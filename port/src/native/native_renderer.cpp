@@ -28,6 +28,7 @@
 #include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <map>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -129,6 +130,17 @@ REXCVAR_DEFINE_DOUBLE(native_render_scale, 1.0, "GPU",
 REXCVAR_DEFINE_INT32(native_scene_height, 0, "GPU",
                      "Native renderer: the scene's height in pixels, between the 720p steps (900 / 1080: "
                      "2x scaled down to it). 0: native_max_scale and native_render_scale decide.");
+
+REXCVAR_DEFINE_STRING(native_upscale, "off", "GPU",
+                      "Native renderer upscaling: off (the scene at the window's resolution or above, averaged "
+                      "down) or fsr1 (AMD FSR 1: the scene rendered smaller - native_upscale_quality - and "
+                      "scaled up to the window edge-adaptively, then sharpened). The HUD is scaled with it.");
+
+REXCVAR_DEFINE_INT32(native_upscale_quality, 1, "GPU",
+                     "FSR 1's render size: 0 Ultra Quality (77% of the window's height), 1 Quality (67%), "
+                     "2 Balanced (59%), 3 Performance (50%)");
+
+REXCVAR_DEFINE_DOUBLE(native_upscale_sharpness, 0.8, "GPU", "FSR 1's sharpening, 0 (none) - 1 (the most)");
 
 REXCVAR_DEFINE_INT32(native_max_scale, 4, "GPU",
                      "Native renderer: the largest render scale (1 = the Xbox 360's 720p, up to 4). "
@@ -616,6 +628,10 @@ struct Renderer {
   std::unique_ptr<plume::RenderSampler> default_sampler;
   std::shared_ptr<plume::RenderTexture> outputs[kOutputs];
   std::unique_ptr<plume::RenderFramebuffer> output_framebuffers[kOutputs];
+  // FSR 1's intermediate (the frame's size: EASU's result, RCAS's source), in the 2D table at kFsrSrv.
+  std::shared_ptr<plume::RenderTexture> fsr_image;
+  std::unique_ptr<plume::RenderTextureView> fsr_view;
+  std::unique_ptr<plume::RenderFramebuffer> fsr_framebuffer;
   uint32_t output_index = 0;
   std::unordered_map<uint64_t, ColorTarget> color_targets;
   std::unordered_map<uint64_t, DepthTarget> depth_targets;
@@ -728,6 +744,12 @@ bool g_shadows = true;
 // native_render_scale: the main scene's targets (and their resolves and the
 // frame images) have this fraction of the scale's pixels per side - weak GPUs.
 float g_res = 1.0f;
+// native_upscale fsr1, while the scene is smaller than the window: Present scales it up with FSR 1 (EASU into the
+// frame-size intermediate, RCAS into the frame image) - g_fsr_sharpness RCAS's strength (0-1).
+bool g_fsr = false;
+float g_fsr_sharpness = 0.8f;
+// The intermediate's place in the 2D texture table: after the three placeholders, before the texture cache's.
+constexpr uint32_t kFsrSrv = 3;
 
 // Whether a target of this guest size is the main scene (1280 x 720).
 bool SceneTarget(uint32_t width, uint32_t height) { return width >= 1152 && height >= 640; }
@@ -1284,6 +1306,24 @@ bool CreateOutputs(Renderer* r) {
     const plume::RenderTexture* color = r->outputs[i].get();
     r->output_framebuffers[i] = r->device->createFramebuffer(plume::RenderFramebufferDesc(&color, 1));
   }
+  // FSR 1's intermediate, the frames' size (made with them: the GPU is idle), sampled from the 2D table at kFsrSrv.
+  r->fsr_framebuffer.reset();
+  r->fsr_view.reset();
+  r->fsr_image = r->device->createTexture(plume::RenderTextureDesc::Texture2D(
+      g_out_w, g_out_h, 1, RenderFormat::R8G8B8A8_UNORM, plume::RenderTextureFlag::RENDER_TARGET));
+  if (r->fsr_image) {
+    r->fsr_image->setName("FSR 1 intermediate");
+    const plume::RenderTexture* color = r->fsr_image.get();
+    r->fsr_framebuffer = r->device->createFramebuffer(plume::RenderFramebufferDesc(&color, 1));
+    plume::RenderTextureViewDesc vd;
+    vd.format = RenderFormat::R8G8B8A8_UNORM;
+    vd.dimension = plume::RenderTextureViewDimension::TEXTURE_2D;
+    vd.mipLevels = 1;
+    r->fsr_view = r->fsr_image->createTextureView(vd);
+    if (r->fsr_view)
+      r->texture_set[0]->setTexture(r->texture_base[0] + kFsrSrv, r->fsr_image.get(), RenderTextureLayout::SHADER_READ,
+                                    r->fsr_view.get());
+  }
   return true;
 }
 
@@ -1367,7 +1407,8 @@ bool Initialize() {
   std::memset(r->zero_buffer->map(), 0, 256);
   r->zero_buffer->unmap();
 
-  textures::Initialize(g_memory, 3, kSrvHeapSize - 3, 1, kSamplerHeapSize - 1);
+  // (the texture cache's places: after the three placeholders and FSR 1's intermediate - kFsrSrv)
+  textures::Initialize(g_memory, kFsrSrv + 1, kSrvHeapSize - (kFsrSrv + 1), 1, kSamplerHeapSize - 1);
   g_r = r;
   if (REXCVAR_GET(native_record_thread)) {
     r->recorder = std::make_unique<RecordingList>();
@@ -1542,8 +1583,13 @@ void ApplyOutputSettings(Renderer* r) {
   (void)shadows_once;
   static float res = float(REXCVAR_GET(native_render_scale));
   static int32_t scene_height = REXCVAR_GET(native_scene_height);
+  static bool fsr = REXCVAR_GET(native_upscale) == "fsr1";
+  static int32_t fsr_quality = REXCVAR_GET(native_upscale_quality);
   static uint64_t aa_checked = 0;
   if (r->frames >= aa_checked + 30) {  // a cvar query isn't free: twice a second
+    fsr = REXCVAR_GET(native_upscale) == "fsr1";
+    fsr_quality = REXCVAR_GET(native_upscale_quality);
+    g_fsr_sharpness = float(std::clamp(REXCVAR_GET(native_upscale_sharpness), 0.0, 1.0));
     aa = aa_level();
     max_scale = REXCVAR_GET(native_max_scale);
     effects = REXCVAR_GET(native_scale_effects);
@@ -1573,8 +1619,17 @@ void ApplyOutputSettings(Renderer* r) {
   const bool wide_changed = std::fabs(wide - g_wide) > 0.002f || std::fabs(tall - g_tall) > 0.002f;
   res = std::clamp(res, 0.25f, 1.0f);
   if (scale > 1) res = 1.0f;  // (only below the Xbox 360's own resolution)
-  // A chosen height (1080P): the 720p step above it, the scene scaled down to it.
-  if (scene_height > 0) {
+  // FSR 1: the scene at the quality's share of the window's height (the 720p step above it, scaled down to it), no
+  // supersampling; Present scales it up (EASU) and sharpens it (RCAS).
+  g_fsr = false;
+  if (fsr) {
+    constexpr float kShare[4] = {1.0f / 1.3f, 1.0f / 1.5f, 1.0f / 1.7f, 1.0f / 2.0f};
+    const uint32_t h = std::clamp<uint32_t>(uint32_t(std::lround(float(out_h) * kShare[std::clamp(fsr_quality, 0, 3)])),
+                                            kHeight / 4, kHeight * 4);
+    scale = std::min<uint32_t>((h + kHeight - 1) / kHeight, 4);
+    res = std::clamp(float(h) / float(kHeight * scale), 0.25f, 1.0f);
+    g_fsr = h < out_h;
+  } else if (scene_height > 0) {  // A chosen height (1080P): the 720p step above it, the scene scaled down to it.
     const uint32_t h = uint32_t(std::clamp<int32_t>(scene_height, int32_t(kHeight / 4), int32_t(kHeight * 4)));
     scale = (h + kHeight - 1) / kHeight;
     res = std::clamp(float(h) / float(kHeight * scale), 0.25f, 1.0f);
@@ -1609,8 +1664,9 @@ void ApplyOutputSettings(Renderer* r) {
     CreateOutputs(r);
   }
   r->list_state = {};
-  REXLOG_INFO("native renderer: output {}x{}, render scale {}x{}{}{}{}", g_out_w, g_out_h, g_scale,
+  REXLOG_INFO("native renderer: output {}x{}, render scale {}x{}{}{}{}{}", g_out_w, g_out_h, g_scale,
               g_res < 1.0f ? fmt::format(" (scene at {:.0f}%)", g_res * 100) : std::string(),
+              g_fsr ? fmt::format(", FSR 1 from {}p", uint32_t(std::lround(kHeight * g_scale * g_res))) : std::string(),
               aa > 1 ? fmt::format(" (anti-aliasing {}x)", aa) : std::string(), g_scale_effects ? "" : ", effects unscaled",
               g_wide > 1.0f   ? fmt::format(", wide {:.3f} (aspect {:.3f})", g_wide, kAspect16x9 * g_wide)
               : g_tall > 1.0f ? fmt::format(", tall {:.3f} (aspect {:.3f})", g_tall, kAspect16x9 / g_tall)
@@ -3735,16 +3791,23 @@ void Attach(rex::memory::Memory* memory) {
 // frame; with SVR2011_NATIVE_STOP_AT_RESOLVE the main target before
 // post-processing) is copied to the window.
 // The pipeline showing a texture in the frame image (shaders/present.*.hlsl).
-const plume::RenderPipeline* PresentPipeline(Renderer* r) {
-  static std::unique_ptr<plume::RenderShader> vs, ps;
-  static std::unique_ptr<plume::RenderPipeline> pso;
-  static bool tried = false;
-  if (tried) return pso.get();
-  tried = true;
+// (the full-screen triangle with pixel shader `ps_name`: present.ps, or FSR 1's fsr_easu.ps / fsr_rcas.ps)
+const plume::RenderPipeline* PresentPipeline(Renderer* r, const char* ps_name = "present.ps") {
+  struct Built {
+    std::unique_ptr<plume::RenderShader> vs, ps;
+    std::unique_ptr<plume::RenderPipeline> pso;
+  };
+  static std::map<std::string, Built> built;
+  const bool tried = built.count(ps_name) != 0;
+  Built& b = built[ps_name];
+  if (tried) return b.pso.get();
+  auto& vs = b.vs;
+  auto& ps = b.ps;
+  auto& pso = b.pso;
   const std::vector<uint8_t> vs_code = ReadShader("present.vs");
-  const std::vector<uint8_t> ps_code = ReadShader("present.ps");
+  const std::vector<uint8_t> ps_code = ReadShader(ps_name);
   if (vs_code.empty() || ps_code.empty()) {
-    REXLOG_WARN("native renderer: present shaders missing");
+    REXLOG_WARN("native renderer: {} shaders missing", ps_name);
     return nullptr;
   }
   plume::RenderGraphicsPipelineDesc d;
@@ -3759,7 +3822,7 @@ const plume::RenderPipeline* PresentPipeline(Renderer* r) {
   d.renderTargetFormat[0] = RenderFormat::R8G8B8A8_UNORM;
   if (d.vertexShader && d.pixelShader) pso = r->device->createGraphicsPipeline(d);
   if (pso && !backend::PipelineCreated(pso.get())) pso.reset();
-  if (!pso) REXLOG_ERROR("native renderer: could not create the present pipeline");
+  if (!pso) REXLOG_ERROR("native renderer: could not create the {} pipeline", ps_name);
   return pso.get();
 }
 
@@ -3784,36 +3847,55 @@ bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
   if (srv == UINT32_MAX) return false;
   const uint32_t sampler = textures::Sampler(ctx, fetch);
   const uint32_t w = (fetch[2] & 0x1FFF) + 1, h = ((fetch[2] >> 13) & 0x1FFF) + 1;
-  auto [cpu, gpu] = Allocate(r, 256);
-  if (!cpu) return false;
-  const uint32_t indices[2] = {srv, sampler};
   const float scale[2] = {std::min(1.0f, float(kWidth) / float(w)),
                           std::min(1.0f, float(kHeight) / float(h))};
   const float out_size[2] = {float(g_out_w), float(g_out_h)};
-  std::memcpy(cpu, indices, 8);
-  std::memcpy(cpu + 8, scale, 8);
-  std::memcpy(cpu + 16, out_size, 8);
   auto* list = r->list;
+  // A full-screen pass: texture table index `tex` (the sampler's), constants {tex, sampler, c, the frame's size}.
+  auto pass = [&](const plume::RenderPipeline* p, uint32_t tex, const float c[2]) {
+    auto [cpu, gpu] = Allocate(r, 256);
+    if (!cpu) return false;
+    const uint32_t indices[2] = {tex, sampler};
+    std::memcpy(cpu, indices, 8);
+    std::memcpy(cpu + 8, c, 8);
+    std::memcpy(cpu + 16, out_size, 8);
+    list->setGraphicsPipelineLayout(r->layout.get());
+    BindTables(r, list);
+    if (backend::CompactTables() || SlotTables()) {
+      // (compact / slot tables: the texture and sampler in place 0 of the draw's sets)
+      uint32_t places[2][kSlotTextures];
+      std::fill(&places[0][0], &places[0][0] + 2 * kSlotTextures, UINT32_MAX);
+      places[0][0] = r->texture_base[0] + tex;
+      places[1][0] = sampler;
+      r->draw_sets[0] = CompactSet(r, 0, places[0]);
+      r->draw_sets[1] = CompactSet(r, 1, places[1]);
+      BindCompactSets(r, list);
+      const uint32_t zero[2] = {0, 0};
+      std::memcpy(cpu, zero, 8);
+    }
+    const RenderBufferReference constants[4] = {{}, {}, {}, gpu};
+    BindConstants(r, constants);
+    list->setPipeline(p);
+    list->setViewports(plume::RenderViewport(0, 0, out_size[0], out_size[1], 0, 1));
+    return true;
+  };
+  // FSR 1 (the scene smaller than the frame): EASU into the intermediate, then RCAS into the frame image below.
+  const plume::RenderPipeline* easu = g_fsr && r->fsr_framebuffer ? PresentPipeline(r, "fsr_easu.ps") : nullptr;
+  const plume::RenderPipeline* rcas = easu ? PresentPipeline(r, "fsr_rcas.ps") : nullptr;
+  if (rcas) {
+    Barrier(r, r->fsr_image.get(), RenderTextureLayout::COLOR_WRITE);
+    list->setFramebuffer(r->fsr_framebuffer.get());
+    if (!pass(easu, srv, scale)) return false;
+    list->setScissors(plume::RenderRect(0, 0, int32_t(out_size[0]), int32_t(out_size[1])));
+    list->drawInstanced(3, 1, 0, 0);
+    Barrier(r, r->fsr_image.get(), RenderTextureLayout::SHADER_READ);
+    r->list_state = {};
+  }
   Barrier(r, FrameImage(r), RenderTextureLayout::COLOR_WRITE);
   list->setFramebuffer(r->output_framebuffers[r->output_index].get());
-  list->setGraphicsPipelineLayout(r->layout.get());
-  BindTables(r, list);
-  if (backend::CompactTables() || SlotTables()) {
-    // (compact / slot tables: the texture and sampler in place 0 of the draw's sets)
-    uint32_t places[2][kSlotTextures];
-    std::fill(&places[0][0], &places[0][0] + 2 * kSlotTextures, UINT32_MAX);
-    places[0][0] = r->texture_base[0] + srv;
-    places[1][0] = sampler;
-    r->draw_sets[0] = CompactSet(r, 0, places[0]);
-    r->draw_sets[1] = CompactSet(r, 1, places[1]);
-    BindCompactSets(r, list);
-    const uint32_t zero[2] = {0, 0};
-    std::memcpy(cpu, zero, 8);
-  }
-  const RenderBufferReference constants[4] = {{}, {}, {}, gpu};
-  BindConstants(r, constants);
-  list->setPipeline(pso);
-  list->setViewports(plume::RenderViewport(0, 0, out_size[0], out_size[1], 0, 1));
+  // (RCAS's strength: 2 stops of sharpening over the 0-1 setting, 1 the most)
+  const float sharp[2] = {g_fsr_sharpness > 0.0f ? std::exp2(-2.0f * (1.0f - g_fsr_sharpness)) : 0.0f, 0.0f};
+  if (!(rcas ? pass(rcas, kFsrSrv, sharp) : pass(pso, srv, scale))) return false;
   if (g_frame_2d && g_wide > 1.0f) {
     // A 2D screen on a wide one: its 16:9 middle, black sides.
     list->clearColor(0, plume::RenderColor(0, 0, 0, 1));
@@ -3905,11 +3987,34 @@ void OnPresent(uint32_t front_buffer) {
     list->clearColor(0, plume::RenderColor(0.05f, 0.05f, 0.08f, 1.0f));
     Barrier(r, back, RenderTextureLayout::SHADER_READ);
   }
-#if SVR2011_DEBUG_SUITE
-  // (a dbg_shot due: the frame image copied to a readback buffer, written once the frame is done - below)
+  // Test aid: SVR2011_TEST_FRAME_SHOT=<file.ppm> - the frame image as it is (the window's pixels, not a desktop
+  // capture), once, 10 s into a match (upscaling comparisons).
+  static const std::string frame_shot = [] {
+    char* v = nullptr;
+    size_t n = 0;
+    std::string s;
+    if (_dupenv_s(&v, &n, "SVR2011_TEST_FRAME_SHOT") == 0 && v) s = v, free(v);
+    return s;
+  }();
+  static bool frame_shot_done = false;
+  const bool test_shot = !frame_shot.empty() && !frame_shot_done && !r->hidden_frame && g_match_scene.load() &&
+                         Be32(Virtual(0x82E3CD0C)) > 600;
   std::shared_ptr<plume::RenderBuffer> shot;
   const uint32_t shot_row = (g_out_w + 63) & ~63u;  // (256-byte rows)
-  if (!r->hidden_frame && svr2011::dbg::ShotWanted()) {
+  if (test_shot) {
+    frame_shot_done = true;
+    shot = r->device->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(uint64_t(shot_row) * g_out_h * 4));
+    if (shot) {
+      Barrier(r, back, RenderTextureLayout::COPY_SOURCE);
+      list->copyTextureRegion(plume::RenderTextureCopyLocation::PlacedFootprint(
+                                  shot.get(), RenderFormat::R8G8B8A8_UNORM, g_out_w, g_out_h, 1, shot_row),
+                              plume::RenderTextureCopyLocation::Subresource(back));
+      Barrier(r, back, RenderTextureLayout::SHADER_READ);
+    }
+  }
+#if SVR2011_DEBUG_SUITE
+  // (a dbg_shot due: the frame image copied to a readback buffer, written once the frame is done - below)
+  if (!shot && !r->hidden_frame && svr2011::dbg::ShotWanted()) {
     shot = r->device->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(uint64_t(shot_row) * g_out_h * 4));
     if (shot) {
       Barrier(r, back, RenderTextureLayout::COPY_SOURCE);
@@ -3951,8 +4056,24 @@ void OnPresent(uint32_t front_buffer) {
     ReportDeviceRemoved(r);
     return;
   }
+  if (shot && test_shot && WaitForFrame(r, r->back_index, "test frame shot")) {
+    if (const auto* px = static_cast<const uint8_t*>(shot->map())) {
+      if (FILE* f = std::fopen(frame_shot.c_str(), "wb")) {  // (binary PPM, RGB)
+        std::fprintf(f, "P6\n%u %u\n255\n", g_out_w, g_out_h);
+        std::vector<uint8_t> row(size_t(g_out_w) * 3);
+        for (uint32_t y = 0; y < g_out_h; ++y) {
+          const uint8_t* s = px + size_t(y) * shot_row * 4;
+          for (uint32_t x = 0; x < g_out_w; ++x) std::memcpy(&row[size_t(x) * 3], s + size_t(x) * 4, 3);
+          std::fwrite(row.data(), 1, row.size(), f);
+        }
+        std::fclose(f);
+        REXLOG_INFO("native renderer: test frame shot {}x{} -> {}", g_out_w, g_out_h, frame_shot);
+      }
+      shot->unmap();
+    }
+  }
 #if SVR2011_DEBUG_SUITE
-  if (shot && WaitForFrame(r, r->back_index, "dbg shot")) {
+  if (shot && !test_shot && WaitForFrame(r, r->back_index, "dbg shot")) {
     if (const auto* px = static_cast<const uint8_t*>(shot->map())) {
       svr2011::dbg::WriteShot(px, g_out_w, g_out_h, shot_row * 4);
       shot->unmap();
