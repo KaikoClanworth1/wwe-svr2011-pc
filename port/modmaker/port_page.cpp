@@ -16,6 +16,7 @@
 #include "disc_list.h"
 #include "full_preview.h"
 #include "json.h"
+#include "simple_port.h"
 #include "svrfmt/disc.h"
 #include "tool_run.h"
 
@@ -452,6 +453,8 @@ void Convert(int k, const std::string& game, const Json& item) {
   }
   for (auto& x : SvrmodArgs(k, game)) args.push_back(x);
   if (g_same_moves && game.rfind("ps2_", 0) == 0 && std::wstring(kKinds[k].script) == L"superstar_port.py") args.push_back(L"--same-moves");
+  if (std::wstring(kKinds[k].script) == L"superstar_port.py")  // (the attire picker's choice: which four, in order)
+    if (const std::string at = simple_port::AttireChoice(game, Source(), key); !at.empty()) args.push_back(L"--attires"), args.push_back(Wide(at));
   if (entrance && !g_settings.bink2_tool.empty())  // (its --titantron: Bink 2 movies through the player's tool)
     args.push_back(L"--bink2-tool"), args.push_back(g_settings.bink2_tool);
   if (NeedsPicture(item) && !g_pp.pick.empty()) args.push_back(L"--picture"), args.push_back(Wide(g_pp.pick));
@@ -972,6 +975,7 @@ void LoneStar(int k, const std::string& game) {
     Hint("The file's name doesn't say it: the number in the game's own name for it (chNNN.pac).");
     if (g_lone_id > 0) key = std::to_string(g_lone_id);
   }
+  if (ps2 && !key.empty()) simple_port::AttirePicker(game, Source(), key);
   ImGui::SetNextItemWidth(260 * g_scale);
   ImGui::InputTextWithHint("Name", "the file's name if left empty", g_lone_name, sizeof g_lone_name);
   if (game.rfind("ps2_", 0) == 0) {
@@ -1238,6 +1242,7 @@ void KindBody(int k) {
     AskPictures(k, game, item);
     PicturePicker();
   }
+  if (std::wstring(kKinds[k].script) == L"superstar_port.py") simple_port::AttirePicker(game, Source(), ItemKey(item));
   ImGui::SetNextItemWidth(360 * g_scale);
   const bool room = std::wstring(kKinds[k].script) == L"backstage_port.py";
   ImGui::InputTextWithHint("Options (advanced)", room ? "e.g. --name \"Parking Lot\" (the row's name)" : "e.g. --height 1.05 --no-moves", g_options, sizeof g_options);
