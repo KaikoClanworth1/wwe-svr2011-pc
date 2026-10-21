@@ -6902,8 +6902,13 @@ static int up_game_version(WCHAR *out, size_t n)
         !(sz = GetFileVersionInfoSizeW(exe, &h)) || !(buf = malloc(sz)))
         return 0;
     if (GetFileVersionInfoW(exe, 0, sz, buf) && VerQueryValueW(buf, L"\\", (void **)&fi, &fl) && fi) {
-        swprintf_s(out, n, L"%u.%u.%u", HIWORD(fi->dwFileVersionMS), LOWORD(fi->dwFileVersionMS),
-                   HIWORD(fi->dwFileVersionLS));
+        /* (the fourth part only when it is set: 2.1.4.1, but 2.1.4 - as PORT_VERSION writes them) */
+        if (LOWORD(fi->dwFileVersionLS))
+            swprintf_s(out, n, L"%u.%u.%u.%u", HIWORD(fi->dwFileVersionMS), LOWORD(fi->dwFileVersionMS),
+                       HIWORD(fi->dwFileVersionLS), LOWORD(fi->dwFileVersionLS));
+        else
+            swprintf_s(out, n, L"%u.%u.%u", HIWORD(fi->dwFileVersionMS), LOWORD(fi->dwFileVersionMS),
+                       HIWORD(fi->dwFileVersionLS));
         ok = 1;
     }
     free(buf);
