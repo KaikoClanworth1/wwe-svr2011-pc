@@ -1185,7 +1185,12 @@ REX_HOOK_RAW(sub_827374A0) {
   // A backstage mod's own row: its bg78 for this match (any other: the usual)
   {
     const auto& own = svr2011::BackstageRows();
-    const int k = g_pending_own_row;
+    int k = g_pending_own_row;
+    // (test aid SVR2011_TEST_BACKSTAGE_ROW=<row name>: that mod's row, with SVR2011_TEST_RULE its area's rule -
+    // a match started without the menus, e.g. svrtest lan)
+    if (const char* v = std::getenv("SVR2011_TEST_BACKSTAGE_ROW"); k < 0 && v && *v)
+      for (size_t i = 0; i < own.size(); ++i)
+        if (own[i].label == v) k = int(i);
     const bool use = k >= 0 && size_t(k) < own.size() && !Rd32(base + kStoryContext) &&
                      rule == kBackstage1v1FirstRule + uint32_t(own[size_t(k)].area);
     if (use) REXLOG_INFO("match types: backstage area '{}'", own[size_t(k)].label);
@@ -1431,6 +1436,29 @@ REX_HOOK_RAW(sub_828BBEF0) {
 // by the set-up sub_828BD278 from the match's rule at +8 - online the
 // session's 6-man, kinds 0): 3 = a waiting entrant (role 3, state 1 when the
 // character is made). (+4 is the slot's no-pad / CPU flag.)
+// Test aid (a LAN test, tools/dev/svrtest_lan.ps1): online, SVR2011_TEST_RULE plays where the session's ONE ON
+// ONE NORMAL would - the online set-up gives the rule to sub_828BD278(match, rule, options) itself (not
+// sub_827374A0) - alike on both games (with SVR2011_TEST_BACKSTAGE_ROW, a backstage mod's row for its area).
+REX_EXTERN(__imp__sub_828BD278);
+REX_HOOK_RAW(sub_828BD278) {
+  if (g_test_rule >= 0 && ctx.r4.u32 == 0 && svr2011::P2POnlineMode() && !Rd32(base + kStoryContext)) {
+    ctx.r4.u64 = uint32_t(g_test_rule);
+    static int told = 0;
+    if (told++ < 4) REXLOG_INFO("match types: online ONE ON ONE NORMAL plays rule {:02X} (SVR2011_TEST_RULE)", g_test_rule);
+    // (and SVR2011_TEST_BACKSTAGE_ROW's row when the rule is its area's: online, the menus' own-row
+    // choice in sub_827374A0's hook isn't made)
+    if (const char* v = std::getenv("SVR2011_TEST_BACKSTAGE_ROW"); v && *v) {
+      const auto& own = svr2011::BackstageRows();
+      for (size_t i = 0; i < own.size(); ++i)
+        if (own[i].label == v && uint32_t(g_test_rule) == kBackstage1v1FirstRule + uint32_t(own[i].area)) {
+          svr2011::UseBackstageRow(int(i));
+          REXLOG_INFO("match types: online backstage area '{}' (SVR2011_TEST_BACKSTAGE_ROW)", own[i].label);
+        }
+    }
+  }
+  __imp__sub_828BD278(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_828BB290);
 REX_HOOK_RAW(sub_828BB290) {
   const uint32_t match = ctx.r3.u32;

@@ -43,10 +43,24 @@ struct JsonReader {
         c = t[++i];
         if (c == 'n') c = '\n';
         else if (c == 't') c = '\t';
-        else if (c == 'u' && i + 4 < t.size()) {
-          const unsigned v = unsigned(std::strtoul(t.substr(i + 1, 4).c_str(), nullptr, 16));
+        else if (c == 'u' && i + 4 < t.size()) {  // (as UTF-8; a surrogate pair is one character)
+          auto hex4 = [&](size_t at) { return unsigned(std::strtoul(t.substr(at, 4).c_str(), nullptr, 16)); };
+          unsigned v = hex4(i + 1);
           i += 4;
-          c = v < 128 ? char(v) : '?';
+          if (v >= 0xD800 && v < 0xDC00 && i + 6 < t.size() && t[i + 1] == '\\' && t[i + 2] == 'u') {
+            if (const unsigned lo = hex4(i + 3); lo >= 0xDC00 && lo < 0xE000) v = 0x10000 + ((v - 0xD800) << 10) + (lo - 0xDC00), i += 6;
+          }
+          if (v < 0x80) {
+            out += char(v);
+          } else if (v < 0x800) {
+            out += char(0xC0 | v >> 6), out += char(0x80 | (v & 0x3F));
+          } else if (v < 0x10000) {
+            out += char(0xE0 | v >> 12), out += char(0x80 | (v >> 6 & 0x3F)), out += char(0x80 | (v & 0x3F));
+          } else {
+            out += char(0xF0 | v >> 18), out += char(0x80 | (v >> 12 & 0x3F)), out += char(0x80 | (v >> 6 & 0x3F)),
+                out += char(0x80 | (v & 0x3F));
+          }
+          continue;
         }
       }
       out += c;

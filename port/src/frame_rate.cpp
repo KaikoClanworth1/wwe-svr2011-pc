@@ -66,6 +66,9 @@
 #include "online_rules.h"
 #include "players.h"
 #include "superstar_mods.h"
+#if SVR2011_DEBUG_SUITE
+#include "debug_suite/debug_suite.h"
+#endif
 
 REXCVAR_DEFINE_INT32(frame_rate, 60, "GPU", "Frames a second: 30 or 60");
 REXCVAR_DEFINE_BOOL(full_speed, true, "GPU",
@@ -445,6 +448,9 @@ REX_HOOK_RAW(sub_8269D768) {
   g_world_ticks = std::clamp(int(g_world_acc), 1, kMaxTicks);
   g_world_acc = std::clamp(g_world_acc - g_world_ticks, -0.5, 1.0);
   if (g_lockstep || !REXCVAR_GET(full_speed)) g_world_ticks = 1, g_world_acc = 0;
+#if SVR2011_DEBUG_SUITE
+  if (const int n = svr2011::dbg::SpeedTicks(); n && !g_lockstep) g_world_ticks = n, g_world_acc = 0;  // (dbg_speed)
+#endif
   // 30 fps at 60 Hz (SetHalfFrames): while frames take two updates (a PC that
   // can't keep 60 Hz) every frame is shown - as 30 fps did before - and every
   // other one again once it keeps up (a running average of the updates).
@@ -462,7 +468,12 @@ REX_HOOK_RAW(sub_8269D768) {
                     want ? "every frame shown (the world can't keep 60 Hz)" : "every other frame shown again", avg_ticks);
     }
   }
+  svr2011::HctpBeforeFrame(base);  // (match_types.h: a door's placements held)
   __imp__sub_8269D768(ctx, base);
+#if SVR2011_DEBUG_SUITE
+  svr2011::dbg::BootFrame(ctx, base);  // (dbg_boot: debug_suite.h)
+  svr2011::dbg::ClockFrame();          // (dbg_state_clock)
+#endif
   TestMatchTime(base);
   svr2011::MatchTypesUpdate(ctx, base);  // (match_types.h: the lumberjacks, Slobber Knocker)
   svr2011::HctpRoomUpdate(ctx, base);    // (match_types.h: an HCTP backstage room's gimmicks)
@@ -733,6 +744,9 @@ REX_HOOK_RAW(sub_82905058) {
   if (out && ctx.r3.u32 == 0) svr2011::FreeCamPad(user, base + out);  // (flying: the game gets no input - free_cam.h)
   if (user == 0 && out && ctx.r3.u32 == 0) {
     svr2011::FastStartInput(base, out);  // (the start skips: fast_start.h)
+#if SVR2011_DEBUG_SUITE
+    svr2011::dbg::BootInput(base, out);  // (dbg_boot: a booted match's entrances skipped)
+#endif
     // (the online overlay's BACK + RB never reaches the game: online_overlay.h)
     const uint16_t b = svr2011::OnlineOverlayPad(uint16_t(base[out + 4] << 8 | base[out + 5]));
     base[out + 4] = uint8_t(b >> 8), base[out + 5] = uint8_t(b);
@@ -948,6 +962,9 @@ REX_HOOK_RAW(sub_826E0F78) {
                     "frames played; mode {} part {})",
                     now ? "recording" : "playing", rec_frames, per, play_steps, play_frames, Rd32(base + obj + 92),
                     part ? Rd32(base + part + 1504) : 0);
+#if SVR2011_DEBUG_SUITE
+        if (now && rec_frames == 0) svr2011::dbg::OnMatchStarted();  // (a new match's first recording: the cues' zero)
+#endif
         phase = now;
         play_acc = 0;
         play_frames = play_steps = 0;

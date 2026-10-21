@@ -43,6 +43,7 @@
 #include "json_lite.h"
 #include "keyboard_typing.h"
 #include "online_files.h"
+#include "online.h"
 #include "online_net.h"
 #include "graphics_page.h"
 #include "p2p.h"
@@ -217,6 +218,8 @@ void Poll() {
   if (r && r->status == 200 && JsonReader{r->body}.Value(j) && j["friends"]) {
     s.answered = true;
     if (const Json* c = j["config"]; c && (*c)["mods_online"]) SetOnlineModsAllowed((*c)["mods_online"]->b);
+    if (const Json* c = j["config"]; c && (*c)["match_network"]) P2PSetServerNetwork((*c)["match_network"]->s);
+    if (const Json* c = j["config"]; c && (*c)["news"]) SetOnlineNews((*c)["news"]->s);
     for (const Json& f : j["friends"]->items) s.friends.push_back({f.Str("name"), f.Str("status"),
                                                                    f["mutual"] && f["mutual"]->b});
     if (const Json* a = j["added_you"])
@@ -224,6 +227,7 @@ void Poll() {
     if (const Json* a = j["invites"])
       for (const Json& v : a->items) s.invites.push_back({v.Str("from"), v.Str("xuid"), v.Str("session"), v.Str("kind")});
   } else {
+    if (!r) P2PSetServerNetwork("auto");  // (no server: today's way - direct, the relay if it answers)
     s.error = !r ? "THE SERVER DIDN'T ANSWER" : r->status == 404 ? "THIS SERVER HAS NO FRIENDS LIST YET"
                                                                  : "THE SERVER REFUSED (" + std::to_string(r->status) + ")";
   }

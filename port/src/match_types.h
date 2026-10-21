@@ -58,6 +58,10 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base);
 // The HCTP backstage as one stage (hctp_room.cpp): after each CFRS room-visibility
 // update (match_types.cpp), only the current room's models and objects are shown.
 void HctpWorldVisibility(PPCContext& ctx, uint8_t* base);
+// The door prompt over the match (a player at a door: his Y button, "GO TO <room>").
+void InstallHctpOverlay(rex::ui::ImGuiDrawer* drawer);
+// (hctp_room.cpp) A world frame's start, before the game's update: wrestlers put through a door held there.
+void HctpBeforeFrame(uint8_t* base);
 // (match_types.cpp) The backstage fight box set up for the match: a new centre and
 // half sizes (the fighters went through a door into another room); the match
 // camera snapped onto them (not panning across).

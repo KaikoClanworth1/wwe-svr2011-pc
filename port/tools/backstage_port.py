@@ -54,6 +54,11 @@ HCTP_WORLDS = {
 }
 
 
+def worlds_on():
+    """The walkable worlds aren't in a release yet (not in 2.1.4): offered only with SVR2011_HCTP_WORLDS=1."""
+    return os.environ.get('SVR2011_HCTP_WORLDS') == '1'
+
+
 class BadInput(Exception):
     pass
 
@@ -80,7 +85,7 @@ def hctp_list(disc):
              for r, (n, about) in sorted(HCTP_ROOMS.items())] +
             [{'key': k, 'name': n, 'rooms': list(rs), 'about': about,
               'status': 'ready' if all('%04d' % r in stg for r in rs) else 'missing'}
-             for k, (n, rs, about) in HCTP_WORLDS.items()])
+             for k, (n, rs, about) in HCTP_WORLDS.items() if worlds_on()])
 
 
 def pac_folder(pac11):
@@ -95,7 +100,7 @@ def hctp_convert(disc, item, out, pac11, name, mod_id=None):
     import hctp_unpack
     import build_room
     hctp_check(disc)
-    if item.lower() in HCTP_WORLDS:
+    if item.lower() in HCTP_WORLDS and worlds_on():
         return hctp_world(disc, item.lower(), out, pac11, name, mod_id)
     try:
         room = int(item.lower().replace('hctp', ''))

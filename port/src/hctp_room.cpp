@@ -24,14 +24,22 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include <fmt/format.h>
+#include <imgui.h>
+
+#include <rex/cvar.h>
+#include <rex/ui/imgui_dialog.h>
 
 #include "arena_mods.h"
+#include "match_hud.h"
 #include "match_types.h"
+#include "p2p.h"
+#include "pad_types.h"
 
 #include "generated/default/svr2011_init.h"
 
@@ -56,7 +64,10 @@ const bool g_props_now = g_roof_env && std::strcmp(g_roof_env, "props") == 0;
 const bool g_tour_now = g_roof_env && std::strcmp(g_roof_env, "tour") == 0;
 // (=fork: room 31, fighter 0 - the test's pad - gets on the forklift 5 seconds in; the script drives)
 const bool g_fork_now = g_roof_env && std::strcmp(g_roof_env, "fork") == 0;
-// (=door: the world mod's first door - fighter 0 put on its trigger 5 seconds in; the script walks him)
+// (=walkin: wrestlers go through a door by walking into it, as the CPU does - not with Y)
+const bool g_walk_in = g_roof_env && std::strcmp(g_roof_env, "walkin") == 0;
+// (=door: the world mod's current room's first door - fighter 0 put on its trigger 5 seconds in, fighter 1
+// 15 seconds in (a LAN pair: each side's player presses Y there))
 const bool g_door_now = g_roof_env && std::strcmp(g_roof_env, "door") == 0;
 // (=nograb: no cage-wall grabs or climbs, so strikes reach the fence)
 const bool g_no_grab = g_roof_env && std::strcmp(g_roof_env, "nograb") == 0;
@@ -188,12 +199,12 @@ REX_HOOK_RAW(sub_824B6A70) {
 
 REX_EXTERN(__imp__sub_82394520);
 REX_HOOK_RAW(sub_82394520) {
-  const uint32_t key = ctx.r4.u32;
+  const uint32_t key = ctx.r4.u32, x = ctx.r5.u32, y = ctx.r6.u32;
   __imp__sub_82394520(ctx, base);
-  if (g_log && key >= 12500 && key < 12600) {
+  if (g_log && key >= 12500 && key < 13600) {
     static int b = 0;
     static std::chrono::steady_clock::time_point t;
-    if (Allow(b, t)) REXLOG_INFO("hctp: motion key {} -> {:08X}", key, ctx.r3.u32);
+    if (Allow(b, t)) REXLOG_INFO("hctp: motion key {} ({}, {}) -> {:08X}", key, x, y, ctx.r3.u32);
   }
 }
 
@@ -317,6 +328,15 @@ std::vector<Room> g_rooms(1);
 size_t g_cur = 0;
 Room& Cur() { return g_rooms[g_cur]; }
 bool World() { return g_rooms.size() > 1; }
+
+// The rooms' own random numbers (hit-reaction variants, knock-downs, traffic timing): one sequence,
+// restarted when the room data loads at the match's start, so both sides of inputs-only netplay draw the
+// same ones (the C library's rand is shared with other code: its sequence can differ between the games).
+uint32_t g_room_rng = 1;
+int RoomRand() {
+  g_room_rng = g_room_rng * 1103515245u + 12345u;
+  return int((g_room_rng >> 16) & 0x7FFF);
+}
 int HctpRoom() {
   if (!HctpRoomActive()) return 0;
   return World() ? Cur().number : svr2011::BackstageRows()[size_t(svr2011::g_active_row)].hctp;
@@ -667,7 +687,7 @@ void KnockOver(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t f) {
   p.timer = 0;
   if (const uint32_t key = FallKey(p)) PlayProp(ctx, base, p, key);
   DropCollision(base, p);
-  if (f) JumpAct(ctx, base, f, kHitObject, uint32_t(1 + std::rand() % 5));
+  if (f) JumpAct(ctx, base, f, kHitObject, uint32_t(1 + RoomRand() % 5));
   REXLOG_INFO("hctp: {} knocked over", p.name);
 }
 
@@ -801,12 +821,44 @@ bool InZone(const Prop& p, float x, float y, float z) {
 // A fighter put at (x, y, z) facing yaw (his position and his physics body's).
 // (After his act starts, as the game's own T22 snap does - sub_824B67D0: the
 // act's root motion counts from where he is then.)
+// A wrestler's yaw facing the way a prop at object yaw a faces (turned by 'turn' as the HCTP code turns
+// its own): -a + turn. An object's local +z at yaw a points (-sin a, cos a), a wrestler's yaw y faces
+// (sin y, cos y) - the prop's own a put him the mirrored way on props turned 90 (room 35's lions).)
+float FighterYaw(float object_yaw, float turn = 0.0f) { return -object_yaw + turn; }
+
 void PlaceFighter(uint8_t* base, uint32_t f, float x, float y, float z, float yaw) {
   WrF(base + f + 288, x), WrF(base + f + 292, y), WrF(base + f + 296, z);
   WrF(base + f + 276, yaw);
   if (const uint32_t body = Rd32(base + f + 304)) {
     WrF(base + body, x), WrF(base + body + 4, y), WrF(base + body + 8, z);
   }
+}
+
+// A wrestler put somewhere for good (through a door, the door test): placed now and again at the start of
+// the next kHeldFrames world frames, before the game's update - with the body's other two position copies
+// (+704, +768). Online the game's update puts him back on his physics body and the body then eases toward
+// him over several frames (seen with svrtest lan: placed at the door, back at his old place the next frame,
+// then 150 -> 121 -> 108 ...); placed this way the body has nothing left to ease.
+constexpr int kHeldFrames = 10;
+struct Held {
+  uint32_t f = 0;
+  float x = 0, y = 0, z = 0, yaw = 0;
+  int frames = 0;
+};
+Held g_held[8];
+
+void PlaceBody(uint8_t* base, uint32_t f, float x, float y, float z, float yaw) {
+  PlaceFighter(base, f, x, y, z, yaw);
+  if (const uint32_t body = Rd32(base + f + 304))
+    for (uint32_t at : {704u, 768u}) WrF(base + body + at, x), WrF(base + body + at + 4, y), WrF(base + body + at + 8, z);
+}
+
+void PlaceFighterHeld(uint8_t* base, uint32_t f, float x, float y, float z, float yaw) {
+  PlaceBody(base, f, x, y, z, yaw);
+  Held* slot = nullptr;
+  for (Held& h : g_held)
+    if (h.f == f || (!slot && !h.frames)) slot = &h;
+  if (slot) *slot = {f, x, y, z, yaw, kHeldFrames};
 }
 
 // First frame: the closing shutter (HCTP syattar2) and the steam puffs hidden.
@@ -1049,8 +1101,8 @@ void ShutIn(PPCContext& ctx, uint8_t* base, Prop& cr, uint32_t victim, int vi) {
   if (!att || best > 60.0f * 60.0f) return;
   JumpAct(ctx, base, att, kCrateIn, 0, 0);
   JumpAct(ctx, base, victim, kCrateIn, 0, 1);
-  PlaceFighter(base, att, cr.x, cr.y, cr.z, cr.ry);
-  PlaceFighter(base, victim, cr.x, cr.y, cr.z, cr.ry);
+  PlaceFighter(base, att, cr.x, cr.y, cr.z, FighterYaw(cr.ry));
+  PlaceFighter(base, victim, cr.x, cr.y, cr.z, FighterYaw(cr.ry));
   PlayProp(ctx, base, cr, kCrateIn, 0, 2);
   Cur().crate = 1, Cur().crate_t = 0, Cur().crate_victim = victim;
   REXLOG_INFO("hctp: fighter {} is shut in {}", vi, cr.name);
@@ -1066,11 +1118,11 @@ void UpdateCrate(PPCContext& ctx, uint8_t* base) {
     const int n = Frames(kCrateIn, 170);
     if (t > 20 && (Rd32(base + v + 212) != kCrateIn || RdF(base + v + 24) >= float(n - 2))) {
       JumpAct(ctx, base, v, kCrateIn, 0, 1, float(n - 2));
-      PlaceFighter(base, v, cr->x, cr->y, cr->z, cr->ry);
+      PlaceFighter(base, v, cr->x, cr->y, cr->z, FighterYaw(cr->ry));
     }
     if (t >= 2 * 420) {
       JumpAct(ctx, base, v, kCrateOut, 0, 0);
-      PlaceFighter(base, v, cr->x, cr->y, cr->z, cr->ry);
+      PlaceFighter(base, v, cr->x, cr->y, cr->z, FighterYaw(cr->ry));
       PlayProp(ctx, base, *cr, kCrateOut, 0, 1);
       Cur().crate = 2;
       REXLOG_INFO("hctp: the crate opens - he climbs out");
@@ -1155,7 +1207,7 @@ uint32_t Nearest(uint8_t* base, uint32_t f, float* d2) {
 }
 
 // The hit-object reaction (HCTP 12014: variants 0-5) for a wrestler driven into a gimmick.
-void HitReaction(PPCContext& ctx, uint8_t* base, uint32_t f) { JumpAct(ctx, base, f, kHitObject, uint32_t(std::rand() % 6)); }
+void HitReaction(PPCContext& ctx, uint8_t* base, uint32_t f) { JumpAct(ctx, base, f, kHitObject, uint32_t(RoomRand() % 6)); }
 
 // CGmBrokenCar (310 / 318): models body whole, body dented, tyres, door, bonnet, windows (params 1-6),
 // collision 7, door zone 8, bonnet zone 9, acts 10 bonnet hit / 11 door hit / 12 crush / 13 bump.
@@ -1278,7 +1330,7 @@ void UpdateMoveCar(PPCContext& ctx, uint8_t* base) {
     if (seg + 1 >= path.size()) {  // arrived: hide it, wait, the other car next
       ShowModel(ctx, base, c, model, false);
       c.bits ^= 1;
-      c.count = -(60 + std::rand() % std::max(1, 2 * int(Param(c, 6, 200))));
+      c.count = -(60 + RoomRand() % std::max(1, 2 * int(Param(c, 6, 200))));
       continue;
     }
     if (c.count == 0) ShowModel(ctx, base, c, model, true);
@@ -1334,7 +1386,7 @@ void HoldVictim(PPCContext& ctx, uint8_t* base, const Prop& p, uint32_t key) {
   if (!v) return;
   const int n = Frames(key, 60);
   if (Rd32(base + v + 212) != key || RdF(base + v + 24) >= float(n - 2)) JumpAct(ctx, base, v, key, 0, 0, float(n - 2));
-  PlaceFighter(base, v, p.x, p.y, p.z, p.ry);
+  PlaceFighter(base, v, p.x, p.y, p.z, FighterYaw(p.ry));
 }
 
 // GmLocker (400): whipped in, he is shut inside (door 69 / body 70, him 12071) for 120 HCTP frames, then
@@ -1345,7 +1397,7 @@ void LockerHit(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t v, int i) {
   PlayModel(ctx, base, p, p.models[1], ObjAct() + uint32_t(Param(p, 4)));
   PlayModel(ctx, base, p, p.models[0], ObjAct() + uint32_t(Param(p, 3)));
   JumpAct(ctx, base, v, RoomKey(Param(p, 2)));
-  PlaceFighter(base, v, p.x, p.y, p.z, p.ry);
+  PlaceFighter(base, v, p.x, p.y, p.z, FighterYaw(p.ry));
   REXLOG_INFO("hctp: fighter {} is shut in {}", i, p.name);
 }
 
@@ -1358,7 +1410,7 @@ void UpdateLocker(PPCContext& ctx, uint8_t* base, Prop& p) {
       PlayModel(ctx, base, p, p.models[1], ObjAct() + uint32_t(Param(p, 9)));
       PlayModel(ctx, base, p, p.models[0], ObjAct() + uint32_t(Param(p, 8)));
       JumpAct(ctx, base, p.who, RoomKey(Param(p, 7)));
-      PlaceFighter(base, p.who, p.x, p.y, p.z, p.ry);
+      PlaceFighter(base, p.who, p.x, p.y, p.z, FighterYaw(p.ry));
       p.state = 2, p.timer = 0;
       REXLOG_INFO("hctp: {} opens - he comes out", p.name);
     }
@@ -1375,7 +1427,7 @@ void ToiletHit(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t v, int i) {
   p.state = 1, p.timer = 0, p.who = v;
   if (!p.models.empty()) ShowModel(ctx, base, p, p.models[0], false);
   JumpAct(ctx, base, v, RoomKey(Param(p, 5)));
-  PlaceFighter(base, v, p.x, p.y, p.z, p.ry);
+  PlaceFighter(base, v, p.x, p.y, p.z, FighterYaw(p.ry));
   REXLOG_INFO("hctp: fighter {} is thrown into {}", i, p.name);
 }
 
@@ -1386,7 +1438,7 @@ void UpdateToilet(PPCContext& ctx, uint8_t* base, Prop& p) {
   if (p.timer > 2 * 101 && p.timer < 2 * 254) HoldVictim(ctx, base, p, RoomKey(Param(p, 5)));
   if (p.timer == 2 * 254) {
     JumpAct(ctx, base, p.who, RoomKey(Param(p, 7)));
-    PlaceFighter(base, p.who, p.x, p.y, p.z, p.ry);
+    PlaceFighter(base, p.who, p.x, p.y, p.z, FighterYaw(p.ry));
     if (!p.models.empty()) ShowModel(ctx, base, p, p.models[0], true);
     p.state = 0, p.cooldown = 2 * 60;
   }
@@ -1521,7 +1573,7 @@ void UpdateSandbag(PPCContext& ctx, uint8_t* base, Prop& p) {
     if (!f || Rd32(base + f + 212) != kWalkBackstage) continue;
     const float dx = RdF(base + f + 288) - (p.x + g_bag.az * s * 0.6f), dz = RdF(base + f + 296) - (p.z - g_bag.ax * s * 0.6f);
     if (dx * dx + dz * dz < 6.0f * 6.0f) {
-      JumpAct(ctx, base, f, kHitByObject, uint32_t(std::rand() & 1));
+      JumpAct(ctx, base, f, kHitByObject, uint32_t(RoomRand() & 1));
       REXLOG_INFO("hctp: the sandbag knocks fighter {} down", i);
     }
   }
@@ -1535,7 +1587,7 @@ constexpr uint32_t kButtonA = 0x40;  // (input +52)
 void TreadmillOn(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t f, int i) {
   p.who = f, p.state = 1, p.count = 0, p.timer = 0;
   JumpAct(ctx, base, f, RoomKey(12073));
-  PlaceFighter(base, f, p.x, p.y, p.z, p.ry - 1.5707963f);
+  PlaceFighter(base, f, p.x, p.y, p.z, FighterYaw(p.ry, -1.5707963f));
   PlayProp(ctx, base, p, ObjAct() + uint32_t(Param(p, 6)));
   REXLOG_INFO("hctp: fighter {} gets on {}", i, p.name);
 }
@@ -1553,7 +1605,7 @@ void UpdateTreadmill(PPCContext& ctx, uint8_t* base, Prop& p) {
     p.who = 0, p.state = 0;
     return;
   }
-  PlaceFighter(base, f, p.x, p.y, p.z, p.ry - 1.5707963f);
+  PlaceFighter(base, f, p.x, p.y, p.z, FighterYaw(p.ry, -1.5707963f));
   const uint32_t input = svr2011::FighterInput(f);
   const uint32_t pressed = input ? Rd32(base + input + 52) : 0;
   ++p.timer;
@@ -1721,7 +1773,7 @@ void UpdateTraffic(PPCContext& ctx, uint8_t* base) {
     if (!end) continue;
     auto [it, fresh] = g_taxis.try_emplace(k);
     Taxi& t = it->second;
-    if (fresh) t.wait = 2 * int(Param(c, 4, 300)), t.top = 0.8f + float(std::rand() % 64) / 100.0f;
+    if (fresh) t.wait = 2 * int(Param(c, 4, 300)), t.top = 0.8f + float(RoomRand() % 64) / 100.0f;
     const float dx = end->x - c.x, dz = end->z - c.z, len = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
     const float ux = dx / len, uz = dz / len;
     if (t.wait > 0) {
@@ -1747,7 +1799,7 @@ void UpdateTraffic(PPCContext& ctx, uint8_t* base) {
               const float ox = RdF(base + o + 288) - px, oz = RdF(base + o + 296) - pz;
               if (ox * ox + oz * oz < 70.0f * 70.0f) JumpAct(ctx, base, o, RoomKey(12015));
             }
-          t.wait = 2 * (200 + std::rand() % 100);
+          t.wait = 2 * (200 + RoomRand() % 100);
           REXLOG_INFO("hctp: fighter {} blows {} up", i, c.name);
         }
         continue;
@@ -1768,7 +1820,7 @@ void UpdateTraffic(PPCContext& ctx, uint8_t* base) {
     t.along += t.speed;
     if (t.along >= len) {  // at its anchor: back to the start after a delay
       ShowProp(ctx, base, c, false);
-      t.wait = 2 * (200 + std::rand() % 100);
+      t.wait = 2 * (200 + RoomRand() % 100);
       continue;
     }
     for (int rec : c.recs) MoveRec(ctx, base, rec, c.x + ux * t.along, c.y, c.z + uz * t.along, 0, c.ry, 0);
@@ -2435,7 +2487,7 @@ void GoThrough(PPCContext& ctx, uint8_t* base, const Door& d, int who) {
         // (an act first - standing, 0 - then the place: a walk or run under way puts him back where
         // he was, the game's own snap does it in this order too)
         JumpAct(ctx, base, f, 0);
-        PlaceFighter(base, f, t.ex + side * fz + back * fx, t.y, t.ez - side * fx + back * fz, t.eyaw);
+        PlaceFighterHeld(base, f, t.ex + side * fz + back * fx, t.y, t.ez - side * fx + back * fz, t.eyaw);
         ++n;
       }
       svr2011::SnapMatchCamera();
@@ -2447,6 +2499,73 @@ void GoThrough(PPCContext& ctx, uint8_t* base, const Door& d, int who) {
     }
 }
 
+// The door prompt (drawn by DoorPromptOverlay on the UI thread): which player stands at a door and
+// where it leads. HCTP's room names.
+struct DoorPrompt {
+  uint32_t port = 0;
+  int to = 0;  // (the door it leads to)
+};
+std::mutex g_prompt_mutex;
+DoorPrompt g_prompt;
+std::string g_prompt_room;  // (empty: no prompt)
+std::chrono::steady_clock::time_point g_prompt_at;
+
+const char* RoomName(int number) {
+  switch (number) {
+    case 30: return "BACK ENTRANCE";
+    case 31: return "PARKING LOT";
+    case 32: return "TRAINING ROOM";
+    case 33: return "TIMES SQUARE";
+    case 34: return "OUTSIDE THE ARENA";
+    case 35: case 36: return "FOUNTAIN SQUARE";
+    default: return "THE NEXT ROOM";
+  }
+}
+
+void PublishPrompt(const DoorPrompt* p) {
+  std::string room;
+  if (p)
+    for (const Room& r : g_rooms)
+      for (const Door& d : r.doors)
+        if (d.id == p->to) room = RoomName(r.number);
+  std::lock_guard<std::mutex> lock(g_prompt_mutex);
+  if (p) g_prompt = *p;
+  g_prompt_room = room;
+  g_prompt_at = std::chrono::steady_clock::now();
+}
+
+// The button as the player's controller names it (pad_types.h: PlayStation / keyboard players).
+std::string YLabel(uint32_t port) {
+  switch (svr2011::PlayerPadType(port)) {
+    case svr2011::PadType::kPlayStation: return "TRIANGLE";
+    case svr2011::PadType::kKeyboard: {
+      std::string k = rex::cvar::Query<std::string>("keybind_y");
+      k = k.substr(0, k.find(','));
+      std::transform(k.begin(), k.end(), k.begin(), [](unsigned char c) { return char(std::toupper(c)); });
+      return k.empty() ? "Y" : k;
+    }
+    default: return "Y";
+  }
+}
+
+class DoorPromptOverlay final : public rex::ui::ImGuiDialog {
+ public:
+  explicit DoorPromptOverlay(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
+
+ protected:
+  void OnDraw(ImGuiIO& io) override {
+    std::string room;
+    uint32_t port = 0;
+    {
+      std::lock_guard<std::mutex> lock(g_prompt_mutex);
+      if (std::chrono::steady_clock::now() - g_prompt_at > std::chrono::milliseconds(300)) return;
+      room = g_prompt_room, port = g_prompt.port;
+    }
+    if (room.empty() || !svr2011::MatchHudVisible()) return;
+    svr2011::DrawHudPanel(io.DisplaySize.x, io.DisplaySize.y, YLabel(port), "GO TO " + room);
+  }
+};
+
 void UpdateWorld(PPCContext& ctx, uint8_t* base) {
   if (!World()) return;
   // (once the stage and the package are there: only the first room's collision and climb spots)
@@ -2456,8 +2575,11 @@ void UpdateWorld(PPCContext& ctx, uint8_t* base) {
       if (k != g_cur) RoomCollision(base, g_rooms[k], false), RoomSpots(ctx, base, g_rooms[k], false);
     Cur().visited = true;  // (the first room's weapons are the manifest's)
   }
+  DoorPrompt prompt;
+  bool prompt_set = false;
   if (g_door_cd > 0) {
     --g_door_cd;
+    PublishPrompt(nullptr);
     return;
   }
   for (uint32_t i = 0; i < 8; ++i) {
@@ -2467,17 +2589,41 @@ void UpdateWorld(PPCContext& ctx, uint8_t* base) {
       hold = 0;
       continue;
     }
-    const bool moving = Rd32(base + f + 212) == kWalkBackstage || base[f + 1286];
-    const float x = RdF(base + f + 288), z = RdF(base + f + 296);
-    const Door* near = nullptr;
+    const uint32_t m = Rd32(base + f + 212);
+    const bool moving = m == kWalkBackstage || base[f + 1286];
+    const float x = RdF(base + f + 288), y = RdF(base + f + 292), z = RdF(base + f + 296);
+    const Door* door = nullptr;
     for (const Door& d : Cur().doors)
-      if ((x - d.x) * (x - d.x) + (z - d.z) * (z - d.z) < 22.0f * 22.0f) near = &d;
-    hold = near && moving ? hold + 1 : 0;
+      if ((x - d.x) * (x - d.x) + (z - d.z) * (z - d.z) < 22.0f * 22.0f) door = &d;
+    // a player: Y at the door (HCTP's own way; the prompt shows meanwhile); the CPU: walking into it for
+    // half a second (its AI walks after its opponent - CPU-vs-CPU and chases keep moving)
+    // (online every wrestler is a player: a port is local - the other side's player has one of 4 or
+    // more - and both games must decide alike)
+    const uint32_t port = Rd32(base + f + 1152);
+    const bool player = (port < 4 || svr2011::P2POnlineMode()) && !g_walk_in;
+    if (player) {
+      hold = 0;
+      // (on his feet: standing 0, fighting stance 20, walking or running - not lying or in a move)
+      const bool ready = m == 0 || m == 20 || m == kWalkBackstage || base[f + 1286];
+      if (!door || !ready || std::fabs(y - door->y) > 4.0f) continue;
+      if (!prompt_set && port < 4) {  // (only this PC's own players see it)
+        prompt_set = true;
+        prompt.port = port, prompt.to = door->to;
+      }
+      const uint32_t input = svr2011::FighterInput(f);
+      if (input && (Rd32(base + input + 52) & kButtonY)) {
+        GoThrough(ctx, base, *door, int(i));
+        break;
+      }
+      continue;
+    }
+    hold = door && moving ? hold + 1 : 0;
     if (hold >= 30) {
-      GoThrough(ctx, base, *near, int(i));
-      return;
+      GoThrough(ctx, base, *door, int(i));
+      break;
     }
   }
+  PublishPrompt(prompt_set ? &prompt : nullptr);
 }
 
 bool FenceBlocks(PPCContext& ctx, uint8_t* base, uint32_t comp, uint32_t target) {
@@ -2531,6 +2677,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   const auto& row = BackstageRows()[size_t(g_active_row)];
   if (!Cur().loaded || Cur().dir != row.dir || frame < Cur().last_frame) {
     if (!LoadRoom(row.dir)) return;
+    g_room_rng = 1;
     for (auto& s : g_fs) s = {};
     g_later.clear();
     g_taxis.clear();
@@ -2552,14 +2699,16 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
     size_t& n = next[Cur().number];
     GoThrough(ctx, base, Cur().doors[n++ % Cur().doors.size()], 0);
   }
-  if (g_door_now && World() && frame >= 300 && !Cur().doors.empty() && Rd32(base + kChars)) {
-    static bool done = false;
-    if (!done) {
-      done = true;
-      const Door& d = Cur().doors[0];
-      PlaceFighter(base, Rd32(base + kChars), d.x, d.y, d.z, d.eyaw + 3.14159265f);
-      REXLOG_INFO("hctp: fighter 0 put at door {} (test)", d.id);
-    }
+  if (g_door_now && World() && !Cur().doors.empty()) {
+    static bool done[2] = {};
+    for (uint32_t i = 0; i < 2; ++i)
+      if (!done[i] && frame >= (i ? 900u : 300u) && Rd32(base + kChars + 4 * i)) {
+        done[i] = true;
+        const Door& d = Cur().doors[0];
+        JumpAct(ctx, base, Rd32(base + kChars + 4 * i), 0);  // (an act first, as GoThrough: then the place holds)
+        PlaceFighterHeld(base, Rd32(base + kChars + 4 * i), d.x, d.y, d.z, d.eyaw + 3.14159265f);
+        REXLOG_INFO("hctp: fighter {} put at door {} (test)", i, d.id);
+      }
   }
   UpdateWorld(ctx, base);
   SetUp(ctx, base);
@@ -2586,7 +2735,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   // (room 31: fighter 0 - the test's pad - stands by the forklift at 1100, after the trailer slam)
   if (g_props_now && HctpRoom() == 31 && frame >= 1100 && frame < 1102)
     if (Prop* fl = FindKind("forklift"); fl && Rd32(base + kChars))
-      PlaceFighter(base, Rd32(base + kChars), fl->x - 10.0f * std::cos(fl->ry), 0.0f, fl->z - 10.0f * std::sin(fl->ry), fl->ry);
+      PlaceFighter(base, Rd32(base + kChars), fl->x - 10.0f * std::cos(fl->ry), 0.0f, fl->z - 10.0f * std::sin(fl->ry), FighterYaw(fl->ry));
   if (g_fork_now && HctpRoom() == 31 && frame >= 300 && !g_fork.rider && g_fork.state == 0 && Rd32(base + kChars))
     if (Prop* fl = FindKind("forklift")) {
       static bool done = false;
@@ -2594,7 +2743,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
         done = true;
         const uint32_t f0 = Rd32(base + kChars);
         const float x = fl->x - 10.0f * std::cos(fl->ry), z = fl->z - 10.0f * std::sin(fl->ry);
-        PlaceFighter(base, f0, x, 0.0f, z, fl->ry);
+        PlaceFighter(base, f0, x, 0.0f, z, FighterYaw(fl->ry));
         ForkliftGetOn(ctx, base, *fl, f0, 0, x, z);
       }
     }
@@ -2622,6 +2771,9 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
       // 1100, a shower 1700)
       if (p.kind == "rack" && at(300) && p.hid == 467) RackHit(ctx, base, p, f1, 1);
       if (p.kind == "sandbag" && at(300)) SandbagHit(ctx, base, p, Rd32(base + kChars), 6.0f);
+      // (fighter 0 - the test's pad - on the first treadmill at 800: the script mashes A)
+      if (p.kind == "treadmill" && at(800) && &p == FindKind("treadmill") && Rd32(base + kChars))
+        TreadmillOn(ctx, base, p, Rd32(base + kChars), 0);
       if (p.kind == "brokenwall" && (at(420) || at(480))) p.cooldown = 0, WallHit(ctx, base, p, 0, 1);
       if (p.kind == "locker" && at(600) && &p == FindKind("locker")) LockerHit(ctx, base, p, f1, 1);
       if (p.kind == "toilet" && at(1100)) ToiletHit(ctx, base, p, f1, 1);
@@ -2629,11 +2781,17 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
       // (rooms 35 / 36: fighter 1 climbs the first lion at 300; the fountain throw at 1100)
       if (p.kind == "lion" && at(300) && &p == FindKind("lion") && !p.who) {
         JumpAct(ctx, base, f1, RoomKey(Param(p, 3)));
-        PlaceFighter(base, f1, p.x, p.y, p.z, p.ry);
+        PlaceFighter(base, f1, p.x, p.y, p.z, FighterYaw(p.ry));
         p.who = f1, p.timer = 0;
         REXLOG_INFO("hctp: fighter 1 climbs {} (test)", p.name);
       }
-      if (p.kind == "fountainthrow" && at(1100) && &p == FindKind("fountainthrow")) FountainThrow(ctx, base, p, f1, 1);
+      if (p.kind == "fountainthrow" && at(1100) && &p == FindKind("fountainthrow") && p.has_zone) {
+        // (both by the basin first: the throw wants its thrower within 60)
+        const float cx = (p.zone[0] + p.zone[1]) / 2, cz = (p.zone[4] + p.zone[5]) / 2;
+        PlaceFighter(base, f1, cx, 0.0f, cz + 20.0f, 0.0f);
+        if (const uint32_t f0 = Rd32(base + kChars)) PlaceFighter(base, f0, cx, 0.0f, cz + 34.0f, 3.14159265f);
+        FountainThrow(ctx, base, p, f1, 1);
+      }
       // (room 33: fighter 1 goes through the first shop window at 300, climbs the first pole at 420)
       if (p.kind == "window" && at(300) && &p == FindKind("window")) WindowHit(ctx, base, p, f1, 1);
     }
@@ -2656,6 +2814,17 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   UpdateRoom33(ctx, base);
   UpdateForklift(ctx, base);
   UpdateHeli(ctx, base);
+}
+
+void InstallHctpOverlay(rex::ui::ImGuiDrawer* drawer) { new DoorPromptOverlay(drawer); }
+
+// A world frame's start (frame_rate.cpp, before the game's update): the held placements.
+void HctpBeforeFrame(uint8_t* base) {
+  for (Held& h : g_held)
+    if (h.frames > 0 && h.f) {
+      PlaceBody(base, h.f, h.x, h.y, h.z, h.yaw);
+      if (--h.frames == 0) h.f = 0;
+    }
 }
 
 void HctpWorldVisibility(PPCContext& ctx, uint8_t* base) {

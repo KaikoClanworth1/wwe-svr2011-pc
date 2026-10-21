@@ -25,6 +25,9 @@
 #include <rex/logging.h>
 
 #include "script_input.h"
+#if SVR2011_DEBUG_SUITE
+#include "debug_suite/debug_suite.h"
+#endif
 
 REXCVAR_DEFINE_BOOL(skip_intros, false, "Gameplay", "Skip the logos and intro movie at launch: straight to the Start Screen");
 REXCVAR_DEFINE_BOOL(skip_training, false, "Gameplay",
@@ -84,8 +87,12 @@ void FastStartInput(uint8_t* base, uint32_t state) {
   if (phase == kStartScreen) {
     if (Clock::now() - g_phase_since < std::chrono::milliseconds(g_hold_off)) {
       if (now & kStart) buttons[0] = uint8_t((now & ~kStart) >> 8), buttons[1] = uint8_t(now & ~kStart);
+      return;
     }
-    return;
+#if SVR2011_DEBUG_SUITE
+    if (!svr2011::dbg::BootWanted())  // (the debug suite's direct boot: its START too)
+#endif
+      return;
   }
   if (phase == kTraining) {
     uint32_t group = 0, row = 0;
@@ -95,7 +102,7 @@ void FastStartInput(uint8_t* base, uint32_t state) {
       return;
     }
   }
-  const bool on = phase == kBoot ? REXCVAR_GET(skip_intros) : REXCVAR_GET(skip_training);
+  const bool on = phase == kBoot ? REXCVAR_GET(skip_intros) : phase == kStartScreen || REXCVAR_GET(skip_training);
   const auto limit = std::chrono::seconds(phase == kBoot ? 90 : 120);
   if (!on || Clock::now() - g_phase_since > limit) {
     if (on && !g_logged[phase]) {

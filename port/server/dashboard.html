@@ -76,9 +76,11 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
        background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
 .set .h { color: var(--faint); font-size: 12.5px; }
 .set input[type=number] { width: 110px; }
+.set textarea { grid-column: 2 / 4; width: 100%; min-height: 120px; resize: vertical; box-sizing: border-box; }
+.set .wide { grid-column: 2 / 4; }
 .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
 .note { color: var(--faint); font-size: 12.5px; }
-@media (max-width: 640px) { .set { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .set { grid-template-columns: 1fr; } .set textarea, .set .wide { grid-column: auto; } }
 .viewer .cap small { color: var(--dim, #8a93a0); display: block; margin-top: 2px; }
 </style>
 </head>
@@ -138,7 +140,8 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   <h2>Settings <span class="spacer"></span></h2>
   <div class="set" id="settings"><span class="empty">Loading&hellip;</span></div>
   <div class="row"><button class="btn" id="save-set">Save settings</button>
-    <button class="btn danger" id="restart">Restart online</button><span class="note" id="set-note"></span></div>
+    <button class="btn danger" id="restart">Restart online</button><span class="note" id="set-note"></span>
+    <button class="btn" id="signout" hidden>Sign out</button></div>
 
   <h2>Server log <span class="spacer"></span><input class="filter" id="f-log" placeholder="Filter (e.g. error, relay, a name)">
     <select class="filter" id="n-log"><option>100</option><option selected>300</option><option>1000</option><option>3000</option></select>
@@ -193,8 +196,15 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
     if (s < 129600) return Math.round(s / 3600) + ' h ago';
     return Math.round(s / 86400) + ' days ago';
   }
+  // (signed in under /svr-admin/: every POST carries the session's CSRF token)
+  var csrf = document.querySelector('meta[name="csrf-token"]');
   function api(path, opts) {
-    return fetch(path, opts || {}).then(function (r) {
+    opts = opts || {};
+    if (csrf && opts.method && opts.method !== 'GET') {
+      opts.headers = Object.assign({}, opts.headers || {}, {'X-CSRF-Token': csrf.content});
+    }
+    return fetch(path, opts).then(function (r) {
+      if (r.status === 401 && csrf) { location.href = 'login?e=expired'; throw new Error('signed out'); }
       if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
       return r.json();
     });
@@ -366,12 +376,14 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   function live() {
     api('api/admin/live').then(function (d) {
       el('live-note').textContent = d.sessions.length + ' session' + (d.sessions.length === 1 ? '' : 's') +
-        ' reported · ' + d.relay.length + ' relay stream' + (d.relay.length === 1 ? '' : 's') + ' · ' + d.udp_games + ' UDP relay games';
+        ' reported · ' + d.relay.length + ' relay stream' + (d.relay.length === 1 ? '' : 's') + ' · ' + d.udp_games +
+        ' UDP relay games · match network: ' + (d.match_network || 'auto');
       el('live').innerHTML = d.sessions.length ? d.sessions.map(function (v) {
         var players = v.players.map(function (p) {
           return esc(p.name) + (p.path ? ' <span class="tag' + (p.path === 'relay' ? '' : ' on') + '">' + esc(p.path) + '</span>' : '');
         }).join(', ');
         return '<tr><td>' + esc(v.host) + (v.version ? ' <span class="tag">' + esc(v.version) + '</span>' : '') +
+          (v.network ? ' <span class="tag">' + esc(v.network) + '</span>' : '') +
           '</td><td>' + players + ' <span class="note">' + v.players.length + (v.slots ? '/' + v.slots : '') + '</span></td><td>' +
           esc([v.kind, v.rule, v.arena].filter(Boolean).join(' · ')) + '</td><td><span class="tag' +
           (v.state === 'match' ? ' on' : '') + '">' + esc(v.state) + '</span> ' + dur(d.now - v.state_since) +
@@ -386,8 +398,14 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
       el('settings').innerHTML = d.settings.map(function (x) {
         var input = typeof x.default === 'boolean'
           ? '<input type="checkbox" data-set="' + x.key + '"' + (x.saved ? ' checked' : '') + '>'
+          : x.text ? '<textarea class="filter" data-set="' + x.key + '" maxlength="' + x.max_len + '">' + esc(x.saved) +
+            '</textarea>'
+          : x.choices ? '<select class="filter" data-set="' + x.key + '">' + x.choices.map(function (c) {
+              return '<option' + (c === x.saved ? ' selected' : '') + '>' + esc(c) + '</option>';
+            }).join('') + '</select>'
           : '<input class="filter" type="number" data-set="' + x.key + '" min="' + x.min + '" max="' + x.max + '" value="' + x.saved + '">';
-        return '<b>' + esc(x.key.replace(/_/g, ' ')) + '</b>' + input + '<span class="h">' + esc(x.help) +
+        return '<b>' + esc(x.key.replace(/_/g, ' ')) + '</b>' + input + (x.text ? '<span></span>' : '') +
+          '<span class="h' + (x.text ? ' wide' : '') + '">' + esc(x.help) +
           (x.live ? '' : ' (applies at the next start' + (x.value !== x.saved ? ': now ' + x.value : '') + ')') + '</span>';
       }).join('');
       el('restart').disabled = !d.supervised;
@@ -404,7 +422,7 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   el('save-set').addEventListener('click', function () {
     var body = {};
     document.querySelectorAll('[data-set]').forEach(function (i) {
-      body[i.dataset.set] = i.type === 'checkbox' ? i.checked : Number(i.value);
+      body[i.dataset.set] = i.type === 'checkbox' ? i.checked : i.tagName === 'SELECT' || i.tagName === 'TEXTAREA' ? i.value : Number(i.value);
     });
     api('api/admin/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
       .then(function () { el('set-note').textContent = 'Saved ' + new Date().toLocaleTimeString(); settings(); })
@@ -472,6 +490,13 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   window.addEventListener('resize', charts);
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') el('viewer').classList.remove('on'); });
 
+  if (csrf) {  // (signed in under /svr-admin/)
+    el('signout').hidden = false;
+    el('signout').addEventListener('click', function () {
+      fetch('logout', {method: 'POST', headers: {'X-CSRF-Token': csrf.content}})
+        .finally(function () { location.href = 'login'; });
+    });
+  }
   stats(); lists(); live(); settings(); log();
   setInterval(live, 5000);
   setInterval(log, 15000);

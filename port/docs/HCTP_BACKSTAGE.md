@@ -163,13 +163,24 @@ whose rooms the fighters walk between through HCTP's doors (`tools/hctp/build_wo
   is 8 in from the move point, the entry 30 in.
 - Game (hctp_room.cpp): after each CFRS update (match_types.cpp hook) only the current room's models
   (sub_8252FF40) and its records' objects (sub_824B4198) are shown; the other rooms' collision triangles are
-  lifted away (as DropCollision) and their climb spots inactive (sub_824B8FE0); only its props run. Walking or
-  running for 30 frames within 22 of a door takes every fighter through: placed side by side at the other
+  lifted away (as DropCollision) and their climb spots inactive (sub_824B8FE0); only its props run. A player at a
+  door (within 22, on his feet: motion 0 / stance 20 / walking / running) sees the prompt "<Y> GO TO <room>"
+  (DoorPromptOverlay, match_hud.h's panel; the button as his pad names it: Y, TRIANGLE or his keybind_y key)
+  and goes through with Y (HCTP's way); a CPU (port char+1152 >= 4) walks or runs into one for 30 frames
+  (its AI chasing - CPU-vs-CPU keeps changing rooms); ROOF=walkin gives players the walk-in too. Either
+  takes every fighter through (in HCTP the opponent came along): placed side by side at the other
   door's entry, the fight box moved to that room (SetFightBox), the camera's eye put at the framed target +
   its old offset for 30 views (SnapMatchCamera - moving the eye once didn't hold: the camera rebuilt it).
   A room's runtime state (later shows, taxis, poles, heli, forklift, what ShowRec hid) is kept while it is
   away. Test switches `SVR2011_TEST_HCTP_ROOF=tour`: a door every 6 seconds; `=door`: fighter 0 put on the first door's trigger 5 s in (walk with the scripted stick); `=fork` (room 31): fighter 0 gets on the forklift 5 s in; `SVR2011_TEST_HCTP_NOVIS=1 /
   models / objects`: the stock visibility only.
+- Online (inputs-only netplay, svrtest lan): the doors work and stay in step (same at 300 / 600 / 1200 / 1500,
+  the wrestlers at the other door's entry). Two things it took: (1) online the game's update puts a wrestler
+  back on his physics body, which then eases toward him over several frames - a door's placement is held:
+  written again at the start of the next 10 world frames, before the game's update (HctpBeforeFrame,
+  frame_rate.cpp), with the body's other position copies +704 / +768; (2) a port (char+1152) is local - the
+  other side's player has one of 4 or more - so online every wrestler counts as a player (Y; no CPU walk-in)
+  and both games decide alike. The prompt shows only for this PC's own players.
 - Weapons: lying ones are parked 5000 below the floor while their room is away (the match's weapon objects,
   72 pointers at 0x82DE0220, position +288..+296) and put back on return; one within 14 of a wrestler stays
   (held: it goes with him; one only lying by him shows in the next room).
@@ -184,7 +195,9 @@ l(101)).
 
 Facing conventions (2011): a fighter's yaw y faces (sin y, cos y); a gimmick object's local +z at yaw a
 points (-sin a, cos a) - objects turn the other way. The traffic car (atan2(-dx, dz)) and the forklift
-(model yaw pi - heading) were driving mirrored ("wrong way").
+(model yaw pi - heading) were driving mirrored ("wrong way"). Wrestlers put at a prop take FighterYaw(prop yaw) = -yaw
+(+ the HCTP turn): with the prop's own yaw they faced the mirrored way on props turned 90 (room 35's lions
+at +-3pi/4, room 30's crate at -pi/2; props at 0 / pi are the same either way).
 
 PS2 culling: the room shells wind like stock 2011 (every triangle agrees with its normals; normals unit),
 but the PS2 drew everything from both sides. Converted meshes now clear render flag 0x2 (back-face cull) for
@@ -205,8 +218,12 @@ Next steps (none started):
   stage-light control found.
 - Room 30's button lamps (CGmSwitchLight 1246): drawn as grey slabs as plain objects - needs an additive /
   emissive draw.
-- Fountain throw (room 35) and treadmill / sandbag knock-down: coded, not driven by a test yet (a real Irish
-  whip / A mashing with the scripted pad).
+- Fountain throw (room 35): checked (21 Oct, ROOF=props puts both by the basin at 1100: 12627 x / y 0 and 1
+  found, the throw plays). Treadmill: checked (ROOF=props puts fighter 0 on it at 800;
+  A mashed: level 1, 12674; he runs facing the console). Sandbag knock-down: coded, not driven by a test yet.
+- Motion keys: a call's (x, y) match the bank entry's second / first field (logged with SVR2011_TEST_HCTP_LOG);
+  lookups the game makes itself for acts HCTP has in one part only (12679 y 1, 12606 / 12608 y 50 ..) miss
+  harmlessly.
 - Lion statue fade (HCTP draws it at 0.3 when a wrestler is behind it), broken-car crushed collision (2098),
   locker-door / TV / window weapons (2011 has no matching weapons), taxi and forklift solidity (static
   collision only).

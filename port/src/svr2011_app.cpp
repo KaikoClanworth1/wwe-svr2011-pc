@@ -643,10 +643,10 @@ void Svr2011App::OnPostLoadXexImage() {
 
   // MY WWE -> OPTIONS -> GRAPHICS (menu_hooks.cpp, graphics_page.h).
   svr2011::InstallMenuHooks(runtime()->memory());
-  svr2011::InstallPerfStats(runtime()->memory());
+  svr2011::InstallPerfStats(runtime()->memory());  // (perf_stats.h: the overlay's numbers, perf_log_seconds)
 #if SVR2011_DEBUG_SUITE
   svr2011::dbg::Install(runtime()->memory());  // (debug_suite.h: the dbg build only)
-#endif  // (perf_stats.h: the overlay's numbers, perf_log_seconds)
+#endif
   svr2011::InstallPadIcons(runtime()->memory());  // (pad_icons.h)
   svr2011::InstallPlaytime();                     // (playtime.h)
   svr2011::InstallCawLogos(runtime()->memory(), g_saves);
@@ -704,6 +704,7 @@ void Svr2011App::OnPostLoadXexImage() {
     svr2011::InstallTouchControls(imgui_drawer(), window(), g_user_data);
     svr2011::InstallPaintPagesOverlay(imgui_drawer());
     svr2011::InstallSlobberKnockerOverlay(imgui_drawer());  // (match_types.h)
+    svr2011::InstallHctpOverlay(imgui_drawer());            // (match_types.h: HCTP door prompts)
     svr2011::InstallGauntletEliminatorOverlay(imgui_drawer());
     svr2011::InstallOnlineRulesOverlay(imgui_drawer());  // (online_rules.h)
     svr2011::InstallThreeStagesOverlay(imgui_drawer());

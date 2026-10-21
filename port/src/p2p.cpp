@@ -91,7 +91,11 @@ constexpr uint32_t kFakeNet = 0x0A400000;        // 10.64.0.0/16: peers as the g
 constexpr uint32_t kMagic = 0x53565250;          // "SVRP"
 constexpr uint32_t kContextGameType = 0x0000800A;  // X_CONTEXT_GAME_TYPE (ranked / standard)
 constexpr uint32_t kContextGameMode = 0x0000800B;  // X_CONTEXT_GAME_MODE
+// The port's session properties (0x1000F00x, XUSER type 1 ints the host's session carries to joiners):
+// 0x1000F001 PORT RULES (here), 0x1000F002 the WEAPONS page's set (weapons_page.cpp), 0x1000F003 mod weapons
+// (Arena Porting, planned), 0x1000F004 the match network (here).
 constexpr uint32_t kPortRules = 0x1000F001;        // the port's match rules (match_types: mode << 16 | set)
+constexpr uint32_t kNetMode = 0x1000F004;          // the host's match network (NetMode)
 constexpr uint8_t kVersion = 1;
 enum : uint8_t {
   kSearch = 1, kSessions = 2, kQosRequest = 3, kQosReply = 4, kHello = 5, kData = 6,
@@ -243,6 +247,7 @@ struct MatchReport {
   uint32_t seconds = 0, direct = 0, relay = 0, lan = 0;  // (peer-seconds per path)
   double rtt_sum = 0;
   uint32_t rtt_n = 0;
+  uint8_t network = 0;  // (the match network it played on: NetMode)
 } g_report;
 
 // A game port's real port: + 20000 (the game's own, UDP 1001, is below 1024,
@@ -277,7 +282,17 @@ int64_t NowMs() {
 uint64_t NowUs() {
   return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count());
 }
-bool ForceRelay() { return REXCVAR_GET(p2p_force_relay); }
+// The match network (the server's match_network setting, P2PSetServerNetwork): auto - direct, the
+// relay when direct fails; relay - every peer through the relay; p2p - match traffic direct only (the
+// relay still finds sessions and carries hellos: a server that struggles only passes those). Latched
+// per match session - the host's mode travels in kNetMode and joiners follow it - so a running match
+// never switches; outside a match, auto.
+enum NetMode : uint8_t { kNetAuto = 0, kNetRelay = 1, kNetP2P = 2 };
+std::atomic<uint8_t> g_server_net{kNetAuto};  // (the server's answer; auto when it can't be reached)
+std::atomic<uint8_t> g_match_net{kNetAuto};   // (this match session's)
+const char* NetName(uint8_t m) { return m == kNetRelay ? "relay" : m == kNetP2P ? "p2p" : "auto"; }
+bool ForceRelay() { return REXCVAR_GET(p2p_force_relay) || g_match_net == kNetRelay; }
+bool NoRelayData() { return g_match_net == kNetP2P && !REXCVAR_GET(p2p_force_relay); }  // (p2p)
 
 struct Peer {
   XnAddr xnaddr{};
@@ -349,7 +364,7 @@ Peer& Learn(const uint8_t* xnaddr, Via via = {}) {
     // players timed out.
     if (Be32(xnaddr) != g_me.lan) {
       p.tunnel = true;
-      if (g_relay_up && p.route != Be32(xnaddr)) p.relayed = true;  // (another network)
+      if (g_relay_up && p.route != Be32(xnaddr) && !NoRelayData()) p.relayed = true;  // (another network)
     }
   }
   const auto now = Clock::now();
@@ -373,7 +388,7 @@ Peer& Learn(const uint8_t* xnaddr, Via via = {}) {
   if (via.relayed) {
     p.seen_ip = via.ip, p.seen_port = via.port;
     // (direct while that works: the relay only when nothing came directly lately)
-    if (!p.relayed && now - p.direct > std::chrono::seconds(10)) {
+    if (!p.relayed && !NoRelayData() && now - p.direct > std::chrono::seconds(10)) {
       p.relayed = p.tunnel = true;
       REXLOG_INFO("p2p: peer {} through the relay (seen at {}:{})", Ip(p.fake), Ip(via.ip), via.port);
     }
@@ -794,7 +809,7 @@ void Punch(const Mac& mac) {
   {
     std::lock_guard lock(g_mutex);
     auto it = g_peers.find(mac);
-    if (it == g_peers.end() || !it->second.relayed || ForceRelay()) return;
+    if (it == g_peers.end() || (!it->second.relayed && !NoRelayData()) || ForceRelay()) return;  // (p2p: every peer)
     Peer& p = it->second;
     const auto now = Clock::now();
     if (now - p.punched < std::chrono::seconds(2)) return;
@@ -914,8 +929,8 @@ void SendMatchReport(const MatchReport& r) {
   std::string version;
   for (const char c : PortVersion())
     if (std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '-') version.push_back(c);
-  const std::string body = fmt::format(R"({{"version":"{}","path":"{}","nat":"{}","step":{},"rtt":{}}})",
-                                       version.substr(0, 24), path, nat, step, rtt);
+  const std::string body = fmt::format(R"({{"version":"{}","path":"{}","nat":"{}","step":{},"rtt":{},"network":"{}"}})",
+                                       version.substr(0, 24), path, nat, step, rtt, NetName(r.network));
   REXLOG_INFO("p2p: match report {} ({} s; peer-seconds direct {}, relay {}, LAN {})", body, r.seconds, r.direct,
               r.relay, r.lan);
   std::thread([body] {
@@ -940,6 +955,7 @@ void PingLoop() {
       for (const auto& [key, proxy] : g_proxies) gamers.insert(proxy->mac);
       if (in_match) {  // (the match report: each peer's path this second)
         ++g_report.seconds;
+        g_report.network = g_match_net;
         for (const Mac& mac : gamers) {
           const auto it = g_peers.find(mac);
           if (it == g_peers.end()) continue;
@@ -968,9 +984,9 @@ void PingLoop() {
         if (p.data_v2 && !ForceRelay()) {
           const bool ok = now - p.direct_ok < std::chrono::seconds(3);
           const bool relay_ok = g_relay_up && p.tunnel && now - p.relay_ok < std::chrono::seconds(3);
-          bool relay = !ok && g_relay_up && p.tunnel;
+          bool relay = !ok && g_relay_up && p.tunnel && !NoRelayData();
           const char* why = relay ? "no direct round trip for 3 s" : "a direct round trip";
-          if (ok && relay_ok && p.rtt_direct > 0 && p.rtt_relay > 0) {
+          if (ok && relay_ok && p.rtt_direct > 0 && p.rtt_relay > 0 && !NoRelayData()) {
             if (!p.relayed && p.rtt_relay + 15 < p.rtt_direct) relay = true, why = "faster";
             else if (p.relayed && p.rtt_direct > p.rtt_relay + 5) relay = true;
             else if (p.relayed) why = "as fast";
@@ -983,7 +999,7 @@ void PingLoop() {
         }
         // (pings both ways for a tunnel peer: the direct one tells whether direct works)
         if (!ForceRelay()) to.push_back(direct);
-        if (p.tunnel && g_relay_up) {
+        if (p.tunnel && g_relay_up && !NoRelayData()) {
           Path relayed = direct;
           relayed.relayed = true;
           to.push_back(relayed);
@@ -1394,10 +1410,11 @@ void ReportLive(bool signed_in) {
       if (in_match && played != ~0u) rule = played;
       bodies.push_back(fmt::format(
           "{{\"session\": \"{:X}\", \"state\": \"{}\", \"rule\": \"{}\", \"arena\": \"{}\", "
-          "\"slots\": {}, \"version\": {}, \"players\": [{}]}}",
+          "\"slots\": {}, \"version\": {}, \"network\": \"{}\", \"players\": [{}]}}",
           local.session.id, in_match ? "match" : "lobby", rule == ~0u ? "" : fmt::format("rule {:02X}", rule),
           in_match && arena != ~0u ? fmt::format("arena {}", arena) : "",
-          local.session.public_slots + local.session.private_slots, JsonQuote(PortVersion()), players));
+          local.session.public_slots + local.session.private_slots, JsonQuote(PortVersion()), NetName(g_match_net),
+          players));
     }
   }
   for (const uint64_t id : reported)
@@ -1870,6 +1887,21 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
         for (const auto& p : s.properties)
           if (p.id == kPortRules && p.value.size() >= 4)
             REXLOG_INFO("p2p: port rules {:08X} (host)", Be32(p.value.data()));
+        if (flags & 0x20) {  // (a match's session: the server's match network, for the joiners too)
+          uint8_t mode = g_server_net;
+          const bool relay = REXCVAR_GET(p2p_relay) && !rex::cvar::Query<std::string>("online_token").empty() && g_relay_up;
+          if (mode == kNetRelay && !relay) {
+            REXLOG_INFO("p2p: match network relay wanted, but this game has no relay (signed out, p2p_relay off or "
+                        "the relay not answering): auto");
+            mode = kNetAuto;
+          }
+          s.properties.erase(std::remove_if(s.properties.begin(), s.properties.end(),
+                                            [](const Property& p) { return p.id == kNetMode; }),
+                             s.properties.end());
+          s.properties.push_back(Property{kNetMode, 1, {0, 0, 0, mode}});
+          g_match_net = mode;
+          REXLOG_INFO("p2p: match network {} (host; the server's {})", NetName(mode), NetName(g_server_net));
+        }
         // X_PROPERTY_GAMER_HOSTNAME (LIVE filled it in: the host's name, UTF-16)
         Property name{0x40008109, 4, {}};
         for (char c : rex::cvar::Query<std::string>("online_name")) name.value.push_back(0), name.value.push_back(uint8_t(c));
@@ -1879,10 +1911,17 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
         s.id = Be64(Guest(info));
         {
           std::lock_guard found_lock(g_mutex);
+          uint8_t mode = kNetAuto;  // (a host without it - an older game: auto)
           if (auto f = g_found.find(s.id); f != g_found.end())
-            for (const auto& p : f->second.properties)
+            for (const auto& p : f->second.properties) {
               if (p.id == kPortRules && p.value.size() >= 4)
                 REXLOG_INFO("p2p: port rules {:08X} (joiner)", Be32(p.value.data()));
+              if (p.id == kNetMode && p.value.size() >= 4 && p.value[3] <= kNetP2P) mode = p.value[3];
+            }
+          if (flags & 0x20) {
+            g_match_net = mode;
+            REXLOG_INFO("p2p: match network {} (joiner; the host's)", NetName(mode));
+          }
         }
         std::memcpy(s.host.data(), Guest(info) + 8, 36);
         Hello(s.host.data());
@@ -1904,6 +1943,8 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
         g_qos.erase(it->second.session.id);
         REXLOG_INFO("p2p: session {:016X} deleted", it->second.session.id);
         g_sessions.erase(it);
+        if (std::none_of(g_sessions.begin(), g_sessions.end(), [](const auto& l) { return (l.second.session.flags & 0x20) != 0; }))
+          g_match_net = kNetAuto;
         UpdateLockstep();
         return kOk;
       }
@@ -2082,6 +2123,11 @@ void SetPortRules(uint32_t value) {
 }
 
 std::optional<uint32_t> PortRules() { return P2PSessionProperty(kPortRules); }
+
+void P2PSetServerNetwork(const std::string& mode) {
+  const uint8_t m = mode == "relay" ? kNetRelay : mode == "p2p" ? kNetP2P : kNetAuto;
+  if (g_server_net.exchange(m) != m) REXLOG_INFO("p2p: the server's match network is {} (new sessions)", NetName(m));
+}
 
 P2PLobby P2PMatchLobby() {
   P2PLobby out;

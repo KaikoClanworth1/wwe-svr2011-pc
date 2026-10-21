@@ -47,6 +47,7 @@ os.environ.setdefault("AIOHTTP_NOSENDFILE", "1")
 
 from aiohttp import web
 
+import admin_auth as aa
 import gamespy as gs
 import discovery
 import leaderboards
@@ -60,6 +61,59 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]{2,14}$")  # 3-15, what the g
 XUID_BASE = 0x0009000100000000  # + account id: the player's XUID on every device
 PBKDF2_ROUNDS = 240000
 MAX_FRIENDS = 200  # (a player's list)
+NEWS_MAX = 600  # (the NEWS panel shows about 14 lines of 30 characters, then scrolls)
+# The game's menu font (every Latin-1 character drawn on the NEWS panel, 21 Oct
+# 2026): ASCII, the Latin-1 letters (but x and / signs), the signs in NEWS_LATIN,
+# curly double quotes, the ellipsis and TM; anything else drew as "*" (an emoji
+# as "????", "o" ordinal as nothing). Look-alikes become ASCII, the rest goes.
+NEWS_SAME = {"\u2018": "'", "\u2019": "'", "\u201a": "'", "\u2032": "'", "\u00b4": "'", "\u201e": '"',
+             "\u2033": '"', "\u00ab": '"', "\u00bb": '"', "\u2039": "'", "\u203a": "'",
+             "\u2013": "-", "\u2014": "-", "\u2012": "-", "\u2015": "-", "\u2212": "-", "\u2022": "-",
+             "\u00b7": "-", "\u25cf": "-", "\u2605": "*", "\u2606": "*", "\u00d7": "x", "\u00f7": "/",
+             "\u00bd": " 1/2", "\u00bc": " 1/4", "\u00be": " 3/4", "\u00b9": "1", "\u00b2": "2", "\u00b3": "3",
+             "\u00ba": "o", "\u00aa": "a", "\u00b1": "+/-", "\u00b5": "u", "\u00a6": "|", "\u00a5": "YEN",
+             "\u20ac": "EUR", "\t": " ", "\u00a0": " ", "\u2009": " ", "\u200a": " ", "\u202f": " "}
+NEWS_LATIN = set("\u00a1\u00a2\u00a3\u00a9\u00ae\u00b0\u00bf")
+NEWS_EXTRA = set("\u201c\u201d\u2026\u2122")
+
+
+def news_char(ch):
+    return (ch == "\n" or " " <= ch <= "~" or ch in NEWS_LATIN or ch in NEWS_EXTRA
+            or ("\u00c0" <= ch <= "\u00ff" and ch not in "\u00d7\u00f7"))
+
+
+def news_clean(text):
+    """The dashboard's news as the game can show it: plain text, new lines kept
+    (at most two in a row), characters the font lacks replaced or left out."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    out = []
+    for c in text:
+        c = NEWS_SAME.get(c, c)
+        out.extend(ch for ch in c if news_char(ch))
+    text = "".join(out)
+    text = "\n".join(" ".join(line.split()) for line in text.split("\n"))  # (no runs of spaces)
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    return text.strip()
+
+
+def news_fields(text, parts=5, size=NEWS_MAX // 5 + 20):
+    """The NEWS record's Text1-5 for the dashboard's news (the game joins them as
+    they are: cut after a space or a new line), or None (empty: the stored record)."""
+    if not text:
+        return None
+    out = []
+    while text and len(out) < parts - 1:
+        if len(text) <= size:
+            break
+        cut = max(text.rfind(" ", 0, size), text.rfind("\n", 0, size))
+        cut = cut + 1 if cut > 0 else size
+        out.append(text[:cut])
+        text = text[cut:]
+    out.append(text)
+    return out + [""] * (parts - len(out))
+
+
 # Settings the dashboard edits (data/settings.json, read at start; "live" ones
 # apply at once, the others at the next start).
 SETTINGS_SPEC = {
@@ -69,12 +123,24 @@ SETTINGS_SPEC = {
                     "help": "seconds an invite to a match stays"},
     "mods_online": {"default": True, "live": True,
                     "help": "mods in online sessions: off = every game plays online without its mods (no mod sets compared)"},
+    "match_network": {"default": "auto", "choices": ["auto", "relay", "p2p"], "live": True,
+                      "help": "how online matches connect: auto = directly, through the relay when that fails; "
+                              "relay = every match through this server's relay; p2p = matches directly only (the "
+                              "relay just helps games find each other) - for when the server struggles. New "
+                              "sessions follow it (games ask every 20 s); running matches keep theirs"},
+    "online_news": {"default": "", "text": True, "max_len": NEWS_MAX, "live": True,
+                    "help": "the NEWS panel on the game's ONLINE screen (after the players-online count): plain "
+                            "text, new lines kept; characters the game's font lacks are replaced or left out. "
+                            "Empty = the built-in welcome. Games show it the next time they open ONLINE"},
     "max_connections": {"default": 100, "min": 10, "max": 1000, "live": False,
                         "help": "game requests at once (more wait up to 10 s, then 503)"},
 }
 SETTINGS = {k: v["default"] for k, v in SETTINGS_SPEC.items()}
 LIVE_LIFE = 60      # seconds a session host's report stays (it reports every 20 s)
-RESTART_CODE = 75   # the exit code that asks the supervisor (--supervise) to start the server again
+RESTART_CODE = 75
+# the dashboard's own pages (admin_auth.py): never framed, cached or sent on as a referrer
+ADMIN_HEADERS = {"X-Frame-Options": "DENY", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                 "X-Content-Type-Options": "nosniff"}   # the exit code that asks the supervisor (--supervise) to start the server again
 
 
 def load_settings(path):
@@ -95,6 +161,10 @@ def check_setting(k, v):
         return False, None
     if isinstance(spec["default"], bool):
         return (True, v) if isinstance(v, bool) else (False, None)
+    if "choices" in spec:
+        return (True, v) if v in spec["choices"] else (False, None)
+    if spec.get("text"):
+        return (True, news_clean(v)[:spec["max_len"]]) if isinstance(v, str) else (False, None)
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return False, None
     v = int(v)
@@ -545,9 +615,11 @@ class Service:
                                  edge=(edge.rsplit(":", 1)[0], int(edge.rsplit(":", 1)[1])) if edge else None,
                                  secret=relay.rl.read_secret(args.relay_secret) if edge else None)
         self.leaderboards = leaderboards.Leaderboards(self.store)
-        # the ONLINE menu's NEWS: how many play now, first
+        # the ONLINE menu's NEWS: how many play now, first; then the dashboard's
+        # text (online_news) when it has one, else the stored record's
         self.sake.news_prefix = lambda: "%d player%s online now. " % (
             self.stats.playing_now(), "" if self.stats.playing_now() == 1 else "s")
+        self.sake.news_text = lambda: news_fields(SETTINGS["online_news"])
         self.invites = collections.defaultdict(dict)  # account id -> {inviter id: invite} (in memory)
         self.max_connections = args.max_connections
         self.attempts = collections.defaultdict(collections.deque)  # ip -> login/register times
@@ -557,6 +629,8 @@ class Service:
         self.supervised = bool(os.environ.get("SVR2011_SUPERVISOR_PID"))
         self.live = {}   # session id -> the host's last report (api_live)
         self.dashboard_html = (HERE / "dashboard.html").read_text(encoding="utf-8")
+        self.admin_auth = aa.AdminAuth(getattr(args, "admin_password_file", None) or os.path.join(args.data, "admin_password"),
+                                       gs.log, account=getattr(args, "admin_account", None), accounts=self.accounts)
         self.max_media = {"music": args.max_music_mb << 20, "movie": args.max_movie_mb << 20}
         self.media_quota = args.media_quota_mb << 20
 
@@ -717,7 +791,10 @@ class Service:
         friends.sort(key=lambda f: ("playing", "online", "offline").index(f["status"]))  # (online first)
         return {
             "ok": True,
-            "config": {"mods_online": bool(SETTINGS["mods_online"])},
+            "config": {"mods_online": bool(SETTINGS["mods_online"]), "match_network": SETTINGS["match_network"],
+                       # (the NEWS panel's text as the game's Sake fetch gets it: the game shows it at the
+                       # next visit to ONLINE, without a restart)
+                       "news": self.sake.news_panel()},
             "online_now": len(self.in_online_mode()),
             "friends": friends,
             "added_you": [a["name"] for a in theirs if a["id"] not in added and not a["banned"]],
@@ -788,6 +865,7 @@ class Service:
             "session": sid, "host": account["name"], "kind": str(body.get("kind") or "")[:40],
             "rule": str(body.get("rule") or "")[:40], "arena": str(body.get("arena") or "")[:40], "state": state,
             "players": players, "slots": int(body.get("slots") or 0), "version": str(body.get("version") or "")[:16],
+            "network": str(body.get("network") or "")[:8],
             "since": old.get("since", now()), "state_since": old.get("state_since", now())
             if old.get("state") == state else now(), "seen": now()}
         return web.json_response({"ok": True})
@@ -860,11 +938,14 @@ class Service:
             step = max(-1000, min(1000, int(body.get("step") or 0)))
             rtt = max(0, int(body.get("rtt") or 0))
             version = re.sub(r"[^0-9A-Za-z.\-]", "", str(body.get("version") or ""))[:24] or "?"
+            network = str(body.get("network") or "")  # (2.1.4 on: the match network it played on)
         except (ValueError, TypeError, AttributeError):
             return web.json_response({"ok": False}, status=400)
         if path not in self.NET_PATHS or nat not in self.NET_NATS:
             return web.json_response({"ok": False}, status=400)
         step = step if abs(step) <= 16 else 99  # (a small steady step: port prediction can follow it)
+        gs.log("netreport: %s played a match, path %s, match network %s (server %s)" % (
+            account["name"], path, network if network in ("auto", "relay", "p2p") else "?", SETTINGS["match_network"]))
         rtt = next(b for b in self.NET_RTT if rtt <= b)
         with self.store.lock:
             self.store.db.execute(
@@ -1110,9 +1191,23 @@ class Service:
     # the dashboard
 
     def admin_only(handler):
+        """The dashboard's routes: under /svr-admin/ only a valid admin session (and on a POST its
+        CSRF token) lets one in - no header does; elsewhere is_admin's rules (the portal, --local-admin)."""
         async def wrapped(self, request):
-            if not self.is_admin(request):
-                return web.Response(status=403, text="Admins only.")
+            if not request.path.startswith(aa.PREFIX + "/"):
+                if not self.is_admin(request):
+                    return web.Response(status=403, text="Admins only.")
+                return await handler(self, request)
+            s = self.admin_auth.session(request)
+            if not s:
+                if request.method == "GET" and request.path == aa.PREFIX + "/":
+                    raise web.HTTPSeeOther(aa.PREFIX + "/login")
+                return web.json_response({"ok": False, "error": "Sign in first."}, status=401)
+            if request.method not in ("GET", "HEAD") and not self.admin_auth.csrf_ok(request, s):
+                gs.log("admin: %s %s refused - no valid CSRF token (from %s)" % (
+                    request.method, request.path, self.client_ip(request)))
+                return web.json_response({"ok": False, "error": "Reload the page."}, status=403)
+            request["admin_session"] = s
             return await handler(self, request)
         return wrapped
 
@@ -1277,7 +1372,41 @@ class Service:
 
     @admin_only
     async def dashboard(self, request):
-        return web.Response(text=self.dashboard_html, content_type="text/html", charset="utf-8")
+        page = self.dashboard_html
+        if "admin_session" in request:  # (signed in under /svr-admin/: its CSRF token for the page's POSTs)
+            page = page.replace("<head>", '<head>\n<meta name="csrf-token" content="%s">' %
+                                request["admin_session"]["csrf"], 1)
+        return web.Response(text=page, content_type="text/html", charset="utf-8", headers=ADMIN_HEADERS)
+
+    async def admin_slash(self, request):
+        raise web.HTTPMovedPermanently(aa.PREFIX + "/")
+
+    async def admin_login_page(self, request):
+        if self.admin_auth.session(request):
+            raise web.HTTPSeeOther(aa.PREFIX + "/")
+        return web.Response(text=self.admin_auth.login_page(request.query.get("e", "")), content_type="text/html",
+                            charset="utf-8", headers=ADMIN_HEADERS)
+
+    async def admin_login(self, request):
+        """The sign-in form: a session cookie and on to the dashboard, or back to the form."""
+        ip = self.client_ip(request)
+        try:
+            form = await request.post()
+        except ValueError:
+            form = {}
+        name, password = str(form.get("name", ""))[:64], str(form.get("password", ""))
+        who, why = await asyncio.get_running_loop().run_in_executor(None, self.admin_auth.check, ip, name, password)
+        if not who:
+            raise web.HTTPSeeOther(aa.PREFIX + "/login?e=" + why, headers=ADMIN_HEADERS)
+        token = self.admin_auth.start(ip, who)
+        raise web.HTTPSeeOther(aa.PREFIX + "/", headers=dict(ADMIN_HEADERS, **{"Set-Cookie": aa.AdminAuth.cookie(token)}))
+
+    async def admin_logout(self, request):
+        s = self.admin_auth.session(request)
+        if s and not self.admin_auth.csrf_ok(request, s):
+            return web.json_response({"ok": False, "error": "Reload the page."}, status=403)
+        self.admin_auth.end(request)
+        raise web.HTTPSeeOther(aa.PREFIX + "/login", headers={"Set-Cookie": aa.AdminAuth.cookie("", 0)})
 
     @admin_only
     async def admin_stats(self, request):
@@ -1433,7 +1562,8 @@ class Service:
         sessions = sorted(self.live.values(), key=lambda v: -v["since"])
         relay = [{"name": g.account["name"], "since": getattr(g, "since", 0)} for g in self.relay.games.values()]
         return web.json_response({"now": t, "sessions": sessions, "relay": relay,
-                                  "udp_games": len(getattr(self.relay, "udp_games", {}))})
+                                  "udp_games": len(getattr(self.relay, "udp_games", {})),
+                                  "match_network": SETTINGS["match_network"]})
 
     @admin_only
     async def admin_log(self, request):
@@ -1486,7 +1616,10 @@ class Service:
             for k, v in changed.items():
                 if SETTINGS_SPEC[k]["live"]:
                     SETTINGS[k] = v
-            gs.log("settings: %s (dashboard)" % ", ".join("%s=%s" % kv for kv in sorted(changed.items())))
+            gs.log("settings: %s (dashboard)" % ", ".join(
+                "%s=%s" % (k, (repr(v[:60] + ("..." if len(v) > 60 else "")) + " (%d characters)" % len(v))
+                           if isinstance(v, str) and SETTINGS_SPEC[k].get("text") else v)
+                for k, v in sorted(changed.items())))
         try:
             stored = json.load(open(self.settings_path, encoding="utf-8"))
         except (OSError, ValueError):
@@ -1510,6 +1643,7 @@ class Service:
         asyncio.get_running_loop().call_later(0.5, bye)
         return web.json_response({"ok": True})
 
+    @admin_only
     async def admin_users(self, request):
         out = []
         uploads = collections.Counter(r["ownerid"] for r in self.store.all("UserContent"))
@@ -1614,22 +1748,29 @@ class Service:
         app.router.add_get(b + "/api/mods/{id}/img/{n}", self.api_mod_image)
         self.relay.routes(app, b)
         app.router.add_get("/__health", self.health)
-        app.router.add_get("/", self.dashboard)
-        app.router.add_get("/api/admin/stats", self.admin_stats)
-        app.router.add_get("/api/admin/uploads", self.admin_uploads)
-        app.router.add_get("/api/admin/upload/{id}/thumb.png", self.admin_upload_thumb)
-        app.router.add_get("/api/admin/upload/{id}/full.png", self.admin_upload_full)
-        app.router.add_get("/api/admin/leaderboard", self.admin_leaderboard)
-        app.router.add_post("/api/admin/upload/{id}/{action}", self.admin_upload_action)
-        app.router.add_get("/api/admin/mods", self.admin_mods)
-        app.router.add_get("/api/admin/mod/{id}/image.jpg", self.admin_mod_image)
-        app.router.add_post("/api/admin/mod/{id}/{action}", self.admin_mod_action)
-        app.router.add_get("/api/admin/users", self.admin_users)
-        app.router.add_get("/api/admin/live", self.admin_live)
-        app.router.add_get("/api/admin/log", self.admin_log)
-        app.router.add_route("*", "/api/admin/settings", self.admin_settings)
-        app.router.add_post("/api/admin/restart", self.admin_restart)
-        app.router.add_post("/api/admin/user/{id}/{action}", self.admin_user_action)
+        # the dashboard: at / (the portal, --local-admin) and again under /svr-admin/ (its own
+        # sign-in: admin_auth.py - what nginx passes on the VPS)
+        app.router.add_get(aa.PREFIX, self.admin_slash)
+        app.router.add_get(aa.PREFIX + "/login", self.admin_login_page)
+        app.router.add_post(aa.PREFIX + "/login", self.admin_login)
+        app.router.add_post(aa.PREFIX + "/logout", self.admin_logout)
+        for p in ("", aa.PREFIX):
+            app.router.add_get(p + "/", self.dashboard)
+            app.router.add_get(p + "/api/admin/stats", self.admin_stats)
+            app.router.add_get(p + "/api/admin/uploads", self.admin_uploads)
+            app.router.add_get(p + "/api/admin/upload/{id}/thumb.png", self.admin_upload_thumb)
+            app.router.add_get(p + "/api/admin/upload/{id}/full.png", self.admin_upload_full)
+            app.router.add_get(p + "/api/admin/leaderboard", self.admin_leaderboard)
+            app.router.add_post(p + "/api/admin/upload/{id}/{action}", self.admin_upload_action)
+            app.router.add_get(p + "/api/admin/mods", self.admin_mods)
+            app.router.add_get(p + "/api/admin/mod/{id}/image.jpg", self.admin_mod_image)
+            app.router.add_post(p + "/api/admin/mod/{id}/{action}", self.admin_mod_action)
+            app.router.add_get(p + "/api/admin/users", self.admin_users)
+            app.router.add_get(p + "/api/admin/live", self.admin_live)
+            app.router.add_get(p + "/api/admin/log", self.admin_log)
+            app.router.add_route("*", p + "/api/admin/settings", self.admin_settings)
+            app.router.add_post(p + "/api/admin/restart", self.admin_restart)
+            app.router.add_post(p + "/api/admin/user/{id}/{action}", self.admin_user_action)
         app.cleanup_ctx.append(self.background)
         return app
 
@@ -1769,7 +1910,16 @@ def main():
     ap.add_argument("--local-admin", action="store_true",
                     help="the dashboard for anyone on this PC talking to the service directly (a developer's own "
                          "server; never behind a public proxy on the same host)")
+    ap.add_argument("--set-admin-password", action="store_true",
+                    help="ask for the dashboard's password (/svr-admin/ sign-in) and store its hash in the data "
+                         "folder (or --admin-password-file), then exit")
+    ap.add_argument("--admin-password-file", default=None, help="where the dashboard password's hash is "
+                    "(default: <data>/admin_password)")
+    ap.add_argument("--admin-account", default=None,
+                    help="the dashboard's sign-in is this online account's name and password instead")
     args = ap.parse_args()
+    if args.set_admin_password:
+        return aa.set_password_cli(args.admin_password_file or os.path.join(args.data, "admin_password"))
     if args.relay_edge and (not args.relay_secret or not args.relay_udp_port):
         ap.error("--relay-edge needs --relay-secret and --relay-udp-port")
     if args.supervise:

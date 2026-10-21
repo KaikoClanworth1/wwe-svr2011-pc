@@ -1,10 +1,15 @@
 # svrtest - one command for a hidden, private test run (docs/DEBUG_SUITE_PLAN.md 2A). For us only: tools\dev is
 # never packaged (tools/release_guard.ps1).
 #
-#   svrtest.ps1 match --p1 136 --p2 110 [--p3 ..] [--attire 2,1] [--arena 9] [--rule 3C] [--entrances]
-#                     [--shot 5s] [--shots every:2s:5] [--until "<log text>"] [--quit 15s]
-#   svrtest.ps1 entrance --p1 136 [--attire 2] [--shots every:6s:20]        (until "entrances over")
+#   svrtest.ps1 match --p1 EDGE --p2 KANE [--p3 ..] [--attire 2,1] [--arena 9] [--rule 3C] [--entrances]
+#                     [--shot 5s] [--shots every:2s:5] [--state 8s] [--fast 2] [--until "<log text>"] [--quit 15s]
+#                     [--boot] [--cpu all]   (--boot, dbg only: straight into the match - no title, no menus)
+#   svrtest.ps1 entrance --p1 EDGE [--attire 2] [--shots every:6s:20]        (until "entrances over")
 #   svrtest.ps1 route <name> [--shot 3s] [--quit 10s]                       (script_input.cpp kRoutes)
+#   svrtest.ps1 lan --p1 EDGE --p2 KANE [--arena 1] [--rule 3C] [--pad1 <file>] [--pad2 <file>] [--clock 600,1200]
+#                   [--play 30s]                         (two games in a LAN match, lockstep check: svrtest_lan.ps1)
+#   svrtest.ps1 open <page> [--shot 3s] [--quit 10s]    (dbg: straight to caw, threads, cae, options:<ROW>,
+#                                                        match_creator, universe, menu:<A>B>C> - boot.cpp kPages)
 #   svrtest.ps1 script <file> [--shot ..] [--quit ..]                        (script_input.h steps, one a line)
 # common: --exe release|dbg|<path>  --backend d3d12|vulkan|d3d11  --mods none|<folder>[,<folder>...]
 #         --userdata <dir>  --perf 0|1|2  --log-level info|debug  --name <run name>  --keep (leave it running)
@@ -19,8 +24,12 @@
 # Times: "5s", "1500ms" or a number of seconds; shots count from the match's start (the log's "replay recorder
 # recording": the match world running - after the entrances when they play; the "match starts" line doesn't come in
 # test matches), the entrances' start (entrance: the "test match: people" hand-off), or the route / script's end.
+# With --exe dbg a match's cues are the game's own (debug_suite.h: dbg_shot / dbg_state / dbg_quit from the match's
+# start): shots read back from the GPU (no window capture), state_<ms>.json dumps (--state), fast-forward (--fast N
+# world updates a frame), and the game ends itself at --quit. Other commands keep the window shots.
 param([Parameter(Position = 0)][string]$Command = "", [Parameter(Position = 1, ValueFromRemainingArguments = $true)][string[]]$Rest)
 $ErrorActionPreference = "Stop"
+if ($Command -eq "lan") { & (Join-Path $PSScriptRoot "svrtest_lan.ps1") @Rest; exit $LASTEXITCODE }  # (svrtest_lan.ps1)
 $tools = Split-Path $PSScriptRoot -Parent
 $port = Split-Path $tools -Parent
 $gameFiles = if (Test-Path (Join-Path (Split-Path $port -Parent) "Game Files\pac")) { Join-Path (Split-Path $port -Parent) "Game Files" } `
@@ -44,7 +53,7 @@ public static class SvrTestWin {
 
 # ---- options
 $o = @{ p = @{}; exe = "release"; backend = ""; mods = "none"; perf = ""; loglevel = "info"; name = ""; keep = $false; args = @()
-        attire = ""; arena = ""; rule = ""; entrances = $false; shot = @(); every = ""; until = ""; quit = ""; userdata = ""; target = "" }
+        attire = ""; arena = ""; rule = ""; entrances = $false; shot = @(); every = ""; until = ""; quit = ""; userdata = ""; target = ""; state = @(); fast = ""; boot = $false; cpu = "" }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
@@ -57,6 +66,10 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         '^--shots$' { $o.every = $v; $i++; continue }
         '^--until$' { $o.until = $v; $i++; continue }
         '^--quit$' { $o.quit = $v; $i++; continue }
+        '^--state$' { $o.state += $v; $i++; continue }
+        '^--fast$' { $o.fast = $v; $i++; continue }
+        '^--boot$' { $o.boot = $true; continue }
+        '^--cpu$' { $o.cpu = $v; $i++; continue }
         '^--exe$' { $o.exe = $v; $i++; continue }
         '^--backend$' { $o.backend = $v; $i++; continue }
         '^--mods$' { $o.mods = $v; $i++; continue }
@@ -69,9 +82,10 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         default { if (-not $o.target -and $a -notlike "--*") { $o.target = $a } else { throw "svrtest: unknown option $a" } }
     }
 }
-if ($Command -notin "match", "entrance", "route", "script") {
-    throw "svrtest: match | entrance | route <name> | script <file> (see the top of tools\dev\svrtest.ps1)"
+if ($Command -notin "match", "entrance", "route", "script", "open", "prepare") {
+    throw "svrtest: match | entrance | route <name> | script <file> | open <page> (see the top of tools\dev\svrtest.ps1)"
 }
+if ($Command -eq "open") { if (-not $o.target) { throw "svrtest open <page>" }; $o.exe = if ($o.exe -eq "release") { "dbg" } else { $o.exe } }
 if ($Command -eq "entrance") { $o.entrances = $true; if (-not $o.until) { $o.until = "entrances over" } }
 function Seconds([string]$t) {
     if (-not $t) { return 0 }
@@ -130,7 +144,12 @@ foreach ($f in $exeName, "rexruntime.dll", "rexgpu-xenos.dll") {
     $src = Join-Path $build $f
     if (-not (Test-Path $src) -and $f -ne $exeName) { $src = Join-Path $port "out\build\SourceRelease\$f" }
     if (-not (Test-Path $src)) { throw "svrtest: no $f in $build - build it first" }
-    Copy-Item $src $game -Force
+    # (only when the build changed; a game that just ended can hold the exe a moment)
+    $to = Join-Path $game $f
+    $same = (Test-Path $to) -and (Get-Item $to).Length -eq (Get-Item $src).Length -and (Get-Item $to).LastWriteTimeUtc -eq (Get-Item $src).LastWriteTimeUtc
+    for ($k = 0; -not $same; $k++) {
+        try { Copy-Item $src $game -Force -ErrorAction Stop; break } catch { if ($k -ge 20) { throw }; Start-Sleep -Milliseconds 500 }
+    }
 }
 # its Mods: only --mods (a mod folder is placed by its manifest's type)
 $kinds = @{ superstar = "Superstars"; attire = "Attires"; arena = "Arenas"; moves = "Moves"; backstage = "Backstage"; signs = "Signs"; media = "Media"; backgrounds = "Backgrounds"; matchtype = "MatchTypes" }
@@ -145,6 +164,8 @@ if ($o.mods -and $o.mods -ne "none") {
         Copy-Item -Recurse $m (Join-Path $game "Mods\$kind\$(Split-Path $m -Leaf)")
     }
 }
+# (prepare: only the game folder, for svrtest_lan.ps1 - its last output line)
+if ($Command -eq "prepare") { $game; exit 0 }
 $userdata = if ($o.userdata) { $o.userdata } else { Join-Path $port "runs\univ_userdata" }  # (private: its own DLC copy)
 # never the player's user data, nor one whose DLC is a link (the game patches the installed DLC's string.pac and
 # catalog.dlc in place)
@@ -181,7 +202,9 @@ if ($Command -in "match", "entrance") {
     if ($o.attire) { $spec += " attires=$($o.attire)" }
     $env:SVR2011_TEST_MATCH = $spec
     if ($o.rule) { $env:SVR2011_TEST_RULE = $(if ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { "{0:X2}" -f [int]$o.rule } else { $o.rule -replace '^0x', '' }) }
-    $steps = if ($o.entrances) { @("route normal", "pressuntil A test match: people") } else { @("route match") }
+    $steps = if ($o.boot) { @() } elseif ($o.entrances) { @("route normal", "pressuntil A test match: people") } else { @("route match") }
+} elseif ($Command -eq "open") {
+    $steps = @()
 } elseif ($Command -eq "route") {
     if (-not $o.target) { throw "svrtest route <name>" }
     $steps = @("route $($o.target)")
@@ -193,6 +216,36 @@ $gameArgs = @("--log_file=`"$log`"", "--log_level=$($o.loglevel)", "--audio_mute
               "--mnk_mode=false", "--p2p_port_mapping=false", "--p2p_port=$p2p")
 if ($o.backend) { $gameArgs += "--gpu_backend=$($o.backend)" }
 if ($o.perf) { $gameArgs += "--perf_overlay=$($o.perf)", "--perf_log_seconds=5" }
+# the dbg build: the game's own cues for a match (debug_suite.h), fast-forward
+$dbg = $exeName -like "*_dbg.exe"
+if (($o.state -or $o.fast -or $o.boot) -and -not $dbg) { throw "svrtest: --state, --fast and --boot need --exe dbg" }
+if ($o.boot) {
+    if ($Command -ne "match") { throw "svrtest: --boot is for match" }
+    $env:SVR2011_TEST_MATCH = $null; $env:SVR2011_TEST_RULE = $null  # (the game's own boot fills the match)
+    $bm = "people=$($people -join ',') arena=$(if ($o.arena) { $o.arena } else { 1 })"
+    if ($o.attire) { $bm += " attires=$($o.attire)" }
+    if ($o.rule) { $bm += " rule=$(if ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { '{0:X2}' -f [int]$o.rule } else { $o.rule -replace '^0x', '' })" }
+    if ($o.cpu -eq "all") { $bm += " cpu=all" }
+    $gameArgs += "--dbg_boot=match", "--dbg_match=`"$bm`""
+    if ($o.entrances) { $gameArgs += "--dbg_entrances=true" }
+}
+$gameCues = $dbg -and $Command -eq "match"
+$inv = [Globalization.CultureInfo]::InvariantCulture
+if ($dbg) { $gameArgs += "--dbg_out=`"$out`"" }
+if ($o.fast) { $gameArgs += "--dbg_speed=$([int]$o.fast)" }
+$wantShots = 0; $wantStates = @($o.state).Count
+if ($gameCues) {
+    $list = @($o.shot | ForEach-Object { (Seconds $_).ToString($inv) })
+    if ($o.every -match '^every:([^:]+)(:(\d+))?$') {
+        $n = if ($Matches[3]) { [int]$Matches[3] } else { 10 }
+        $list += "every:$((Seconds $Matches[1]).ToString($inv)):$n"
+    }
+    $wantShots = @($o.shot).Count + $(if ($o.every) { $n } else { 0 })
+    if ($list) { $gameArgs += "--dbg_shot=$($list -join ',')" }
+    if ($o.state) { $gameArgs += "--dbg_state=$((@($o.state | ForEach-Object { (Seconds $_).ToString($inv) })) -join ',')" }
+    if ($o.quit) { $gameArgs += "--dbg_quit=$((Seconds $o.quit).ToString($inv))" }
+}
+if ($Command -eq "open") { $gameArgs += "--dbg_boot=`"$($o.target)`"" }
 $gameArgs += $o.args
 
 # ---- run
@@ -230,10 +283,14 @@ function Shot([string]$label) {
 }
 try {
     # the start: the main menu, then the command's own cue (the match hand-off / the route's end)
-    if (Wait-Log "title: main menu" 180) { $timings.main_menu_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) }
+    $menuCue = if ($o.boot -or $Command -eq "open") { "fast start: the main menu" } else { "title: main menu" }
+    if (Wait-Log $menuCue 180) { $timings.main_menu_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) }
     # (the real line has a space after "people": not the script's own "pressuntil A test match: people")
-    $cue = if ($Command -in "match", "entrance") { "test match: people " } else { "script input: all steps done" }
-    if (Wait-Log $cue 240) { $timings.cue_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) }
+    $cue = if ($o.boot) { "SVRDBG: boot: match -" } elseif ($Command -eq "open") { "SVRDBG: boot: page " } elseif ($Command -in "match", "entrance") { "test match: people " } else { "script input: all steps done" }
+    $deadline = (Get-Date).AddSeconds(240)
+    while ((Get-Date) -lt $deadline -and -not $proc.HasExited -and -not (LogHas $cue) -and -not (LogHas "script input: no route")) { Start-Sleep -Milliseconds 500 }
+    if (LogHas "script input: no route") { $ok = $false; $why = (@(Select-String -Path $log -Pattern "script input: no route" -SimpleMatch)[0].Line -split '\] ', 2)[-1] -replace '^.*script input: ', '' }
+    elseif (LogHas $cue) { $timings.cue_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) }
     else { $ok = $false; $why = "no `"$cue`" in the log (the game: $(if ($proc.HasExited) { 'exited' } else { 'still running' }))" }
     # (a match's shots count from its start: the replay recorder recording - after the entrances when they play)
     if ($ok -and $Command -eq "match") {
@@ -241,6 +298,20 @@ try {
         else { $ok = $false; $why = "the match didn't start (no `"replay recorder recording`" in the log)" }
     }
     $from = Get-Date
+    if ($ok -and $gameCues) {
+        # (the game's own cues: wait for its quit, or for every shot and state it was asked for)
+        $limit = (Get-Date).AddSeconds(60 + [math]::Max((Seconds $o.quit), 0) + 3 * ($wantShots + $wantStates) +
+                                       ((@($o.shot) + @($o.state) | ForEach-Object { Seconds $_ } | Measure-Object -Maximum).Maximum))
+        while ((Get-Date) -lt $limit -and -not $proc.HasExited) {
+            if (-not $o.quit -and @(Select-String -Path $log -Pattern "SVRDBG: (shot|state) " -ErrorAction SilentlyContinue).Count -ge $wantShots + $wantStates) { break }
+            if ($o.until -and (LogHas $o.until)) { $timings.until_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1); break }
+            Start-Sleep -Milliseconds 250
+        }
+        if (LogHas "SVRDBG: quit") { $timings.quit_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) }
+        elseif ($o.quit) { $ok = $false; $why = "no `"SVRDBG: quit`" (the game: $(if ($proc.HasExited) { "exited, code $($proc.ExitCode)" } else { 'still running' }))" }
+        $script:shots = @(Get-ChildItem $out -Filter "shot_*.png" | ForEach-Object { $_.Name })
+        $o.shot = @(); $o.every = ""; $o.quit = ""
+    }
     $plan = @()
     foreach ($s in $o.shot) { $plan += [pscustomobject]@{ at = (Seconds $s); label = "shot_$s" } }
     if ($o.every -match '^every:([^:]+)(:(\d+))?$') {
@@ -259,9 +330,12 @@ try {
     }
     if ($o.until -and -not $timings.until_s) { if (Wait-Log $o.until 300) { $timings.until_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) } }
     if ($quitAt) { while (((Get-Date) - $from).TotalSeconds -lt $quitAt -and -not $proc.HasExited) { Start-Sleep -Milliseconds 250 } }
-    if ($proc.HasExited -and $ok) { $ok = $false; $why = "the game exited (code $($proc.ExitCode))" }
+    if ($proc.HasExited -and $ok -and -not $timings.quit_s) { $ok = $false; $why = "the game exited (code $($proc.ExitCode))" }
 } finally {
-    if (-not $o.keep -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+    if (-not $o.keep -and -not $proc.HasExited) {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        [void]$proc.WaitForExit(15000)  # (gone before the next run copies the exe over it)
+    }
     foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_INPUT_FILE") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
 }
 
@@ -278,7 +352,7 @@ $result = [ordered]@{
     ok = $ok; why = $why; command = "$Command $($Rest -join ' ')"; exe = (Join-Path $game $exeName); pid = $proc.Id; p2p_port = $p2p
     timings = $timings; match = @($lines | Where-Object { $_ -match 'test match: people|\] match: ' } | Select-Object -Last 2 | ForEach-Object { $_.Substring([Math]::Min(40, $_.Length)) })
     fps = $fps; errors = $errors.Count; first_errors = @($errors | Select-Object -First 5 | ForEach-Object { $_.Substring([Math]::Min(40, $_.Length)) })
-    crashes = $crashes; game_files_changed = $touched; shots = $shots; folder = $out; log = $log; kept_running = ($o.keep -and -not $proc.HasExited)
+    crashes = $crashes; game_files_changed = $touched; shots = $shots; states = @(Get-ChildItem $out -Filter "state_*.json" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }); folder = $out; log = $log; kept_running = ($o.keep -and -not $proc.HasExited)
 }
 $json = $result | ConvertTo-Json -Depth 4
 Set-Content (Join-Path $out "result.json") $json -Encoding UTF8

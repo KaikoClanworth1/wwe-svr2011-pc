@@ -70,6 +70,9 @@
 #include "native/guest_d3d.h"
 #include "native/textures.h"
 #include "free_cam.h"
+#if SVR2011_DEBUG_SUITE
+#include "debug_suite/debug_suite.h"
+#endif
 
 // Default "main" (as the launcher): settings files without the key use it.
 #if defined(__ANDROID__)
@@ -3902,6 +3905,21 @@ void OnPresent(uint32_t front_buffer) {
     list->clearColor(0, plume::RenderColor(0.05f, 0.05f, 0.08f, 1.0f));
     Barrier(r, back, RenderTextureLayout::SHADER_READ);
   }
+#if SVR2011_DEBUG_SUITE
+  // (a dbg_shot due: the frame image copied to a readback buffer, written once the frame is done - below)
+  std::shared_ptr<plume::RenderBuffer> shot;
+  const uint32_t shot_row = (g_out_w + 63) & ~63u;  // (256-byte rows)
+  if (!r->hidden_frame && svr2011::dbg::ShotWanted()) {
+    shot = r->device->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(uint64_t(shot_row) * g_out_h * 4));
+    if (shot) {
+      Barrier(r, back, RenderTextureLayout::COPY_SOURCE);
+      list->copyTextureRegion(plume::RenderTextureCopyLocation::PlacedFootprint(
+                                  shot.get(), RenderFormat::R8G8B8A8_UNORM, g_out_w, g_out_h, 1, shot_row),
+                              plume::RenderTextureCopyLocation::Subresource(back));
+      Barrier(r, back, RenderTextureLayout::SHADER_READ);
+    }
+  }
+#endif
   r->list->end();
   // Debug: SVR2011_NATIVE_TEST_STALL=<frame> stalls the GPU queue for good at
   // that frame (as a stuck GPU job would), to test WaitForFrame's way out.
@@ -3933,6 +3951,14 @@ void OnPresent(uint32_t front_buffer) {
     ReportDeviceRemoved(r);
     return;
   }
+#if SVR2011_DEBUG_SUITE
+  if (shot && WaitForFrame(r, r->back_index, "dbg shot")) {
+    if (const auto* px = static_cast<const uint8_t*>(shot->map())) {
+      svr2011::dbg::WriteShot(px, g_out_w, g_out_h, shot_row * 4);
+      shot->unmap();
+    }
+  }
+#endif
   // This frame, for the emulator's next swap (rex/external_frame.h).
   g_last_hidden = r->hidden_frame;
   if (!r->hidden_frame)  // (a frame not shown keeps the last one on screen)
