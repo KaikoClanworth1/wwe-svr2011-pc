@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -26,6 +27,9 @@
 REXCVAR_DEFINE_STRING(dbg_from, "match", "Debug", "SVRDBG: the cues' zero: match (its start) or start (the game's)");
 REXCVAR_DEFINE_STRING(dbg_shot, "", "Debug", "SVRDBG: shots at these seconds (5,10,every:2:5)");
 REXCVAR_DEFINE_STRING(dbg_state, "", "Debug", "SVRDBG: state dumps at these seconds");
+REXCVAR_DEFINE_STRING(dbg_state_clock, "", "Debug",
+                      "SVRDBG: state dumps at these match clock values (60 a second; on the game's thread, exact "
+                      "positions - two lockstep games compare)");
 REXCVAR_DEFINE_DOUBLE(dbg_quit, 0.0, "Debug", "SVRDBG: the game ends itself at this second (0: never)");
 REXCVAR_DEFINE_INT32(dbg_speed, 1, "Debug", "SVRDBG: world updates a frame (fast-forward)");
 REXCVAR_DEFINE_STRING(dbg_out, "", "Debug", "SVRDBG: the folder for shots and states (default: dbg)");
@@ -78,7 +82,7 @@ std::string Json(const std::string& s) {
   return o + "\"";
 }
 
-void WriteState(int64_t ms) {
+void WriteState(int64_t ms, const std::string& name = "", bool exact = false) {
   const auto people = MatchPeople(g_base);
   const FrameTiming t = GetFrameTiming();
   const PerfSample p = SamplePerf();
@@ -95,10 +99,15 @@ void WriteState(int64_t ms) {
                      i ? "," : "", m.index, m.person, m.superstar, Json(m.name), Json(m.mod),
                      m.last_move == 0xFFFF ? std::string("null") : std::to_string(m.last_move), m.move_age_s);
     if (m.has_position) j += fmt::format(", \"position\": [{:.2f}, {:.2f}, {:.2f}]", m.x, m.y, m.z);
+    if (m.has_position && exact) {  // (the floats' bits: lockstep games have the very same)
+      uint32_t b[3];
+      std::memcpy(&b[0], &m.x, 4), std::memcpy(&b[1], &m.y, 4), std::memcpy(&b[2], &m.z, 4);
+      j += fmt::format(", \"position_bits\": \"{:08X} {:08X} {:08X}\"", b[0], b[1], b[2]);
+    }
     j += "}";
   }
   j += people.empty() ? "]\n}\n" : "\n  ]\n}\n";
-  const fs::path file = g_out / fmt::format("state_{:06d}.json", ms);
+  const fs::path file = g_out / (name.empty() ? fmt::format("state_{:06d}.json", ms) : name);
   std::ofstream f(file, std::ios::binary | std::ios::trunc);
   f << j;
   REXLOG_INFO("SVRDBG: state {} ({} people)", file.filename().string(), people.size());
@@ -171,6 +180,20 @@ void WriteShot(const uint8_t* rgba, uint32_t width, uint32_t height, uint32_t ro
     ++g_shots_done;
     REXLOG_INFO("SVRDBG: shot {} ({}x{})", file.filename().string(), width, height);
   }).detach();
+}
+
+void ClockFrame() {
+  static const std::vector<double> at = Times(REXCVAR_GET(dbg_state_clock));
+  static size_t next = 0;
+  static uint32_t last = 0;
+  if (at.empty() || !g_base) return;
+  const uint32_t clock = MatchClock(g_base);
+  if (clock < last) next = 0;  // (a new match)
+  last = clock;
+  if (next < at.size() && InMatch() && clock >= uint32_t(at[next])) {
+    WriteState(0, fmt::format("state_clock_{:06d}.json", uint32_t(at[next])), true);
+    ++next;
+  }
 }
 
 void OnMatchStarted() {
