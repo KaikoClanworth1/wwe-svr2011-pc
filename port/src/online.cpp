@@ -1020,8 +1020,10 @@ REX_HOOK_RAW(sub_824FDFC8) {
 //    224 u16 slots at +0x104 (only CREATE A MOVE-SET's move slots, cam_mod_moves.cpp) - a move a
 //    pack gives that the stock game can't play (PackMove && !StockPlays); its entrance (284 bytes
 //    at +0x2C4) naming a pack's CREATE AN ENTRANCE part (10000 + 1000 k + n, ModEntrances).
-//  - Move-set / Finisher / Story / reel: not checked yet (their data's layout: the confirm step logs
-//    its first bytes for that).
+//  - Move-set: its file (the manager's buffer, *(manager+4) - sub_824C5768's +952 is its 0x1C-byte trailer)
+//    starts with the same 224 move slots (980 bytes: moves, name at +0x1C0, ..., trailer at +0x3B8).
+//  - Finisher (CREATE A FINISHER's own motion parts: packs add none), Story (the whole .sas) and reel:
+//    not checked (the confirm step logs their trailer's first bytes).
 // Every upload this build lets through carries the relay's X-Svr-ModFree header (online_net.cpp):
 // the server refuses unmarked ones once the release with this check is out (its cc_unmarked setting).
 namespace {
@@ -1054,16 +1056,22 @@ void AddUse(std::vector<std::string>& out, const std::string& what) {
 
 namespace svr2011 {
 
-std::vector<std::string> CawModUses(uint8_t* base, uint32_t profile) {
-  std::vector<std::string> out;
-  if (!profile) return out;
+// A moveset's 224 u16 slots at `moves` (CREATE A MOVE-SET's move slots only): a pack's move the stock game
+// can't play.
+void MovesetModUses(uint8_t* base, uint32_t moves, std::vector<std::string>& out) {
   for (uint32_t slot = 0; slot < 224; ++slot) {
     if (!kCamSlot[slot]) continue;
-    const uint16_t id = Rd16(base, profile + 0x104 + 2 * slot);
+    const uint16_t id = Rd16(base, moves + 2 * slot);
     if (!id || id == 0xFFFF || !PackMove(id) || StockPlays(id)) continue;
     const std::string pack = PackOfMove(id);
     AddUse(out, "move " + std::to_string(id) + (pack.empty() ? "" : " (" + pack + ")"));
   }
+}
+
+std::vector<std::string> CawModUses(uint8_t* base, uint32_t profile) {
+  std::vector<std::string> out;
+  if (!profile) return out;
+  MovesetModUses(base, profile + 0x104, out);
   // its entrance: a CREATE AN ENTRANCE part number from a pack (10000 + 1000 k + n)
   const auto mods = ModEntrances();
   for (uint32_t at = 0; at + 2 <= 284; at += 2) {
@@ -1087,7 +1095,20 @@ bool CcUploadModsRefused(PPCContext& ctx, uint8_t* base, uint32_t screen) {
     ctx.r3.u64 = ctx.r3.u32;
     sub_8257A450(ctx, base);
     uses = CawModUses(base, ctx.r3.u32);
-  } else if (kind == 2 || kind == 3 || kind == 5 || kind == 6) {
+  } else if (kind == 6) {
+    // a Move-set's file (its buffer, *(manager+4): sub_824C5768's +952 is the file's 0x1C-byte trailer):
+    // the 224 move slots first, as a profile's +0x104 (then its name at +0x1C0)
+    if (const uint32_t file = Rd32(base, manager + 4)) {
+      // (test aid SVR2011_TEST_CC_MODMOVE=ms:<move id>: that move into the file's first move slot)
+      if (const char* v = std::getenv("SVR2011_TEST_CC_MODMOVE"); v && std::strncmp(v, "ms:", 3) == 0) {
+        const int id = std::atoi(v + 3);
+        base[file + 2 * 3] = uint8_t(id >> 8), base[file + 2 * 3 + 1] = uint8_t(id);
+      }
+      MovesetModUses(base, file, uses);
+    }
+  } else if (kind == 2 || kind == 3 || kind == 5) {
+    // (Finisher: parts of CREATE A FINISHER's own motions - packs don't add any; Story: the whole .sas,
+    // its superstars / arenas not decoded yet; reel: not decoded yet)
     ctx.r3.u64 = manager, ctx.r4.u64 = 1;
     sub_824C5768(ctx, base);
     const uint32_t data = ctx.r3.u32;
