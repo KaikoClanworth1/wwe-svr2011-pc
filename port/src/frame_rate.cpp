@@ -469,6 +469,9 @@ REX_HOOK_RAW(sub_8269D768) {
     }
   }
   __imp__sub_8269D768(ctx, base);
+#if SVR2011_DEBUG_SUITE
+  svr2011::dbg::BootFrame(ctx, base);  // (dbg_boot: debug_suite.h)
+#endif
   TestMatchTime(base);
   svr2011::MatchTypesUpdate(ctx, base);  // (match_types.h: the lumberjacks, Slobber Knocker)
   svr2011::HctpRoomUpdate(ctx, base);    // (match_types.h: an HCTP backstage room's gimmicks)
@@ -739,6 +742,9 @@ REX_HOOK_RAW(sub_82905058) {
   if (out && ctx.r3.u32 == 0) svr2011::FreeCamPad(user, base + out);  // (flying: the game gets no input - free_cam.h)
   if (user == 0 && out && ctx.r3.u32 == 0) {
     svr2011::FastStartInput(base, out);  // (the start skips: fast_start.h)
+#if SVR2011_DEBUG_SUITE
+    svr2011::dbg::BootInput(base, out);  // (dbg_boot: a booted match's entrances skipped)
+#endif
     // (the online overlay's BACK + RB never reaches the game: online_overlay.h)
     const uint16_t b = svr2011::OnlineOverlayPad(uint16_t(base[out + 4] << 8 | base[out + 5]));
     base[out + 4] = uint8_t(b >> 8), base[out + 5] = uint8_t(b);

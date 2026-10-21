@@ -3,6 +3,7 @@
 #
 #   svrtest.ps1 match --p1 EDGE --p2 KANE [--p3 ..] [--attire 2,1] [--arena 9] [--rule 3C] [--entrances]
 #                     [--shot 5s] [--shots every:2s:5] [--state 8s] [--fast 2] [--until "<log text>"] [--quit 15s]
+#                     [--boot] [--cpu all]   (--boot, dbg only: straight into the match - no title, no menus)
 #   svrtest.ps1 entrance --p1 EDGE [--attire 2] [--shots every:6s:20]        (until "entrances over")
 #   svrtest.ps1 route <name> [--shot 3s] [--quit 10s]                       (script_input.cpp kRoutes)
 #   svrtest.ps1 script <file> [--shot ..] [--quit ..]                        (script_input.h steps, one a line)
@@ -47,7 +48,7 @@ public static class SvrTestWin {
 
 # ---- options
 $o = @{ p = @{}; exe = "release"; backend = ""; mods = "none"; perf = ""; loglevel = "info"; name = ""; keep = $false; args = @()
-        attire = ""; arena = ""; rule = ""; entrances = $false; shot = @(); every = ""; until = ""; quit = ""; userdata = ""; target = ""; state = @(); fast = "" }
+        attire = ""; arena = ""; rule = ""; entrances = $false; shot = @(); every = ""; until = ""; quit = ""; userdata = ""; target = ""; state = @(); fast = ""; boot = $false; cpu = "" }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
@@ -62,6 +63,8 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         '^--quit$' { $o.quit = $v; $i++; continue }
         '^--state$' { $o.state += $v; $i++; continue }
         '^--fast$' { $o.fast = $v; $i++; continue }
+        '^--boot$' { $o.boot = $true; continue }
+        '^--cpu$' { $o.cpu = $v; $i++; continue }
         '^--exe$' { $o.exe = $v; $i++; continue }
         '^--backend$' { $o.backend = $v; $i++; continue }
         '^--mods$' { $o.mods = $v; $i++; continue }
@@ -186,7 +189,7 @@ if ($Command -in "match", "entrance") {
     if ($o.attire) { $spec += " attires=$($o.attire)" }
     $env:SVR2011_TEST_MATCH = $spec
     if ($o.rule) { $env:SVR2011_TEST_RULE = $(if ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { "{0:X2}" -f [int]$o.rule } else { $o.rule -replace '^0x', '' }) }
-    $steps = if ($o.entrances) { @("route normal", "pressuntil A test match: people") } else { @("route match") }
+    $steps = if ($o.boot) { @() } elseif ($o.entrances) { @("route normal", "pressuntil A test match: people") } else { @("route match") }
 } elseif ($Command -eq "route") {
     if (-not $o.target) { throw "svrtest route <name>" }
     $steps = @("route $($o.target)")
@@ -200,7 +203,17 @@ if ($o.backend) { $gameArgs += "--gpu_backend=$($o.backend)" }
 if ($o.perf) { $gameArgs += "--perf_overlay=$($o.perf)", "--perf_log_seconds=5" }
 # the dbg build: the game's own cues for a match (debug_suite.h), fast-forward
 $dbg = $exeName -like "*_dbg.exe"
-if (($o.state -or $o.fast) -and -not $dbg) { throw "svrtest: --state and --fast need --exe dbg" }
+if (($o.state -or $o.fast -or $o.boot) -and -not $dbg) { throw "svrtest: --state, --fast and --boot need --exe dbg" }
+if ($o.boot) {
+    if ($Command -ne "match") { throw "svrtest: --boot is for match" }
+    $env:SVR2011_TEST_MATCH = $null; $env:SVR2011_TEST_RULE = $null  # (the game's own boot fills the match)
+    $bm = "people=$($people -join ',') arena=$(if ($o.arena) { $o.arena } else { 1 })"
+    if ($o.attire) { $bm += " attires=$($o.attire)" }
+    if ($o.rule) { $bm += " rule=$(if ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { '{0:X2}' -f [int]$o.rule } else { $o.rule -replace '^0x', '' })" }
+    if ($o.cpu -eq "all") { $bm += " cpu=all" }
+    $gameArgs += "--dbg_boot=match", "--dbg_match=`"$bm`""
+    if ($o.entrances) { $gameArgs += "--dbg_entrances=true" }
+}
 $gameCues = $dbg -and $Command -eq "match"
 $inv = [Globalization.CultureInfo]::InvariantCulture
 if ($dbg) { $gameArgs += "--dbg_out=`"$out`"" }
@@ -254,9 +267,10 @@ function Shot([string]$label) {
 }
 try {
     # the start: the main menu, then the command's own cue (the match hand-off / the route's end)
-    if (Wait-Log "title: main menu" 180) { $timings.main_menu_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) }
+    $menuCue = if ($o.boot) { "fast start: the main menu" } else { "title: main menu" }
+    if (Wait-Log $menuCue 180) { $timings.main_menu_s = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) }
     # (the real line has a space after "people": not the script's own "pressuntil A test match: people")
-    $cue = if ($Command -in "match", "entrance") { "test match: people " } else { "script input: all steps done" }
+    $cue = if ($o.boot) { "SVRDBG: boot: match -" } elseif ($Command -in "match", "entrance") { "test match: people " } else { "script input: all steps done" }
     $deadline = (Get-Date).AddSeconds(240)
     while ((Get-Date) -lt $deadline -and -not $proc.HasExited -and -not (LogHas $cue) -and -not (LogHas "script input: no route")) { Start-Sleep -Milliseconds 500 }
     if (LogHas "script input: no route") { $ok = $false; $why = (@(Select-String -Path $log -Pattern "script input: no route" -SimpleMatch)[0].Line -split '\] ', 2)[-1] -replace '^.*script input: ', '' }
