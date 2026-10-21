@@ -1090,6 +1090,19 @@ void InstallTouchControls(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
 
 void SetTouchControlsFont(ImFont* font) { g_font = font; }
 
+float TouchControlsSideInset(bool right, float top, float bottom) {
+  if (!Visible() || g_editor.load() || g_help.load() || g_w <= 0) return 0;
+  float inset = 0;
+  for (const Control& c : Current()) {
+    if (!c.visible || !Shown(c)) continue;
+    const ImVec2 p = Centre(c), h = Half(c);
+    if (p.y + h.y < top || p.y - h.y > bottom) continue;           // (not in the band)
+    if (right ? p.x < g_w * 0.5f : p.x > g_w * 0.5f) continue;  // (the other half)
+    inset = std::max(inset, right ? g_w - (p.x - h.x) : p.x + h.x);
+  }
+  return inset > 0 ? inset + 4.0f : 0.0f;
+}
+
 bool TouchControlsHoldInput() { return g_editor.load() || g_help.load(); }
 
 void TouchGameInMatch(bool in_match) {
