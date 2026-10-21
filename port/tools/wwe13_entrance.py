@@ -589,6 +589,81 @@ def is_static(m):
     return True
 
 
+
+# ---- vehicles: a prop that drives itself (2011's own: 518 / 519 Chuck Palumbo's bike 2540, the jeep, the limos).
+# 2011 moves one as a prop with no parent (slot +208 = 9999) on a world track of prop poses: 0x75 [count][3h root]
+# [24-bit node mask][3h x/y/z per node]; root = cm x 10 (model units / 0.01, the characters' root); node angles
+# s16 (ymks.ANG). The rider is a character on a track of his own, in step. WWE '12-2K15 keep the same bike (2540)
+# with its own nodes: their roles below (by behaviour on 2K14 210 / 409: the root channel carries the position and
+# the whole bike's turn, two channels spin about x - the wheels -, one turns about y - the steering), 2011's from
+# its 518 track: node 0 the body's turn (y heading, small x / z), 1 and 4 the steering (always equal), 2 and 3 the
+# wheels (x), 5 and 6 never move. Without a node map a vehicle keeps 2011's parked donor pose (as before).
+VEHICLE_NODES = {
+    2540: dict(root='#0c5879e5', body=0, wheels={'#fdd95b24': 2, '#fdd95b25': 3}, steer=('#fdd95b27', (1, 4)),
+               nodes=7, lights_on=('6c010005', '6c010106', '6c013204'), lights_off=('6c0132ff', '6c0101ff', '6c0100ff')),
+}
+
+
+def _yxz(q):
+    """quaternion (x, y, z, w) -> (x, y, z) radians, heading first (Y, then X, then Z)"""
+    x, y, z, w = q
+    R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                  [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                  [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+    ry = math.atan2(R[0, 2], R[2, 2])
+    rx = math.asin(max(-1.0, min(1.0, -R[1, 2])))
+    rz = math.atan2(R[1, 0], R[1, 1])
+    return rx, ry, rz
+
+
+def _s16a(rad):
+    v = int(round(rad / ymks.ANG)) & 0xFFFF
+    return v - 65536 if v >= 32768 else v
+
+
+def vehicle_track(m, nf, model, park_off=False):
+    """a vehicle's own motion (VEHICLE_NODES) -> 2011 prop track data, or None (no map / no root channel).
+    park_off: the lights go off where the vehicle stops for good in this segment (2011's 518 does so as it parks)."""
+    vm = VEHICLE_NODES.get(model)
+    if not vm or vm['root'] not in m['tracks']:
+        return None
+    last = m['frames'] - 1
+    tr = m['tracks']
+    recs = []
+    roots = []
+    for f in range(nf):
+        sf = min(2 * f, last)
+        r = Y.sample_track(tr[vm['root']], sf)
+        pos = r['pos'] if r['pos'] is not None else (0.0, 0.0, 0.0)
+        root = tuple(max(-32768, min(32767, int(round(float(v) * 10)))) for v in pos)
+        roots.append(root)
+        nodes = {k: (0, 0, 0) for k in range(vm['nodes'])}
+        if r['rot'] is not None:
+            rx, ry, rz = _yxz(r['rot'])
+            nodes[vm['body']] = (_s16a(rx), _s16a(ry), _s16a(rz))
+        for name, k in vm['wheels'].items():
+            if name in tr:
+                w = Y.sample_track(tr[name], sf)['rot']
+                if w is not None:
+                    nodes[k] = (_s16a(2 * math.atan2(w[0], w[3])), 0, 0)   # (a turn about x only: any angle)
+        sname, sks = vm['steer']
+        if sname in tr:
+            st = Y.sample_track(tr[sname], sf)['rot']
+            if st is not None:
+                for k in sks:
+                    nodes[k] = (0, _s16a(2 * math.atan2(st[1], st[3])), 0)
+        mask = sum(1 << k for k in nodes)
+        pose = bytes([0x75, 0]) + struct.pack('<3h', *root) + bytes([mask & 0xff, mask >> 8 & 0xff, mask >> 16 & 0xff])
+        for k in sorted(nodes):
+            pose += struct.pack('<3h', *nodes[k])
+        recs.append([f, b'', pose])
+    moving = [i for i in range(1, nf) if roots[i] != roots[i - 1]]
+    if moving:   # (lights on while it drives - 518's parked segment has none)
+        recs[0][1] += b''.join(bytes.fromhex(h) for h in vm['lights_on'])
+        if park_off and moving[-1] < nf - 1:
+            recs[moving[-1] + 1][1] += b''.join(bytes.fromhex(h) for h in vm['lights_off'])
+    return ymks.build_stream(ymks.make_stream([(f, ymks.join_record(ev, pose, False)) for f, ev, pose in recs], nf))
+
 # ============================================================================ convert
 
 def convert(evp13, evz13, number, game_pac=None, name=None, bind='rest', progress=None, game='wwe13'):
@@ -679,6 +754,15 @@ def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None
                 data = camera_track(m, nf, evs)
             elif k in ('rope', 'turnbuckle'):
                 data = rope_track(m, nf, evs)
+            elif k == 'prop' and o['model'] in VEHICLE_NODES and not is_static(m) and \
+                    all(struct.unpack_from('>H', sl, 208)[0] == 9999 for sl in o['slots']):
+                # (a vehicle on its own world track: its motion, not 2011's parked pose; lights off where it parks)
+                data = vehicle_track(m, nf, o['model'], park_off=True)
+                if data is None:
+                    rep['warnings'].append('object %d (%d,%d): vehicle %d without its root channel: no track' % (i, x, y, o['model']))
+                    continue
+                rep['notes'].append('object %d (%d,%d): vehicle %d - its own motion (%d frames: position, turn, wheels, '
+                                    'steering)' % (i, x, y, o['model'], nf))
             elif k == 'prop':
                 don = prop_donor(stock, o['model'])
                 if don:

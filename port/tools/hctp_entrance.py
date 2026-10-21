@@ -282,6 +282,136 @@ def conv_obj_pose(pose):
     return bytes(out)
 
 
+
+
+# HCTP's motorbike (BG.PAC SOBJ 2035, Undertaker 3003, also 3203 / 3411 / 3511) is 2011's own bike 2540 (518 / 519
+# Chuck Palumbo; 2011's 2035 is a desk). Its 13 nodes onto 2540's 7 keyed ones (2011: 0 the body's turn, 1 and 4 the
+# steering, 2 and 3 the wheels, 5 and 6 still): HCTP node 1 and 4 spin about x (the wheels), 2 turns about y (the
+# steering), 3 holds one angle (left out), 0 the body - on a world track (no parent) it stands in a frame turned 180
+# degrees (x and z near 180): 2011's heading = 180 - y (checked on 3003 segment 3: path toward -x / +z = 135 degrees,
+# y about 45). In a segment where the bike is attached to the rider (parent set) its pose stays as HCTP keeps it.
+VEHICLES = {2035: dict(model=2540, body=0, wheels={1: 2, 4: 3}, steer=(2, (1, 4)), nodes=7)}
+
+
+def _wrap16(v):
+    v &= 0xFFFF
+    return v - 65536 if v >= 32768 else v
+
+
+def conv_vehicle_pose(pose, veh, attached):
+    """an HCTP bike pose -> 2011 2540's (VEHICLES): node map, the body's turn on world tracks"""
+    d = H.decode_obj(pose)
+    out = bytearray()
+    for sub in d['subs']:
+        op = sub['op']
+        if op == 0x7a:
+            b = sub['bones']
+            nodes = {}
+            if veh['body'] in b:
+                x, y, z = b[veh['body']]['x'], b[veh['body']]['y'], b[veh['body']]['z']
+                if not attached and abs(_wrap16(x - 32768)) < 4096 and abs(_wrap16(z - 32768)) < 4096:
+                    x, y, z = _wrap16(x - 32768), _wrap16(32768 - y), _wrap16(z - 32768)
+                nodes[0] = (x, y, z)
+            for hk, k in veh['wheels'].items():
+                if hk in b:
+                    nodes[k] = (b[hk]['x'], 0, 0)
+            sk, ks = veh['steer']
+            if sk in b:
+                for k in ks:
+                    nodes[k] = (0, b[sk]['y'], 0)
+            m = sum(1 << k for k in nodes)
+            out += bytes([0x75, sub['count']]) + struct.pack('<3h', *sub['root']) + bytes([m & 0xff, m >> 8 & 0xff, m >> 16 & 0xff])
+            for k in sorted(nodes):
+                out += struct.pack('<3h', *nodes[k])
+        elif op in (0x7d, 0x7e):
+            out += bytes([0x7e, sub['count']]) + struct.pack('<3h', *sub['root'])
+        elif op == 0x7b:
+            out += bytes([0x7b, sub['ref'], sub['count']]) + struct.pack('<3h', *sub['trans'])
+        else:   # (one node: through the map, else left out)
+            k = next(iter(sub['bones']))
+            v = sub['bones'][k]
+            if k in veh['wheels']:
+                out += bytes([veh['wheels'][k], sub['count']]) + struct.pack('<3h', v['x'], 0, 0)
+            elif k == veh['steer'][0]:
+                for kk in veh['steer'][1]:
+                    out += bytes([kk, sub['count']]) + struct.pack('<3h', 0, v['y'], 0)
+    return bytes(out)
+
+
+# 2011 has no vehicle attached to its rider (the bike stayed out of sight in game), so an HCTP segment where the bike
+# is the rider's child is baked onto a world track from the rider's: 2011's bike sits at the rider's root plus a
+# fixed offset turned by the rider's heading (bone 0 y), its heading the rider's plus a little - measured on the 2K14
+# Undertaker (210) riding 2540 in 2011: offset (10, -790, -32) root units rider - bike in the bike's frame, heading
+# +150 s16. The bike's own wheels and steering from its HCTP track.
+RIDE_OFFSET = (10.0, -790.0, -32.0)
+RIDE_TURN = 150
+
+
+def _bike_nodes_at(bike_recs):
+    """{frame: {node: (x, y, z)}} of a converted bike track (2011 0x75 / single-node poses), held between keys"""
+    out, cur = {}, {}
+    for f, r in bike_recs:
+        _, pose = Y.split_record(r)
+        p = 0
+        while p < len(pose) - 1:
+            op = pose[p]
+            if op == 0x75:
+                m = pose[p + 8] | pose[p + 9] << 8 | pose[p + 10] << 16
+                q = p + 11
+                for k in range(24):
+                    if m >> k & 1:
+                        cur[k] = struct.unpack_from('<3h', pose, q); q += 6
+                p = q
+            elif op in (0x7e,):
+                p += 8
+            elif op == 0x7b:
+                p += 9
+            elif op < 21:
+                cur[op] = struct.unpack_from('<3h', pose, p + 2); p += 8
+            else:
+                break
+        out[f] = dict(cur)
+    return out
+
+
+def bake_vehicle(rider_recs, bike_recs, nframes, veh):
+    """an attached HCTP bike segment -> 2011 world-track records, one key a frame (from the rider's keys)"""
+    import math
+    data = Y.build_stream(Y.make_stream(list(rider_recs), nframes))
+    ks = [k for k in Y.body_keys(data, S.T11) if k['has_pose']]
+    if not ks:
+        return []
+    nodes_at = _bike_nodes_at(bike_recs)
+    frames = sorted(nodes_at)
+    out = []
+    ki = 0
+    last_nodes = {}
+    for f in range(nframes):
+        while ki + 1 < len(ks) and ks[ki + 1]['frame'] <= f:
+            ki += 1
+        k = ks[ki]
+        rx, ry, rz = k['root']
+        h16 = (k['bones'].get(0) or {}).get('y', 0)
+        h = h16 * Y.ANG
+        lx, ly, lz = RIDE_OFFSET
+        dx = math.cos(h) * lx + math.sin(h) * lz
+        dz = -math.sin(h) * lx + math.cos(h) * lz
+        root = tuple(max(-32768, min(32767, int(round(v)))) for v in (rx - dx, ry - ly, rz - dz))
+        while frames and frames[0] <= f:
+            last_nodes = nodes_at[frames.pop(0)]
+        nodes = {kk: (0, 0, 0) for kk in range(veh['nodes'])}
+        for kk in list(veh['wheels'].values()) + list(veh['steer'][1]):
+            if kk in last_nodes:
+                nodes[kk] = last_nodes[kk]
+        nodes[veh['body']] = (0, _wrap16(h16 + RIDE_TURN), 0)
+        m = sum(1 << kk for kk in nodes)
+        pose = bytes([0x75, 0]) + struct.pack('<3h', *root) + bytes([m & 0xff, m >> 8 & 0xff, m >> 16 & 0xff])
+        for kk in sorted(nodes):
+            pose += struct.pack('<3h', *nodes[kk])
+        out.append((f, Y.join_record(b'', pose)))
+    return out
+
+
 def conv_cam_pose(pose, dy, fov):
     c = pose[0]
     pos = list(struct.unpack_from('<3h', pose, 1))
@@ -329,9 +459,10 @@ def cam_follow(b):
     return bytes([b[0], max(0, b[1] - 1)])
 
 
-def convert_records(kind, data, T, rep, ground_fix=True, fov=CAM_FOV, shifts=None):
+def convert_records(kind, data, T, rep, ground_fix=True, fov=CAM_FOV, shifts=None, vehicle=None, attached=False):
     """one HCTP track -> ([(frame, 2011 record)], frames). kind: char / camera / prop / rope.
-    shifts: [(frame, dy)] of the entrant in this segment (cameras follow it)."""
+    shifts: [(frame, dy)] of the entrant in this segment (cameras follow it). vehicle: VEHICLES entry of a prop
+    that is a vehicle (attached: this segment's slot has a parent)."""
     recs = []
     for f, r in H.records(data):
         ev, pose = Y.split_record(r)
@@ -353,7 +484,10 @@ def convert_records(kind, data, T, rep, ground_fix=True, fov=CAM_FOV, shifts=Non
                     rep['camera key of %d bytes copied' % len(pose)] += 1
         elif kind == 'prop':
             ev2 = filter_events(ev, T, KEEP_PROP, rep, 'prop')
-            p2 = conv_obj_pose(pose) if len(pose) > 1 else pose
+            if vehicle and len(pose) > 1:
+                p2 = conv_vehicle_pose(pose, vehicle, attached)
+            else:
+                p2 = conv_obj_pose(pose) if len(pose) > 1 else pose
         else:                                    # ropes: 5-byte scalar keys, same in 2011
             ev2 = filter_events(ev, T, set(), rep, kind)
             p2 = pose
@@ -483,11 +617,21 @@ def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, 
                 continue
             if tk == 'char' and i == 0:
                 shifts[k] = char_keys_shift(e['data']) if ground_fix else []
+            veh = VEHICLES.get(o['model']) if tk == 'prop' else None
             recs, n = convert_records(tk, e['data'], T, rep, ground_fix, fov,
-                                      shifts.get(k) if tk == 'camera' else None)
+                                      shifts.get(k) if tk == 'camera' else None, veh, s['parent'] != S.NONE16)
             conv[(i, k)] = (tk, recs, max(n, e['frames']))
     ent = next((i for i, kd in enumerate(kinds) if kd == 'char'), 0)
     cam = next((i for i, kd in enumerate(kinds) if kd == 'camera'), None)
+    for i, o in enumerate(script['objs']):   # (a vehicle attached to the rider: baked onto a world track)
+        veh = VEHICLES.get(o['model']) if kinds[i] == 'prop' else None
+        if not veh:
+            continue
+        for k, s in enumerate(o['slots'][:nseg]):
+            if s['parent'] != S.NONE16 and (i, k) in conv and (ent, k) in conv:
+                n = conv[(ent, k)][2]
+                conv[(i, k)] = ('prop', bake_vehicle(conv[(ent, k)][1], conv[(i, k)][1], n, veh), n)
+                notes.append('object %d: HCTP segment %d - the bike on the rider, baked to a world track' % (i, k))
     intro = 0
     if cfg['groups']:
         pl = plan_groups(nseg, cfg['groups'])
@@ -512,7 +656,7 @@ def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, 
                 full = conv.get((ent, hk), (None, None, 0))[2]
                 b2 = full if b is None else b
                 c = conv.get((i, hk))
-                if c and c[0] == 'prop':
+                if c and c[0] == 'prop' and o['model'] not in VEHICLES:
                     # one-frame prop poses: only the first part's, held for the segment
                     if not have:
                         parts.append((c[1], b2 - a)); have = True
@@ -574,12 +718,16 @@ def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, 
         if kind == 'char':
             model = S.PREVIEW_CHAR_11 if i == ent else S.GENERIC_CHAR_11
         elif kind == 'prop':
-            new = prop_map.get(model, model)
-            notes.append('object %d: HCTP prop %d -> 2011 evtobj %d' % (i, model, new))
+            new = VEHICLES[model]['model'] if model in VEHICLES else prop_map.get(model, model)
+            notes.append('object %d: HCTP prop %d -> 2011 evtobj %d%s' % (i, model, new, ' (the bike: its nodes mapped)'
+                                                                          if model in VEHICLES else ''))
             model = new
         slots = []
         for jj in range(SLOTS_11):
             s = slot_src.get((i, jj // 5)) if jj % 5 == 0 else None
+            if s is not None and kind == 'prop' and o['model'] in VEHICLES:
+                rs = slot_src.get((ent, jj // 5)) or s
+                s = dict(s, params=rs['params'], parent=S.NONE16)
             if s is None:
                 slots.append(slot11(jj, 0, S.ID_SHIFT + i, (), S.NONE16))
                 continue
