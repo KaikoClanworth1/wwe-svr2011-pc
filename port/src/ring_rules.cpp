@@ -8,6 +8,7 @@
 // (0x82E354E4 = -12 - 3.4). Rope k (0 = bottom) is at that height minus
 // k * 4.2. Units: 1 = 10 cm, y points down.
 #include "ring_rules.h"
+#include "caw_limits.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -151,6 +152,17 @@ REX_EXTERN(__imp__sub_8269A8D8);
 REX_HOOK_RAW(sub_8269A8D8) {
   const uint32_t size = ctx.r3.u32;
   __imp__sub_8269A8D8(ctx, base);
+  if (ctx.r3.u32 == 0 && size) {  // (the CAW editor's part heap full: caw_limits.h)
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    if (heap == 42)
+      if (const uint32_t p = svr2011::CawHeapFallback(size)) {
+        ctx.r3.u64 = p;
+        return;
+      }
+  }
   if (!g_heap_log) return;
   static bool listed = false;
   const uint32_t table = Rd32(base + 0x82EC5F48);
@@ -174,6 +186,17 @@ REX_EXTERN(__imp__sub_8269BA30);
 REX_HOOK_RAW(sub_8269BA30) {
   const uint32_t units = ctx.r3.u32;  // 16-byte units
   __imp__sub_8269BA30(ctx, base);
+  if (ctx.r3.u32 == 0 && units) {  // (the CAW editor's part heap full: caw_limits.h)
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    if (heap == 42)
+      if (const uint32_t p = svr2011::CawHeapFallback(units * 16)) {
+        ctx.r3.u64 = p;
+        return;
+      }
+  }
   if (g_heap_log && ctx.r3.u32 && units * 16 >= 256 * 1024) {
     const auto saved = ctx;
     sub_8269A478(ctx, base);

@@ -114,6 +114,7 @@ enum Row {
   kArenaBrightness,                                              // GRAPHICS
   kOverlayCorner,                                                // DISPLAY (after PERFORMANCE)
   kUpscaling,                                                    // GRAPHICS (after ANTI-ALIASING)
+  kCawLimits,                                                    // DISPLAY (last: caw_limits.cpp)
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
@@ -123,10 +124,10 @@ const char* kTabNames[kTabs] = {"DISPLAY", "GRAPHICS", "ADV. GRAPHICS"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
 // (no RENDERER row: the phone draws natively on Vulkan, its only graphics API)
-const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kOverlayCorner, kPing, kRouterPort, kTouch, kReplays, kFastStart},
+const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kOverlayCorner, kPing, kRouterPort, kTouch, kReplays, kFastStart, kCawLimits},
 #else
 const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kOverlayCorner, kPing, kRouterPort, kRenderer, kTouch,
-                                              kReplays, kCpuPriority, kFastStart},
+                                              kReplays, kCpuPriority, kFastStart, kCawLimits},
 #endif
                                              {kRenderScale, kAntiAliasing, kUpscaling, kTextureQuality, kArenaBrightness, kWide, kCutsceneFps},
                                              {kCrowd, kShadows, kEffects, kDof, kMotionBlur, kSoft, kPrepare}};
@@ -395,6 +396,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool touch_ = false;  // the on-screen controller
   bool wide_ = true;    // matches as wide as the screen
   bool dof_ = true, blur_ = true, soft_ = false, replays_ = true;  // depth of field, motion blur (post_effects.cpp)
+  bool caw_no_limits_ = true;  // CAW LIMITS: OFF (the port's) / STOCK (caw_limits.cpp)
   int fast_start_ = 0;  // FAST START (fast_start.h): bit 0 skip_intros, bit 1 skip_training
   bool prepare_ = true;  // the known pipelines built ahead in the menus
   bool crowd_ = true, crowd_at_start_ = true;  // arena_crowd (read when the game starts)
@@ -487,6 +489,7 @@ void GraphicsPage::Load() {
   blur_ = rex::cvar::Query<bool>("motion_blur");
   soft_ = rex::cvar::Query<bool>("soft_filter");
   replays_ = rex::cvar::Query<bool>("replays");
+  caw_no_limits_ = rex::cvar::Query<bool>("caw_no_limits");
   fast_start_ = (rex::cvar::Query<bool>("skip_intros") ? 1 : 0) | (rex::cvar::Query<bool>("skip_training") ? 2 : 0);
   prepare_ = rex::cvar::Query<bool>("native_prepare_pipelines");
   {
@@ -600,6 +603,11 @@ void GraphicsPage::Change(int row, int dir) {
       rex::cvar::SetFlagByName("skip_training", fast_start_ & 2 ? "true" : "false");
       SaveSetting("skip_intros", fast_start_ & 1 ? "true" : "false");
       SaveSetting("skip_training", fast_start_ & 2 ? "true" : "false");
+      break;
+    case kCawLimits:
+      caw_no_limits_ = !caw_no_limits_;
+      rex::cvar::SetFlagByName("caw_no_limits", caw_no_limits_ ? "true" : "false");
+      SaveSetting("caw_no_limits", caw_no_limits_ ? "true" : "false");
       break;
     case kReplays:
       replays_ = !replays_;
@@ -1097,6 +1105,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kMotionBlur: return blur_ ? "ON" : "OFF";
       case kSoft: return soft_ ? "ON (XBOX 360)" : "OFF";
       case kReplays: return replays_ ? "ON" : "OFF";
+      case kCawLimits: return caw_no_limits_ ? "OFF" : "STOCK";
       case kFastStart: {
         static const char* const kNames[4] = {"OFF", "SKIP INTROS", "SKIP PRACTICE RING", "SKIP BOTH"};
         return kNames[fast_start_ & 3];
@@ -1143,6 +1152,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kSoft: return "SOFT FILTER";
       case kReplays: return "REPLAYS";
       case kFastStart: return "FAST START";
+      case kCawLimits: return "CAW LIMITS";
       case kCpuPriority: return "CPU PRIORITY";
       case kPrepare: return "PREPARE GRAPHICS";
       case kLanguage: return "LANGUAGE";
@@ -1181,6 +1191,11 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kMotionBlur: return "Blur and trails on fast moves and replays.";
       case kSoft: return "The game's 720p smoothing filter: blurs wide shots at higher resolutions.";
       case kReplays: return "Instant replays after finishers and the highlights at the end of a match.";
+      case kCawLimits:
+        return caw_no_limits_ ? "CREATE A SUPERSTAR: no Remaining Points budget, and any number of parts of a kind "
+                                "(layers may clip). STOCK: the game's own limits."
+                              : "CREATE A SUPERSTAR with the game's own limits: the Remaining Points budget and its "
+                                "part counts. OFF: no budget, parts stack freely.";
       case kFastStart:
         return "At launch: no logo movies (straight to the Start Screen) and / or no practice ring (straight to the "
                "main menu). Next start.";

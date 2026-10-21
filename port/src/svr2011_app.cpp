@@ -46,6 +46,7 @@
 #include "story_designer.h"
 #include "move_packs.h"
 #include "ring_rules.h"
+#include "caw_limits.h"
 #include "superstar_mods.h"
 #include "caw_check.h"
 #include "superstar_threads.h"
@@ -677,6 +678,7 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::KeepWindowAlive();
   // Ring Kit: rope heights and rules from a custom arena's manifest (ring_rules.h).
   svr2011::InstallRingRules(runtime()->memory());
+  svr2011::InstallCawLimits(runtime()->memory());  // (the CAW editor's part heap fallback: caw_limits.h)
   svr2011::InstallJukebox(runtime()->memory());  // MY WWE -> JUKEBOX (jukebox.h)
   // Superstar mods: new characters in the free DLC slots (superstar_mods.h).
   svr2011::InstallMediaMods(runtime()->memory());  // (arenas branch: before the superstar mods mount its pac)

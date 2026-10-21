@@ -58,6 +58,7 @@ set(SVR2011_SOURCES
     src/match_types.cpp
     src/match_diag.cpp
     src/caw_check.cpp
+    src/caw_limits.cpp
     src/match_hud.cpp
     src/slobber_knocker.cpp
     src/gauntlet_eliminator.cpp

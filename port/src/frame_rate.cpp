@@ -58,6 +58,7 @@
 #include <rex/ui/presenter.h>
 
 #include "arena_mods.h"
+#include "caw_limits.h"
 #include "generated/default/svr2011_init.h"
 #include "jukebox.h"
 #include "match_types.h"
@@ -1192,6 +1193,7 @@ REX_HOOK_RAW(sub_826E02A8) {
 REX_EXTERN(__imp__sub_8269B2D0);
 REX_HOOK_RAW(sub_8269B2D0) {
   const uint32_t ptr = ctx.r3.u32;
+  if (svr2011::CawHeapFree(ptr)) return;  // (a CAW editor part from the fallback memory: caw_limits.h)
   if (ptr && !g_frame_commands.empty() && std::this_thread::get_id() == g_logic_thread.load()) {
     constexpr uint32_t kWithin = 0x4000;  // (the object: at or just after the block's start)
     for (const uint32_t cmd : g_frame_commands) {
