@@ -2627,6 +2627,9 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
       // 1100, a shower 1700)
       if (p.kind == "rack" && at(300) && p.hid == 467) RackHit(ctx, base, p, f1, 1);
       if (p.kind == "sandbag" && at(300)) SandbagHit(ctx, base, p, Rd32(base + kChars), 6.0f);
+      // (fighter 0 - the test's pad - on the first treadmill at 800: the script mashes A)
+      if (p.kind == "treadmill" && at(800) && &p == FindKind("treadmill") && Rd32(base + kChars))
+        TreadmillOn(ctx, base, p, Rd32(base + kChars), 0);
       if (p.kind == "brokenwall" && (at(420) || at(480))) p.cooldown = 0, WallHit(ctx, base, p, 0, 1);
       if (p.kind == "locker" && at(600) && &p == FindKind("locker")) LockerHit(ctx, base, p, f1, 1);
       if (p.kind == "toilet" && at(1100)) ToiletHit(ctx, base, p, f1, 1);
