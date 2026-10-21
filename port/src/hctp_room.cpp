@@ -834,6 +834,33 @@ void PlaceFighter(uint8_t* base, uint32_t f, float x, float y, float z, float ya
   }
 }
 
+// A wrestler put somewhere for good (through a door, the door test): placed now and again at the start of
+// the next kHeldFrames world frames, before the game's update - with the body's other two position copies
+// (+704, +768). Online the game's update puts him back on his physics body and the body then eases toward
+// him over several frames (seen with svrtest lan: placed at the door, back at his old place the next frame,
+// then 150 -> 121 -> 108 ...); placed this way the body has nothing left to ease.
+constexpr int kHeldFrames = 10;
+struct Held {
+  uint32_t f = 0;
+  float x = 0, y = 0, z = 0, yaw = 0;
+  int frames = 0;
+};
+Held g_held[8];
+
+void PlaceBody(uint8_t* base, uint32_t f, float x, float y, float z, float yaw) {
+  PlaceFighter(base, f, x, y, z, yaw);
+  if (const uint32_t body = Rd32(base + f + 304))
+    for (uint32_t at : {704u, 768u}) WrF(base + body + at, x), WrF(base + body + at + 4, y), WrF(base + body + at + 8, z);
+}
+
+void PlaceFighterHeld(uint8_t* base, uint32_t f, float x, float y, float z, float yaw) {
+  PlaceBody(base, f, x, y, z, yaw);
+  Held* slot = nullptr;
+  for (Held& h : g_held)
+    if (h.f == f || (!slot && !h.frames)) slot = &h;
+  if (slot) *slot = {f, x, y, z, yaw, kHeldFrames};
+}
+
 // First frame: the closing shutter (HCTP syattar2) and the steam puffs hidden.
 void ShowModel(PPCContext& ctx, uint8_t* base, const Prop& p, int model, bool show);
 
@@ -2460,7 +2487,7 @@ void GoThrough(PPCContext& ctx, uint8_t* base, const Door& d, int who) {
         // (an act first - standing, 0 - then the place: a walk or run under way puts him back where
         // he was, the game's own snap does it in this order too)
         JumpAct(ctx, base, f, 0);
-        PlaceFighter(base, f, t.ex + side * fz + back * fx, t.y, t.ez - side * fx + back * fz, t.eyaw);
+        PlaceFighterHeld(base, f, t.ex + side * fz + back * fx, t.y, t.ez - side * fx + back * fz, t.eyaw);
         ++n;
       }
       svr2011::SnapMatchCamera();
@@ -2550,13 +2577,6 @@ void UpdateWorld(PPCContext& ctx, uint8_t* base) {
   }
   DoorPrompt prompt;
   bool prompt_set = false;
-  // (online - inputs-only netplay - the rooms don't change yet: a LAN pair (svrtest lan, 21 Oct) changed
-  // room on both games at the same frame, but the move to the other door didn't hold and the wrestlers'
-  // positions then drifted apart; the match stays in its first room, which stays in step)
-  if (svr2011::P2POnlineMode()) {
-    PublishPrompt(nullptr);
-    return;
-  }
   if (g_door_cd > 0) {
     --g_door_cd;
     PublishPrompt(nullptr);
@@ -2577,14 +2597,16 @@ void UpdateWorld(PPCContext& ctx, uint8_t* base) {
       if ((x - d.x) * (x - d.x) + (z - d.z) * (z - d.z) < 22.0f * 22.0f) door = &d;
     // a player: Y at the door (HCTP's own way; the prompt shows meanwhile); the CPU: walking into it for
     // half a second (its AI walks after its opponent - CPU-vs-CPU and chases keep moving)
+    // (online every wrestler is a player: a port is local - the other side's player has one of 4 or
+    // more - and both games must decide alike)
     const uint32_t port = Rd32(base + f + 1152);
-    const bool player = port < 4 && !g_walk_in;
+    const bool player = (port < 4 || svr2011::P2POnlineMode()) && !g_walk_in;
     if (player) {
       hold = 0;
       // (on his feet: standing 0, fighting stance 20, walking or running - not lying or in a move)
       const bool ready = m == 0 || m == 20 || m == kWalkBackstage || base[f + 1286];
       if (!door || !ready || std::fabs(y - door->y) > 4.0f) continue;
-      if (!prompt_set) {
+      if (!prompt_set && port < 4) {  // (only this PC's own players see it)
         prompt_set = true;
         prompt.port = port, prompt.to = door->to;
       }
@@ -2684,7 +2706,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
         done[i] = true;
         const Door& d = Cur().doors[0];
         JumpAct(ctx, base, Rd32(base + kChars + 4 * i), 0);  // (an act first, as GoThrough: then the place holds)
-        PlaceFighter(base, Rd32(base + kChars + 4 * i), d.x, d.y, d.z, d.eyaw + 3.14159265f);
+        PlaceFighterHeld(base, Rd32(base + kChars + 4 * i), d.x, d.y, d.z, d.eyaw + 3.14159265f);
         REXLOG_INFO("hctp: fighter {} put at door {} (test)", i, d.id);
       }
   }
@@ -2795,6 +2817,15 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
 }
 
 void InstallHctpOverlay(rex::ui::ImGuiDrawer* drawer) { new DoorPromptOverlay(drawer); }
+
+// A world frame's start (frame_rate.cpp, before the game's update): the held placements.
+void HctpBeforeFrame(uint8_t* base) {
+  for (Held& h : g_held)
+    if (h.frames > 0 && h.f) {
+      PlaceBody(base, h.f, h.x, h.y, h.z, h.yaw);
+      if (--h.frames == 0) h.f = 0;
+    }
+}
 
 void HctpWorldVisibility(PPCContext& ctx, uint8_t* base) {
   // (test aid SVR2011_TEST_HCTP_NOVIS=1 / models / objects: the stock visibility only, for all or that part)
