@@ -85,7 +85,9 @@ inline int OverallRating(const int r[7]) {
   return v > 100 ? 100 : v;
 }
 extern int g_view_attire;  // the attire the preview shows (1-4)
-void MaterialsSection(bool simple);  // the material panel for the model the 3D view shows (its attire, its gear)
+// The material panel for the model the 3D view shows (its attire, its gear): under a header of its own, or (header
+// false) just the list - show_list false: none of it, its edits still shown in the 3D view.
+void MaterialsSection(bool simple, bool header = true, bool show_list = true);
 // The Full preview window (full_preview.cpp) of entrance n for this project (star_page.cpp).
 void OpenFullPreview(int n, int start_part = 0);  // (start_part: full_preview::Request)
 
@@ -105,7 +107,9 @@ void Install(bool start);
 void SetPicture(const Image& src);
 std::wstring StyleChPac();  // the fighting style's superstar's model (pac\ch\ch<id>.pac)
 void SimpleDraw();          // simple_star.cpp
-void FbxRows(bool simple);
+void FbxRows(bool simple);  // the FBX import, step by step
+bool FbxMaterials(bool simple, bool intro = true);  // the FBX's materials (its step 3; Simple's Materials tab)
+void FbxMakeButton(const char* label, float width);
 void GearRows(bool simple);  // entrance gear per attire: has it, show it, leave it out, give it another attire's
 std::vector<int> AttireCount();  // the attires the mod has, 1..4 (star_page.cpp)
 void ThreadsOpen(int attire);    // the Threads parts tab on that attire (threads_page.cpp)

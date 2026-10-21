@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "bytes.h"
+#include "texture.h"
 
 namespace svrfmt {
 
@@ -57,7 +58,9 @@ struct FbxMaterial {
   bool has_tint = false;
   float tint[3] = {1, 1, 1};    // into g_f4MatDifCol
   int cutout = -1, double_sided = -1;
+  int flip = -1;                // 1: the faces as the FBX has them (Flip faces; by default they're turned to the game's)
   std::string specular_alpha;   // "texture" | "flat" | "brightness"
+  std::string shine_mask;       // a picture: its brightness is where it shines (into the colour picture's alpha)
 };
 struct FbxImportOptions {
   std::map<std::string, FbxMaterial> material;  // by mesh name (as `include`)
@@ -86,6 +89,9 @@ struct FbxMeshInfo {
   bool hidden = false, has_texture = false;
 };
 bool FbxListMeshes(const std::string& fbx_path, std::vector<FbxMeshInfo>& out, std::string& err);
+// Each mesh's colour picture (by FbxMeshInfo::name, fitted into size x size) as its material has it - the Materials
+// list's thumbnails. Slow the first time (a texture is looked for in the folders around the FBX): off the UI thread.
+bool FbxMeshPictures(const std::string& fbx_path, int size, std::map<std::string, Image>& out);
 
 // Model checks for the Problems list (D12; found by robert32's SvR Port Doctor): a mesh with not-a-number values
 // (the game crashes), eyes far from their eye bones (they pop out when the face blinks: the eyeball vertices' centre

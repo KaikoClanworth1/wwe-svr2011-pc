@@ -416,11 +416,13 @@ bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir
       verts.insert(verts.end(), {part.pos[k][0], -part.pos[k][1], -part.pos[k][2]});
       uvs.insert(uvs.end(), {part.uv[k][0], 1.0 - part.uv[k][1]});
     }
+    // (the game's faces turned over - its normals and winding point in: FbxToBuildInput turns them back)
     for (const auto& t : part.tris)
-      for (int c = 0; c < 3; ++c) {
-        poly.push_back(c == 2 ? -(t[size_t(c)] + 1) : t[size_t(c)]);
+      for (int k = 0; k < 3; ++k) {
+        const int c = k == 0 ? 0 : 3 - k;  // (0, 2, 1)
+        poly.push_back(k == 2 ? -(t[size_t(c)] + 1) : t[size_t(c)]);
         const auto& n = part.nrm[size_t(t[size_t(c)])];
-        normals.insert(normals.end(), {n[0], -n[1], -n[2]});
+        normals.insert(normals.end(), {-n[0], n[1], n[2]});
         uv_index.push_back(t[size_t(c)]);
       }
     const int64_t gid = doc.NewId(), mid = doc.NewId();
@@ -1051,6 +1053,44 @@ bool FbxListMeshes(const std::string& fbx_path, std::vector<FbxMeshInfo>& out, s
   return true;
 }
 
+bool FbxMeshPictures(const std::string& fbx_path, int size, std::map<std::string, Image>& out) {
+  ufbx_load_opts lo = {};
+  ufbx_error ue;
+  ufbx_scene* scene = ufbx_load_file(fbx_path.c_str(), &lo, &ue);
+  if (!scene) return false;
+  const fs::path fbx_dir = fs::u8path(fbx_path).parent_path();
+  std::map<const ufbx_texture*, Image> loaded;
+  for (size_t ni = 0; ni < scene->nodes.count; ++ni) {
+    const ufbx_node* node = scene->nodes.data[ni];
+    const ufbx_mesh* mesh = node->mesh;
+    if (!mesh || mesh->num_faces == 0) continue;
+    const size_t parts = std::max<size_t>(1, mesh->material_parts.count);
+    for (size_t pi = 0; pi < parts; ++pi) {
+      const ufbx_mesh_part* part = mesh->material_parts.count ? &mesh->material_parts.data[pi] : nullptr;
+      if (part && part->num_triangles == 0) continue;
+      const ufbx_material* mat = part && pi < mesh->materials.count ? mesh->materials.data[pi] : nullptr;
+      const ufbx_texture* t = MaterialTexture(mat, false);
+      if (!t) continue;
+      auto it = loaded.find(t);
+      if (it == loaded.end()) {
+        Image img;
+        std::string where;
+        if (LoadFbxTexture(t, fbx_dir, img, where) && img.w > 0 && img.h > 0) {
+          const double f = std::min(1.0, double(size) / std::max(img.w, img.h));
+          img = Resize(img, std::max(1, int(img.w * f)), std::max(1, int(img.h * f)));
+        }
+        it = loaded.emplace(t, std::move(img)).first;
+      }
+      if (it->second.rgba.empty()) continue;
+      const std::string node_name(node->name.data, node->name.length);
+      const std::string mat_name = mat ? std::string(mat->name.data, mat->name.length) : "";
+      out[node_name + (mat_name.empty() ? "" : " / " + mat_name)] = it->second;
+    }
+  }
+  ufbx_free_scene(scene);
+  return true;
+}
+
 bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>& targets, const Bytes& template_pac,
                      const std::string& template_path, const std::string& out_dir, FbxImportReport& rep,
                      const FbxImportOptions& opts) {
@@ -1131,7 +1171,7 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
       if (!fresh && depth[i] < depth[size_t(it->second)]) it->second = int(i);
     }
   for (const char* need : {"root", "l_ninoude", "r_ninoude", "atama", "l_ashi", "r_ashi"})
-    if (!src_of.count(need)) return fail(std::string("the mapping has no ") + need + " (Bone mapping)");
+    if (!src_of.count(need)) return fail(std::string("the mapping has no ") + need + " (the Skeleton step)");
 
   // game axes: C = diag(1, -1, -1) (y up -> -Y up), then a turn about the up axis putting the character's left on +X
   M axes;
@@ -1399,6 +1439,14 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
       else
         for (uint32_t f = 0; f < mesh->num_faces; ++f) faces(f);
       if (om.tris.empty()) continue;
+      // The game's faces are turned over: its models keep their normals, and the winding with them, pointing in
+      // (stock bodies: about a quarter point away from the body's centre line, an FBX's own about three quarters),
+      // so a model as the FBX has it came out inside out - lit from behind, its fronts culled (user report 21 Oct).
+      // The material's "flip" (Flip faces) keeps them as the file has them.
+      if (const auto mo = opts.material.find(om.name); mo == opts.material.end() || mo->second.flip != 1) {
+        for (auto& n : om.nrm) n = {-n[0], -n[1], -n[2]};
+        for (auto& t : om.tris) std::swap(t[1], t[2]);
+      }
       if (om.kind == "eye?") {  // (an eye fits in 8 cm; a whole model named EYE doesn't)
         V3 lo{1e30, 1e30, 1e30}, hi{-1e30, -1e30, -1e30};
         for (const auto& p : om.pos)
@@ -1486,6 +1534,35 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
     for (const auto& b : bare) list += (list.empty() ? "" : ", ") + b;
     if (!list.empty()) rep.warnings.push_back("no colour texture on " + list + " (plain grey: pick its picture)");
   }
+  // A mesh's shine mask picture: its colour picture again (its own sheet cell) with the mask's brightness as the
+  // alpha - where it shines (svr11_build "specular_alpha": "texture"; a skin part's goes into the normal map's alpha)
+  std::set<std::string> own_alpha;  // (sheet cells whose alpha is the picture's: kept)
+  for (auto& m : meshes) {
+    const auto mt = opts.material.find(m.name);
+    if (mt == opts.material.end()) continue;
+    const FbxMaterial& f = mt->second;
+    if (!f.shine_mask.empty()) {
+      Image mask;
+      if (!LoadImageFile(f.shine_mask, mask) || mask.w <= 0 || mask.h <= 0) {
+        rep.warnings.push_back("shine picture not readable: " + f.shine_mask);
+      } else {
+        const std::string key = m.texture_key + "|shine|" + f.shine_mask;
+        if (!sheets.count(key)) {
+          Sheet s;
+          if (const auto base = sheets.find(m.texture_key); base != sheets.end() && !m.texture_key.empty()) s = base->second;
+          else s.color.w = mask.w, s.color.h = mask.h, s.color.rgba.assign(size_t(mask.w) * mask.h * 4, 160);
+          const Image fit = Resize(mask, s.color.w, s.color.h);
+          for (size_t q = 0; q + 3 < s.color.rgba.size(); q += 4)
+            s.color.rgba[q + 3] = uint8_t((fit.rgba[q] * 77 + fit.rgba[q + 1] * 150 + fit.rgba[q + 2] * 29) >> 8);
+          sheets.emplace(key, std::move(s));
+        }
+        m.texture_key = key;
+        own_alpha.insert(key);
+        continue;
+      }
+    }
+    if (f.cutout == 1 || f.specular_alpha == "texture") own_alpha.insert(m.texture_key);  // (see-through: the alpha is it)
+  }
   // (meshes with no picture share one small grey patch)
   bool any_plain = false;
   for (const auto& m : meshes) any_plain |= !sheets.count(m.texture_key);
@@ -1536,7 +1613,9 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
   color.rgba.assign(size_t(atlas) * atlas * 4, 0);
   normal.rgba.assign(size_t(atlas) * atlas * 4, 0);
   for (size_t k = 0; k < normal.rgba.size(); k += 4) normal.rgba[k] = 128, normal.rgba[k + 1] = 128, normal.rgba[k + 2] = 255, normal.rgba[k + 3] = 48;
-  std::set<std::string> keep_alpha;  // (hair and lash cards: the alpha is their cut-out; else it's the shine)
+  // (hair and lash cards, see-through parts: the alpha is their cut-out; a shine picture's; else it's a low shine -
+  // a see-through cloth part used to lose its alpha here, cut where it shouldn't be or not at all)
+  std::set<std::string> keep_alpha = own_alpha;
   for (const auto& m : meshes)
     if (m.kind == "hair" || m.kind == "lash") keep_alpha.insert(m.texture_key);
   for (auto& [key, s] : sheets) {
@@ -1659,7 +1738,8 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
       if (f.has_tint) field("\"tint\": [" + Num(f.tint[0]) + ", " + Num(f.tint[1]) + ", " + Num(f.tint[2]) + "]");
       if (f.cutout >= 0) field(std::string("\"cutout\": ") + (f.cutout ? "true" : "false"));
       if (f.double_sided >= 0) field(std::string("\"double_sided\": ") + (f.double_sided ? "true" : "false"));
-      if (!f.specular_alpha.empty()) field("\"specular_alpha\": " + JsonStr(f.specular_alpha));
+      if (!f.specular_alpha.empty() || !f.shine_mask.empty())  // (a shine picture is the colour cell's alpha)
+        field("\"specular_alpha\": " + JsonStr(f.shine_mask.empty() ? f.specular_alpha : "texture"));
       if (!mj.empty()) j += ",\n    \"material\": {" + mj + "}";
     }
     j += "}";
@@ -1844,7 +1924,7 @@ std::vector<FbxIssue> FbxInspect(const std::string& fbx_path, const std::vector<
         "Unwrap it in your 3D program (Blender: Smart UV Project) and export again.");
   if (nan) add(2, Thousands(nan) + " broken points (not-a-number positions): the game would crash.", "Blender: Mesh > Clean Up, then export again.");
   if (degenerate) add(0, Thousands(degenerate) + " triangles have no area (dropped).", "Harmless. Blender: Mesh > Clean Up > Degenerate Dissolve.");
-  if (!hidden.empty()) add(0, list(hidden) + (hidden.size() == 1 ? " is" : " are") + " hidden in the file and left out.", "Turn them on in Meshes if you want them.");
+  if (!hidden.empty()) add(0, list(hidden) + (hidden.size() == 1 ? " is" : " are") + " hidden in the file and left out.", "Turn them on in the Outfit step if you want them.");
   // textures
   int missing = 0, big = 0, odd = 0;
   std::set<std::string> pictures;  // (distinct files: materials sharing one count once)
@@ -1870,8 +1950,8 @@ std::vector<FbxIssue> FbxInspect(const std::string& fbx_path, const std::vector<
   }
   if (missing)
     add(1, "No picture for " + missing_names + ": " + (missing == 1 ? "it comes" : "they come") + " out plain grey.",
-        "Meshes: Pick... a picture for each, or export the FBX with its textures (Blender: Path Mode Copy + Embed Textures).");
-  if (odd) add(1, "Pictures in a format the Mod Maker can't read: " + odd_names + ".", "Save them as PNG and pick them in Meshes.");
+        "Materials step: a Colour picture for each, or export the FBX with its textures (Blender: Path Mode Copy + Embed Textures).");
+  if (odd) add(1, "Pictures in a format the Mod Maker can't read: " + odd_names + ".", "Save them as PNG and pick them in the Materials step.");
   if (big) add(0, std::to_string(big) + " picture" + (big == 1 ? " is" : "s are") + " bigger than 2048: everything shares one 2048 sheet, so they get smaller.", "Nothing to do; fine detail softens.");
   if (pictures.size() > 8)
     add(0, std::to_string(pictures.size()) + " pictures share one 2048 sheet: each gets only a small part of it.", "Bake them into one atlas in your 3D program for sharper pictures.");

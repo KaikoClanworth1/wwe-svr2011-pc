@@ -138,27 +138,66 @@ void StepName() {
 
 char g_find[64] = "";
 int g_look_mode = -1;  // the Look step's way in (-1: by the project)
+int g_look_tab = -1;   // (test aid: the tab opened, 0 Model / 1 Materials)
 void StepLook_();
+// The Look step's Materials tab: an FBX's materials (used when it's made), else the model's parts.
+void LookMaterials() {
+  if (g_look_mode == 2 && !g_star.fbx.empty()) {
+    FbxMaterials(true);
+    FbxMakeButton(g_star.model.find(L".convert") != std::wstring::npos ? "Make the model again" : "Make the model", 240);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(the 3D view shows the model once it's made)");
+    MaterialsSection(true, false, false);
+    return;
+  }
+  MaterialsSection(true, false, true);
+}
 void StepLook() {
-  StepLook_();
-  ImGui::Spacing();
-  MaterialsSection(true);
+  if (!ImGui::BeginTabBar("looktabs")) return;
+  const int open = g_look_tab;
+  g_look_tab = -1;
+  if (ImGui::BeginTabItem("Model", nullptr, open == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+    ImGui::Spacing();
+    StepLook_();
+    MaterialsSection(true, false, false);  // (its edits still in the 3D view)
+    ImGui::EndTabItem();
+  }
+  if (ImGui::BeginTabItem("Materials", nullptr, open == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
+    ImGui::Spacing();
+    LookMaterials();
+    ImGui::EndTabItem();
+  }
+  ImGui::EndTabBar();
 }
 void StepLook_() {
   int& mode = g_look_mode;  // 0 a game superstar, 1 an older disc, 2 an FBX
   if (mode < 0) mode = g_star.fbx.empty() ? 0 : 2;  // (a project with an FBX opens on it)
-  const float w = CardWidth(), h = 80 * g_scale;
-  const int per_row = CardsPerRow(w);
-  if (Card("game", "A superstar in the game", "Use the look of anyone on the roster.", mode == 0, w, h)) mode = 0;
-  if (1 % per_row) ImGui::SameLine(0, 8 * g_scale);
-  if (Card("disc", "From an older game", "Someone from your other WWE games, or one character file.", mode == 1, w, h)) mode = 1;
-  if (2 % per_row) ImGui::SameLine(0, 8 * g_scale);
-  if (Card("fbx", "Import a 3D model", "Your own model from Blender, Unity, VRChat or Mixamo (FBX).", mode == 2, w, h)) mode = 2;
-  ImGui::Spacing();
   const int now = GameStarOf(g_star.model);
-  if (const StarInfo* s = now ? StarById(now) : nullptr) ImGui::Text("Now: looks like %s.", s->name.c_str());
-  else if (!g_star.model.empty()) ImGui::Text("Now: %s.", Lower(FileName(g_star.model)) == "ch.pac" ? "the look you brought in" : FileName(g_star.model).c_str());
-  ImGui::Spacing();
+  if (mode == 2 && !g_star.fbx.empty()) {  // (an FBX on its way in: the ways in as one small row - room for its steps)
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("The look from:");
+    static const char* kWays[] = {"A superstar in the game", "An older game", "A 3D model (FBX)"};
+    const int cur = mode;
+    for (int k = 0; k < 3; ++k) {
+      ImGui::SameLine();
+      if (k == cur) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.26f, 0.59f, 0.98f, 1));
+      if (ImGui::SmallButton(kWays[k])) mode = k;
+      if (k == cur) ImGui::PopStyleColor();
+    }
+    ImGui::Spacing();
+  } else {
+    const float w = CardWidth(), h = 80 * g_scale;
+    const int per_row = CardsPerRow(w);
+    if (Card("game", "A superstar in the game", "Use the look of anyone on the roster.", mode == 0, w, h)) mode = 0;
+    if (1 % per_row) ImGui::SameLine(0, 8 * g_scale);
+    if (Card("disc", "From an older game", "Someone from your other WWE games, or one character file.", mode == 1, w, h)) mode = 1;
+    if (2 % per_row) ImGui::SameLine(0, 8 * g_scale);
+    if (Card("fbx", "Import a 3D model", "Your own model from Blender, Unity, VRChat or Mixamo (FBX).", mode == 2, w, h)) mode = 2;
+    ImGui::Spacing();
+    if (const StarInfo* s = now ? StarById(now) : nullptr) ImGui::Text("Now: looks like %s.", s->name.c_str());
+    else if (!g_star.model.empty()) ImGui::Text("Now: %s.", Lower(FileName(g_star.model)) == "ch.pac" ? "the look you brought in" : FileName(g_star.model).c_str());
+    ImGui::Spacing();
+  }
   if (mode == 0) {
     ImGui::SetNextItemWidth(260 * g_scale);
     ImGui::InputTextWithHint("##find", "Find a superstar...", g_find, sizeof g_find);
@@ -192,9 +231,6 @@ void StepLook_() {
     }
     ImGui::EndChild();
   } else if (mode == 2) {
-    ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("Pick a rigged model (one with a skeleton). The Mod Maker matches its bones to the game's, checks it, and builds your superstar from it.");
-    ImGui::PopTextWrapPos();
     FbxRows(true);
   } else {  // (a game from My game discs, its superstars with pictures: simple_port.cpp)
     std::wstring got;
@@ -574,6 +610,7 @@ void StepFinish() {
 }  // namespace
 
 void TestSimpleLook(int mode) { g_look_mode = mode; }
+void TestLookTab(int tab) { g_look_tab = tab; }
 std::wstring g_test_capture;  // --simple-capture <png>: the 3D view taken as the select picture, saved, quit
 void TestSimpleCapture(const std::wstring& png) { g_test_capture = png; }
 bool g_test_simple_chain = false;
