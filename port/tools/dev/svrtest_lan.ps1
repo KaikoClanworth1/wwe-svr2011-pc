@@ -9,9 +9,9 @@
 # configs; the host and the joiner on their own p2p ports (365xx / 366xx, never 36000; the joiner searches the
 # host's through p2p_peers; no relay), both started straight in the ONLINE menu (dbg_boot=online), then the online
 # menus as np_round.ps1 presses them: the host CREATE SESSION (entrances off), the joiner QUICK MATCH, both pick.
-# The match's arena / rule are the asked-for ones on both games (SVR2011_TEST_MATCH arena= / SVR2011_TEST_RULE,
-# test_match.cpp / match_types.cpp). Not yet the people: online, the match is built from the lobby's picks after
-# test_match's hand-off (the first Superstars on the select screen play). Once the match runs: --pad1 / --pad2 (script_input.h steps, one a line) go to
+# The match's people / arena / rule are the asked-for ones on both games (SVR2011_TEST_MATCH / SVR2011_TEST_RULE:
+# test_match.cpp drops the lobby's person records at the hand-off, match_types.cpp sets the rule online); other
+# SVR2011_TEST_* the caller sets (e.g. SVR2011_TEST_BACKSTAGE_ROW) reach both games. Once the match runs: --pad1 / --pad2 (script_input.h steps, one a line) go to
 # the host's / joiner's scripted pad (default: both move and strike every 3 s) for --play seconds. Both games dump
 # their state at the same match clock values (--clock, 60 a second: dbg_state_clock) and the dumps are compared -
 # people, last moves and the positions' exact bits: lockstep games have the very same.

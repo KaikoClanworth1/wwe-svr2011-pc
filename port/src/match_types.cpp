@@ -1436,6 +1436,19 @@ REX_HOOK_RAW(sub_828BBEF0) {
 // by the set-up sub_828BD278 from the match's rule at +8 - online the
 // session's 6-man, kinds 0): 3 = a waiting entrant (role 3, state 1 when the
 // character is made). (+4 is the slot's no-pad / CPU flag.)
+// Test aid (a LAN test, tools/dev/svrtest_lan.ps1): online, SVR2011_TEST_RULE plays where the session's ONE ON
+// ONE NORMAL would - the online set-up gives the rule to sub_828BD278(match, rule, options) itself (not
+// sub_827374A0) - alike on both games (with SVR2011_TEST_BACKSTAGE_ROW, a backstage mod's row for its area).
+REX_EXTERN(__imp__sub_828BD278);
+REX_HOOK_RAW(sub_828BD278) {
+  if (g_test_rule >= 0 && ctx.r4.u32 == 0 && svr2011::P2POnlineMode() && !Rd32(base + kStoryContext)) {
+    ctx.r4.u64 = uint32_t(g_test_rule);
+    static int told = 0;
+    if (told++ < 4) REXLOG_INFO("match types: online ONE ON ONE NORMAL plays rule {:02X} (SVR2011_TEST_RULE)", g_test_rule);
+  }
+  __imp__sub_828BD278(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_828BB290);
 REX_HOOK_RAW(sub_828BB290) {
   const uint32_t match = ctx.r3.u32;
