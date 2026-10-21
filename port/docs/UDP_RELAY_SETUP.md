@@ -78,3 +78,19 @@ PC: remove `relay_udp_port` from `config.json` (or set it to 0) and restart the
 server. Optionally remove the firewall rule:
 `Remove-NetFirewallRule -DisplayName "SvR2011 relay UDP (WireGuard)"`. Games
 then use the https relay again, with no other change.
+
+## Match network switch (dashboard)
+
+Dashboard -> Settings -> **match network** (server setting `match_network`, saved in data/settings.json,
+logged as `settings: match_network=... (dashboard)`):
+
+- **auto** (default): matches connect directly; the relay only when direct fails.
+- **relay**: every match through the relay.
+- **p2p**: match traffic direct only. The relay still carries the small search / hello messages that let
+  internet games find each other (there is no other session list), never match data. For when the
+  server struggles; a pair that cannot connect directly then fails to join.
+
+Games read it with the presence poll (`/api/friends` config, every 20 s; no server: auto). The host puts
+its mode in its session (property 0x1000F004) and joiners follow it, so both use the same; a running
+match keeps its mode. Logs: game `p2p: match network <mode> (host|joiner ...)`, the match report and the
+server `netreport: ... match network <mode>` line; the Live view tags each session with its mode.

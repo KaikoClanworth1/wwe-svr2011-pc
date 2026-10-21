@@ -366,12 +366,14 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   function live() {
     api('api/admin/live').then(function (d) {
       el('live-note').textContent = d.sessions.length + ' session' + (d.sessions.length === 1 ? '' : 's') +
-        ' reported · ' + d.relay.length + ' relay stream' + (d.relay.length === 1 ? '' : 's') + ' · ' + d.udp_games + ' UDP relay games';
+        ' reported · ' + d.relay.length + ' relay stream' + (d.relay.length === 1 ? '' : 's') + ' · ' + d.udp_games +
+        ' UDP relay games · match network: ' + (d.match_network || 'auto');
       el('live').innerHTML = d.sessions.length ? d.sessions.map(function (v) {
         var players = v.players.map(function (p) {
           return esc(p.name) + (p.path ? ' <span class="tag' + (p.path === 'relay' ? '' : ' on') + '">' + esc(p.path) + '</span>' : '');
         }).join(', ');
         return '<tr><td>' + esc(v.host) + (v.version ? ' <span class="tag">' + esc(v.version) + '</span>' : '') +
+          (v.network ? ' <span class="tag">' + esc(v.network) + '</span>' : '') +
           '</td><td>' + players + ' <span class="note">' + v.players.length + (v.slots ? '/' + v.slots : '') + '</span></td><td>' +
           esc([v.kind, v.rule, v.arena].filter(Boolean).join(' · ')) + '</td><td><span class="tag' +
           (v.state === 'match' ? ' on' : '') + '">' + esc(v.state) + '</span> ' + dur(d.now - v.state_since) +
@@ -386,6 +388,9 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
       el('settings').innerHTML = d.settings.map(function (x) {
         var input = typeof x.default === 'boolean'
           ? '<input type="checkbox" data-set="' + x.key + '"' + (x.saved ? ' checked' : '') + '>'
+          : x.choices ? '<select class="filter" data-set="' + x.key + '">' + x.choices.map(function (c) {
+              return '<option' + (c === x.saved ? ' selected' : '') + '>' + esc(c) + '</option>';
+            }).join('') + '</select>'
           : '<input class="filter" type="number" data-set="' + x.key + '" min="' + x.min + '" max="' + x.max + '" value="' + x.saved + '">';
         return '<b>' + esc(x.key.replace(/_/g, ' ')) + '</b>' + input + '<span class="h">' + esc(x.help) +
           (x.live ? '' : ' (applies at the next start' + (x.value !== x.saved ? ': now ' + x.value : '') + ')') + '</span>';
@@ -404,7 +409,7 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   el('save-set').addEventListener('click', function () {
     var body = {};
     document.querySelectorAll('[data-set]').forEach(function (i) {
-      body[i.dataset.set] = i.type === 'checkbox' ? i.checked : Number(i.value);
+      body[i.dataset.set] = i.type === 'checkbox' ? i.checked : i.tagName === 'SELECT' ? i.value : Number(i.value);
     });
     api('api/admin/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
       .then(function () { el('set-note').textContent = 'Saved ' + new Date().toLocaleTimeString(); settings(); })

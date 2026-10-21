@@ -76,6 +76,10 @@ std::optional<uint32_t> P2PSessionProperty(uint32_t id);
 // sessions never carry them.
 void SetPortRules(uint32_t value);
 std::optional<uint32_t> PortRules();
+// The server's match network (its match_network setting, from the presence poll): "auto",
+// "relay" (every peer through the relay) or "p2p" (match traffic direct only). A session this game
+// hosts from then on carries it (property 0x1000F004); joiners follow the host's.
+void P2PSetServerNetwork(const std::string& mode);
 // The match kind the game set for its online sessions (XUserSetContext
 // X_CONTEXT_GAME_TYPE, set as the player enters RANKED MATCH / PLAYER MATCH,
 // before CREATE SESSION): true Ranked, false Player Match; nullopt: not set yet.

@@ -69,6 +69,11 @@ SETTINGS_SPEC = {
                     "help": "seconds an invite to a match stays"},
     "mods_online": {"default": True, "live": True,
                     "help": "mods in online sessions: off = every game plays online without its mods (no mod sets compared)"},
+    "match_network": {"default": "auto", "choices": ["auto", "relay", "p2p"], "live": True,
+                      "help": "how online matches connect: auto = directly, through the relay when that fails; "
+                              "relay = every match through this server's relay; p2p = matches directly only (the "
+                              "relay just helps games find each other) - for when the server struggles. New "
+                              "sessions follow it (games ask every 20 s); running matches keep theirs"},
     "max_connections": {"default": 100, "min": 10, "max": 1000, "live": False,
                         "help": "game requests at once (more wait up to 10 s, then 503)"},
 }
@@ -95,6 +100,8 @@ def check_setting(k, v):
         return False, None
     if isinstance(spec["default"], bool):
         return (True, v) if isinstance(v, bool) else (False, None)
+    if "choices" in spec:
+        return (True, v) if v in spec["choices"] else (False, None)
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return False, None
     v = int(v)
@@ -717,7 +724,7 @@ class Service:
         friends.sort(key=lambda f: ("playing", "online", "offline").index(f["status"]))  # (online first)
         return {
             "ok": True,
-            "config": {"mods_online": bool(SETTINGS["mods_online"])},
+            "config": {"mods_online": bool(SETTINGS["mods_online"]), "match_network": SETTINGS["match_network"]},
             "online_now": len(self.in_online_mode()),
             "friends": friends,
             "added_you": [a["name"] for a in theirs if a["id"] not in added and not a["banned"]],
@@ -788,6 +795,7 @@ class Service:
             "session": sid, "host": account["name"], "kind": str(body.get("kind") or "")[:40],
             "rule": str(body.get("rule") or "")[:40], "arena": str(body.get("arena") or "")[:40], "state": state,
             "players": players, "slots": int(body.get("slots") or 0), "version": str(body.get("version") or "")[:16],
+            "network": str(body.get("network") or "")[:8],
             "since": old.get("since", now()), "state_since": old.get("state_since", now())
             if old.get("state") == state else now(), "seen": now()}
         return web.json_response({"ok": True})
@@ -860,11 +868,14 @@ class Service:
             step = max(-1000, min(1000, int(body.get("step") or 0)))
             rtt = max(0, int(body.get("rtt") or 0))
             version = re.sub(r"[^0-9A-Za-z.\-]", "", str(body.get("version") or ""))[:24] or "?"
+            network = str(body.get("network") or "")  # (2.1.4 on: the match network it played on)
         except (ValueError, TypeError, AttributeError):
             return web.json_response({"ok": False}, status=400)
         if path not in self.NET_PATHS or nat not in self.NET_NATS:
             return web.json_response({"ok": False}, status=400)
         step = step if abs(step) <= 16 else 99  # (a small steady step: port prediction can follow it)
+        gs.log("netreport: %s played a match, path %s, match network %s (server %s)" % (
+            account["name"], path, network if network in ("auto", "relay", "p2p") else "?", SETTINGS["match_network"]))
         rtt = next(b for b in self.NET_RTT if rtt <= b)
         with self.store.lock:
             self.store.db.execute(
@@ -1433,7 +1444,8 @@ class Service:
         sessions = sorted(self.live.values(), key=lambda v: -v["since"])
         relay = [{"name": g.account["name"], "since": getattr(g, "since", 0)} for g in self.relay.games.values()]
         return web.json_response({"now": t, "sessions": sessions, "relay": relay,
-                                  "udp_games": len(getattr(self.relay, "udp_games", {}))})
+                                  "udp_games": len(getattr(self.relay, "udp_games", {})),
+                                  "match_network": SETTINGS["match_network"]})
 
     @admin_only
     async def admin_log(self, request):
