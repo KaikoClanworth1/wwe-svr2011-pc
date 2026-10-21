@@ -132,10 +132,24 @@ SETTINGS_SPEC = {
                     "help": "the NEWS panel on the game's ONLINE screen (after the players-online count): plain "
                             "text, new lines kept; characters the game's font lacks are replaced or left out. "
                             "Empty = the built-in welcome. Games show it the next time they open ONLINE"},
+    "cc_unmarked": {"default": "refuse", "choices": ["refuse", "log"], "live": True,
+                    "help": "Community Creations uploads from builds that don't check for mods (no 'checked' "
+                            "mark): refuse = refused (once latest_release is 2.1.5 or newer - before, only "
+                            "logged), log = allowed and logged"},
+    "latest_release": {"default": "", "text": True, "max_len": 16, "live": True,
+                       "help": "the newest published release (e.g. 2.1.5): unmarked uploads are refused only "
+                               "once it is 2.1.5 or newer (the release with the check). Empty = not yet"},
     "max_connections": {"default": 100, "min": 10, "max": 1000, "live": False,
                         "help": "game requests at once (more wait up to 10 s, then 503)"},
 }
 SETTINGS = {k: v["default"] for k, v in SETTINGS_SPEC.items()}
+MODFREE_SINCE = (2, 1, 5)  # (the release whose game marks Community Creations uploads checked for mods)
+
+
+def release_at_least(text, want):
+    """'2.1.5' (or 'v2.1.5.1') >= want, a tuple; False when empty or not a version."""
+    parts = re.findall(r"\d+", text or "")
+    return bool(parts) and tuple(int(p) for p in parts[:len(want)]) >= want
 LIVE_LIFE = 60      # seconds a session host's report stays (it reports every 20 s)
 RESTART_CODE = 75
 # the dashboard's own pages (admin_auth.py): never framed, cached or sent on as a referrer
@@ -620,6 +634,8 @@ class Service:
         self.sake.news_prefix = lambda: "%d player%s online now. " % (
             self.stats.playing_now(), "" if self.stats.playing_now() == 1 else "s")
         self.sake.news_text = lambda: news_fields(SETTINGS["online_news"])
+        self.sake.refuse_unmarked = lambda: SETTINGS["cc_unmarked"] == "refuse" and release_at_least(
+            SETTINGS["latest_release"], MODFREE_SINCE)
         self.invites = collections.defaultdict(dict)  # account id -> {inviter id: invite} (in memory)
         self.max_connections = args.max_connections
         self.attempts = collections.defaultdict(collections.deque)  # ip -> login/register times
@@ -1158,7 +1174,9 @@ class Service:
             if path.endswith("authservice/authservice.asmx"):
                 xml = gs.login(self.store, func, call, account["profileid"], account["name"])
             elif path.endswith("sakestorageserver/storageserver.asmx"):
-                xml = await loop.run_in_executor(None, self.sake.handle, func, call, account["profileid"], xuid)
+                modfree = request.headers.get("X-Svr-ModFree") == "1"  # (the game's relay: checked for mods)
+                xml = await loop.run_in_executor(None, self.sake.handle, func, call, account["profileid"], xuid,
+                                                 modfree)
                 result = re.search(rb"<%sResult>([^<]*)<" % func.encode(), xml)
                 gs.log("sake: %s %s %s by %s -> %s" % (func, gs.text_of(call, "tableid"), gs.text_of(call, "recordid", ""),
                                                      account["name"], result.group(1).decode() if result else "?"))

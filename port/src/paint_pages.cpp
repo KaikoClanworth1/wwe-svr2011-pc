@@ -28,6 +28,7 @@
 //   labels; sub_82510518 draws the list. Mode 2 copies the download into slot
 //   +0x8344 of +272 and saves the whole file (sub_82518268).
 #include "paint_pages.h"
+#include "online.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1009,6 +1010,7 @@ REX_HOOK_RAW(sub_825181C0) {
 REX_EXTERN(__imp__sub_82511C18);
 REX_HOOK_RAW(sub_82511C18) {
   const uint32_t screen = ctx.r3.u32;
+  if (svr2011::CcUploadModsRefused(ctx, base, screen)) return;  // (online.h: uses mods - not uploaded)
   if (!IsSlotScreen(base, screen)) {
     __imp__sub_82511C18(ctx, base);
     return;
