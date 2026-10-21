@@ -19,7 +19,9 @@
 #include "superstar_threads.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -50,6 +52,7 @@ fs::path g_dir;                                // Saves\.threads
 std::mutex g_mutex;
 std::vector<svr2011::ThreadsMod> g_mods;              // the listed mods
 std::map<std::string, std::vector<uint8_t>> g_saved;  // folder -> its 324 bytes as last saved / loaded
+std::string g_listing;                                 // the listed mods: record source, parts per attire, model
 
 std::vector<uint8_t> EmptySlots() {
   std::vector<uint8_t> s(kSlotsSize, 0);
@@ -183,26 +186,40 @@ bool BuildThreadsOverlay(rex::memory::Memory* memory, const fs::path& game, cons
   for (const auto& [name, m] : uses)
     codes[name] = std::max_element(m.begin(), m.end(), [](const auto& a, const auto& b) { return a.second < b.second; })->first;
   std::vector<ThreadsMod> listed;
-  std::string names;
+  std::string names, summary;
   for (const auto& m : mods) {
-    if (at.count(m.slot)) continue;
+    if (at.count(m.slot)) {
+      REXLOG_INFO("[svr2011] superstar threads: {} not listed - its id {} has the game's own Threads record", m.folder, m.slot);
+      continue;
+    }
     const auto b = at.find(m.base);  // (end: the base isn't in Threads - the mod can still bring threads.txt)
     char nm[16];
     std::snprintf(nm, sizeof nm, "ch%03u.pac", m.base);
     const auto base_models = Attire1Models(game / "pac" / "ch" / nm);
     const auto own = Attire1Models(m.ch_pac);
     svrfmt::Bytes rec;
-    std::string why;
+    std::string why, from;
     if (b != at.end() && !base_models.empty() && own == base_models) {
       rec.assign(list.begin() + long(b->second), list.begin() + long(b->second + kRecord));
+      from = "the record of " + Dec(m.base);
     } else if (!PartsRecord(m.ch_pac.parent_path() / "threads.txt", codes, rec, why)) {
       REXLOG_INFO("[svr2011] superstar threads: {} not listed - {}", m.folder, why);
       continue;
+    } else {
+      from = "threads.txt";
     }
     for (int k = 0; k < 4; ++k) rec[k] = uint8_t(m.slot >> (8 * k));
+    std::string per;  // (parts per attire: the mask channels the record paints)
+    for (int a = 0; a < 4; ++a) {
+      int n = 0;
+      for (int p = 0; p < 12; ++p) n += std::memcmp(&rec[4 + (a * 12 + p) * 4], "\xFF\xFF\xFF\xFF", 4) != 0;
+      per += (a ? "/" : "") + Dec(uint32_t(n));
+    }
     list.insert(list.end(), rec.begin(), rec.end());
     listed.push_back(m);
     names += (names.empty() ? "" : ", ") + m.folder + " (id " + Dec(m.slot) + ")";
+    summary += (summary.empty() ? "" : "; ") + m.folder + " id " + Dec(m.slot) + ": " + from + ", parts " + per +
+               " (attires 1-4), model " + m.ch_pac.filename().string();
   }
   if (listed.empty()) return false;
   const uint32_t n = count + uint32_t(listed.size());
@@ -225,16 +242,27 @@ bool BuildThreadsOverlay(rex::memory::Memory* memory, const fs::path& game, cons
   {
     std::lock_guard lock(g_mutex);
     g_mods = listed;
+    g_listing = summary;
   }
   REXLOG_INFO("[svr2011] superstar threads: {} mod(s) listed: {}", listed.size(), names);
   return true;
 }
 
 uint32_t ThreadsAlias(const char* name) {
-  if (!g_alias_slash || !name) return 0;
-  if (!std::strcmp(name, "/EDIT/SSTL")) return g_alias_slash;
-  if (!std::strcmp(name, "EDIT/SSTL")) return g_alias_bare;
-  return 0;
+  if (!name) return 0;
+  const bool slash = !std::strcmp(name, "/EDIT/SSTL");
+  if (!slash && std::strcmp(name, "EDIT/SSTL")) return 0;
+  {  // (Threads opens its list: what it gets, once a few seconds - problem reports)
+    static auto last = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last > std::chrono::seconds(10)) {
+      last = now;
+      std::lock_guard lock(g_mutex);
+      REXLOG_INFO("[svr2011] superstar threads: list opened - {}", g_listing.empty() ? "the game's own (no mod listed)" : g_listing);
+    }
+  }
+  if (!g_alias_slash) return 0;
+  return slash ? g_alias_slash : g_alias_bare;
 }
 
 void ThreadsSlots(uint8_t* profile, const std::string& folder) {
@@ -286,4 +314,26 @@ REX_HOOK_RAW(sub_827235D8) {
     }
   }
   __imp__sub_827235D8(ctx, base);
+}
+
+// The edit screens' light (sub_8279EDE8 opens a colour screen: sub_82788310 -> sub_82787A20) is set on the
+// preview object's light (+116) or, when it has none, on the scene's at *0x82E3CC50 (+272): written without the
+// null check its siblings sub_82787990 / sub_82787AC0 make. With no scene light yet (2.1.4.1 Android report: a
+// Threads attire edit) the write to 0x110 faulted over and over and the game froze: skipped as the siblings do.
+REX_EXTERN(__imp__sub_82787A20);
+REX_HOOK_RAW(sub_82787A20) {
+  const auto rd32 = [&](uint32_t a) {
+    return uint32_t(base[a] << 24 | base[a + 1] << 16 | base[a + 2] << 8 | base[a + 3]);
+  };
+  static const bool test_none = std::getenv("SVR2011_TEST_NO_SCENE_LIGHT") != nullptr;  // (test aid: as if none)
+  if (ctx.r3.u32 && !rd32(ctx.r3.u32 + 116) && (test_none || !rd32(0x82E3CC50))) {
+    static bool told = false;
+    if (!told) {
+      told = true;
+      REXLOG_WARN("[svr2011] edit screen: no preview or scene light (object {:08X}, caller {:08X}) - light left as it is",
+                  ctx.r3.u32, uint32_t(ctx.lr));
+    }
+    return;
+  }
+  __imp__sub_82787A20(ctx, base);
 }
