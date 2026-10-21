@@ -326,6 +326,15 @@ std::vector<Room> g_rooms(1);
 size_t g_cur = 0;
 Room& Cur() { return g_rooms[g_cur]; }
 bool World() { return g_rooms.size() > 1; }
+
+// The rooms' own random numbers (hit-reaction variants, knock-downs, traffic timing): one sequence,
+// restarted when the room data loads at the match's start, so both sides of inputs-only netplay draw the
+// same ones (the C library's rand is shared with other code: its sequence can differ between the games).
+uint32_t g_room_rng = 1;
+int RoomRand() {
+  g_room_rng = g_room_rng * 1103515245u + 12345u;
+  return int((g_room_rng >> 16) & 0x7FFF);
+}
 int HctpRoom() {
   if (!HctpRoomActive()) return 0;
   return World() ? Cur().number : svr2011::BackstageRows()[size_t(svr2011::g_active_row)].hctp;
@@ -676,7 +685,7 @@ void KnockOver(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t f) {
   p.timer = 0;
   if (const uint32_t key = FallKey(p)) PlayProp(ctx, base, p, key);
   DropCollision(base, p);
-  if (f) JumpAct(ctx, base, f, kHitObject, uint32_t(1 + std::rand() % 5));
+  if (f) JumpAct(ctx, base, f, kHitObject, uint32_t(1 + RoomRand() % 5));
   REXLOG_INFO("hctp: {} knocked over", p.name);
 }
 
@@ -1169,7 +1178,7 @@ uint32_t Nearest(uint8_t* base, uint32_t f, float* d2) {
 }
 
 // The hit-object reaction (HCTP 12014: variants 0-5) for a wrestler driven into a gimmick.
-void HitReaction(PPCContext& ctx, uint8_t* base, uint32_t f) { JumpAct(ctx, base, f, kHitObject, uint32_t(std::rand() % 6)); }
+void HitReaction(PPCContext& ctx, uint8_t* base, uint32_t f) { JumpAct(ctx, base, f, kHitObject, uint32_t(RoomRand() % 6)); }
 
 // CGmBrokenCar (310 / 318): models body whole, body dented, tyres, door, bonnet, windows (params 1-6),
 // collision 7, door zone 8, bonnet zone 9, acts 10 bonnet hit / 11 door hit / 12 crush / 13 bump.
@@ -1292,7 +1301,7 @@ void UpdateMoveCar(PPCContext& ctx, uint8_t* base) {
     if (seg + 1 >= path.size()) {  // arrived: hide it, wait, the other car next
       ShowModel(ctx, base, c, model, false);
       c.bits ^= 1;
-      c.count = -(60 + std::rand() % std::max(1, 2 * int(Param(c, 6, 200))));
+      c.count = -(60 + RoomRand() % std::max(1, 2 * int(Param(c, 6, 200))));
       continue;
     }
     if (c.count == 0) ShowModel(ctx, base, c, model, true);
@@ -1535,7 +1544,7 @@ void UpdateSandbag(PPCContext& ctx, uint8_t* base, Prop& p) {
     if (!f || Rd32(base + f + 212) != kWalkBackstage) continue;
     const float dx = RdF(base + f + 288) - (p.x + g_bag.az * s * 0.6f), dz = RdF(base + f + 296) - (p.z - g_bag.ax * s * 0.6f);
     if (dx * dx + dz * dz < 6.0f * 6.0f) {
-      JumpAct(ctx, base, f, kHitByObject, uint32_t(std::rand() & 1));
+      JumpAct(ctx, base, f, kHitByObject, uint32_t(RoomRand() & 1));
       REXLOG_INFO("hctp: the sandbag knocks fighter {} down", i);
     }
   }
@@ -1735,7 +1744,7 @@ void UpdateTraffic(PPCContext& ctx, uint8_t* base) {
     if (!end) continue;
     auto [it, fresh] = g_taxis.try_emplace(k);
     Taxi& t = it->second;
-    if (fresh) t.wait = 2 * int(Param(c, 4, 300)), t.top = 0.8f + float(std::rand() % 64) / 100.0f;
+    if (fresh) t.wait = 2 * int(Param(c, 4, 300)), t.top = 0.8f + float(RoomRand() % 64) / 100.0f;
     const float dx = end->x - c.x, dz = end->z - c.z, len = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
     const float ux = dx / len, uz = dz / len;
     if (t.wait > 0) {
@@ -1761,7 +1770,7 @@ void UpdateTraffic(PPCContext& ctx, uint8_t* base) {
               const float ox = RdF(base + o + 288) - px, oz = RdF(base + o + 296) - pz;
               if (ox * ox + oz * oz < 70.0f * 70.0f) JumpAct(ctx, base, o, RoomKey(12015));
             }
-          t.wait = 2 * (200 + std::rand() % 100);
+          t.wait = 2 * (200 + RoomRand() % 100);
           REXLOG_INFO("hctp: fighter {} blows {} up", i, c.name);
         }
         continue;
@@ -1782,7 +1791,7 @@ void UpdateTraffic(PPCContext& ctx, uint8_t* base) {
     t.along += t.speed;
     if (t.along >= len) {  // at its anchor: back to the start after a delay
       ShowProp(ctx, base, c, false);
-      t.wait = 2 * (200 + std::rand() % 100);
+      t.wait = 2 * (200 + RoomRand() % 100);
       continue;
     }
     for (int rec : c.recs) MoveRec(ctx, base, rec, c.x + ux * t.along, c.y, c.z + uz * t.along, 0, c.ry, 0);
@@ -2637,6 +2646,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   const auto& row = BackstageRows()[size_t(g_active_row)];
   if (!Cur().loaded || Cur().dir != row.dir || frame < Cur().last_frame) {
     if (!LoadRoom(row.dir)) return;
+    g_room_rng = 1;
     for (auto& s : g_fs) s = {};
     g_later.clear();
     g_taxis.clear();
