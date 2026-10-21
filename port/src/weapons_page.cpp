@@ -298,11 +298,11 @@ int ExtremeWeaponsPlacedModel(int i, int model) {
 }
 
 void ExtremeWeaponsPlaced(uint8_t* base, rex::memory::Memory* memory) {
-  if (base[kLiveSettings + kExtremeOption]) {  // (for reports: the match's weapons as placed - slot:model@x,y,z)
+  {  // (for reports, every match: its weapons and prizes as placed - slot:model@x,y,z; a ladder match's prize hangs high)
     std::string s;
     for (uint32_t i = 0; i < kObjectSlots; ++i) {
       const uint32_t o = Rd32(base + kObjects + i * 4);
-      if (!o || Rd32(base + o + 80) >= 1000) continue;
+      if (!o) continue;
       float p[3];
       for (int k = 0; k < 3; ++k) {
         const uint32_t v = Rd32(base + o + 288 + uint32_t(k) * 4);
