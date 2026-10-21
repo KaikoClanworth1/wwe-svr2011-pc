@@ -87,6 +87,35 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
+## New in 2.1.4
+
+### Launcher
+- A new look and a simpler **Play** page, with **Start Without Mods** (no mods load; your mods and saves are left as they are).
+- One step-by-step **Setup** tab (install, setup, DLC, Android; the Mod Maker's tools as an optional step).
+- **Mods** in three tabs: Installed Mods, **Discovery** (players' `.svrmod` mods through the online server) and Texture Packs.
+- The launcher and the game share the same settings keys (full screen kinds, render resolution); saves exported from one install work in a fresh one.
+- **SvR2011 Updater** installs updates, checks every file against the release's list, and the launcher fetches any missing files.
+
+### Online
+- The player count is the players actually online; matchmaking, a host-left notice, mods / DLC mismatch messages, a fallback online port.
+- The NEWS panel on the ONLINE screen comes from the server and can change at any time.
+- The server can switch matches to direct connections only or through its relay.
+
+### Fixes
+- Created Superstar save crash with Direct3D 11; Road to WrestleMania (Jericho weeks 6 / 12) crashes; WWE '13 / 2K14 ported moves freezing; pins with no kick-out; Three Stages of Hell First Blood freeze; fast replays / stuck at 30 fps; crashes in some custom arenas.
+- Mixed matches: no DQ for a man hitting a diva, holds can win, the CPU fights either gender.
+- Superstar mods with no usable moveset get a stock one of the same gender; mods' themes with the same name no longer swap.
+- Mod Maker: the HCTP "missing: hctp2jboy" message, SvR 2008 Carlito, WWE 2K16 attires.
+- Problem reports carry the game's logs, crash notes, the mods' text files and a CAW save summary.
+
+### New
+- Free camera / photo mode (F6 / F5 / F7 / F8, offline); CAW logos anywhere on the body.
+- Arena lighting: dark ported arenas fixed (and repaired by the Mod Maker), ARENA BRIGHTNESS, entrance lighting in the match for arena mods; custom arenas' titantrons show their own screens in the match.
+- Mod arenas fill the arena select in install order; Extreme Rules weapon choice (MY WWE > OPTIONS > WEAPONS).
+- Superstar Threads for superstar mods, and the Mod Maker's Threads parts editor (paint the colour parts).
+- Mod Maker: import a moveset, entrance outfits from any superstar, created entrances for mods, named entrance presets, free 3-axis move / turn in the Arena Editor, PS2 USA discs and single PS2 files.
+- Performance overlay: Off / FPS / Full, in a corner (GRAPHICS > PERFORMANCE, F2).
+
 ## New in 2.1.3
 
 ### Fixes
