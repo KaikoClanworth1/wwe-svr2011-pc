@@ -3127,6 +3127,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--simple-ring") && more) star_page::TestSimpleRing(_wtoi(argv[++i]));  // an entrance's walk to the ring in Simple's preview
     else if (!wcscmp(argv[i], L"--simple-capture") && more) star_page::TestSimpleCapture(argv[++i]);  // the 3D view as the select picture -> <png>, quit
     else if (!wcscmp(argv[i], L"--simple-look") && more) star_page::TestSimpleLook(_wtoi(argv[++i]));  // Simple's Look step on way <n>
+    else if (!wcscmp(argv[i], L"--attire-pick") && more) simple_port::AttireTest(Utf8(argv[++i]));  // open | <n,n,...>: the attire picker
     else if (!wcscmp(argv[i], L"--look-tab") && more) star_page::TestLookTab(_wtoi(argv[++i]));  // Simple's Look step: 0 Model, 1 Materials
     else if (!wcscmp(argv[i], L"--fbx-step") && more) star_page::TestFbxStep(_wtoi(argv[++i]) - 1);  // the FBX import's step <1-5>
     else if (!wcscmp(argv[i], L"--simple") && more) {  // the Superstar page in Simple mode at <step>[,from]: that step's "From another game"

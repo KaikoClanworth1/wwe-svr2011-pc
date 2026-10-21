@@ -48,6 +48,15 @@ void ForStarTest(Kind k, const std::string& game, const std::string& item);
 // The project's move pack with another merged in: a new folder (neither is changed); either empty: the other.
 std::wstring CombinePacks(const std::wstring& have, const std::wstring& add);
 
+// The attire picker: a PS2 superstar's attires as pictures (superstar_port attires), up to four picked in the order
+// they become the mod's attires 1-4 - a small "Choose attires..." line until opened; nothing for other games (their
+// own four). game: the converter's id, src: the disc / file, item: list key (a file: the character's hex id).
+void AttirePicker(const std::string& game, const std::wstring& src, const std::string& item);
+// The choice as convert's --attires ("": none made - the converter's first four).
+std::string AttireChoice(const std::string& game, const std::wstring& src, const std::string& item);
+// Test aid --attire-pick open|<n,n,...>: the next picker opened (and those attires picked once they're drawn).
+void AttireTest(const std::string& spec);
+
 // Test aid --simple-port <entrance|moves|taunts|import>,<game key>[,<item key>[,<step>[,add]]]: that menu with the game (its
 // disc from My game discs) and the item picked, on that step (--shot shows it); add: Add to my game once ready. import:
 // Simple superstar's Look step (step 1: "Bring everything too"; add: Bring in; a 6th field "cancel": Cancel 30 s into the
