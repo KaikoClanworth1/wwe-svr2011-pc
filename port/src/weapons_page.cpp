@@ -176,7 +176,7 @@ std::vector<uint32_t> g_nine;
 size_t g_real = 0;
 
 // The chosen weapons as nine models (empty: the game's set).
-std::vector<uint32_t> NineOf(const std::array<int, kCount>& want, std::string& names, std::string& dropped) {
+std::vector<uint32_t> NineOf(const std::array<int, kCount>& want, std::string& names, std::string& dropped, size_t* real_n = nullptr) {
   std::vector<uint32_t> real;
   for (int i = 0; i < kCount; ++i)
     for (int k = 0; k < want[i]; ++k) real.push_back(uint32_t(kWeapons[i].id));
@@ -197,7 +197,7 @@ std::vector<uint32_t> NineOf(const std::array<int, kCount>& want, std::string& n
     const int n = int(std::count(real.begin(), real.end(), uint32_t(kWeapons[i].id)));
     if (n) names += fmt::format("{}{} x{}", names.empty() ? "" : ", ", kWeapons[i].name, n);
   }
-  g_real = real.size();
+  if (real_n) *real_n = real.size();
   uint32_t light = 87;  // (the make-up: the lightest chosen one; none chosen - the drink cup)
   for (uint32_t id : real)
     if (KbOf(id) < KbOf(light) || light == 87) light = id;
@@ -373,7 +373,7 @@ void ChooseExtremeWeapons(uint8_t* base, uint32_t list) {
     return;
   }
   std::string names, dropped;
-  const std::vector<uint32_t> nine = NineOf(want, names, dropped);
+  const std::vector<uint32_t> nine = NineOf(want, names, dropped, &g_real);
   const uint32_t at = uint32_t(run - ids.begin());
   for (size_t k = 0; k < nine.size(); ++k) Wr32(l + 4 + 4 * (at + uint32_t(k)), nine[k]);
   g_nine = nine;
@@ -632,6 +632,20 @@ void WeaponsPage::OnDraw(ImGuiIO& io) {
     line(list_top + 292, 16 * s, "Ranked matches keep the game's.", kDim);
     std::snprintf(buf, sizeof buf, "UP TO %d WEAPONS IN ALL", kMaxTotal);
     line(list_top + 340, 16 * s, buf, kDim);
+    // (the room: the chosen ones share what the game's nine take - heavier picks leave the last ones out)
+    std::string names, dropped;
+    NineOf(count, names, dropped);
+    if (!dropped.empty()) {
+      const size_t n = size_t(std::count(dropped.begin(), dropped.end(), ',')) + 1;
+      std::snprintf(buf, sizeof buf, "NO ROOM FOR %zu: %s", n, dropped.substr(0, dropped.find(',')).c_str());
+      line(list_top + 372, 16 * s, buf, kGold);
+      line(list_top + 396, 16 * s, "The weapons share the room of the", kDim);
+      line(list_top + 420, 16 * s, "game's nine; heavy ones take more.", kDim);
+    } else {
+      line(list_top + 372, 16 * s, "They take no more room than the", kDim);
+      line(list_top + 396, 16 * s, "game's nine: with big custom arenas", kDim);
+      line(list_top + 420, 16 * s, "keep the set light.", kDim);
+    }
   }
   {
     const float cy = P(0, 660).y;
