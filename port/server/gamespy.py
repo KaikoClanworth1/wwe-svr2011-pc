@@ -946,12 +946,29 @@ class Sake:
     # (set by the service: the NEWS panel's first line starts with it, e.g.
     # "12 players online now. ")
     news_prefix = None
+    # (set by the service: the dashboard's news as the record's Text1-5, or None
+    # for the stored record's own)
+    news_text = None
+
+    def news_panel(self):
+        """The NEWS panel's whole text as the game's fetch gets it (the prefix, then
+        Text1-5 joined): the dashboard's news, else the stored record's."""
+        own = self.news_text() if self.news_text else None
+        if not own:
+            recs = self.store.all("Newsfeed")
+            f = recs[-1]["fields"] if recs else {}
+            own = [str((f.get("Text%d" % k) or [None, ""])[1] or "") for k in range(1, 6)]
+        return (self.news_prefix() if self.news_prefix else "") + "".join(own)
 
     def field(self, tableid, rec, name, viewer):
         """A record's value for a requested field: (type, value)."""
         f = rec["fields"]
-        if tableid == "Newsfeed" and name == "Text1" and self.news_prefix:
-            return "unicodeStringValue", self.news_prefix() + str((f.get("Text1") or [None, ""])[1] or "")
+        if tableid == "Newsfeed" and name in ("Text1", "Text2", "Text3", "Text4", "Text5"):
+            own = self.news_text() if self.news_text else None
+            text = own[int(name[4]) - 1] if own else str((f.get(name) or [None, ""])[1] or "")
+            if name == "Text1" and self.news_prefix:
+                text = self.news_prefix() + text
+            return "unicodeStringValue", text
         if name == "recordid":
             return "intValue", rec["recordid"]
         if name == "ownerid":

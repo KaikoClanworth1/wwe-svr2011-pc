@@ -94,3 +94,19 @@ Games read it with the presence poll (`/api/friends` config, every 20 s; no serv
 its mode in its session (property 0x1000F004) and joiners follow it, so both use the same; a running
 match keeps its mode. Logs: game `p2p: match network <mode> (host|joiner ...)`, the match report and the
 server `netreport: ... match network <mode>` line; the Live view tags each session with its mode.
+
+## NEWS panel text (dashboard)
+
+Dashboard -> Settings -> **online news** (server setting `online_news`, data/settings.json, logged with its
+first 60 characters): the NEWS panel on the game's ONLINE screen, after the "N players online now." line.
+Plain text, new lines kept, 600 characters at most; empty = the built-in welcome (the stored Newsfeed record).
+
+- The game's menu font draws ASCII, the Latin-1 letters (not the multiply/divide signs), the signs
+  inverted !, cent, pound, (c), (R), degree, inverted ?, curly double quotes, the ellipsis and TM. The server turns
+  look-alikes into ASCII (curly single quotes, dashes, guillemets, fractions, euro -> EUR, ...) and drops the rest
+  (emoji, other scripts) - anything else drew as "*".
+- The game fetches the news once a session (Sake "Newsfeed") and keeps it (UTF-8) in its online state at
+  `*0x82E3DDFC + 0x2248`, building the panel from there at each visit. The presence poll (`/api/friends`
+  config "news": the whole panel text) writes the current text there (online.cpp SetOnlineNews, only over
+  a news text from this server), so a change shows at the next visit to ONLINE (within 20 s) without a
+  restart. No server answer: the game keeps what it fetched.

@@ -10,6 +10,7 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 namespace rex::memory {
 class Memory;
@@ -30,6 +31,10 @@ void InstallOnline(rex::memory::Memory* memory, const std::filesystem::path& sav
 // address of the port's replacement, or 0 for the game's own. Removes what
 // the PC doesn't have (gamer cards, Xbox LIVE Party).
 uint32_t OnlineString(uint32_t id);
+// The ONLINE screen's NEWS panel: the server's news (the presence poll's
+// config "news", UTF-8, already in the game font's characters) for the next
+// visit. No server answer: the game keeps what it fetched.
+void SetOnlineNews(const std::string& text);
 
 // Guest scratch memory for online_cpu.cpp's calls into the game (4 KB, the
 // game's thread only); 0 before InstallOnline.
