@@ -628,6 +628,32 @@ def _s16a(rad):
 VEHICLE_FLOOR, GROUND_MIN = 1217, 100
 
 
+# 2K14's slope stage (its "... Slope" entrances: 409, 421, 739 - 2011's stage is floor level): 1807 raw units up
+# from z 23706 back, a ramp down to the floor at z 8723 (measured on 409's bike). A raised entrance (its entrant's
+# stage roots that far above his ringside ones) has its characters moved down by slope_shift of their own z.
+SLOPE_TOP_Z, SLOPE_FOOT_Z, SLOPE_HEIGHT = 23706.0, 8723.0, 1807.0
+
+
+def slope_shift(z):
+    """raw y down for a root at raw z on 2K14's slope stage"""
+    if z >= SLOPE_TOP_Z:
+        return SLOPE_HEIGHT
+    if z <= SLOPE_FOOT_Z:
+        return 0.0
+    return SLOPE_HEIGHT * (z - SLOPE_FOOT_Z) / (SLOPE_TOP_Z - SLOPE_FOOT_Z)
+
+
+def raised_stage(leaf, RT):
+    """the entrant stands on a raised source stage: his stage roots (segment 5) about SLOPE_HEIGHT above his ringside
+    ones (segment 15)"""
+    med = {}
+    for x, y, off in blocks(leaf):
+        if y == 0 and x in (5, 15):
+            m = Y.decode(leaf, y=off, sample=False)
+            med[x] = float(np.median([k[0][1] for k in RT.keys(m, frames11(m))]))
+    return 5 in med and 15 in med and med[15] - med[5] > SLOPE_HEIGHT * 0.6
+
+
 def vehicle_ground(m, nf, model):
     """[raw y shift per 2011 frame] that keeps a vehicle's wheels on 2011's floor, or None (no shift needed)"""
     vm = VEHICLE_NODES.get(model)
@@ -764,6 +790,11 @@ def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None
                         ground[x] = g
                         rep['notes'].append('segment %d: the vehicle rides up to %.1f units off the floor (a raised '
                                             'stage): it and its rider moved onto 2011\'s floor (cameras as they are)' % (x, max(map(abs, g)) / 100))
+    # no vehicle to go by: a raised source stage from the entrant's own heights (2K14's slope entrances)
+    slope = not ground and ent in leaves and raised_stage(leaves[ent], RT)
+    if slope:
+        rep['notes'].append('raised source stage (its entrant %.1f units up on the stage): the characters moved onto '
+                            '2011\'s floor-level stage and ramp by where they stand (cameras as they are)' % (SLOPE_HEIGHT / 100))
     for i, leaf in todo:
         o = e['objs'][i]
         k = kind(o)
@@ -784,6 +815,8 @@ def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None
                 g = ground.get(x) if i == ent else None
                 if g:
                     keys = [((r[0], r[1] + g[min(f, len(g) - 1)], r[2]), a) for f, (r, a) in enumerate(keys)]
+                elif slope:
+                    keys = [((r[0], r[1] + slope_shift(r[2]), r[2]), a) for r, a in keys]
                 data = WR.body_track(keys, evs)
                 if i == ent:   # (the Biped finger bones -> 2011's y2 / y3 finger tracks: finger_retarget.py)
                     for yy, hd in FR.finger_tracks(m, nf, FT).items():
