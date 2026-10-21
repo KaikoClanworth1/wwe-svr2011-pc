@@ -30,6 +30,15 @@ Files: `vps_install.sh` / `vps_uninstall.sh` (VPS), `pc_storage_setup.ps1` (PC).
   systemctl is-enabled svr2011        # -> disabled
   sudo cat /etc/svr2011/storage_key   # copy the value for the PC (it is a secret)
   ```
+- [ ] **VPS** - the dashboard's password (for https://sho-ti.me/svr-admin/ - at least 10 characters, a new
+  one, not the online account's; asked twice, stored only as a hash in `/var/lib/svr2011/admin_password`):
+  ```
+  sudo svr2011-admin-password
+  sudo ls -l /var/lib/svr2011/admin_password   # -> -rw------- svr2011
+  ```
+  Run it again any time to change it (no restart). Instead of a password of its own, the sign-in can be
+  the admin's online account: add `--admin-account <name>` to the unit's `ExecStart`
+  (`sudo systemctl edit --full svr2011`).
 - [ ] **PC** - the same key, and see the switch's commands:
   ```
   cd "D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\port\server"
@@ -94,7 +103,16 @@ Files: `vps_install.sh` / `vps_uninstall.sh` (VPS), `pc_storage_setup.ps1` (PC).
   - the game: ONLINE menu ("signed in as"), Community Creations list, one download (comes from the PC node)
   - one upload (a logo), then check it on the PC: a new file under `Apps\SvR2011\data\blobs`
   - a relayed test match (two games, UDP 36500)
-  - the dashboard over a tunnel: `ssh -L 8101:127.0.0.1:8101 <user>@152.53.32.77`, then http://127.0.0.1:8101/
+  - the dashboard: https://sho-ti.me/svr-admin/ -> the sign-in page; the password -> the dashboard; Sign out.
+    Without signing in every dashboard call answers 401:
+    ```
+    curl -s -o /dev/null -w "%{http_code}\n" https://sho-ti.me/svr-admin/api/admin/stats     # -> 401
+    curl -s -o /dev/null -w "%{http_code}\n" -X POST https://sho-ti.me/svr-admin/api/admin/restart   # -> 401
+    ```
+    (Five wrong passwords lock that address out for 15 minutes, twenty from anywhere lock every sign-in;
+    `admin:` lines in server.log. Don't test the lockout from your own address right before you need in.)
+  - the dashboard over a tunnel still works too: `ssh -L 8101:127.0.0.1:8101 <user>@152.53.32.77`, then
+    http://127.0.0.1:8101/
 - [ ] 9. Watch `/var/log/svr2011/server.log` and the PC node's `server.log` for the first hour.
 
 ## C. Rollback (the first week)

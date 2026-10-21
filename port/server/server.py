@@ -47,6 +47,7 @@ os.environ.setdefault("AIOHTTP_NOSENDFILE", "1")
 
 from aiohttp import web
 
+import admin_auth as aa
 import gamespy as gs
 import discovery
 import leaderboards
@@ -136,7 +137,10 @@ SETTINGS_SPEC = {
 }
 SETTINGS = {k: v["default"] for k, v in SETTINGS_SPEC.items()}
 LIVE_LIFE = 60      # seconds a session host's report stays (it reports every 20 s)
-RESTART_CODE = 75   # the exit code that asks the supervisor (--supervise) to start the server again
+RESTART_CODE = 75
+# the dashboard's own pages (admin_auth.py): never framed, cached or sent on as a referrer
+ADMIN_HEADERS = {"X-Frame-Options": "DENY", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                 "X-Content-Type-Options": "nosniff"}   # the exit code that asks the supervisor (--supervise) to start the server again
 
 
 def load_settings(path):
@@ -625,6 +629,8 @@ class Service:
         self.supervised = bool(os.environ.get("SVR2011_SUPERVISOR_PID"))
         self.live = {}   # session id -> the host's last report (api_live)
         self.dashboard_html = (HERE / "dashboard.html").read_text(encoding="utf-8")
+        self.admin_auth = aa.AdminAuth(getattr(args, "admin_password_file", None) or os.path.join(args.data, "admin_password"),
+                                       gs.log, account=getattr(args, "admin_account", None), accounts=self.accounts)
         self.max_media = {"music": args.max_music_mb << 20, "movie": args.max_movie_mb << 20}
         self.media_quota = args.media_quota_mb << 20
 
@@ -1185,9 +1191,23 @@ class Service:
     # the dashboard
 
     def admin_only(handler):
+        """The dashboard's routes: under /svr-admin/ only a valid admin session (and on a POST its
+        CSRF token) lets one in - no header does; elsewhere is_admin's rules (the portal, --local-admin)."""
         async def wrapped(self, request):
-            if not self.is_admin(request):
-                return web.Response(status=403, text="Admins only.")
+            if not request.path.startswith(aa.PREFIX + "/"):
+                if not self.is_admin(request):
+                    return web.Response(status=403, text="Admins only.")
+                return await handler(self, request)
+            s = self.admin_auth.session(request)
+            if not s:
+                if request.method == "GET" and request.path == aa.PREFIX + "/":
+                    raise web.HTTPSeeOther(aa.PREFIX + "/login")
+                return web.json_response({"ok": False, "error": "Sign in first."}, status=401)
+            if request.method not in ("GET", "HEAD") and not self.admin_auth.csrf_ok(request, s):
+                gs.log("admin: %s %s refused - no valid CSRF token (from %s)" % (
+                    request.method, request.path, self.client_ip(request)))
+                return web.json_response({"ok": False, "error": "Reload the page."}, status=403)
+            request["admin_session"] = s
             return await handler(self, request)
         return wrapped
 
@@ -1352,7 +1372,41 @@ class Service:
 
     @admin_only
     async def dashboard(self, request):
-        return web.Response(text=self.dashboard_html, content_type="text/html", charset="utf-8")
+        page = self.dashboard_html
+        if "admin_session" in request:  # (signed in under /svr-admin/: its CSRF token for the page's POSTs)
+            page = page.replace("<head>", '<head>\n<meta name="csrf-token" content="%s">' %
+                                request["admin_session"]["csrf"], 1)
+        return web.Response(text=page, content_type="text/html", charset="utf-8", headers=ADMIN_HEADERS)
+
+    async def admin_slash(self, request):
+        raise web.HTTPMovedPermanently(aa.PREFIX + "/")
+
+    async def admin_login_page(self, request):
+        if self.admin_auth.session(request):
+            raise web.HTTPSeeOther(aa.PREFIX + "/")
+        return web.Response(text=self.admin_auth.login_page(request.query.get("e", "")), content_type="text/html",
+                            charset="utf-8", headers=ADMIN_HEADERS)
+
+    async def admin_login(self, request):
+        """The sign-in form: a session cookie and on to the dashboard, or back to the form."""
+        ip = self.client_ip(request)
+        try:
+            form = await request.post()
+        except ValueError:
+            form = {}
+        name, password = str(form.get("name", ""))[:64], str(form.get("password", ""))
+        who, why = await asyncio.get_running_loop().run_in_executor(None, self.admin_auth.check, ip, name, password)
+        if not who:
+            raise web.HTTPSeeOther(aa.PREFIX + "/login?e=" + why, headers=ADMIN_HEADERS)
+        token = self.admin_auth.start(ip, who)
+        raise web.HTTPSeeOther(aa.PREFIX + "/", headers=dict(ADMIN_HEADERS, **{"Set-Cookie": aa.AdminAuth.cookie(token)}))
+
+    async def admin_logout(self, request):
+        s = self.admin_auth.session(request)
+        if s and not self.admin_auth.csrf_ok(request, s):
+            return web.json_response({"ok": False, "error": "Reload the page."}, status=403)
+        self.admin_auth.end(request)
+        raise web.HTTPSeeOther(aa.PREFIX + "/login", headers={"Set-Cookie": aa.AdminAuth.cookie("", 0)})
 
     @admin_only
     async def admin_stats(self, request):
@@ -1589,6 +1643,7 @@ class Service:
         asyncio.get_running_loop().call_later(0.5, bye)
         return web.json_response({"ok": True})
 
+    @admin_only
     async def admin_users(self, request):
         out = []
         uploads = collections.Counter(r["ownerid"] for r in self.store.all("UserContent"))
@@ -1693,22 +1748,29 @@ class Service:
         app.router.add_get(b + "/api/mods/{id}/img/{n}", self.api_mod_image)
         self.relay.routes(app, b)
         app.router.add_get("/__health", self.health)
-        app.router.add_get("/", self.dashboard)
-        app.router.add_get("/api/admin/stats", self.admin_stats)
-        app.router.add_get("/api/admin/uploads", self.admin_uploads)
-        app.router.add_get("/api/admin/upload/{id}/thumb.png", self.admin_upload_thumb)
-        app.router.add_get("/api/admin/upload/{id}/full.png", self.admin_upload_full)
-        app.router.add_get("/api/admin/leaderboard", self.admin_leaderboard)
-        app.router.add_post("/api/admin/upload/{id}/{action}", self.admin_upload_action)
-        app.router.add_get("/api/admin/mods", self.admin_mods)
-        app.router.add_get("/api/admin/mod/{id}/image.jpg", self.admin_mod_image)
-        app.router.add_post("/api/admin/mod/{id}/{action}", self.admin_mod_action)
-        app.router.add_get("/api/admin/users", self.admin_users)
-        app.router.add_get("/api/admin/live", self.admin_live)
-        app.router.add_get("/api/admin/log", self.admin_log)
-        app.router.add_route("*", "/api/admin/settings", self.admin_settings)
-        app.router.add_post("/api/admin/restart", self.admin_restart)
-        app.router.add_post("/api/admin/user/{id}/{action}", self.admin_user_action)
+        # the dashboard: at / (the portal, --local-admin) and again under /svr-admin/ (its own
+        # sign-in: admin_auth.py - what nginx passes on the VPS)
+        app.router.add_get(aa.PREFIX, self.admin_slash)
+        app.router.add_get(aa.PREFIX + "/login", self.admin_login_page)
+        app.router.add_post(aa.PREFIX + "/login", self.admin_login)
+        app.router.add_post(aa.PREFIX + "/logout", self.admin_logout)
+        for p in ("", aa.PREFIX):
+            app.router.add_get(p + "/", self.dashboard)
+            app.router.add_get(p + "/api/admin/stats", self.admin_stats)
+            app.router.add_get(p + "/api/admin/uploads", self.admin_uploads)
+            app.router.add_get(p + "/api/admin/upload/{id}/thumb.png", self.admin_upload_thumb)
+            app.router.add_get(p + "/api/admin/upload/{id}/full.png", self.admin_upload_full)
+            app.router.add_get(p + "/api/admin/leaderboard", self.admin_leaderboard)
+            app.router.add_post(p + "/api/admin/upload/{id}/{action}", self.admin_upload_action)
+            app.router.add_get(p + "/api/admin/mods", self.admin_mods)
+            app.router.add_get(p + "/api/admin/mod/{id}/image.jpg", self.admin_mod_image)
+            app.router.add_post(p + "/api/admin/mod/{id}/{action}", self.admin_mod_action)
+            app.router.add_get(p + "/api/admin/users", self.admin_users)
+            app.router.add_get(p + "/api/admin/live", self.admin_live)
+            app.router.add_get(p + "/api/admin/log", self.admin_log)
+            app.router.add_route("*", p + "/api/admin/settings", self.admin_settings)
+            app.router.add_post(p + "/api/admin/restart", self.admin_restart)
+            app.router.add_post(p + "/api/admin/user/{id}/{action}", self.admin_user_action)
         app.cleanup_ctx.append(self.background)
         return app
 
@@ -1848,7 +1910,16 @@ def main():
     ap.add_argument("--local-admin", action="store_true",
                     help="the dashboard for anyone on this PC talking to the service directly (a developer's own "
                          "server; never behind a public proxy on the same host)")
+    ap.add_argument("--set-admin-password", action="store_true",
+                    help="ask for the dashboard's password (/svr-admin/ sign-in) and store its hash in the data "
+                         "folder (or --admin-password-file), then exit")
+    ap.add_argument("--admin-password-file", default=None, help="where the dashboard password's hash is "
+                    "(default: <data>/admin_password)")
+    ap.add_argument("--admin-account", default=None,
+                    help="the dashboard's sign-in is this online account's name and password instead")
     args = ap.parse_args()
+    if args.set_admin_password:
+        return aa.set_password_cli(args.admin_password_file or os.path.join(args.data, "admin_password"))
     if args.relay_edge and (not args.relay_secret or not args.relay_udp_port):
         ap.error("--relay-edge needs --relay-secret and --relay-udp-port")
     if args.supervise:

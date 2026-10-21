@@ -36,8 +36,9 @@ etc=/etc/svr2011
 unit=/etc/systemd/system/svr2011.service
 ngx_dir=/etc/nginx/svr2011
 ngx_file=$ngx_dir/svr-location.conf
-files="server.py gamespy.py leaderboards.py media.py relay.py relay_link.py thumbs.py lb_reset.py discovery.py
-       dashboard.html leaderboards.json requirements.txt"
+files="server.py admin_auth.py gamespy.py leaderboards.py media.py relay.py relay_link.py thumbs.py lb_reset.py
+       discovery.py dashboard.html leaderboards.json requirements.txt"
+pw_tool=/usr/local/sbin/svr2011-admin-password
 
 # run CMD...: does it (or prints it with --dry-run)
 run() {
@@ -108,10 +109,12 @@ fi
 echo "== systemd: svr2011.service (installed, NOT enabled or started)"
 # The relay edge's link stays where it is (10.8.0.1:36501 - the VPS's own tunnel
 # address, so the edge needs no change). Secrets come in as credentials (%d).
-# --local-admin: the dashboard for direct loopback connections only (an SSH tunnel,
-# ssh -L 8101:127.0.0.1:8101) - everything through nginx carries X-Forwarded-For
-# (svr-location.conf sets it), which is never an admin, and the dashboard's routes
-# are outside /svr/ so nginx doesn't pass them at all.
+# The dashboard, two ways: https://<host>/svr-admin/ with its own sign-in (admin_auth.py:
+# the password set with svr2011-admin-password; only a valid admin session is an admin
+# there), and --local-admin: the old routes (/, /api/admin/...) for direct loopback
+# connections only (an SSH tunnel, ssh -L 8101:127.0.0.1:8101) - everything through nginx
+# carries X-Forwarded-For (svr-location.conf sets it), which is never an admin by itself,
+# and the old routes are outside /svr/ and /svr-admin/ so nginx doesn't pass them at all.
 put "$unit" 644 root:root <<EOF
 [Unit]
 Description=SvR2011 online server (core: accounts, Community Creations, relay)
@@ -144,6 +147,20 @@ if [ $dry = 0 ]; then
     echo "  state: $(systemctl is-enabled svr2011 2>/dev/null || true), $(systemctl is-active svr2011 2>/dev/null || true)"
 fi
 
+echo "== dashboard password: $pw_tool (run it once: sudo $pw_tool)"
+put "$pw_tool" 755 root:root <<EOF
+#!/bin/bash
+# Sets the online dashboard's password (https://<host>/svr-admin/): asked twice, stored
+# as a PBKDF2 hash in $data/admin_password (mode 600, the service's user). The running
+# server reads it at each sign-in: no restart needed.
+set -euo pipefail
+[ "\$(id -u)" = 0 ] || { echo "run it as root (sudo)"; exit 1; }
+exec runuser -u svr2011 -- $venv/bin/python $app/server.py --set-admin-password --data $data
+EOF
+if [ $dry = 0 ]; then
+    if [ -s "$data/admin_password" ]; then echo "  password: set"; else echo "  password: NOT set yet"; fi
+fi
+
 echo "== nginx: $ngx_file (written, NOT included - vps_cutover.md switches it on)"
 run install -d -m 755 -o root -g root "$ngx_dir"
 put "$ngx_file" 644 root:root <<'EOF'
@@ -172,6 +189,25 @@ location /svr/ {
     proxy_send_timeout 14400s;
     # uploads: Community Creations files (--max-file-mb 8)
     client_max_body_size 8m;
+}
+
+# The dashboard with its own sign-in (admin_auth.py): /svr-admin/... is passed as it is.
+# There only a valid admin session is an admin - no header is (X-Forwarded-For is set
+# here, the portal's headers emptied, as above). Five wrong passwords lock an address out.
+location /svr-admin/ {
+    proxy_pass http://127.0.0.1:8101;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Portal-Role "";
+    proxy_set_header X-Portal-Public "";
+    proxy_set_header X-Portal-User "";
+    client_max_body_size 1m;
+    add_header X-Robots-Tag "noindex, nofollow" always;
+}
+location = /svr-admin {
+    return 301 /svr-admin/;
 }
 
 # Discovery uploads: a .svrmod up to 250 MB and its four pictures (discovery.py)
