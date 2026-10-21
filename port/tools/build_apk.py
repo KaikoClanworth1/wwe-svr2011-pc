@@ -58,8 +58,12 @@ def build_native():
 
 def version():
     v = (PORT / "VERSION.txt").read_text().strip()
-    major, minor, patch = (int(x) for x in v.split(".")[:3])
-    return v, major * 10000 + minor * 100 + patch
+    parts = [int(x) for x in v.split(".")] + [0, 0, 0]
+    major, minor, patch, fix = parts[:4]
+    if (major, minor, patch, fix) <= (2, 1, 4, 0):
+        return v, major * 10000 + minor * 100 + patch   # (2.1.4 and older: 20104 ...)
+    # from 2.1.4.1 on: room for hotfixes (2.1.4.1 -> 201041, 2.1.5 -> 201050), still above every older code
+    return v, (major * 10000 + minor * 100 + patch) * 10 + fix
 
 
 def main():

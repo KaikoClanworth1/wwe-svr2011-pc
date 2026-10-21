@@ -32,6 +32,28 @@ int mods_install(const WCHAR *game_dir, const WCHAR *zip);
 /* A main menu background made from a picture (backgrounds.h; tests:
    --bg-add <game folder> <picture> [logo]). 1 on success; prints the folder. */
 int mods_add_background(const WCHAR *game_dir, const WCHAR *image, int logo);
-/* Installs the mods shipped with the port (<bundle_dir>\*.svrmod) that the
-   game hasn't had yet, or whose shipped file changed. */
+/* Checks the mods shipped with the port (<bundle_dir>\*.svrmod) against what it installed (Mods\.bundled_state):
+   installs one only when it isn't there (and the player didn't remove it), or updates an unedited copy to a newer
+   version; an edited copy with a newer version shipped, or an unedited one with files missing, is a question
+   (mods_bundled_questions), acted on at the next call with its answer (mods_bundled_answer). Never a silent
+   reinstall over the player's edits. */
 void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir);
+enum { BUNDLED_ASK_UPDATE = 1, BUNDLED_ASK_FIX = 2 };   /* (BundledQuestion.kind) */
+enum { BUNDLED_YES = 1, BUNDLED_NO = 2 };   /* update (a backup of theirs) / keep theirs; fix it / not now */
+typedef struct {
+    int kind;
+    WCHAR file[MAX_PATH];  /* the bundle (its .svrmod) */
+    WCHAR name[128];       /* its id */
+    WCHAR have[32], ship[32];  /* versions: installed, shipped */
+} BundledQuestion;
+/* The questions of the mods_install_bundled calls since mods_bundled_reset (how many; up to max copied). */
+int mods_bundled_questions(BundledQuestion *out, int max);
+/* An answer for the next mods_install_bundled (file NULL: for every question - the --bundled tests). */
+void mods_bundled_answer(const WCHAR *file, int answer);
+void mods_bundled_reset(void);
+/* Told before each bundled mod mods_install_bundled installs: n of total (from any thread - it may run on a worker). */
+void mods_set_bundled_progress(void (*progress)(int n, int total));
+/* Deletes a folder tree directly (no shell, no Recycle Bin). The shell's FO_DELETE took 30 s on each folder a mod
+   update had just renamed into Mods\.old (2.1.4: an update installing four match types ran for two minutes before the
+   window showed). 1 when it is gone. */
+int mods_delete_tree(const WCHAR *dir);

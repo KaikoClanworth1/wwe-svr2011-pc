@@ -353,8 +353,13 @@ REX_HOOK_RAW(sub_8280CFD0) {
     static std::mutex m;
     static std::set<uint32_t> pairs;  // (pairs that have had an opponent this match)
     static uint32_t first = 0;        // (person 0: a new one, a new match)
+    static uint32_t placed = 0;       // (a match placed since: a new match too - person 0 is often made at the same
+                                      // place: a second backstage brawl kept the quit one's pairs, the guard found
+                                      // nobody "at ringside" there and skipped the AI's set-up, which then read a
+                                      // null target: crash, 21 Oct report. Not the clock: a gauntlet's restarts.)
     std::lock_guard lock(m);
-    if (const uint32_t c = Rd32(base + kChars); c != first) first = c, pairs.clear();
+    const uint32_t now_placed = svr2011::MatchPlacements();
+    if (const uint32_t c = Rd32(base + kChars); c != first || now_placed != placed) first = c, placed = now_placed, pairs.clear();
     if (pair && Rd32(base + pair + 20)) pairs.insert(pair);
     had = pair && pairs.count(pair) && !old_way;
   }

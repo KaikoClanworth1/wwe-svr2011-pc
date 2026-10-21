@@ -2573,6 +2573,7 @@ void ExportCreatedEntrances(const uint8_t* base) {
 void CheckModProfiles(uint8_t* base) {
   ExportCreatedEntrances(base);
   UniverseModsTick(base);  // (the game wrote its save: the mods' Universe side table beside it)
+  UniverseTeamsTick(base);  // (Universe's teams and stables made / changed / dissolved: logged)
   UniverseWelcomeTick(base);  // (the Universe welcome accepted: kept as seen in the save file at once)
   std::lock_guard lock(g_slots_mutex);
   for (const auto& m : g_mods) {
@@ -2784,7 +2785,11 @@ REX_HOOK_RAW(sub_825AD850) {  // (id, id) -> the pair's rivalry index from the c
       return;
     }
     const int64_t pa = ModOf(a) ? 0 : UniversePlace(ctx, base, a), pb = ModOf(b) ? 0 : UniversePlace(ctx, base, b);
-    ctx.r3.u64 = uint64_t(svr2011::UniverseModPair(base, table, a, pa, b, pb));
+    // (the weekly relationship pass's working copy lives in sub_825C3D70's stack frame, just above this call's
+    // stack pointer: universe_mods.h)
+    const uint32_t sp = ctx.r1.u32;
+    const bool working_copy = table > sp && table - sp < 0x10000;
+    ctx.r3.u64 = uint64_t(svr2011::UniverseModPair(base, table, a, pa, b, pb, working_copy));
     return;
   }
   __imp__sub_825AD850(ctx, base);

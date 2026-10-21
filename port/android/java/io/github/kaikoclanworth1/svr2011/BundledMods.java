@@ -6,14 +6,12 @@
 // a copy in the games or Download folder. Its size is shown first (and mobile
 // data said), and it can be stopped.
 //
-// The rules, as the PC's: Mods/.bundled keeps "name|size|crc<hex>" of the
-// bundles installed, so each installs once and again only when the shipped
-// file changes (one the player removed stays removed); a bundle installed for
-// the first time comes switched off ("disabled"), except a match type; a new
-// version keeps the player's on / off and never replaces a newer copy. Lines
-// the PC launcher wrote (name|size|file time, the folder came in the PC's game
-// package) count as installed when the name and size match. Retired bundles
-// are switched off once.
+// The rules are the PC's (BundledRules: Mods/.bundled_state, the decisions in
+// Mods/.install.log): a bundle installs once, switched off ("disabled") except
+// a match type; one the player removed stays removed; a newer version updates
+// an unedited copy (its on / off kept), and an edited one is asked about here
+// (update, the edited copy to Mods/.backup / keep mine); missing files are
+// asked about (fix / not now). Retired bundles are switched off once.
 
 package io.github.kaikoclanworth1.svr2011;
 
@@ -38,6 +36,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -45,10 +45,6 @@ import java.util.zip.ZipFile;
 final class BundledMods {
     // (the app version whose bundles were installed, or offered and put off)
     static final String kPref = "bundled_mods_version";
-    // Bundles no longer shipped: switched off once (the player may switch them
-    // back on). hurricane.svrmod (2.0.5): The Hurricane is the playable manager
-    // on the M tile already.
-    static final String[][] kRetired = { {"hurricane.svrmod", "Superstars/the_hurricane"} };
 
     private static boolean busy_;
 
@@ -129,7 +125,7 @@ final class BundledMods {
 
     static String rules() {
         return "New ones come switched off (match types on): switch them on in the Mods tab. Mods you have keep "
-            + "their on / off, and ones you removed stay removed.";
+            + "their on / off, ones you removed stay removed, and you're asked before one you edited is updated.";
     }
 
     static void ask(LauncherActivity a, String message, String action, boolean asked, Runnable onYes) {
@@ -188,7 +184,7 @@ final class BundledMods {
                 result[0] = installAll(a, zip, cancel, (i, n) -> a.runOnUiThread(() -> {
                     bar.setProgress(n > 0 ? (int) (i * 1000 / n) : 0);
                     text.setText("Installing the mods… " + i + " of " + n);
-                }));
+                }), q -> askNow(a, q));
                 done[0] = !cancel.get();
             } catch (Exception e) {
                 result[0] = cancel.get() ? "Stopped: the bundled mods not installed yet are got next time."
@@ -218,36 +214,58 @@ final class BundledMods {
 
     interface Step { void at(int i, int n); }
 
-    // Installs the zip's *.svrmod by the rules above; returns what it did.
-    static String installAll(Context ctx, File zipFile, AtomicBoolean cancel, Step step) throws IOException {
-        File mods = modsFolder();
-        mods.mkdirs();
-        File listFile = new File(mods, ".bundled");
-        List<String> known = new ArrayList<>();
-        if (listFile.isFile()) {
-            byte[] b = new byte[(int) listFile.length()];
-            try (InputStream in = new FileInputStream(listFile)) {
-                int at = 0, n;
-                while (at < b.length && (n = in.read(b, at, b.length - at)) > 0) at += n;
+    interface Asker { int ask(BundledRules.Question q); }
+
+    // A bundle's question as a dialog, from the install's thread (it waits for the answer); kNone when the
+    // launcher closed meanwhile (asked again next time).
+    static int askNow(LauncherActivity a, BundledRules.Question q) {
+        boolean update = q.kind == BundledRules.kAskUpdate;
+        String msg = update
+            ? "A newer version (" + q.ship + ") of the bundled mod \"" + q.name + "\" came with the update, but your "
+              + "copy (version " + (q.have.isEmpty() ? "?" : q.have) + ") has been edited.\n\nUpdate: your edited copy "
+              + "is kept in Mods/.backup.\nKeep mine: you won't be asked again for this version."
+            : "Files of the bundled mod \"" + q.name + "\" are missing (" + q.missing + ") - a copy that stopped "
+              + "half-way, or a cleaner app?\n\nFix it: it's installed again, its on / off kept.\nNot now: you're "
+              + "asked again next time.";
+        CountDownLatch done = new CountDownLatch(1);
+        int[] answer = {BundledRules.kNone};
+        a.runOnUiThread(() -> {
+            if (a.isFinishing()) {
+                done.countDown();
+                return;
             }
-            for (String l : new String(b, StandardCharsets.UTF_8).replace("﻿", "").split("\r?\n"))
-                if (!l.trim().isEmpty()) known.add(l.trim());
+            new AlertDialog.Builder(a, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                .setTitle("Bundled mods")
+                .setMessage(msg)
+                .setPositiveButton(update ? "Update" : "Fix it", (d, w) -> answer[0] = BundledRules.kYes)
+                .setNegativeButton(update ? "Keep mine" : "Not now", (d, w) -> answer[0] = BundledRules.kNo)
+                .setOnDismissListener(d -> done.countDown())
+                .setCancelable(false)
+                .show();
+        });
+        try {
+            while (!done.await(1, TimeUnit.SECONDS))
+                if (a.isFinishing() || a.isDestroyed()) return BundledRules.kNone;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return BundledRules.kNone;
         }
-        boolean changed = false;
-        for (String[] r : kRetired) {
-            boolean had = false;
-            for (int i = known.size() - 1; i >= 0; i--)
-                if (known.get(i).startsWith(r[0] + "|")) {
-                    known.remove(i);
-                    had = true;
+        return answer[0];
+    }
+
+    // Checks the zip's *.svrmod by the rules (BundledRules) and acts; returns what it did.
+    static String installAll(Context ctx, File zipFile, AtomicBoolean cancel, Step step, Asker asker) throws IOException {
+        File one = new File(ctx.getCacheDir(), "bundle.svrmod");
+        BundledRules rules = new BundledRules(modsFolder(), new BundledRules.Host() {
+            @Override public File install(File svrmod) throws IOException {
+                try (InputStream in = new FileInputStream(svrmod)) {
+                    ModsPage.Installed r = ModsPage.install(ctx, in, true);
+                    return r.kept ? null : r.dest;
                 }
-            if (!had) continue;
-            File folder = new File(mods, r[1]);
-            if (folder.isDirectory()) new FileOutputStream(new File(folder, "disabled")).close();
-            changed = true;
-        }
-        int added = 0, updated = 0, kept = 0, failed = 0;
-        StringBuilder bad = new StringBuilder();
+            }
+
+            @Override public int ask(BundledRules.Question q) { return asker.ask(q); }
+        });
         try (ZipFile zip = new ZipFile(zipFile)) {
             List<ZipEntry> all = new ArrayList<>();
             for (Enumeration<? extends ZipEntry> e = zip.entries(); e.hasMoreElements();) {
@@ -259,59 +277,20 @@ final class BundledMods {
                 if (cancel.get()) break;
                 ZipEntry z = all.get(i);
                 String n = z.getName().replace('\\', '/');
-                String leaf = n.substring(n.lastIndexOf('/') + 1);
-                String line = leaf + "|" + z.getSize() + "|crc" + Long.toHexString(z.getCrc());
                 step.at(i, all.size());
-                if (isKnown(known, leaf, z.getSize(), line)) continue;
-                boolean fresh = true;
-                for (String l : known) if (l.startsWith(leaf + "|")) fresh = false;
-                try (InputStream in = zip.getInputStream(z)) {
-                    ModsPage.Installed r = ModsPage.install(ctx, in, true);
-                    if (r.kept) kept++;
-                    else if (r.existed) updated++;
-                    else added++;
-                    if (fresh && !r.existed && !r.kept && !"matchtype".equals(r.type))
-                        new FileOutputStream(new File(r.dest, "disabled")).close();
+                try (InputStream in = zip.getInputStream(z); OutputStream out = new FileOutputStream(one)) {
+                    FileOps.copy(in, out);
                 } catch (IOException e) {
-                    failed++;
-                    bad.append(bad.length() > 0 ? ", " : "").append(leaf);
-                    continue;  // (not in .bundled: tried again next time)
+                    rules.fail(n.substring(n.lastIndexOf('/') + 1), e.getMessage());
+                    continue;
                 }
-                for (int k = known.size() - 1; k >= 0; k--) if (known.get(k).startsWith(leaf + "|")) known.remove(k);
-                known.add(line);
-                changed = true;
-                // (.bundled after each: a stopped install carries on next time)
-                write(listFile, known);
+                rules.bundle(n.substring(n.lastIndexOf('/') + 1), one);
             }
             step.at(all.size(), all.size());
+        } finally {
+            one.delete();
+            rules.finish();
         }
-        if (changed) write(listFile, known);
-        String s = cancel.get() ? "Stopped: " : "Bundled mods: ";
-        s += added + " new (switched off - match types on), " + updated + " updated";
-        if (kept > 0) s += ", " + kept + " kept (yours are newer)";
-        if (failed > 0) s += ", " + failed + " couldn't be installed (" + bad + ")";
-        return s + (cancel.get() ? "; the rest next time." : ".");
-    }
-
-    // Installed already: the same line, or a PC launcher's line (name|size|file
-    // time) for the same name and size.
-    static boolean isKnown(List<String> known, String leaf, long size, String line) {
-        String pc = leaf + "|" + size + "|";
-        for (String l : known) {
-            if (l.equals(line)) return true;
-            if (l.startsWith(pc) && !l.substring(pc.length()).startsWith("crc")) return true;
-        }
-        return false;
-    }
-
-    static void write(File listFile, List<String> known) throws IOException {
-        StringBuilder b = new StringBuilder();
-        for (String l : known) b.append(l).append('\n');
-        File part = new File(listFile.getPath() + ".part");
-        try (OutputStream out = new FileOutputStream(part)) {
-            out.write(b.toString().getBytes(StandardCharsets.UTF_8));
-        }
-        if (listFile.exists()) listFile.delete();
-        if (!part.renameTo(listFile)) throw new IOException("can't write " + listFile.getName());
+        return rules.summary(cancel.get());
     }
 }

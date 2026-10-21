@@ -51,6 +51,8 @@
 namespace svr2011 {
 std::atomic<uint32_t> g_match_rule{~0u}, g_match_arena{~0u};  // (the last match placed: LastMatch)
 void LastMatch(uint32_t* rule, uint32_t* arena) { *rule = g_match_rule.load(), *arena = g_match_arena.load(); }
+std::atomic<uint32_t> g_match_placements{0};
+uint32_t MatchPlacements() { return g_match_placements.load(); }
 // (the whole backstage 0x19 / 0x1A, the 1 on 1 rooms 0x1B.. and the 2 on 2 rooms 0x70-0x76: arena 78)
 bool BackstageRule(uint32_t rule) { return (rule >= 0x19 && rule <= 0x21) || (rule >= 0x70 && rule <= 0x76); }
 }  // namespace svr2011
@@ -1837,6 +1839,7 @@ REX_EXTERN(__imp__sub_822AD738);
 REX_HOOK_RAW(sub_822AD738) {
   const uint32_t placer = ctx.r3.u32;
   svr2011::SetMatchLoading(false);  // (its loading screen is up)
+  svr2011::g_match_placements.fetch_add(1);
   LogMatch(ctx, base, ctx.r4.u32);
   // Research aid (Hell in a Cell roof): SVR2011_TEST_CELL_START=<y tenths> -
   // in a cell match people 0 and 1 start at that height (x -150 / +150, z 0).
@@ -2856,6 +2859,8 @@ REX_HOOK_RAW(sub_82301148) {
     }
     REXLOG_INFO("match types: test - the weapon load list has {} entries", Rd32(base + list));
   }
+  // (for reports: each load's list - a longer one than the game's crashed loads)
+  if (list) REXLOG_INFO("match types: the weapon load list has {} models (rule {:02X})", Rd32(base + list), base[0x82E3DE00]);
   const int r = svr2011::g_active_row;
   if (!list || r < 0 || size_t(r) >= svr2011::BackstageRows().size() || Rd32(base + kStoryContext)) return;
   const auto& row = svr2011::BackstageRows()[size_t(r)];
@@ -3299,6 +3304,38 @@ REX_HOOK_RAW(sub_82856B00) {
     }
   }
   __imp__sub_82856B00(ctx, base);
+}
+
+// ...and its conditions 400-483 (sub_82858B08(object, id), which sub_82859388 hands the 400s): the same kind
+// of unchecked reads. Road to WrestleMania, Jericho's week 12 (2.1.4.1, Android, every time, right after the
+// cutscene): with id 32 answered false, the script asked id 460 - the character's +4 handed to sub_821B4C70
+// (its +212 == 284) - and +4 was empty there: a read of 0xD4, the world update stuck. The ids whose case reads
+// the character's +4 (or hands it on) or its +20 - the one it handles - with nothing there answer false, as the
+// console's read near address 0 did; id 422 checks +4 itself (a missing character still answers false).
+REX_EXTERN(__imp__sub_82858B08);
+REX_HOOK_RAW(sub_82858B08) {
+  static constexpr uint16_t kPlus4[] = {424, 434, 435, 442, 448, 450, 451, 452, 457, 458, 459, 460, 461, 462, 464, 465};
+  static constexpr uint16_t kPlus20[] = {453, 454, 455, 456, 478};
+  const uint32_t id = ctx.r4.u32;
+  auto listed = [&](const auto& ids) {
+    for (const uint16_t v : ids)
+      if (v == id) return true;
+    return false;
+  };
+  if (ctx.r3.u32 && id >= 400 && id < 484) {
+    const bool plus4 = listed(kPlus4), plus20 = listed(kPlus20);
+    if (plus4 || plus20 || id == 422) {
+      const uint32_t ch = Rd32(base + ctx.r3.u32);
+      if (!ch || (plus4 && !Rd32(base + ch + 4)) || (plus20 && !Rd32(base + ch + 20))) {
+        static int logged = 0;
+        if (logged++ < 3)
+          REXLOG_INFO("[svr2011] event condition {} with no character to check - false (as on the console)", id);
+        ctx.r3.u64 = 0;
+        return;
+      }
+    }
+  }
+  __imp__sub_82858B08(ctx, base);
 }
 
 namespace svr2011 {

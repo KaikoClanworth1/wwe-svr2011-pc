@@ -20,6 +20,8 @@ void InstallMatchTypes(rex::memory::Memory* memory);
 
 // The last match placed (its rule and arena; ~0 before one): the online live report.
 void LastMatch(uint32_t* rule, uint32_t* arena);
+// How many times a match's people were placed (sub_822AD738, as a match loads) - it changes when a new match starts.
+uint32_t MatchPlacements();
 // A backstage match's rule (its rooms are bg78 - where backstage mods play).
 bool BackstageRule(uint32_t rule);
 

@@ -256,11 +256,38 @@ void mods_show(const WCHAR *game_dir)
     fill();
 }
 
-/* Removes a folder tree (Recycle Bin when `recycle`). */
+int mods_delete_tree(const WCHAR *dir)
+{
+    WCHAR pat[MAX_PATH], p[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    const DWORD a = GetFileAttributesW(dir);
+    if (a == INVALID_FILE_ATTRIBUTES) return 1;
+    if (!(a & FILE_ATTRIBUTE_DIRECTORY)) {
+        SetFileAttributesW(dir, FILE_ATTRIBUTE_NORMAL);
+        return DeleteFileW(dir) != 0;
+    }
+    if (!(a & FILE_ATTRIBUTE_REPARSE_POINT) && swprintf_s(pat, MAX_PATH, L"%s\\*", dir) > 0) {
+        h = FindFirstFileW(pat, &fd);  /* (a junction: the link only, never what it points at) */
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+                if (swprintf_s(p, MAX_PATH, L"%s\\%s", dir, fd.cFileName) > 0) mods_delete_tree(p);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
+    SetFileAttributesW(dir, FILE_ATTRIBUTE_NORMAL);
+    return RemoveDirectoryW(dir) != 0 || GetFileAttributesW(dir) == INVALID_FILE_ATTRIBUTES;
+}
+
+/* Removes a folder tree: to the Recycle Bin when `recycle` (a mod the player removes), else directly
+   (mods_delete_tree: the launcher's own temporary and replaced copies). */
 static int remove_tree(const WCHAR *dir, int recycle)
 {
     WCHAR from[MAX_PATH + 2] = { 0 };
     SHFILEOPSTRUCTW op;
+    if (!recycle) return mods_delete_tree(dir);
     wcsncpy_s(from, MAX_PATH, dir, _TRUNCATE);  /* (double NUL terminated) */
     ZeroMemory(&op, sizeof op);
     op.wFunc = FO_DELETE;
@@ -665,6 +692,10 @@ int mods_add_background(const WCHAR *game_dir, const WCHAR *image, int logo)
 static WCHAR s_installed[MAX_PATH];  /* the folder install_file put the last mod in */
 static int s_installed_existed;      /* ... and whether it was installed already */
 static int s_bundle_install;         /* (mods_install_bundled: never an older version over a newer one) */
+static void (*s_bundled_progress)(int n, int total);
+static int s_bundled_n, s_bundled_total;  /* (this call's: the progress) */
+
+void mods_set_bundled_progress(void (*progress)(int n, int total)) { s_bundled_progress = progress; }
 
 /* a > b as dotted versions ("1.10" > "1.9"). */
 static int version_newer(const WCHAR *a, const WCHAR *b)
@@ -763,196 +794,552 @@ static const WCHAR *kind_folder(const WCHAR *type)
     return NULL;
 }
 
-/* An installed mod folder missing what install_file requires of its type (a superstar without ch.pac, an arena
-   without arena.pac ...): what a half-done replace left. */
-static int folder_incomplete(const WCHAR *dir, const WCHAR *type)
-{
-    WCHAR p[MAX_PATH];
-    const WCHAR *need[3] = { L"manifest.txt", NULL, NULL };
-    int i;
-    if (!_wcsicmp(type, L"superstar")) need[1] = L"ch.pac";
-    else if (!_wcsicmp(type, L"arena")) need[1] = L"arena.pac", need[2] = L"banner.dds";
-    else if (!_wcsicmp(type, L"backstage")) need[1] = L"arena.pac";
-    else if (!_wcsicmp(type, L"attire")) need[1] = L"attire.pac";
-    else if (!_wcsicmp(type, L"moves")) need[1] = L"pack.txt";
-    else if (!_wcsicmp(type, L"background")) need[1] = L"*.dds";
-    for (i = 0; i < 3 && need[i]; ++i) {
-        swprintf_s(p, MAX_PATH, L"%s\\%s", dir, need[i]);
-        if (wcschr(need[i], L'*')) {
-            WIN32_FIND_DATAW fd;
-            HANDLE h = FindFirstFileW(p, &fd);
-            if (h == INVALID_HANDLE_VALUE) return 1;
-            FindClose(h);
-        } else if (!exists(p)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
 int mods_install(const WCHAR *game_dir, const WCHAR *zip)
 {
     wcsncpy_s(s_game, MAX_PATH, game_dir ? game_dir : L"", _TRUNCATE);
     return s_game[0] && install_file(zip);
 }
 
-/* Mods shipped with the port (<bundle_dir>\*.svrmod, the release's
- * "Bundled Mods"): each is installed into the game once, and again only when
- * the shipped file changes - <game>\Mods\.bundled keeps "name|size|time" of
- * those installed - so one the player removed stays removed. A bundle comes
- * switched off the first time ("disabled" in its folder) - except a match
- * type, which the game had on before it became a mod. One the player
- * already has (installed by hand, or an older bundle) is updated to it and
- * keeps its on / off - unless the player's copy is a newer version. */
-void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
+/* ── the bundled mods' record (Mods\.bundled_state) ───────────────────────────────────────────────────────
+ * What the launcher installed of each bundle, so it only CHECKS them at a start and never puts a player's edits
+ * over: per bundle its version, folder (kind\id) and state - "on" (installed by the launcher), "removed" (the
+ * player removed its folder: it stays removed), "kept <version>" (the player kept their edited copy over that
+ * version) - and per installed file its size, time and hash (FNV-1a 64). (The old Mods\.bundled -
+ * "name|size|time" lines, one more for each update - is read only once, to carry its installs over: it was read
+ * into 8192 characters, and past that, after a few updates, its newest lines were cut off and those bundles
+ * installed again at every start, over the player's edits - 2.1.4.1 report.) */
+typedef struct {
+    WCHAR rel[MAX_PATH];
+    unsigned long long size, time, hash;
+} BundleFile;
+typedef struct {
+    WCHAR file[MAX_PATH], version[32], folder[MAX_PATH], state[48];
+    BundleFile *files;
+    int n_files, cap_files;
+} BundleRec;
+static BundleRec *s_recs;
+static int s_n_recs, s_cap_recs;
+static BundledQuestion s_questions[64];
+static int s_n_questions;
+static struct { WCHAR file[MAX_PATH]; int answer; } s_answers[64];
+static int s_n_answers, s_default_answer;
+
+static unsigned long long file_hash(const WCHAR *path)
 {
-    WCHAR pat[MAX_PATH], zip[MAX_PATH], list[MAX_PATH], line[MAX_PATH + 64], mods[MAX_PATH];
+    static unsigned char buf[1 << 20];
+    unsigned long long h = 1469598103934665603ull;
+    FILE *f;
+    size_t got, i;
+    if (_wfopen_s(&f, path, L"rb") || !f) return 0;
+    while ((got = fread(buf, 1, sizeof buf, f)) > 0)
+        for (i = 0; i < got; ++i) h = (h ^ buf[i]) * 1099511628211ull;
+    fclose(f);
+    return h;
+}
+
+static BundleRec *rec_find(const WCHAR *file)
+{
+    int i;
+    for (i = 0; i < s_n_recs; ++i)
+        if (!_wcsicmp(s_recs[i].file, file)) return &s_recs[i];
+    return NULL;
+}
+
+static BundleRec *rec_add(const WCHAR *file)
+{
+    BundleRec *r = rec_find(file);
+    if (r) return r;
+    if (s_n_recs == s_cap_recs) {
+        BundleRec *more = (BundleRec *)realloc(s_recs, sizeof *s_recs * (s_cap_recs ? s_cap_recs * 2 : 64));
+        if (!more) return NULL;
+        s_recs = more;
+        s_cap_recs = s_cap_recs ? s_cap_recs * 2 : 64;
+    }
+    r = &s_recs[s_n_recs++];
+    ZeroMemory(r, sizeof *r);
+    wcsncpy_s(r->file, MAX_PATH, file, _TRUNCATE);
+    return r;
+}
+
+static void rec_file_add(BundleRec *r, const WCHAR *rel, unsigned long long size, unsigned long long time,
+                         unsigned long long hash)
+{
+    if (r->n_files == r->cap_files) {
+        BundleFile *more = (BundleFile *)realloc(r->files, sizeof *r->files * (r->cap_files ? r->cap_files * 2 : 16));
+        if (!more) return;
+        r->files = more;
+        r->cap_files = r->cap_files ? r->cap_files * 2 : 16;
+    }
+    wcsncpy_s(r->files[r->n_files].rel, MAX_PATH, rel, _TRUNCATE);
+    r->files[r->n_files].size = size, r->files[r->n_files].time = time, r->files[r->n_files].hash = hash;
+    ++r->n_files;
+}
+
+static void recs_free(void)
+{
+    int i;
+    for (i = 0; i < s_n_recs; ++i) free(s_recs[i].files);
+    free(s_recs);
+    s_recs = NULL, s_n_recs = s_cap_recs = 0;
+}
+
+/* A whole UTF-8 text file (no length limit) as a malloc'd wide string; NULL if none. */
+static WCHAR *read_text(const WCHAR *path)
+{
+    FILE *f;
+    long long n;
+    char *b;
+    WCHAR *w = NULL;
+    int wn;
+    if (_wfopen_s(&f, path, L"rb") || !f) return NULL;
+    _fseeki64(f, 0, SEEK_END);
+    n = _ftelli64(f);
+    _fseeki64(f, 0, SEEK_SET);
+    if (n < 0 || n > (64ll << 20) || !(b = (char *)malloc((size_t)n + 1))) {
+        fclose(f);
+        return NULL;
+    }
+    n = (long long)fread(b, 1, (size_t)n, f);
+    fclose(f);
+    b[n] = 0;
+    wn = MultiByteToWideChar(CP_UTF8, 0, b, (int)n + 1, NULL, 0);
+    if (wn > 0 && (w = (WCHAR *)malloc(sizeof(WCHAR) * wn))) MultiByteToWideChar(CP_UTF8, 0, b, (int)n + 1, w, wn);
+    free(b);
+    if (w && w[0] == 0xFEFF) memmove(w, w + 1, wcslen(w) * sizeof(WCHAR));
+    return w;
+}
+
+static void state_load(const WCHAR *mods)
+{
+    WCHAR path[MAX_PATH], *text, *line, *next;
+    recs_free();
+    swprintf_s(path, MAX_PATH, L"%s\\.bundled_state", mods);
+    if (!(text = read_text(path))) return;
+    for (line = text; line && *line; line = next) {
+        WCHAR *f[7] = {0};
+        int k = 0;
+        WCHAR *p;
+        next = wcschr(line, L'\n');
+        if (next) *next++ = 0;
+        if ((p = wcschr(line, L'\r')) != NULL) *p = 0;
+        for (p = line; k < 7; ++k) {   /* (tab-separated) */
+            f[k] = p;
+            if (!(p = wcschr(p, L'\t'))) break;
+            *p++ = 0;
+        }
+        if (!wcscmp(f[0], L"B") && f[4]) {
+            BundleRec *r = rec_add(f[1]);
+            if (!r) continue;
+            wcsncpy_s(r->version, 32, f[2], _TRUNCATE);
+            wcsncpy_s(r->folder, MAX_PATH, f[3], _TRUNCATE);
+            wcsncpy_s(r->state, 48, f[4], _TRUNCATE);
+        } else if (!wcscmp(f[0], L"F") && f[5]) {
+            BundleRec *r = rec_find(f[1]);
+            if (r) rec_file_add(r, f[2], _wcstoui64(f[3], NULL, 10), _wcstoui64(f[4], NULL, 10), _wcstoui64(f[5], NULL, 16));
+        }
+    }
+    free(text);
+}
+
+static void state_save(const WCHAR *mods)
+{
+    WCHAR path[MAX_PATH], part[MAX_PATH];
+    FILE *f;
+    int i, k;
+    swprintf_s(path, MAX_PATH, L"%s\\.bundled_state", mods);
+    swprintf_s(part, MAX_PATH, L"%s.part", path);
+    if (_wfopen_s(&f, part, L"w, ccs=UTF-8") || !f) return;
+    fwprintf(f, L"# The bundled mods the launcher installed: their versions, folders and files (don't edit)\n");
+    for (i = 0; i < s_n_recs; ++i) {
+        const BundleRec *r = &s_recs[i];
+        fwprintf(f, L"B\t%s\t%s\t%s\t%s\n", r->file, r->version, r->folder, r->state);
+        for (k = 0; k < r->n_files; ++k)
+            fwprintf(f, L"F\t%s\t%s\t%llu\t%llu\t%llx\n", r->file, r->files[k].rel, r->files[k].size, r->files[k].time,
+                     r->files[k].hash);
+    }
+    fclose(f);
+    MoveFileExW(part, path, MOVEFILE_REPLACE_EXISTING);
+}
+
+/* (the files that are the mod's own: not its on / off "disabled" or the game's and launcher's dot files) */
+static int bundle_file_counts(const WCHAR *name)
+{
+    return name[0] != L'.' && _wcsicmp(name, L"disabled") != 0;
+}
+
+/* Every file under dir (rel paths from root) into r - size, time and (with `hash`) its hash. */
+static void record_files(BundleRec *r, const WCHAR *root, const WCHAR *rel, int hash)
+{
+    WCHAR pat[MAX_PATH], full[MAX_PATH], sub[MAX_PATH];
     WIN32_FIND_DATAW fd;
     HANDLE h;
-    static WCHAR known[8192];
-    FILE *f;
-    int changed = 0, fresh = 0;
+    swprintf_s(pat, MAX_PATH, rel[0] ? L"%s\\%s\\*" : L"%s%s\\*", root, rel);
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..") || !bundle_file_counts(fd.cFileName)) continue;
+        swprintf_s(sub, MAX_PATH, rel[0] ? L"%s\\%s" : L"%s%s", rel, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) record_files(r, root, sub, hash);
+            continue;
+        }
+        swprintf_s(full, MAX_PATH, L"%s\\%s", root, sub);
+        rec_file_add(r, sub, (unsigned long long)fd.nFileSizeHigh << 32 | fd.nFileSizeLow,
+                     (unsigned long long)fd.ftLastWriteTime.dwHighDateTime << 32 | fd.ftLastWriteTime.dwLowDateTime,
+                     hash ? file_hash(full) : 0);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+static void rec_set_files(BundleRec *r, const WCHAR *dir)
+{
+    r->n_files = 0;
+    record_files(r, dir, L"", 1);
+}
+
+/* dir against r's files: *edited - a file changed, or one added (the Mod Maker's save, the player's own);
+   *missing - files gone. A file whose size and time are the same is taken as unchanged (no rehash at every
+   start); one whose time changed but not its content is too (its time is updated in r). */
+static void rec_check(BundleRec *r, const WCHAR *dir, int *edited, int *missing)
+{
+    BundleRec now;
+    int i, k;
+    *edited = *missing = 0;
+    ZeroMemory(&now, sizeof now);
+    for (i = 0; i < r->n_files; ++i) {
+        WCHAR full[MAX_PATH];
+        WIN32_FILE_ATTRIBUTE_DATA a;
+        unsigned long long size, time;
+        swprintf_s(full, MAX_PATH, L"%s\\%s", dir, r->files[i].rel);
+        if (!GetFileAttributesExW(full, GetFileExInfoStandard, &a)) {
+            ++*missing;
+            continue;
+        }
+        size = (unsigned long long)a.nFileSizeHigh << 32 | a.nFileSizeLow;
+        time = (unsigned long long)a.ftLastWriteTime.dwHighDateTime << 32 | a.ftLastWriteTime.dwLowDateTime;
+        if (size == r->files[i].size && time == r->files[i].time) continue;
+        if (size == r->files[i].size && file_hash(full) == r->files[i].hash) {
+            r->files[i].time = time;  /* (touched, not changed) */
+            continue;
+        }
+        ++*edited;
+    }
+    record_files(&now, dir, L"", 0);   /* (files the bundle didn't install: names only) */
+    for (k = 0; k < now.n_files; ++k) {
+        int known = 0;
+        for (i = 0; i < r->n_files && !known; ++i) known = !_wcsicmp(now.files[k].rel, r->files[i].rel);
+        if (!known) ++*edited;
+    }
+    free(now.files);
+}
+
+static int answer_for(const WCHAR *file)
+{
+    int i;
+    for (i = 0; i < s_n_answers; ++i)
+        if (!_wcsicmp(s_answers[i].file, file)) return s_answers[i].answer;
+    return s_default_answer;
+}
+
+static void ask(const WCHAR *game_dir, int kind, const WCHAR *file, const WCHAR *name, const WCHAR *have,
+                const WCHAR *ship)
+{
+    BundledQuestion *q;
+    WCHAR msg[600];
+    if (kind == BUNDLED_ASK_UPDATE)
+        swprintf_s(msg, 600, L"bundled %s: edited, version %s shipped (%s installed) - asking", file, ship, have);
+    else
+        swprintf_s(msg, 600, L"bundled %s: files missing - asking to fix it", file);
+    install_log(game_dir, msg);
+    if (s_n_questions >= (int)(sizeof s_questions / sizeof *s_questions)) return;
+    q = &s_questions[s_n_questions++];
+    q->kind = kind;
+    wcsncpy_s(q->file, MAX_PATH, file, _TRUNCATE);
+    wcsncpy_s(q->name, 128, name, _TRUNCATE);
+    wcsncpy_s(q->have, 32, have, _TRUNCATE);
+    wcsncpy_s(q->ship, 32, ship, _TRUNCATE);
+}
+
+int mods_bundled_questions(BundledQuestion *out, int max)
+{
+    int i;
+    for (i = 0; i < s_n_questions && i < max; ++i) out[i] = s_questions[i];
+    return s_n_questions;
+}
+
+void mods_bundled_answer(const WCHAR *file, int answer)
+{
+    int i;
+    if (!file) {
+        s_default_answer = answer;
+        return;
+    }
+    for (i = 0; i < s_n_answers; ++i)
+        if (!_wcsicmp(s_answers[i].file, file)) {
+            s_answers[i].answer = answer;
+            return;
+        }
+    if (s_n_answers < (int)(sizeof s_answers / sizeof *s_answers)) {
+        wcsncpy_s(s_answers[s_n_answers].file, MAX_PATH, file, _TRUNCATE);
+        s_answers[s_n_answers++].answer = answer;
+    }
+}
+
+void mods_bundled_reset(void)
+{
+    s_n_questions = s_n_answers = 0;
+    s_default_answer = 0;
+}
+
+/* Installs the bundle zip into dir (kept on / off; a fresh one off unless a match type), recorded in r. 1 if done. */
+static int bundle_install(const WCHAR *game_dir, const WCHAR *zip, const WCHAR *dir, BundleRec *r, const Mod *bm,
+                          int fresh, int was_off)
+{
+    int ok;
+    s_installed[0] = 0;
+    s_installed_existed = 0;
+    s_bundle_install = 1;
+    if (s_bundled_progress) s_bundled_progress(++s_bundled_n, s_bundled_total);
+    ok = mods_install(game_dir, zip) && s_installed[0];
+    s_bundle_install = 0;
+    if (!ok) return 0;
+    if ((fresh && _wcsicmp(bm->type, L"matchtype")) || was_off) {
+        WCHAR off[MAX_PATH];
+        FILE *f;
+        swprintf_s(off, MAX_PATH, L"%s\\disabled", dir);
+        if (_wfopen_s(&f, off, L"wb") == 0 && f) fclose(f);
+    }
+    wcsncpy_s(r->version, 32, bm->version, _TRUNCATE);
+    wcscpy_s(r->state, 48, L"on");
+    rec_set_files(r, dir);
+    scan();
+    fill();
+    return 1;
+}
+
+/* Mods shipped with the port (<bundle_dir>\*.svrmod, the release's "Bundled Mods"), checked at each start against
+ * Mods\.bundled_state (above) - nothing is installed again unless it's needed:
+ * - not installed, and never: installed (switched off - "disabled" in its folder - except a match type, which the
+ *   game had on before it became a mod);
+ * - its folder gone (the player removed it): recorded as removed, never installed again;
+ * - a newer version shipped: an unedited copy is updated (its on / off kept); an edited one is asked about
+ *   (mods_bundled_questions: update - the player's copy to Mods\.backup - or keep theirs, not asked again for that
+ *   version);
+ * - files missing from an unedited copy (a damaged install): asked about (fix / not now) - never fixed silently;
+ * - the player's copy a newer version than the shipped one: left alone.
+ * The questions are answered (mods_bundled_answer) and acted on at the next call. */
+void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
+{
+    WCHAR pat[MAX_PATH], zip[MAX_PATH], list[MAX_PATH], mods[MAX_PATH], *legacy = NULL;
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int changed = 0, carried = 0;
     if (!game_dir || !game_dir[0] || !bundle_dir || !bundle_dir[0])
         return;
     swprintf_s(pat, MAX_PATH, L"%s\\*.svrmod", bundle_dir);
     swprintf_s(mods, MAX_PATH, L"%s\\Mods", game_dir);
     swprintf_s(list, MAX_PATH, L"%s\\.bundled", mods);
-    known[0] = 0;
-    if (_wfopen_s(&f, list, L"r, ccs=UTF-8") == 0 && f) {
-        size_t n = fread(known, sizeof(WCHAR), sizeof known / sizeof *known - 1, f);
-        known[n] = 0;
-        fclose(f);
-    }
-    /* Bundles no longer shipped: the copy the launcher installed is switched
-       off once ("disabled" in its folder; the player may switch it back on)
-       and its line leaves .bundled. hurricane.svrmod (2.0.5): The Hurricane
-       is the playable manager on the M tile already - two tiles, neither with
-       an entrance video, theme or announcer clip (the game has none). */
+    SHCreateDirectoryExW(NULL, mods, NULL);
+    state_load(mods);
+    legacy = read_text(list);  /* (the old record, whole: what it says was installed is carried over) */
+    /* Bundles no longer shipped: the copy the launcher installed is switched off once ("disabled" in its folder;
+       the player may switch it back on). hurricane.svrmod (2.0.5): The Hurricane is the playable manager on the M
+       tile already - two tiles, neither with an entrance video, theme or announcer clip (the game has none). */
     {
         static const struct { const WCHAR *file, *folder; } retired[] = {
             {L"hurricane.svrmod", L"Superstars\\the_hurricane"},
         };
         int i;
         for (i = 0; i < (int)(sizeof retired / sizeof *retired); ++i) {
-            WCHAR key[MAX_PATH], *at, *end, off[MAX_PATH];
+            WCHAR key[MAX_PATH], off[MAX_PATH];
+            BundleRec *r = rec_find(retired[i].file);
+            int was;
             FILE *g;
             swprintf_s(key, MAX_PATH, L"%s|", retired[i].file);
-            at = wcsstr(known, key);
-            if (!at || (at != known && at[-1] != L'\n'))
-                continue;
+            was = (r && !wcscmp(r->state, L"on")) || (!r && legacy && wcsstr(legacy, key));
+            if (!was) continue;
             swprintf_s(off, MAX_PATH, L"%s\\%s", mods, retired[i].folder);
             if (GetFileAttributesW(off) != INVALID_FILE_ATTRIBUTES) {
                 wcscat_s(off, MAX_PATH, L"\\disabled");
                 if (_wfopen_s(&g, off, L"wb") == 0 && g) fclose(g);
             }
-            end = wcschr(at, L'\n');
-            end = end ? end + 1 : at + wcslen(at);
-            memmove(at, end, (wcslen(end) + 1) * sizeof(WCHAR));
+            if ((r = rec_add(retired[i].file)) != NULL) wcscpy_s(r->state, 48, L"retired");
             changed = 1;
         }
     }
-    /* Old copies a replace couldn't recycle (swap_in): gone now. */
+    /* Old copies a replace left (swap_in: one held then): gone now. */
     {
         WCHAR olds[MAX_PATH];
         swprintf_s(olds, MAX_PATH, L"%s\\.old", mods);
-        if (exists(olds)) remove_tree(olds, 1);
+        if (exists(olds)) remove_tree(olds, 0);
     }
-    /* Repair: a bundle installed before whose folder is now incomplete (a 2.1.2 update's replace that recycled
-       the old folder half-way - a held file - and then couldn't move the new one in: the manifest but no model,
-       listed but left out by the game) is installed again, keeping its on / off. A bundle whose folder is gone
-       altogether stays gone (the player removed it). */
-    h = FindFirstFileW(pat, &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            WCHAR key[MAX_PATH + 2], *at, dir[MAX_PATH], msg[512];
-            const WCHAR *kf;
-            Mod bm;
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-            swprintf_s(key, MAX_PATH + 2, L"%s|", fd.cFileName);
-            for (at = wcsstr(known, key); at && at != known && at[-1] != L'\n'; at = wcsstr(at + 1, key)) {}
-            if (!at) continue;   /* (not installed yet: the loop below does it) */
-            ZeroMemory(&bm, sizeof bm);
-            swprintf_s(zip, MAX_PATH, L"%s\\%s", bundle_dir, fd.cFileName);
-            if (!zip_manifest(zip, &bm) || !(kf = kind_folder(bm.type))) continue;
-            safe_id(bm.id);
-            swprintf_s(dir, MAX_PATH, L"%s\\%s\\%s", mods, kf, bm.id);
-            if (!exists(dir) || !folder_incomplete(dir, bm.type)) continue;
-            swprintf_s(msg, 512, L"bundled %s: %s\\%s is incomplete (a replace stopped half-way) - installing it again",
-                       fd.cFileName, kf, bm.id);
-            install_log(game_dir, msg);
-            /* its lines out (every one: an update leaves the older version's line too) - the loop below installs it
-               again, keeping its on / off */
-            while (at) {
-                WCHAR *end = wcschr(at, L'\n');
-                end = end ? end + 1 : at + wcslen(at);
-                memmove(at, end, (wcslen(end) + 1) * sizeof(WCHAR));
-                changed = 1;
-                for (at = wcsstr(known, key); at && at != known && at[-1] != L'\n'; at = wcsstr(at + 1, key)) {}
-            }
-            {
-                WCHAR mark[MAX_PATH + 4];
-                swprintf_s(mark, MAX_PATH + 4, L"\n%s|repair\n", fd.cFileName);   /* (keeps "fresh" off below) */
-                if (wcslen(known) + wcslen(mark) < sizeof known / sizeof *known - 1) wcscat_s(known, sizeof known / sizeof *known, mark + 1);
-            }
-        } while (FindNextFileW(h, &fd));
-        FindClose(h);
-    }
+    s_bundled_total = s_bundled_n = 0;
     h = FindFirstFileW(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) {
-        if (changed && _wfopen_s(&f, list, L"w, ccs=UTF-8") == 0 && f) {
-            fputws(known, f);
-            fclose(f);
-        }
+        if (changed) state_save(mods);
+        free(legacy);
         return;
     }
     do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-            continue;
-        swprintf_s(line, MAX_PATH + 64, L"%s|%lu|%lu%lu\n", fd.cFileName, fd.nFileSizeLow,
-                   fd.ftLastWriteTime.dwHighDateTime, fd.ftLastWriteTime.dwLowDateTime);
-        if (wcsstr(known, line))
-            continue;
+        WCHAR dir[MAX_PATH], folder[MAX_PATH], key[MAX_PATH + 2], msg[700], off[MAX_PATH];
+        const WCHAR *kf;
+        BundleRec *r;
+        Mod bm, have;
+        ZeroMemory(&have, sizeof have);
+        int edited = 0, missing = 0, was_off;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        ZeroMemory(&bm, sizeof bm);
         swprintf_s(zip, MAX_PATH, L"%s\\%s", bundle_dir, fd.cFileName);
-        SHCreateDirectoryExW(NULL, mods, NULL);
-        {
-            /* (a bundle installed for the first time comes switched off - the
-               player ticks the ones they want on the Mods tab; a new version
-               of one already installed keeps its on / off) */
-            WCHAR first[MAX_PATH + 4];
-            swprintf_s(first, MAX_PATH + 4, L"\n%s|", fd.cFileName);
-            fresh = wcsncmp(known, first + 1, wcslen(first + 1)) != 0 && !wcsstr(known, first);
-        }
-        s_installed[0] = 0;
-        s_installed_existed = 0;
-        s_bundle_install = 1;
-        if (mods_install(game_dir, zip) && fresh && !s_installed_existed && s_installed[0] &&
-            !wcsstr(s_installed, L"\\Mods\\MatchTypes\\")) {
-            WCHAR off[MAX_PATH];
-            FILE *f;
-            swprintf_s(off, MAX_PATH, L"%s\\disabled", s_installed);
-            if (_wfopen_s(&f, off, L"wb") == 0 && f) fclose(f);
-            scan();
-            fill();
-        }
-        s_bundle_install = 0;
-        if (s_installed[0] && wcslen(known) + wcslen(line) < sizeof known / sizeof *known - 1) {
-            wcscat_s(known, sizeof known / sizeof *known, line);
+        if (!zip_manifest(zip, &bm) || !(kf = kind_folder(bm.type))) continue;
+        safe_id(bm.id);
+        swprintf_s(folder, MAX_PATH, L"%s\\%s", kf, bm.id);
+        swprintf_s(dir, MAX_PATH, L"%s\\%s", mods, folder);
+        swprintf_s(off, MAX_PATH, L"%s\\disabled", dir);
+        r = rec_find(fd.cFileName);
+        if (r && (!wcscmp(r->state, L"removed") || !wcscmp(r->state, L"retired"))) continue;  /* (the player's say) */
+        if (!r) {
+            /* not in the record: the old one's installs carried over, or a new bundle */
+            swprintf_s(key, MAX_PATH + 2, L"%s|", fd.cFileName);
+            if (!(r = rec_add(fd.cFileName))) continue;
+            wcsncpy_s(r->folder, MAX_PATH, folder, _TRUNCATE);
             changed = 1;
+            if (!exists(dir)) {
+                if (legacy && wcsstr(legacy, key)) {   /* (installed before, its folder gone: the player removed it) */
+                    wcscpy_s(r->state, 48, L"removed");
+                    swprintf_s(msg, 700, L"bundled %s: removed by the player - not installed again", fd.cFileName);
+                    install_log(game_dir, msg);
+                    continue;
+                }
+                if (bundle_install(game_dir, zip, dir, r, &bm, 1, 0)) {
+                    swprintf_s(msg, 700, L"bundled %s: installed (%s)", fd.cFileName, folder);
+                    install_log(game_dir, msg);
+                } else {
+                    s_n_recs--;  /* (not recorded: tried again next start) */
+                }
+                continue;
+            }
+            /* installed before this record (its copy never replaced to find out): the same version as the shipped
+               one - the copy compared with the bundle's files (unpacked into Mods\.compare): its record is the
+               bundle's, so the player's changes show as edits; another version - taken as edited (asked about, never
+               updated silently) */
+            {
+                WCHAR man[MAX_PATH], cmp[MAX_PATH];
+                BundleRec shipped;
+                int i, k, same = 0;
+                ZeroMemory(&have, sizeof have);
+                ZeroMemory(&shipped, sizeof shipped);
+                swprintf_s(man, MAX_PATH, L"%s\\manifest.txt", dir);
+                read_manifest(man, &have);
+                wcsncpy_s(r->version, 32, have.version, _TRUNCATE);
+                wcscpy_s(r->state, 48, L"on");
+                rec_set_files(r, dir);
+                swprintf_s(cmp, MAX_PATH, L"%s\\.compare", mods);
+                remove_tree(cmp, 0);
+                SHCreateDirectoryExW(NULL, cmp, NULL);
+                if (!wcscmp(have.version, bm.version) && unzip_file(zip, cmp)) {
+                    record_files(&shipped, cmp, L"", 1);
+                    same = shipped.n_files > 0;
+                    for (k = 0; k < shipped.n_files && same; ++k) {   /* (the bundle's files - the copy's extra
+                                                                         ones, e.g. its movie fallbacks, aside) */
+                        int found = 0;
+                        for (i = 0; i < r->n_files && !found; ++i)
+                            found = !_wcsicmp(r->files[i].rel, shipped.files[k].rel) &&
+                                    r->files[i].hash == shipped.files[k].hash;
+                        same = found;
+                    }
+                }
+                remove_tree(cmp, 0);
+                free(shipped.files);
+                if (!same)   /* (an edited copy: its record no longer matches it) */
+                    for (i = 0; i < r->n_files; ++i) r->files[i].hash ^= 1, r->files[i].time = 0;
+                swprintf_s(msg, 700, L"bundled %s: installed before (version %s) - carried over %s", fd.cFileName,
+                           have.version[0] ? have.version : L"?", same ? L"as the bundle's" : L"as edited");
+                install_log(game_dir, msg);
+                ++carried;
+            }
+        }
+        if (!exists(dir)) {   /* (the player removed it) */
+            wcscpy_s(r->state, 48, L"removed");
+            changed = 1;
+            swprintf_s(msg, 700, L"bundled %s: removed by the player - not installed again", fd.cFileName);
+            install_log(game_dir, msg);
+            continue;
+        }
+        rec_check(r, dir, &edited, &missing);
+        was_off = exists(off);
+        if (version_newer(bm.version, r->version)) {
+            WCHAR from[32];
+            wcsncpy_s(from, 32, r->version, _TRUNCATE);
+            WCHAR kept[48];
+            swprintf_s(kept, 48, L"kept %s", bm.version);
+            if (!wcscmp(r->state, kept)) continue;   /* (the player kept theirs over this version) */
+            if (!edited && !missing) {
+                if (bundle_install(game_dir, zip, dir, r, &bm, 0, was_off)) {
+                    changed = 1;
+                    swprintf_s(msg, 700, L"bundled %s: updated %s -> %s (unedited)", fd.cFileName, from[0] ? from : L"?", bm.version);
+                    install_log(game_dir, msg);
+                }
+                continue;
+            }
+            switch (answer_for(fd.cFileName)) {
+            case BUNDLED_YES: {   /* update: the player's copy to Mods\.backup first */
+                WCHAR backup[MAX_PATH];
+                SYSTEMTIME st;
+                GetLocalTime(&st);
+                swprintf_s(backup, MAX_PATH, L"%s\\.backup\\%s-%s-%04d%02d%02d-%02d%02d%02d", mods, kf, bm.id, st.wYear,
+                           st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+                { WCHAR parent[MAX_PATH]; swprintf_s(parent, MAX_PATH, L"%s\\.backup", mods); SHCreateDirectoryExW(NULL, parent, NULL); }
+                if (!MoveFileW(dir, backup)) {
+                    swprintf_s(msg, 700, L"bundled %s: couldn't back the edited copy up (Windows error %lu) - left as it is",
+                               fd.cFileName, GetLastError());
+                    install_log(game_dir, msg);
+                    continue;
+                }
+                if (bundle_install(game_dir, zip, dir, r, &bm, 0, was_off)) {
+                    changed = 1;
+                    swprintf_s(msg, 700, L"bundled %s: updated to %s, the edited copy kept in %s", fd.cFileName, bm.version, backup);
+                } else {
+                    MoveFileW(backup, dir);
+                    swprintf_s(msg, 700, L"bundled %s: the update failed - the edited copy put back", fd.cFileName);
+                }
+                install_log(game_dir, msg);
+                break;
+            }
+            case BUNDLED_NO:   /* keep theirs - not asked again for this version */
+                wcscpy_s(r->state, 48, kept);
+                changed = 1;
+                swprintf_s(msg, 700, L"bundled %s: the player kept their edited copy over version %s", fd.cFileName, bm.version);
+                install_log(game_dir, msg);
+                break;
+            default:
+                ask(game_dir, BUNDLED_ASK_UPDATE, fd.cFileName, bm.id, r->version, bm.version);
+            }
+            continue;
+        }
+        if (missing && !edited) {   /* a damaged install: a question, never a silent reinstall */
+            switch (answer_for(fd.cFileName)) {
+            case BUNDLED_YES:
+                if (bundle_install(game_dir, zip, dir, r, &bm, 0, was_off)) {
+                    changed = 1;
+                    swprintf_s(msg, 700, L"bundled %s: %d missing file(s) put back (installed again)", fd.cFileName, missing);
+                    install_log(game_dir, msg);
+                }
+                break;
+            case BUNDLED_NO:
+                break;   /* (not now: asked again at the next start) */
+            default:
+                ask(game_dir, BUNDLED_ASK_FIX, fd.cFileName, bm.id, r->version, bm.version);
+            }
         }
     } while (FindNextFileW(h, &fd));
     FindClose(h);
-    {   /* (the repair's "<file>|repair" marks: not written) */
-        WCHAR *r;
-        while ((r = wcsstr(known, L"|repair\n")) != NULL) {
-            WCHAR *start = r, *end = r + 8;
-            while (start > known && start[-1] != L'\n') --start;
-            memmove(start, end, (wcslen(end) + 1) * sizeof(WCHAR));
-        }
+    if (carried) {
+        WCHAR msg[200];
+        swprintf_s(msg, 200, L"bundled mods: %d installed copies carried over to Mods\\.bundled_state as they are", carried);
+        install_log(game_dir, msg);
     }
-    if (changed && _wfopen_s(&f, list, L"w, ccs=UTF-8") == 0 && f) {
-        fputws(known, f);
-        fclose(f);
-    }
+    state_save(mods);
+    free(legacy);
 }
 
 /* A superstar / media mod's .mp4 entrance movies (movie= / video.<id>=) that
@@ -1069,8 +1456,8 @@ static int move_retry(const WCHAR *from, const WCHAR *to)
    leaving a half: the old folder is renamed into Mods\.old first (a rename
    fails whole when a file in it is held, and then nothing changed), the new
    one moved in (on failure the old one goes back), and only then the old one
-   goes to the Recycle Bin (if that fails, Mods\.old is emptied at the next
-   start). It used to be recycled first: a held file left a folder with its
+   is deleted (directly - the shell's delete took 30 s a folder here; if it
+   fails, Mods\.old is emptied at the next start). It used to be recycled first: a held file left a folder with its
    manifest but no model - listed, but left out by the game (2.1.2 bundled-mod
    reports). 1 on success; else `why` says what to do. */
 static int swap_in(const WCHAR *tmp, const WCHAR *dst, const WCHAR *kind, const WCHAR *id, WCHAR *why, size_t cap)
@@ -1108,7 +1495,7 @@ static int swap_in(const WCHAR *tmp, const WCHAR *dst, const WCHAR *kind, const 
                              L"the new files): the installed copy is unchanged; install again.", id, err);
         return 0;
     }
-    remove_tree(old, 1);  /* (an older version: to the Recycle Bin; a held file leaves it for the next start) */
+    remove_tree(old, 0);  /* (the replaced copy, directly: a held file leaves it in Mods\.old for the next start) */
     return 1;
 }
 

@@ -2,6 +2,7 @@
 
     py ps2_char.py --list <disc iso or extract folder>
     py ps2_char.py <disc> <id> <out dir> --template <2011 chNNN.pac> [--attire N[,N..]|all] [--no-gear] [--models ID,ID..]
+    py ps2_char.py <disc> <id> <out dir> --template <2011 chNNN.pac> --attire-pictures   (each attire as a picture)
 
 --list prints JSON {game, disc_serial, characters: [{id, name, raw_id, source, attires: [{attire, source,
 bones, meshes}]}]}. The convert writes into <out dir>: model.json (svr11_build's neutral model), tex_*.png
@@ -44,6 +45,7 @@ import json
 import math
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -59,6 +61,12 @@ SKELETON = json.load(open(os.path.join(HERE, 'svr11_skeleton.json')))
 B11 = {b['name']: b for b in SKELETON['bones']}
 SPECULAR = 48   # colour alpha = specular level (2011 skin: about 40-60)
 CUTOUT_TRIS = 0.15   # an opaque-drawn mesh with more triangle middles on see-through texels is a cut-out too
+# A blended-flagged mesh (JBI / SYM / HCTP) whose triangle middles are nearly all on see-through texels isn't a cut-out:
+# its texture's alpha isn't opacity (the PS2's opaque path ignores it). Stock HCTP, every blended submesh measured
+# (21 Oct 2026): 977 of 1089 under 10%, five at 90-100% and each 2-4 triangles. A modded model with the flag on its
+# body (a report: legs gone, holes in the torso, boots as outlines) drew that body see-through.
+BLEND_SOLID_TRIS = 0.9
+BLEND_SOLID_MIN = 8
 
 # a bone's segment: bone -> the child it points at (2011 names)
 SEGMENT = {'koshi': 'mune', 'mune': 'kubi', 'kubi': 'atama'}
@@ -735,6 +743,16 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
         mids = [((uvs[i][0] + uvs[j][0] + uvs[k][0]) / 3, (uvs[i][1] + uvs[j][1] + uvs[k][1]) / 3) for i, j, k in tris]
         return sum(1 for u, v in mids if al[int(v * h) % h, int(u * w) % w] < 128) / len(mids) > CUTOUT_TRIS
 
+    def clear_share(name, uvs, tris):
+        """the share of a mesh's triangle middles on see-through texels (alpha < 16) of its texture; 0: no texture"""
+        img = tex.get(name.lower())
+        if img is None or not tris:
+            return 0.0
+        al = img[..., 3]
+        h, w = al.shape
+        mids = [((uvs[i][0] + uvs[j][0] + uvs[k][0]) / 3, (uvs[i][1] + uvs[j][1] + uvs[k][1]) / 3) for i, j, k in tris]
+        return sum(1 for u, v in mids if al[int(v * h) % h, int(u * w) % w] < 16) / len(mids)
+
     def cutout(sub):
         """whether a PS2 submesh is drawn blended (hair cards, hair lines, laces): its material's flags (u32 at
         +0x24) - JBI / SYM / HCTP: 0x07 opaque, 0x05 blended (bit 0x02 clear) in a model that has 0x07; SvR 2004 on: 0x05 opaque,
@@ -770,6 +788,8 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
         return fn
 
     meshes = []
+    solid_blended = []   # (blended-flagged meshes drawn solid: BLEND_SOLID_TRIS)
+    see_list = []        # (the meshes drawn see-through, for the report)
     # (JBI / SYM / HCTP: 0x05 means blended only in a model that also has 0x07 - the Rock's and Austin's
     # models are all 0x05, all solid)
     mixed = any(u32(sub['mat'], 0x24) & 0x02 for m in body['meshes'] for sub in m['subs'] if len(sub.get('mat') or b'') >= 0x28)
@@ -822,10 +842,18 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
                             tris.append([a, b, c])
                 if not tris:
                     continue
-                kind = 'eye' if 'eye' in tname.lower() else 'hair' if cutout(sub) or (not old_materials and see_through(tname, uvs, tris)) else 'skin'
+                blended = cutout(sub)
+                if blended and old_materials and len(tris) >= BLEND_SOLID_MIN and \
+                        clear_share(tname, uvs, tris) >= BLEND_SOLID_TRIS:
+                    blended = False   # (its texture's alpha isn't opacity: BLEND_SOLID_TRIS)
+                    solid_blended.append('%s (%s, %d triangles)' % ('%s_m%d_%d' % (src['name'] or tag, mi, si), tname, len(tris)))
+                kind = 'eye' if 'eye' in tname.lower() else 'hair' if blended or (not old_materials and see_through(tname, uvs, tris)) else 'skin'
                 mesh = dict(name='%s_m%d_%d' % (src['name'] or tag, mi, si), kind=kind, positions=pos, normals=nrm,
                             uvs=uvs, bones=bones, weights=wts, triangles=tris, _tex=tname, _spec=spec_of(sub))
                 meshes.append(mesh)
+                if kind == 'hair' and len(see_list) < 24:
+                    see_list.append('%s (%s, %d triangles, %d%% on see-through texels)' % (
+                        mesh['name'], tname, len(tris), round(100 * clear_share(tname, uvs, tris))))
     # (a texture both hair and solid meshes use: a see-through copy for the hair, a specular one for the rest)
     files = {}
     for m in meshes:
@@ -849,6 +877,13 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
             joints[nd['name']] = [float(x) for x in Q[i]]
     ys = [p[1] for m in meshes for p in m['positions']]
     info = dict(bones_folded=folded, scale=1.0, height_m=round((max(ys) - min(ys)) / 10.0, 2) if ys else None)
+    # (problem reports: what each attire's meshes became - a body part drawn see-through or gone shows here)
+    kinds = {}
+    for m in meshes:
+        kinds[m['kind']] = kinds.get(m['kind'], 0) + 1
+    info['mesh_kinds'] = kinds
+    info['see_through'] = see_list
+    info['drawn_solid'] = solid_blended
     return dict(meshes=meshes, joints=joints), info
 
 
@@ -1132,6 +1167,105 @@ def list_disc(path):
     print(json.dumps(out, indent=1))
 
 
+
+def render_meshes(meshes, out_dir, path, size=(192, 288)):
+    """A picture of an attire for choosing it (the Mod Maker's attire picker): its meshes, front view, textured,
+    nearest texel, depth-tested, see-through texels left out - a plain software rasteriser (no GPU), a second or so."""
+    W, H = size
+    tris_all = []
+    for m in meshes:
+        P = np.array(m['positions'], np.float32)
+        if len(P):
+            tris_all.append(P)
+    if not tris_all:
+        return None
+    allp = np.concatenate(tris_all)
+    lo, hi = allp.min(0), allp.max(0)
+    scale = 0.94 * min(W / max(hi[0] - lo[0], 1e-6), H / max(hi[1] - lo[1], 1e-6))
+    cx, cy = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2
+    rgb = np.zeros((H, W, 3), np.uint8)
+    alpha = np.zeros((H, W), np.uint8)
+    depth = np.full((H, W), -np.inf, np.float32)
+    texcache = {}
+    for m in meshes:
+        c = (m.get('textures') or {}).get('color')
+        if c not in texcache:
+            try:
+                texcache[c] = np.array(Image.open(os.path.join(out_dir, c)).convert('RGBA')) if c else None
+            except OSError:
+                texcache[c] = None
+        img = texcache[c]
+        P = np.array(m['positions'], np.float32)
+        if not len(P):
+            continue
+        UV = np.array(m['uvs'], np.float32) if len(m['uvs']) == len(P) else np.zeros((len(P), 2), np.float32)
+        X = (P[:, 0] - cx) * scale + W / 2
+        Y = H / 2 + (P[:, 1] - cy) * scale   # (the model's y points down the picture)
+        Z = -P[:, 2]                         # (its front faces -z)
+        cut = m['kind'] == 'hair'
+        for a, b, cc in m['triangles']:
+            x0, x1, x2, y0, y1, y2 = X[a], X[b], X[cc], Y[a], Y[b], Y[cc]
+            area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
+            if abs(area) < 1e-9:
+                continue
+            xa, xb = max(int(min(x0, x1, x2)), 0), min(int(max(x0, x1, x2)) + 1, W)
+            ya, yb = max(int(min(y0, y1, y2)), 0), min(int(max(y0, y1, y2)) + 1, H)
+            if xa >= xb or ya >= yb:
+                continue
+            gx, gy = np.meshgrid(np.arange(xa, xb) + 0.5, np.arange(ya, yb) + 0.5)
+            w0 = ((x1 - gx) * (y2 - gy) - (x2 - gx) * (y1 - gy)) / area
+            w1 = ((x2 - gx) * (y0 - gy) - (x0 - gx) * (y2 - gy)) / area
+            w2 = 1 - w0 - w1
+            inside = (w0 >= 0) & (w1 >= 0) & (w2 >= 0)
+            if not inside.any():
+                continue
+            z = w0 * Z[a] + w1 * Z[b] + w2 * Z[cc]
+            sub = depth[ya:yb, xa:xb]
+            draw = inside & (z > sub)
+            if not draw.any():
+                continue
+            if img is not None:
+                u = w0 * UV[a, 0] + w1 * UV[b, 0] + w2 * UV[cc, 0]
+                v = w0 * UV[a, 1] + w1 * UV[b, 1] + w2 * UV[cc, 1]
+                th, tw = img.shape[:2]
+                texel = img[(v * th).astype(int) % th, (u * tw).astype(int) % tw]
+                if cut:
+                    draw &= texel[..., 3] >= 64
+                col = texel[..., :3]
+            else:
+                col = np.full(gx.shape + (3,), 160, np.uint8)
+            sub[draw] = z[draw]
+            rgb[ya:yb, xa:xb][draw] = col[draw]
+            alpha[ya:yb, xa:xb][draw] = 255
+    im = Image.fromarray(np.dstack([rgb, alpha]), 'RGBA')
+    im.save(path)
+    return path
+
+
+def attire_pictures(path, id_, out_dir, template):
+    """--attire-pictures: every attire of a character built and drawn (render_meshes) for choosing which become the
+    mod's four: <out>/attire_<n>.png and attires.json [{attire, model_id, picture, meshes, see_through, drawn_solid}]"""
+    g = open_game(path)
+    chars = g.characters()
+    if id_ not in chars:
+        raise BadInput('no character %x (have %s)' % (id_, ' '.join('%x' % c for c in sorted(chars))))
+    os.makedirs(out_dir, exist_ok=True)
+    out = []
+    for at, mid in sorted(chars[id_].items()):
+        tag = '%0*x' % (8 if mid > 0xFFFF else 4, mid)
+        body, parts, tex = g.model(mid)
+        work = os.path.join(out_dir, '.attire_%d' % at)
+        os.makedirs(work, exist_ok=True)
+        a, info = build_model(body, parts, tex, work, template, tag, g.old_materials)
+        pic = render_meshes(a['meshes'], work, os.path.join(out_dir, 'attire_%d.png' % at))
+        out.append(dict(attire=at, model_id=tag, picture=pic, meshes=info['mesh_kinds'],
+                        see_through=len(info['see_through']), drawn_solid=len(info['drawn_solid'])))
+        shutil.rmtree(work, ignore_errors=True)
+    json.dump(out, open(os.path.join(out_dir, 'attires.json'), 'w'), indent=1)
+    print(json.dumps(dict(ok=True, game=g.game, id='%x' % id_, attires=out)))
+    return 0
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--list', metavar='DISC')
@@ -1142,6 +1276,8 @@ def main(argv):
     ap.add_argument('--attire', default='all', help='all, one attire or a list: 0,2,3 (in this order)')
     ap.add_argument('--no-gear', action='store_true', help='leave the entrance gear out')
     ap.add_argument('--models', help='model ids (hex) to build as attires 1, 2, .. in that order: 00,40')
+    ap.add_argument('--attire-pictures', action='store_true',
+                    help="every attire drawn to <out>/attire_<n>.png + attires.json (to choose the mod's four)")
     a = ap.parse_args(argv)
     try:
         if a.list:
@@ -1149,6 +1285,8 @@ def main(argv):
             return 0
         if not (a.disc and a.id and a.out and a.template):
             ap.error('give <disc> <id> <out dir> --template <2011 ch.pac>, or --list <disc>')
+        if a.attire_pictures:
+            return attire_pictures(a.disc, int(a.id, 16), a.out, a.template)
         models = [int(x, 16) for x in a.models.split(',') if x.strip()] if a.models else None
         return convert(a.disc, int(a.id, 16), a.out, a.template, a.attire, not a.no_gear, models)
     except BadInput as e:

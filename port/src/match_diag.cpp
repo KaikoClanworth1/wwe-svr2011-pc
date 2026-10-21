@@ -22,6 +22,8 @@ namespace {
 
 constexpr uint32_t kChars = 0x82E3CC50, kMatchFrames = 0x82E3CD0C;
 constexpr uint32_t kQuietFrames = 30 * 60;  // (the match clock: 60 a second)
+constexpr uint32_t kHeldFrames = 10 * 60;   // a wrestler's motion and its frame unchanged this long: held
+constexpr uint32_t kMotion = 212, kMotionFrame = 24;  // (character: its motion, the motion's frame - a float)
 
 using Clock = std::chrono::steady_clock;
 
@@ -39,6 +41,11 @@ std::array<std::string, 10> g_names;           // character index -> name (the m
 std::array<uint32_t, 10> g_ids{};               // character index -> superstar id (0xFFFF: unknown)
 uint32_t g_clock_at_move = 0;                  // the match clock at the last answer the tick saw
 uint32_t g_told_quiet = 0;                     // (the match clock's value when told: once a match)
+bool g_told_held = false;                      // (two wrestlers held in one motion frame: told once a match)
+struct Held {
+  uint32_t ch = 0, motion = 0, frame_bits = 0, since = 0;  // (since: the match clock when it last changed)
+};
+std::array<Held, 10> g_held;
 bool g_was_in_match = false;
 
 uint32_t Rd32(const uint8_t* base, uint32_t a) {
@@ -97,7 +104,11 @@ void LogMatchState(uint8_t* base, const char* why) {
                          std::chrono::duration_cast<std::chrono::seconds>(now - Clock::time_point(Clock::duration(e.at.load()))).count());
       break;
     }
-    REXLOG_WARN("[svr2011] match state:   person {} {} - {}; {}", person, g_names[i], mod.empty() ? "not a mod" : "mod " + mod, move);
+    const uint32_t frame_bits = Rd32(base, ch + kMotionFrame);
+    float frame;
+    std::memcpy(&frame, &frame_bits, 4);
+    REXLOG_WARN("[svr2011] match state:   person {} {} - {}; motion {} frame {:.1f}; {}", person, g_names[i],
+                mod.empty() ? "not a mod" : "mod " + mod, Rd32(base, ch + kMotion), frame, move);
   }
 }
 
@@ -141,7 +152,7 @@ void MatchDiagTick(uint8_t* base, bool in_match) {
     if (!in_match) {  // (a match ended: the next starts clean - its people are noted as it loads, before it runs)
       if (g_was_in_match) {
         for (auto& e : g_last) e.fighter = 0;
-        g_names = {}, g_ids.fill(0xFFFF), g_told_quiet = 0, g_clock_at_move = 0;
+        g_names = {}, g_ids.fill(0xFFFF), g_told_quiet = 0, g_clock_at_move = 0, g_told_held = false, g_held = {};
       }
       g_was_in_match = false;
       return;
@@ -156,6 +167,29 @@ void MatchDiagTick(uint8_t* base, bool in_match) {
     if (clock > g_clock_at_move + kQuietFrames && g_told_quiet == 0 && g_last[0].fighter.load()) tell = true, g_told_quiet = clock;
   }
   if (tell) LogMatchState(base, "the match clock ran 30 s with no wrestler asking for a move");
+  // Two wrestlers frozen in a hold while the rest of the match runs (player report 21 Oct: "just the 2 opponents in
+  // the ring freeze"): their motion and its frame unchanged for 10 s of the match clock.
+  bool held_tell = false;
+  uint32_t held_motion = 0;
+  {
+    std::lock_guard lock(g_mutex);
+    int held = 0;
+    for (uint32_t i = 0; i < 10; ++i) {
+      const uint32_t ch = Rd32(base, kChars + i * 4);
+      Held& h = g_held[i];
+      if (ch < 0x40000000u || (ch & 3) || g_names[i].empty() || Rd32(base, ch + 1156) >= 6) {  // (wrestlers only)
+        h = {};
+        continue;
+      }
+      const uint32_t motion = Rd32(base, ch + kMotion), frame_bits = Rd32(base, ch + kMotionFrame);
+      if (h.ch != ch || h.motion != motion || h.frame_bits != frame_bits || clock < h.since) h = {ch, motion, frame_bits, clock};
+      if (motion && clock >= h.since + kHeldFrames) ++held, held_motion = motion;
+    }
+    if (held >= 2 && !g_told_held) g_told_held = held_tell = true;
+  }
+  if (held_tell)
+    LogMatchState(base, fmt::format("two wrestlers held in one motion frame for 10 s while the match clock runs (motion {})",
+                                    held_motion).c_str());
   // Test aid: SVR2011_TEST_MATCH_STATE=<s> - the state once, <s> s into the match clock.
   static const uint32_t test_at = [] { const char* v = std::getenv("SVR2011_TEST_MATCH_STATE"); return v ? uint32_t(std::atoi(v)) * 60 : 0u; }();
   static bool test_told = false;

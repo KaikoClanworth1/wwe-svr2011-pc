@@ -3102,6 +3102,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
     else if (!wcscmp(argv[i], L"--page-name") && more) page_name = argv[++i];  // arena editor backstage superstar moves signs media assets anims icons help
     else if (!wcscmp(argv[i], L"--select") && more) start_select = argv[++i];
+    else if (!wcscmp(argv[i], L"--test-picture") && more) editor::TestPicture(Utf8(argv[++i]));
     else if (!wcscmp(argv[i], L"--test-edit-save") && more) test_save = argv[++i];
     else if (!wcscmp(argv[i], L"--new-arena") && more) start_new = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-lib") && more) test_lib = _wtoi(argv[++i]);

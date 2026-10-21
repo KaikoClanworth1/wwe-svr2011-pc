@@ -23,9 +23,11 @@
 #include <string>
 #include <vector>
 
+#include <fmt/format.h>
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
+#include "frame_rate.h"
 #include "superstar_mods.h"
 
 namespace svr2011 {
@@ -247,9 +249,17 @@ int64_t UniverseModPlace(uint8_t* base, uint32_t id) {
   return int64_t(k);
 }
 
-int64_t UniverseModPair(uint8_t* base, uint32_t table, uint32_t a, int64_t place_a, uint32_t b, int64_t place_b) {
+int64_t UniverseModPair(uint8_t* base, uint32_t table, uint32_t a, int64_t place_a, uint32_t b, int64_t place_b,
+                        bool working_copy) {
   const uint32_t p = P(base);
-  if (!p || !g_rows || a == b || table != p + kRivalry) return -1;
+  if (!p || !g_rows || a == b || (table != p + kRivalry && !working_copy)) return -1;
+  if (table != p + kRivalry) {  // (a working copy: its mod pairs are the side bytes themselves - see the header)
+    static bool said = false;
+    if (!said) {
+      said = true;
+      REXLOG_INFO("[svr2011] universe mods: rivalry working copy at {:08X} - its mod pairs use the side table", table);
+    }
+  }
   const int ia = Index(a), ib = Index(b);
   int row = -1;
   uint32_t col = 0;
@@ -278,6 +288,75 @@ void UniverseModsLoaded(uint8_t* base) {
   Read(base);
   g_seen = SaveTime();
   g_loaded = true;
+}
+
+namespace {
+constexpr uint32_t kTeams = 0xF5C8, kTeamSize = 270, kTeamCount = 70, kTeamName = 0x50, kNoMember = 0x200;
+
+struct Team {
+  std::vector<uint32_t> members;
+  std::string name;
+  bool operator==(const Team& o) const { return members == o.members && name == o.name; }
+};
+
+Team ReadTeam(const uint8_t* t) {
+  Team out;
+  const uint32_t n = std::min<uint32_t>(uint32_t(t[0]) << 8 | t[1], 5);
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint32_t id = uint32_t(t[2 + 2 * i]) << 8 | t[3 + 2 * i];
+    if (id != kNoMember) out.members.push_back(id);
+  }
+  for (uint32_t i = kTeamName; i < kTeamName + 48 && t[i] >= 0x20 && t[i] < 0x7F; ++i) out.name += char(t[i]);
+  return out;
+}
+
+std::string Members(const Team& t) {
+  std::string out;
+  for (const uint32_t id : t.members) {
+    const std::string mod = SuperstarModFolder(id);
+    out += (out.empty() ? "" : ", ") + std::to_string(id) + (mod.empty() ? "" : " (mod " + mod + ")");
+  }
+  return out.empty() ? "none" : out;
+}
+}  // namespace
+
+void UniverseTeamsTick(uint8_t* base) {
+  static uint32_t frames = 0, save_seen = 0, grace = 0;  // (grace: ticks after a list - a save still coming in)
+  static std::vector<Team> seen;
+  if (++frames % 30) return;
+  const uint32_t save = Rd32(base + kSavePtr);
+  if (!save) return;
+  std::vector<Team> now;
+  for (uint32_t k = 0; k < kTeamCount; ++k) now.push_back(ReadTeam(base + save + kTeams + k * kTeamSize));
+  const auto in_use = [](const Team& t) { return !t.members.empty() || !t.name.empty(); };
+  int changed = 0;
+  for (uint32_t k = 0; k < kTeamCount && !seen.empty(); ++k) changed += !(now[k] == seen[k]);
+  if (save != save_seen || seen.empty() || changed > 3 || (changed && grace)) {  // (a save came in: the list)
+    grace = 60;  // (about 30 s: a save's teams come in over several seconds)
+    std::string list;
+    int n = 0;
+    for (uint32_t k = 0; k < kTeamCount; ++k)
+      if (in_use(now[k])) ++n, list += fmt::format("{}{} \"{}\" [{}]", list.empty() ? "" : "; ", k + 1, now[k].name, Members(now[k]));
+    REXLOG_INFO("[svr2011] universe teams: {} in this save{}{}", n, n ? ": " : "", list);
+  } else {
+    if (grace) --grace;
+    const char* when = InMatch() ? "during a match" : "outside a match";
+    for (uint32_t k = 0; k < kTeamCount; ++k) {
+      if (now[k] == seen[k]) continue;
+      const Team& a = seen[k];
+      const Team& b = now[k];
+      if (!in_use(a))
+        REXLOG_INFO("[svr2011] universe teams: team {} \"{}\" made - {} ({})", k + 1, b.name, Members(b), when);
+      else if (!in_use(b) || b.members.size() < 2)
+        REXLOG_INFO("[svr2011] universe teams: team {} \"{}\" dissolved - it had {}, now {} ({})", k + 1, a.name,
+                    Members(a), Members(b), when);
+      else
+        REXLOG_INFO("[svr2011] universe teams: team {} \"{}\" changed - {} -> \"{}\" {} ({})", k + 1, a.name,
+                    Members(a), b.name, Members(b), when);
+    }
+  }
+  seen = std::move(now);
+  save_seen = save;
 }
 
 void UniverseModsTick(uint8_t* base) {

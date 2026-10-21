@@ -94,13 +94,42 @@ REX_HOOK_RAW(sub_82158C70) {
 
 // sub_8215A380(size, min, max, align, protect) -> MmAllocatePhysicalMemoryEx: an
 // allocator heap growing inside its physical address window. Failures logged.
+//
+// A window that's full is tried again anywhere in physical memory: the match's block heap (sub_821DB908 at the
+// match start, after the entrances: 2 x 6.5 MB, the first in 19EC0000-1A540000 - exactly its size) found a page
+// of its window taken - two big 2K14 ports in a mod arena (2.1.3 / 2.1.4.1 reports, every time: Eddie Guerrero
+// and Undertaker Biker in "Smackdown 13") - and the game cleared the null it got (memset at lr 821DBA14), a
+// crash 2.5 s after the entrances. The heap's users take its base as given (sub_821DB908 lays its blocks from
+// the address returned), so another place works; no room anywhere is still 0 (logged with the heaps).
 REX_EXTERN(__imp__sub_8215A380);
 REX_HOOK_RAW(sub_8215A380) {
   const uint32_t size = ctx.r3.u32, lo = ctx.r4.u32, hi = ctx.r5.u32, align = ctx.r6.u32, prot = ctx.r7.u32;
   const uint32_t caller = uint32_t(ctx.lr);
+  const PPCContext in = ctx;
+  // Test aid: SVR2011_TEST_BLOCKHEAP_SQUAT=1 - 64 KB of the block heap's window taken first (once), as another
+  // allocation spilling into it would: the window is then too full for it.
+  if (static const bool squat = std::getenv("SVR2011_TEST_BLOCKHEAP_SQUAT") != nullptr;
+      squat && size == 0x680000 && lo == 0x19EC0000) {
+    static bool done = false;
+    if (!done) {
+      done = true;
+      ctx.r3.u64 = 0x10000;
+      __imp__sub_8215A380(ctx, base);
+      REXLOG_WARN("[svr2011] model memory: test - 64 KB of {:08X}-{:08X} taken first (at {:08X})", lo, hi, ctx.r3.u32);
+      ctx = in;
+    }
+  }
   __imp__sub_8215A380(ctx, base);
   static const bool log_all = std::getenv("SVR2011_TEST_BUFFER_LOG") != nullptr;
   if (ctx.r3.u32 == 0 || log_all)
     REXLOG_WARN("[svr2011] model memory: physical {} bytes in {:08X}-{:08X} (align {:X}, protect {:X}) -> {:08X} (caller {:08X})",
                 size, lo, hi, align, prot, ctx.r3.u32, caller);
+  if (ctx.r3.u32 == 0 && size && (lo != 0 || hi < 0x1FFFFFFF)) {
+    LogHeaps();
+    ctx = in;
+    ctx.r4.u64 = 0, ctx.r5.u64 = 0x1FFFFFFF;  // (anywhere)
+    __imp__sub_8215A380(ctx, base);
+    REXLOG_WARN("[svr2011] model memory: ... its window full: {}", ctx.r3.u32 ? fmt::format("placed at {:08X} instead", ctx.r3.u32)
+                                                                          : std::string("no room anywhere either"));
+  }
 }
