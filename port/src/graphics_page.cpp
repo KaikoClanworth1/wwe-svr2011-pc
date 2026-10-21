@@ -113,6 +113,7 @@ enum Row {
   kRouterPort,                                                   // DISPLAY
   kArenaBrightness,                                              // GRAPHICS
   kOverlayCorner,                                                // DISPLAY (after PERFORMANCE)
+  kUpscaling,                                                    // GRAPHICS (after ANTI-ALIASING)
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
@@ -127,7 +128,7 @@ const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kF
 const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kOverlayCorner, kPing, kRouterPort, kRenderer, kTouch,
                                               kReplays, kCpuPriority, kFastStart},
 #endif
-                                             {kRenderScale, kAntiAliasing, kTextureQuality, kArenaBrightness, kWide, kCutsceneFps},
+                                             {kRenderScale, kAntiAliasing, kUpscaling, kTextureQuality, kArenaBrightness, kWide, kCutsceneFps},
                                              {kCrowd, kShadows, kEffects, kDof, kMotionBlur, kSoft, kPrepare}};
 // SHADOWS: only with the renderer's native_shadows setting.
 bool HasShadows() {
@@ -401,6 +402,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
   int aa_ = 1;  // anti-aliasing level: 1 off, 2-4 supersampling per side
+  int upscale_ = 0;  // UPSCALING: 0 off, 1-4 FSR 1 (native_upscale_quality 0-3: ultra quality .. performance)
   bool ping_ = true;
   bool router_port_ = true;
   int perf_ = 1, corner_ = 0;  // (PERFORMANCE: 0 off, 1 the frame rate, 2 everything; its corner)
@@ -438,6 +440,9 @@ void GraphicsPage::Load() {
     const int32_t level = rex::cvar::Query<int32_t>("native_aa");
     aa_ = level > 0 ? std::clamp<int32_t>(level, 1, 4) : (rex::cvar::Query<bool>("native_2x_msaa") ? 2 : 1);
   }
+  upscale_ = rex::cvar::GetFlagByName("native_upscale") == "fsr1"
+                 ? std::clamp<int32_t>(rex::cvar::Query<int32_t>("native_upscale_quality"), 0, 3) + 1
+                 : 0;
   {
     const int32_t v = rex::cvar::Query<int32_t>("native_max_scale");
     const double res = rex::cvar::Query<double>("native_render_scale");
@@ -570,6 +575,15 @@ void GraphicsPage::Change(int row, int dir) {
       rex::cvar::SetFlagByName("native_2x_msaa", aa_ >= 2 ? "true" : "false");
       SaveSetting("native_aa", std::to_string(aa_));
       SaveSetting("native_2x_msaa", aa_ >= 2 ? "true" : "false");
+      break;
+    case kUpscaling:
+      upscale_ = (upscale_ + dir + 5) % 5;  // OFF, FSR 1 ULTRA QUALITY .. PERFORMANCE
+      rex::cvar::SetFlagByName("native_upscale", upscale_ ? "fsr1" : "off");
+      SaveSetting("native_upscale", upscale_ ? "fsr1" : "off");
+      if (upscale_) {
+        rex::cvar::SetFlagByName("native_upscale_quality", std::to_string(upscale_ - 1));
+        SaveSetting("native_upscale_quality", std::to_string(upscale_ - 1));
+      }
       break;
     case kLanguage:
       language_ = (language_ + dir + kNumLanguages) % kNumLanguages;
@@ -1099,6 +1113,11 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         return b;
       }
       case kAntiAliasing: return aa_ == 1 ? "OFF" : aa_ == 2 ? "2X" : aa_ == 3 ? "3X" : "4X";
+      case kUpscaling: {
+        static const char* const kNames[] = {"OFF", "FSR 1 ULTRA QUALITY", "FSR 1 QUALITY", "FSR 1 BALANCED",
+                                             "FSR 1 PERFORMANCE"};
+        return kNames[std::clamp(upscale_, 0, 4)];
+      }
       case kCrowd: return crowd_ ? "ON" : "OFF";
       case kShadows: return shadows_ ? "ON" : "OFF";
       case kEffects: return effects_ ? "HIGH" : "NORMAL";
@@ -1132,6 +1151,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kTextureQuality: return "TEXTURES";
       case kArenaBrightness: return "ARENA BRIGHTNESS";
       case kAntiAliasing: return "ANTI-ALIASING";
+      case kUpscaling: return "UPSCALING";
       case kEffects: return "EFFECT DETAIL";
       case kCrowd: return "CROWD";
       case kShadows: return "SHADOWS";
@@ -1181,6 +1201,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kAntiAliasing:
         return "Renders at 2, 3 or 4 times the resolution per side and averages it down (4, 9 or 16 samples a "
                "pixel): smoother edges, slower. Limited by RENDER SCALE.";
+      case kUpscaling:
+        return "AMD FSR 1: the game drawn smaller (77%, 67%, 59% or 50% of the screen's height) and scaled up "
+               "sharp - faster on weak PCs and phones. Replaces RENDER SCALE while on.";
       case kArenaBrightness:
         return "The arena's lights - on the wrestlers, the ring and the hall. 100%: the game's own. From the next "
                "arena that loads.";
