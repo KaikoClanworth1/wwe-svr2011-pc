@@ -375,7 +375,8 @@ std::string MaterialsText(const std::map<MatKey, MatEdit>& m) {
                   std::get<3>(k), int(e.has_spec), e.spec, e.normal, int(e.has_tint), e.tint[0], e.tint[1], e.tint[2], e.cutout,
                   e.two_sided, e.spec_alpha);
     t += b + Utf8(e.normal_file);
-    if (e.flip >= 0 || !e.shine_mask.empty()) t += "\t" + std::to_string(e.flip) + "\t" + Utf8(e.shine_mask);  // (after a tab: older lines have none)
+    // (after a \x1d: older lines have none; not a tab - a project joins these lines with tabs)
+    if (e.flip >= 0 || !e.shine_mask.empty()) t += "\x1d" + std::to_string(e.flip) + "\x1d" + Utf8(e.shine_mask);
     t += "\n";
   }
   return t;
@@ -396,11 +397,11 @@ std::map<MatKey, MatEdit> MaterialsFromText(const std::string& t) {
     for (int n = 0; n < 7 && bar != std::string::npos; ++n) bar = line.find('|', bar + 1);
     if (bar != std::string::npos) {
       std::string rest = line.substr(bar + 1);
-      if (const size_t tab = rest.find('\t'); tab != std::string::npos) {
+      if (const size_t tab = rest.find('\x1d'); tab != std::string::npos) {
         const std::string more = rest.substr(tab + 1);
         rest.resize(tab);
         e.flip = std::atoi(more.c_str());
-        if (const size_t t2 = more.find('\t'); t2 != std::string::npos) e.shine_mask = Wide(more.substr(t2 + 1));
+        if (const size_t t2 = more.find('\x1d'); t2 != std::string::npos) e.shine_mask = Wide(more.substr(t2 + 1));
       }
       e.normal_file = Wide(rest);
     }

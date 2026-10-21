@@ -1268,6 +1268,7 @@ struct Slot {
   struct Phys {  // hair and jiggle (Physics): built once the character is in, settled on load / a new motion
     bool built = false, settle = true;
     std::vector<hair::Chain> chains;
+    int rigid_chains = 0;  // (cloth chains kept as posed: BuildPhysics)
     std::vector<std::pair<int, hair::CapsuleParams>> caps;  // (bone, capsule)
     std::vector<hair::Muscle> muscles;
     std::vector<hair::MuscleRow> rows;
@@ -1825,6 +1826,19 @@ void BuildPhysics(Slot& sl) {
     if (cp.A != 0) continue;  // (2 of the game's 570 lines: their write-back moves nothing)
     const int root = find(cp.root);
     if (root < 0 || ch.bones[size_t(root)].parent < 0) continue;
+    // Only the hair (chains hanging from the head) swings here. A coat's / cloth's chains (hung from the hips or the
+    // chest: Undertaker's entrance coat, an FBX jacket) are kept as posed - the game's collision keeps a coat's flare
+    // around the legs, this solver doesn't yet: its panels folded in between the legs (user report 21 Oct, the Full
+    // preview - "the legs flipped"). The game swings them.
+    {
+      bool hair = false;
+      for (int b = ch.bones[size_t(root)].parent, n = 0; b >= 0 && n < 64 && !hair; b = ch.bones[size_t(b)].parent, ++n)
+        hair = ch.bones[size_t(b)].name == "atama";
+      if (!hair) {
+        ++ph.rigid_chains;
+        continue;
+      }
+    }
     hair::Chain c;
     c.p = cp, c.parent = ch.bones[size_t(root)].parent;
     c.n.push_back({}), c.n.back().bone = root;
@@ -1853,9 +1867,10 @@ void BuildPhysics(Slot& sl) {
         m.bone = b, m.row = row;
         ph.muscles.push_back(m);
       }
-  if (!ph.chains.empty() || !ph.muscles.empty())
+  if (!ph.chains.empty() || !ph.muscles.empty() || ph.rigid_chains)
     mm::Log("physics: " + std::to_string(ph.chains.size()) + " hair chains, " + std::to_string(ph.caps.size()) + " capsules, " +
-            std::to_string(ph.muscles.size()) + " jiggle bones");
+            std::to_string(ph.muscles.size()) + " jiggle bones" +
+            (ph.rigid_chains ? ", " + std::to_string(ph.rigid_chains) + " cloth chains as posed (they swing in the game)" : ""));
 }
 
 // The rotation turning +X onto unit u (the shortest arc, 826A8890: identity when nearly parallel).
@@ -1887,6 +1902,7 @@ void Physics(Slot& sl, std::vector<Xf>& world, const std::vector<Xf>& local, con
   Slot::Phys& ph = sl.phys;
   if (!ph.built) BuildPhysics(sl);
   if (ph.chains.empty() && ph.muscles.empty()) return;
+  const float prev_key = ph.last_key;
   if (motion != ph.motion || key + 0.5f < ph.last_key) ph.settle = true;
   ph.motion = motion, ph.last_key = key;
   auto pos = [&](int b) { return ToV(world[size_t(b)].t); };
@@ -1912,10 +1928,11 @@ void Physics(Slot& sl, std::vector<Xf>& world, const std::vector<Xf>& local, con
     ph.settle = false, ph.acc = 0, steps = 30;
     for (hair::Chain& c : ph.chains) hair::Reset(c, pos(c.parent));
     for (size_t i = 0; i < ph.muscles.size(); ++i) hair::MuscleReset(ph.muscles[i], mpos[i]);
-  } else {
-    ph.acc += std::min(0.25, double(ImGui::GetIO().DeltaTime));
-    steps = int(ph.acc * 60.0);
-    ph.acc -= steps / 60.0;
+  } else {  // (the motion's clock: 2 steps a key, the game's 60 Hz - not the frame clock, whose 0 / 2 step frames
+             // made the hair stutter against the body)
+    ph.acc += std::clamp(double(key - prev_key) * 2.0, 0.0, 4.0);
+    steps = int(ph.acc + 1e-4);
+    ph.acc -= steps;
     steps = std::min(steps, 4);
   }
   for (int s = 0; s < steps; ++s) step();

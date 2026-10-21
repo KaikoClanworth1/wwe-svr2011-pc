@@ -74,6 +74,10 @@ struct StarProject {
   std::map<int, std::string> gear;
   std::map<MatKey, MatEdit> mats;  // the material panel's edits: (attire 1-4, gear, model id, mesh) -> edit
   std::map<std::string, MatEdit> fbx_mat;  // FBX import: a mesh's material for the builder (by mesh name)
+  int fbx_reduce = 0;          // FBX import's Reduce detail: about this many vertices (0: off - never on its own)
+  int fbx_hair = -1;           // ... moving hair: -1 auto (not VRChat's J_Sec_* bones), 0 none, 1 every hair bone
+  std::map<std::string, std::string> fbx_cloth;  // ... spring cloth bones ticked ("1") / unticked ("0") by hand
+  bool fbx_keep_face = true;   // ... the head left as it is
 };
 extern StarProject g_star;
 // The overall rating as the game works it out (sub_828B7950, used by the select screen's OVERALL list and ~28 more

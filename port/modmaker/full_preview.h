@@ -31,6 +31,7 @@ void Draw();
 // Test aid --full-preview <entrance>,<star>[,<key>[,<camera 0/1>]]: opens with that superstar's model;
 // with a key, paused there (for --shot).
 void TestOpen(int entrance, int star, float key, bool camera);
+void TestModel(const std::wstring& pac);  // (--full-preview-model <pac>: that model instead)
 // Test aid --full-preview-song <file>: the theme the test opens with (else the profile's).
 void TestSong(const std::wstring& file);
 // Test aid --full-preview-movie <file>: the titantron movie the test opens with.

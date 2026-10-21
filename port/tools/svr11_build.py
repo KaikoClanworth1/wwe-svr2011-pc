@@ -18,7 +18,8 @@ named the weights by 2011 bones. model.json:
      "attires": [{
         "name": "<optional; only '<template id><attire digit>2' is accepted (the entry name the game looks up),
                  anything else - a display name - is ignored with a warning>",
-        "hair_chains": [[[x, y, z], ...], ...],   optional: moving hair - per strand its joints, root (on the
+        "hair_chains": [[[x, y, z], ...] | {"parent": "<2011 bone>", "joints": [...]}, ...],   optional: moving hair
+                                  (or cloth: a chain hanging from that bone - default atama) - per strand its joints, root (on the
                                   scalp) to tip, 2011 world space, at least 4: built as kami_b00, kami_b00_00 ...
                                   under atama (one segment length a chain, each bone aimed at the next; at most
                                   16), weights may name them (the tip's go to the node before), 0x3C stock-like,
@@ -654,13 +655,20 @@ class Builder:
             index[b['name']] = len(nodes) - 1
         self.chain_roots = []
         for ci, joints in enumerate((chains or [])[:16]):   # (hair physics chains, docs/HAIR_PHYSICS_PLAN.md B1)
+            hang = 'atama'
+            if isinstance(joints, dict):   # (cloth: the chain's root parent - the solver reads it from the node table)
+                hang = joints.get('parent') or 'atama'
+                if hang not in index:
+                    self.warnings.append('chain %d: no bone %r to hang from - on atama' % (ci, hang))
+                    hang = 'atama'
+                joints = joints.get('joints') or []
             P = [np.array(j, float) for j in joints]
             if len(P) < 4:   # (a chain needs a pivot, a pinned node, one that moves and a tip target)
                 self.warnings.append('hair chain %d: %d joints, at least 4 needed - left out' % (ci, len(P)))
                 continue
             root = 'kami_b%02d' % len(self.chain_roots)
             L = float(np.mean([np.linalg.norm(P[k + 1] - P[k]) for k in range(len(P) - 1)]))
-            pi = index.get('atama', 0)
+            pi = index.get(hang, index.get('atama', 0))
             Rw = W.align_x(P[1] - P[0])
             Ra = Wn[pi][:3, :3]
             prev = None
