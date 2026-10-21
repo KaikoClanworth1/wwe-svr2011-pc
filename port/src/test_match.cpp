@@ -33,6 +33,7 @@
 #include "generated/default/svr2011_init.h"
 #include "arena_mods.h"
 #include "p2p.h"
+#include "rtwm_streak.h"
 #include "script_input.h"
 
 namespace {
@@ -188,6 +189,7 @@ REX_HOOK_RAW(sub_8247B6C8) {
 
 REX_EXTERN(__imp__sub_828BC5E8);
 REX_HOOK_RAW(sub_828BC5E8) {
+  if (ctx.r3.u32) svr2011::RtwmStreakPeople(base, ctx.r3.u32);  // (the Streak story played as a mod)
   const TestMatch& m = Config();
   if (Applies() && ctx.r3.u32) {
     const uint32_t match = ctx.r3.u32;
