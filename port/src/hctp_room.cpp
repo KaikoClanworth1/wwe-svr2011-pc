@@ -24,14 +24,21 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include <fmt/format.h>
+#include <imgui.h>
+
+#include <rex/cvar.h>
+#include <rex/ui/imgui_dialog.h>
 
 #include "arena_mods.h"
+#include "match_hud.h"
 #include "match_types.h"
+#include "pad_types.h"
 
 #include "generated/default/svr2011_init.h"
 
@@ -56,6 +63,8 @@ const bool g_props_now = g_roof_env && std::strcmp(g_roof_env, "props") == 0;
 const bool g_tour_now = g_roof_env && std::strcmp(g_roof_env, "tour") == 0;
 // (=fork: room 31, fighter 0 - the test's pad - gets on the forklift 5 seconds in; the script drives)
 const bool g_fork_now = g_roof_env && std::strcmp(g_roof_env, "fork") == 0;
+// (=walkin: wrestlers go through a door by walking into it, as the CPU does - not with Y)
+const bool g_walk_in = g_roof_env && std::strcmp(g_roof_env, "walkin") == 0;
 // (=door: the world mod's first door - fighter 0 put on its trigger 5 seconds in; the script walks him)
 const bool g_door_now = g_roof_env && std::strcmp(g_roof_env, "door") == 0;
 // (=nograb: no cage-wall grabs or climbs, so strikes reach the fence)
@@ -2452,6 +2461,73 @@ void GoThrough(PPCContext& ctx, uint8_t* base, const Door& d, int who) {
     }
 }
 
+// The door prompt (drawn by DoorPromptOverlay on the UI thread): which player stands at a door and
+// where it leads. HCTP's room names.
+struct DoorPrompt {
+  uint32_t port = 0;
+  int to = 0;  // (the door it leads to)
+};
+std::mutex g_prompt_mutex;
+DoorPrompt g_prompt;
+std::string g_prompt_room;  // (empty: no prompt)
+std::chrono::steady_clock::time_point g_prompt_at;
+
+const char* RoomName(int number) {
+  switch (number) {
+    case 30: return "BACK ENTRANCE";
+    case 31: return "PARKING LOT";
+    case 32: return "TRAINING ROOM";
+    case 33: return "TIMES SQUARE";
+    case 34: return "OUTSIDE THE ARENA";
+    case 35: case 36: return "FOUNTAIN SQUARE";
+    default: return "THE NEXT ROOM";
+  }
+}
+
+void PublishPrompt(const DoorPrompt* p) {
+  std::string room;
+  if (p)
+    for (const Room& r : g_rooms)
+      for (const Door& d : r.doors)
+        if (d.id == p->to) room = RoomName(r.number);
+  std::lock_guard<std::mutex> lock(g_prompt_mutex);
+  if (p) g_prompt = *p;
+  g_prompt_room = room;
+  g_prompt_at = std::chrono::steady_clock::now();
+}
+
+// The button as the player's controller names it (pad_types.h: PlayStation / keyboard players).
+std::string YLabel(uint32_t port) {
+  switch (svr2011::PlayerPadType(port)) {
+    case svr2011::PadType::kPlayStation: return "TRIANGLE";
+    case svr2011::PadType::kKeyboard: {
+      std::string k = rex::cvar::Query<std::string>("keybind_y");
+      k = k.substr(0, k.find(','));
+      std::transform(k.begin(), k.end(), k.begin(), [](unsigned char c) { return char(std::toupper(c)); });
+      return k.empty() ? "Y" : k;
+    }
+    default: return "Y";
+  }
+}
+
+class DoorPromptOverlay final : public rex::ui::ImGuiDialog {
+ public:
+  explicit DoorPromptOverlay(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
+
+ protected:
+  void OnDraw(ImGuiIO& io) override {
+    std::string room;
+    uint32_t port = 0;
+    {
+      std::lock_guard<std::mutex> lock(g_prompt_mutex);
+      if (std::chrono::steady_clock::now() - g_prompt_at > std::chrono::milliseconds(300)) return;
+      room = g_prompt_room, port = g_prompt.port;
+    }
+    if (room.empty() || !svr2011::MatchHudVisible()) return;
+    svr2011::DrawHudPanel(io.DisplaySize.x, io.DisplaySize.y, YLabel(port), "GO TO " + room);
+  }
+};
+
 void UpdateWorld(PPCContext& ctx, uint8_t* base) {
   if (!World()) return;
   // (once the stage and the package are there: only the first room's collision and climb spots)
@@ -2461,8 +2537,11 @@ void UpdateWorld(PPCContext& ctx, uint8_t* base) {
       if (k != g_cur) RoomCollision(base, g_rooms[k], false), RoomSpots(ctx, base, g_rooms[k], false);
     Cur().visited = true;  // (the first room's weapons are the manifest's)
   }
+  DoorPrompt prompt;
+  bool prompt_set = false;
   if (g_door_cd > 0) {
     --g_door_cd;
+    PublishPrompt(nullptr);
     return;
   }
   for (uint32_t i = 0; i < 8; ++i) {
@@ -2472,17 +2551,39 @@ void UpdateWorld(PPCContext& ctx, uint8_t* base) {
       hold = 0;
       continue;
     }
-    const bool moving = Rd32(base + f + 212) == kWalkBackstage || base[f + 1286];
-    const float x = RdF(base + f + 288), z = RdF(base + f + 296);
-    const Door* near = nullptr;
+    const uint32_t m = Rd32(base + f + 212);
+    const bool moving = m == kWalkBackstage || base[f + 1286];
+    const float x = RdF(base + f + 288), y = RdF(base + f + 292), z = RdF(base + f + 296);
+    const Door* door = nullptr;
     for (const Door& d : Cur().doors)
-      if ((x - d.x) * (x - d.x) + (z - d.z) * (z - d.z) < 22.0f * 22.0f) near = &d;
-    hold = near && moving ? hold + 1 : 0;
+      if ((x - d.x) * (x - d.x) + (z - d.z) * (z - d.z) < 22.0f * 22.0f) door = &d;
+    // a player: Y at the door (HCTP's own way; the prompt shows meanwhile); the CPU: walking into it for
+    // half a second (its AI walks after its opponent - CPU-vs-CPU and chases keep moving)
+    const uint32_t port = Rd32(base + f + 1152);
+    const bool player = port < 4 && !g_walk_in;
+    if (player) {
+      hold = 0;
+      // (on his feet: standing 0, fighting stance 20, walking or running - not lying or in a move)
+      const bool ready = m == 0 || m == 20 || m == kWalkBackstage || base[f + 1286];
+      if (!door || !ready || std::fabs(y - door->y) > 4.0f) continue;
+      if (!prompt_set) {
+        prompt_set = true;
+        prompt.port = port, prompt.to = door->to;
+      }
+      const uint32_t input = svr2011::FighterInput(f);
+      if (input && (Rd32(base + input + 52) & kButtonY)) {
+        GoThrough(ctx, base, *door, int(i));
+        break;
+      }
+      continue;
+    }
+    hold = door && moving ? hold + 1 : 0;
     if (hold >= 30) {
-      GoThrough(ctx, base, *near, int(i));
-      return;
+      GoThrough(ctx, base, *door, int(i));
+      break;
     }
   }
+  PublishPrompt(prompt_set ? &prompt : nullptr);
 }
 
 bool FenceBlocks(PPCContext& ctx, uint8_t* base, uint32_t comp, uint32_t target) {
@@ -2671,6 +2772,8 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   UpdateForklift(ctx, base);
   UpdateHeli(ctx, base);
 }
+
+void InstallHctpOverlay(rex::ui::ImGuiDrawer* drawer) { new DoorPromptOverlay(drawer); }
 
 void HctpWorldVisibility(PPCContext& ctx, uint8_t* base) {
   // (test aid SVR2011_TEST_HCTP_NOVIS=1 / models / objects: the stock visibility only, for all or that part)

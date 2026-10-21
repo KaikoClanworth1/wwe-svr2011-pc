@@ -163,8 +163,12 @@ whose rooms the fighters walk between through HCTP's doors (`tools/hctp/build_wo
   is 8 in from the move point, the entry 30 in.
 - Game (hctp_room.cpp): after each CFRS update (match_types.cpp hook) only the current room's models
   (sub_8252FF40) and its records' objects (sub_824B4198) are shown; the other rooms' collision triangles are
-  lifted away (as DropCollision) and their climb spots inactive (sub_824B8FE0); only its props run. Walking or
-  running for 30 frames within 22 of a door takes every fighter through: placed side by side at the other
+  lifted away (as DropCollision) and their climb spots inactive (sub_824B8FE0); only its props run. A player at a
+  door (within 22, on his feet: motion 0 / stance 20 / walking / running) sees the prompt "<Y> GO TO <room>"
+  (DoorPromptOverlay, match_hud.h's panel; the button as his pad names it: Y, TRIANGLE or his keybind_y key)
+  and goes through with Y (HCTP's way); a CPU (port char+1152 >= 4) walks or runs into one for 30 frames
+  (its AI chasing - CPU-vs-CPU keeps changing rooms); ROOF=walkin gives players the walk-in too. Either
+  takes every fighter through (in HCTP the opponent came along): placed side by side at the other
   door's entry, the fight box moved to that room (SetFightBox), the camera's eye put at the framed target +
   its old offset for 30 views (SnapMatchCamera - moving the eye once didn't hold: the camera rebuilt it).
   A room's runtime state (later shows, taxis, poles, heli, forklift, what ShowRec hid) is kept while it is
