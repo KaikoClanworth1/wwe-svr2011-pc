@@ -37,6 +37,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <set>
 #include <cstring>
 #include <fstream>
@@ -69,6 +70,7 @@
 #include "native/native_renderer.h"
 #include "../modmaker/svrfmt/pac.h"
 #include "../modmaker/svrfmt/texture.h"
+#include "../modmaker/svrfmt/jboy.h"
 
 namespace {
 
@@ -951,8 +953,10 @@ std::string TitantronFile(const CustomArena& c) {
   const fs::path src = g_game / fs::u8path(c.file);
   const std::string rel = "Mods/ArenaOverlay/tron_" + c.id + ".pac";
   const fs::path dst = g_game / fs::u8path(rel), stamp_file = dst.string() + ".src";
+  // (" v2": announce table monitors kept - copies made by the first rule are made again)
   const std::string stamp = std::to_string(fs::file_size(src, ec)) + " " +
-                            std::to_string(static_cast<long long>(fs::last_write_time(src, ec).time_since_epoch().count()));
+                            std::to_string(static_cast<long long>(fs::last_write_time(src, ec).time_since_epoch().count())) +
+                            " v2";
   if (fs::exists(dst, ec)) {
     std::ifstream in(stamp_file);
     std::string had;
@@ -966,12 +970,33 @@ std::string TitantronFile(const CustomArena& c) {
     REXLOG_WARN("[svr2011] arena mods: {} - its file can't be read for the titantron (as it is)", c.id);
     return c.file;
   }
-  int flagged = 0;
+  int flagged = 0, kept = 0;
   for (auto& g : e.groups)
     for (auto& en : g.entries) {
       const svrfmt::Bytes raw = svrfmt::Unpack(en.data);
       std::vector<svrfmt::PachEntry> kids;
       if (raw.size() < 4 || std::memcmp(raw.data(), "PACH", 4) || !svrfmt::PachRead(raw, kids)) continue;
+      // Which of its 800-899 models are the hall's screens: an announce table's monitor (small, at the ring:
+      // a 2K17 port's 820) keeps the game's feed in the match - it showed nothing once flagged (21 Oct report).
+      std::set<int> monitors;
+      for (const auto& k : kids) {
+        if (k.id < 800 || k.id > 899) continue;
+        svrfmt::Bytes m = svrfmt::Unpack(k.data);
+        if (svrfmt::IsPach(m)) {
+          std::vector<svrfmt::PachEntry> parts;
+          svrfmt::Bytes jboy;
+          if (svrfmt::PachRead(m, parts))
+            for (const auto& p : parts)
+              if (p.id == 0) jboy = svrfmt::Unpack(p.data);
+          m = std::move(jboy);
+        }
+        svrfmt::Model model;
+        if (!svrfmt::IsJboy(m) || !svrfmt::JboyRead(m, model) || model.meshes.empty()) continue;
+        bool small_at_ring = true;
+        for (const auto& s : model.meshes)
+          small_at_ring = small_at_ring && s.sphere[3] < 60.f && std::fabs(s.sphere[0]) < 60.f && std::fabs(s.sphere[2]) < 60.f;
+        if (small_at_ring) monitors.insert(int(k.id));
+      }
       bool changed = false;
       for (auto& k : kids) {
         if (k.id != 0xC351) continue;
@@ -992,7 +1017,10 @@ std::string TitantronFile(const CustomArena& c) {
             bool has = false;
             words >> w;
             while (words >> w) has |= w == "e" || w == "g";
-            if (id >= 800 && id <= 899 && !has) line += " e", ++flagged, changed = true;
+            if (id >= 800 && id <= 899 && !has) {
+              if (monitors.count(id)) ++kept;
+              else line += " e", ++flagged, changed = true;
+            }
           }
           out += line + (cr ? "\r" : "") + (end < t.size() ? "\n" : "");
           at = end + 1;
@@ -1025,8 +1053,8 @@ std::string TitantronFile(const CustomArena& c) {
   if (ec) return c.file;
   std::ofstream(stamp_file, std::ios::trunc) << stamp << "\n";
   REXLOG_INFO("[svr2011] arena mods: {} - {} video screens shown during entrances only (its own screens in the "
-              "match; titantron=live keeps the camera)",
-              c.id, flagged);
+              "match; titantron=live keeps the camera){}",
+              c.id, flagged, kept ? fmt::format(", {} announce table monitor(s) as they were", kept) : std::string());
   return rel;
 }
 

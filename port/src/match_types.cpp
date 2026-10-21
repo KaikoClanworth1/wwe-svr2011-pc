@@ -1612,6 +1612,26 @@ REX_HOOK_RAW(sub_822F2A38) {
 }
 REX_EXTERN(__imp__sub_82227150);
 REX_HOOK_RAW(sub_82227150) {
+  // Test aid: SVR2011_TEST_VIEW="<eye x,y,z>,<target x,y,z>" - every scene view from there (y up is negative), to
+  // look at one place of an arena in a match (the announce tables).
+  static const std::vector<float> test_view = [] {
+    std::vector<float> v;
+    if (const char* s = std::getenv("SVR2011_TEST_VIEW"))
+      for (const char* p = s; *p;) {
+        v.push_back(float(std::atof(p)));
+        while (*p && *p != ',') ++p;
+        if (*p) ++p;
+      }
+    return v;
+  }();
+  if (test_view.size() == 6 && ctx.r3.u32 == 0x82E3CC00 && Rd32(base + 0x82E3CD0C) > 0) {
+    const float dx = test_view[3] - test_view[0], dy = test_view[4] - test_view[1], dz = test_view[5] - test_view[2];
+    const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    for (int k = 0; k < 3 && len > 1e-3f; ++k) {
+      WrF(base + ctx.r4.u32 + 4 * uint32_t(k), test_view[size_t(k)]);
+      WrF(base + ctx.r5.u32 + 4 * uint32_t(k), (k == 0 ? dx : k == 1 ? dy : dz) / len);
+    }
+  }
   const uint32_t cam = g_camera_frame;
   if (cam && ctx.r3.u32 == 0x82E3CC00 && ctx.r4.u32 == cam + 304 && ctx.r5.u32 == cam + 288) {
     const uint32_t sp = ctx.r1.u32;  // (still sub_822F2A38's frame: the framed target at +128 / +136)
