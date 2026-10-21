@@ -574,6 +574,7 @@ struct ResolvedTexture {
   uint32_t width = 0, height = 0;
   uint32_t scale = 1;  // (the resolved target's)
   bool swap_rb = false;  // (red and blue swapped in the copy: its texture view swaps them back)
+  RenderFormat view_format = RenderFormat::UNKNOWN;  // (colour: the format it is read as - `format` is typeless)
 };
 
 // A DrawVerticesUP waiting for its vertices (the game writes them into the
@@ -1676,8 +1677,7 @@ void ApplyOutputSettings(Renderer* r) {
   }
   // (FSR 2: Direct3D 12 / Vulkan - compute; not with the commands recorded on a second thread)
 #if SVR2011_FSR2
-  // (Direct3D 12: open - the device is removed at the first FSR 2 dispatch; FSR 1 there for now)
-  g_fsr2 = fsr2 && g_fsr && backend::ActiveApi() == backend::Api::kVulkan && !r->recorder && !r->fsr2_failed;
+  g_fsr2 = fsr2 && g_fsr && !SlotTables() && !r->recorder && !r->fsr2_failed;
 #endif
   const bool res_changed = std::fabs(res - g_res) > 0.001f;
   if (scale == g_scale && effects == g_scale_effects && out_w == g_out_w && out_h == g_out_h &&
@@ -3933,7 +3933,9 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
   using svr2011::fsr2::Texture;
   svr2011::fsr2::Frame f;
   // (UNKNOWN: plume knows where each is - the backend's first barrier always goes)
-  f.color = Texture{color.resource.get(), color.format, color.host_w, color.host_h, RenderTextureLayout::UNKNOWN};
+  // (read as the target's view format: the copy's own is typeless - an invalid view on Direct3D 12)
+  const RenderFormat color_format = color.view_format != RenderFormat::UNKNOWN ? color.view_format : color.format;
+  f.color = Texture{color.resource.get(), color_format, color.host_w, color.host_h, RenderTextureLayout::UNKNOWN};
   f.depth = Texture{r->fsr2_depth.get(), backend::DepthFormat(), r->fsr2_depth_w, r->fsr2_depth_h,
                     RenderTextureLayout::UNKNOWN};
   f.motion = Texture{r->fsr2_motion.get(), RenderFormat::R16G16_FLOAT, r->fsr2_depth_w, r->fsr2_depth_h,
@@ -4649,6 +4651,7 @@ void OnResolve(const PPCContext& ctx) {
     // RB_COPY_DEST_INFO: the destination's swizzle tells.)
     const bool swap_rb = t.color->components == 4 && ((fetch[3] >> 1) & 7) == 2;
     dst.swap_rb = swap_rb;
+    dst.view_format = t.color->view_format;
     textures::RegisterResolved(base, dst.resource.get(), t.color->view_format,
                                t.color->view_gamma_format, t.color->components, swap_rb,
                                dst_w * dst_h * 4);
