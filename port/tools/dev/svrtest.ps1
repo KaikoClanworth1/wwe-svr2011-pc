@@ -6,6 +6,8 @@
 #                     [--boot] [--cpu all]   (--boot, dbg only: straight into the match - no title, no menus)
 #   svrtest.ps1 entrance --p1 EDGE [--attire 2] [--shots every:6s:20]        (until "entrances over")
 #   svrtest.ps1 route <name> [--shot 3s] [--quit 10s]                       (script_input.cpp kRoutes)
+#   svrtest.ps1 lan --p1 EDGE --p2 KANE [--arena 1] [--rule 3C] [--pad1 <file>] [--pad2 <file>] [--clock 600,1200]
+#                   [--play 30s]                         (two games in a LAN match, lockstep check: svrtest_lan.ps1)
 #   svrtest.ps1 open <page> [--shot 3s] [--quit 10s]    (dbg: straight to caw, threads, cae, options:<ROW>,
 #                                                        match_creator, universe, menu:<A>B>C> - boot.cpp kPages)
 #   svrtest.ps1 script <file> [--shot ..] [--quit ..]                        (script_input.h steps, one a line)
@@ -27,6 +29,7 @@
 # world updates a frame), and the game ends itself at --quit. Other commands keep the window shots.
 param([Parameter(Position = 0)][string]$Command = "", [Parameter(Position = 1, ValueFromRemainingArguments = $true)][string[]]$Rest)
 $ErrorActionPreference = "Stop"
+if ($Command -eq "lan") { & (Join-Path $PSScriptRoot "svrtest_lan.ps1") @Rest; exit $LASTEXITCODE }  # (svrtest_lan.ps1)
 $tools = Split-Path $PSScriptRoot -Parent
 $port = Split-Path $tools -Parent
 $gameFiles = if (Test-Path (Join-Path (Split-Path $port -Parent) "Game Files\pac")) { Join-Path (Split-Path $port -Parent) "Game Files" } `
@@ -79,7 +82,7 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         default { if (-not $o.target -and $a -notlike "--*") { $o.target = $a } else { throw "svrtest: unknown option $a" } }
     }
 }
-if ($Command -notin "match", "entrance", "route", "script", "open") {
+if ($Command -notin "match", "entrance", "route", "script", "open", "prepare") {
     throw "svrtest: match | entrance | route <name> | script <file> | open <page> (see the top of tools\dev\svrtest.ps1)"
 }
 if ($Command -eq "open") { if (-not $o.target) { throw "svrtest open <page>" }; $o.exe = if ($o.exe -eq "release") { "dbg" } else { $o.exe } }
@@ -161,6 +164,8 @@ if ($o.mods -and $o.mods -ne "none") {
         Copy-Item -Recurse $m (Join-Path $game "Mods\$kind\$(Split-Path $m -Leaf)")
     }
 }
+# (prepare: only the game folder, for svrtest_lan.ps1 - its last output line)
+if ($Command -eq "prepare") { $game; exit 0 }
 $userdata = if ($o.userdata) { $o.userdata } else { Join-Path $port "runs\univ_userdata" }  # (private: its own DLC copy)
 # never the player's user data, nor one whose DLC is a link (the game patches the installed DLC's string.pac and
 # catalog.dlc in place)

@@ -9,6 +9,8 @@
 //                            when they play; from zero again each match) or the game's start
 //   dbg_shot=5,10,every:2:5  shots of the frame image, read back from the GPU (works hidden / minimised): at
 //                            5 s, 10 s and every 2 s five times -> <dbg_out>/shot_<ms>.png
+//   dbg_state_clock=600,1200 state dumps at those match clock values (60 a second), on the game's thread, with the
+//                            positions' exact bits -> state_clock_<n>.json (two lockstep games: the same)
 //   dbg_state=8              state dumps -> <dbg_out>/state_<ms>.json (the match's people with their last
 //                            moves and positions, the match clock, fps, the perf numbers)
 //   dbg_quit=15              the game ends itself (exit code 0) at 15 s, after the cues before it
@@ -52,6 +54,7 @@ void WriteShot(const uint8_t* rgba, uint32_t width, uint32_t height, uint32_t ro
 // the world updates this frame (dbg_speed; 0: the normal rule).
 void OnMatchStarted();
 int SpeedTicks();
+void ClockFrame();  // (each world update: dbg_state_clock)
 
 // The direct boot (boot.cpp): set up at start (Install); fast_start.cpp presses START on the Start Screen too
 // while one is wanted; frame_rate.cpp's world update (the game's thread) starts it once the main menu is up.

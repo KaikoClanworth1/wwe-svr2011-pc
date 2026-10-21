@@ -471,6 +471,7 @@ REX_HOOK_RAW(sub_8269D768) {
   __imp__sub_8269D768(ctx, base);
 #if SVR2011_DEBUG_SUITE
   svr2011::dbg::BootFrame(ctx, base);  // (dbg_boot: debug_suite.h)
+  svr2011::dbg::ClockFrame();          // (dbg_state_clock)
 #endif
   TestMatchTime(base);
   svr2011::MatchTypesUpdate(ctx, base);  // (match_types.h: the lumberjacks, Slobber Knocker)
