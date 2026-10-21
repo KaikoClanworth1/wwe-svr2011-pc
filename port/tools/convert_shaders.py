@@ -262,6 +262,9 @@ def main():
                                    os.path.join(out, "hlsl_d3d11"), model)
                 if err and (not name.startswith("debug_") or name.startswith("debug_solid")):
                     results.append((name, "own " + ext[1:], err))
+    # FSR 2's passes (fsr2_shaders.py: DXIL + SPIR-V, Direct3D 12 / Vulkan only).
+    import fsr2_shaders
+    results += [(name, "fsr2 " + what, err) for name, what, err in fsr2_shaders.build(out)]
     failed = [r for r in results if r[1]]
     with open(os.path.join(out, "report.txt"), "w") as rep:
         rep.write(f"{len(files)} shaders, {len(files) - len(failed)} converted to DXIL, SPIR-V and DXBC\n")
