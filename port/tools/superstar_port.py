@@ -9,6 +9,8 @@ the Mod Maker calls (docs/MOD_MAKER_3_PLAN.md section 4, docs/OTHER_GAMES.md).
     py superstar_port.py moveset-pack --game <id> --src <...> --item <key> --rows all|0x012,0x14E [--taunts-only] --out <dir>
     py superstar_port.py detect  --src <one character pac> [--game <id>] [--svrmod <exe>]
     py superstar_port.py convert --src <one character pac> [--game <id>] [--item <id>] --out <dir> [--name S] [--base N]
+    py superstar_port.py attires --src <PS2 disc | one PS2 character archive> [--game <id>] [--item <key>] --out <dir>
+        (every attire drawn as a picture; convert --attires 0,3,5,9 then takes up to four of them, in that order)
 
 One character pac (tools/lone_pac.py): a 360 ch<id>.pac of any game here (plus Legends of WrestleMania) or a PS2
 character archive (CH.PAC / CH2.PAC: --item one of detect's characters, hex). The game is read from the file;
@@ -1808,8 +1810,14 @@ def build_single(cid, outdir, o, rep):
             raise BadInput('%s has no character %x (it has %s)' % (os.path.basename(pac), cid,
                                                                      ' '.join('%x' % c for c in sorted(chars))))
         ats = chars[cid]
-        if len(ats) > 4:
-            drop('attires %s (a mod holds 4)' % ', '.join(str(x) for x in ats[4:]))
+        if o.get('attires'):   # (--attires: which of the source's become the mod's four, in that order)
+            pick = [int(x) for x in str(o['attires']).split(',') if x.strip()]
+            bad = [x for x in pick if x not in ats]
+            if bad or not pick or len(pick) > 4:
+                raise BadInput('--attires: up to 4 of %s (attires lists them)' % ', '.join(str(x) for x in ats))
+            ats = pick
+        elif len(ats) > 4:
+            drop('attires %s (a mod holds 4; --attires to choose)' % ', '.join(str(x) for x in ats[4:]))
         tmpl = os.path.join(pac11, 'ch', 'ch%d.pac' % base)
         if not os.path.exists(tmpl):
             tmpl = os.path.join(pac11, 'ch', 'ch104.pac')
@@ -2348,6 +2356,45 @@ def convert_single(a):
     return rep
 
 
+def cmd_attires(a):
+    """attires --src <disc image | one character archive> [--game G] [--item K] --out D: every attire of a PS2
+    character drawn (ps2_char --attire-pictures) -> {ok, game, id, attires: [{attire, model_id, picture, meshes,
+    see_through, drawn_solid}]} - the numbers --attires takes. A disc: --game ps2_* and --item from list (decimal);
+    one file: --item from detect (hex; left out when it holds one character)."""
+    import lone_pac
+    import subprocess
+    if not a.get('src') or not a.get('out'):
+        raise BadInput('attires needs --src and --out')
+    outdir = os.path.abspath(a['out'])
+    os.makedirs(outdir, exist_ok=True)
+    tmpl = os.path.join(a['pac11'], 'ch', 'ch104.pac')
+    if os.path.isfile(a['src']) and not discfs_image(a['src']):
+        game, _ = single_game(a)
+        if not game.startswith('ps2_'):
+            raise BadInput('attires is for PS2 characters (%s keeps its attires in the pac: convert takes the first 4)'
+                           % lone_pac.LABELS.get(game, game))
+        chars = lone_pac.ps2_characters(a['src'], game, os.path.join(outdir, '.lone'),
+                                        __import__('moves_port').cache_dir(a['pac11'], os.path.join(outdir, '.lone')))
+        if a.get('item'):
+            cid = int(a['item'], 16)
+        elif len(chars) == 1:
+            cid = int(chars[0]['id'], 16)
+        else:
+            raise BadInput('%s holds %d characters: say which with --item (detect lists them)' % (
+                os.path.basename(a['src']), len(chars)))
+        disc = lone_pac.ps2_disc(a['src'], game, os.path.join(outdir, '.lone'))
+    else:
+        if not str(a.get('game', '')).startswith('ps2_') or not a.get('item'):
+            raise BadInput('attires on a disc: --game ps2_* and --item (from list)')
+        cid, disc = int(a['item']), a['src']
+    r = subprocess.run([sys.executable, os.path.join(HERE, 'ps2_char.py'), disc, '%x' % cid, outdir, '--template', tmpl,
+                        '--attire-pictures'], capture_output=True, text=True)
+    try:
+        return json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        raise BadInput('ps2_char failed: %s' % (r.stderr or r.stdout)[-600:])
+
+
 def cmd_convert(a):
     single = os.path.isfile(a.get('src') or '') and not discfs_image(a['src'])
     if (not a.get('item') and not single) or not a.get('out'):
@@ -2428,6 +2475,8 @@ def main(argv):
                                              + (['--svrmod', a['svrmod']] if a.get('svrmod') else [])
                                              + (['--game', a['game']] if a.get('game') else [])
                                              + ['--cache', __import__('moves_port').cache_dir(a['pac11'], os.path.join(HERE, 'work'))]))
+        elif cmd == 'attires':   # (a PS2 character's attires as pictures, to choose --attires)
+            res = cmd_attires(a)
         elif cmd == 'convert' and os.path.isfile(a.get('src') or '') and not discfs_image(a['src']):
             rep_path = os.path.join(os.path.abspath(a['out']), 'report.json') if a.get('out') else None
             res = cmd_convert(a)

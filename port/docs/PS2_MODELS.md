@@ -118,3 +118,15 @@ A different engine (Pacific Coast Power & Light, RenderWare 3.4); notes for whoe
 - Needed: a structural bone matcher (the bones have no names), a PS2-native TXD decoder (GS-swizzled
   rasters) or textures dumped by the Crush Hour port (`PS2X_RASTER_DUMP`), and the inverse bind pose ->
   A-pose. The models are low-detail (about 1400 vertices, one 256 texture).
+
+## Choosing attires, blended flags (21 Oct)
+
+- `superstar_port.py attires --src <PS2 disc | one archive> [--game ps2_*] [--item K] --out D` draws every attire of a
+  character (ps2_char `--attire-pictures`: a small software rasteriser, front view, about a second each) to
+  `D/attire_<n>.png` and prints `{ok, game, id, attires: [{attire, model_id, picture, meshes, see_through, drawn_solid}]}`.
+  `convert ... --attires 9,3,0` then takes up to four of those numbers, in that order (disc and single file alike).
+- JBI / SYM / HCTP: a submesh flagged blended whose triangle middles are 90%+ on see-through texels (and has 8+
+  triangles) is drawn solid - its texture alpha isn't opacity (the PS2's opaque path ignores it). Stock HCTP: 977 of
+  1089 blended submeshes are under 10%; the five at 90-100% have 2-4 triangles. A modded model with the flag on its
+  body showed holes, outline boots and no legs. The convert report's `sources[]` now lists per attire `mesh_kinds`,
+  `see_through` (with the share) and `drawn_solid`.
