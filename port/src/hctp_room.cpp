@@ -38,6 +38,7 @@
 #include "arena_mods.h"
 #include "match_hud.h"
 #include "match_types.h"
+#include "p2p.h"
 #include "pad_types.h"
 
 #include "generated/default/svr2011_init.h"
@@ -2549,6 +2550,13 @@ void UpdateWorld(PPCContext& ctx, uint8_t* base) {
   }
   DoorPrompt prompt;
   bool prompt_set = false;
+  // (online - inputs-only netplay - the rooms don't change yet: a LAN pair (svrtest lan, 21 Oct) changed
+  // room on both games at the same frame, but the move to the other door didn't hold and the wrestlers'
+  // positions then drifted apart; the match stays in its first room, which stays in step)
+  if (svr2011::P2POnlineMode()) {
+    PublishPrompt(nullptr);
+    return;
+  }
   if (g_door_cd > 0) {
     --g_door_cd;
     PublishPrompt(nullptr);
@@ -2675,6 +2683,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
       if (!done[i] && frame >= (i ? 900u : 300u) && Rd32(base + kChars + 4 * i)) {
         done[i] = true;
         const Door& d = Cur().doors[0];
+        JumpAct(ctx, base, Rd32(base + kChars + 4 * i), 0);  // (an act first, as GoThrough: then the place holds)
         PlaceFighter(base, Rd32(base + kChars + 4 * i), d.x, d.y, d.z, d.eyaw + 3.14159265f);
         REXLOG_INFO("hctp: fighter {} put at door {} (test)", i, d.id);
       }

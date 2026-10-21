@@ -174,6 +174,11 @@ whose rooms the fighters walk between through HCTP's doors (`tools/hctp/build_wo
   A room's runtime state (later shows, taxis, poles, heli, forklift, what ShowRec hid) is kept while it is
   away. Test switches `SVR2011_TEST_HCTP_ROOF=tour`: a door every 6 seconds; `=door`: fighter 0 put on the first door's trigger 5 s in (walk with the scripted stick); `=fork` (room 31): fighter 0 gets on the forklift 5 s in; `SVR2011_TEST_HCTP_NOVIS=1 /
   models / objects`: the stock visibility only.
+- Online (inputs-only netplay): no room changes yet - the match stays in its first room (in step: svrtest lan
+  same at 300 / 600 / 1200). A LAN pair with them (21 Oct, runs\svrtest\*_hctpdoor5) changed room on both games
+  at the same frame, but the move to the other door didn't hold (the wrestlers stayed near the old door) and
+  their positions then differed in the low bits; a placement written from the room code (the door test's
+  too) doesn't hold online. Open.
 - Weapons: lying ones are parked 5000 below the floor while their room is away (the match's weapon objects,
   72 pointers at 0x82DE0220, position +288..+296) and put back on return; one within 14 of a wrestler stays
   (held: it goes with him; one only lying by him shows in the next room).
