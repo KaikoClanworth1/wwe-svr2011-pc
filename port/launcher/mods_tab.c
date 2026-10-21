@@ -816,6 +816,7 @@ typedef struct {
     WCHAR file[MAX_PATH], version[32], folder[MAX_PATH], state[48];
     BundleFile *files;
     int n_files, cap_files;
+    int carried_old;   /* (carried over at this start: another version than the shipped one, dated unedited) */
 } BundleRec;
 static BundleRec *s_recs;
 static int s_n_recs, s_cap_recs;
@@ -1091,6 +1092,34 @@ void mods_bundled_reset(void)
     s_default_answer = 0;
 }
 
+static int bundle_install(const WCHAR *game_dir, const WCHAR *zip, const WCHAR *dir, BundleRec *r, const Mod *bm,
+                          int fresh, int was_off);
+
+/* The copy dir to Mods\.backup and the bundle installed in its place (the copy put back if that fails): 1 if done,
+   backup = where the copy is. */
+static int bundle_replace_keeping(const WCHAR *game_dir, const WCHAR *mods, const WCHAR *kf, const WCHAR *zip,
+                                  const WCHAR *dir, BundleRec *r, const Mod *bm, int was_off, WCHAR *backup)
+{
+    WCHAR parent[MAX_PATH], msg[700];
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    swprintf_s(backup, MAX_PATH, L"%s\\.backup\\%s-%s-%04d%02d%02d-%02d%02d%02d", mods, kf, bm->id, st.wYear,
+               st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    swprintf_s(parent, MAX_PATH, L"%s\\.backup", mods);
+    SHCreateDirectoryExW(NULL, parent, NULL);
+    if (!MoveFileW(dir, backup)) {
+        swprintf_s(msg, 700, L"bundled %s: couldn't back the copy up (Windows error %lu) - left as it is", r->file,
+                   GetLastError());
+        install_log(game_dir, msg);
+        return 0;
+    }
+    if (bundle_install(game_dir, zip, dir, r, bm, 0, was_off)) return 1;
+    MoveFileW(backup, dir);
+    swprintf_s(msg, 700, L"bundled %s: the update failed - the copy put back", r->file);
+    install_log(game_dir, msg);
+    return 0;
+}
+
 /* Installs the bundle zip into dir (kept on / off; a fresh one off unless a match type), recorded in r. 1 if done. */
 static int bundle_install(const WCHAR *game_dir, const WCHAR *zip, const WCHAR *dir, BundleRec *r, const Mod *bm,
                           int fresh, int was_off)
@@ -1219,11 +1248,14 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
                 continue;
             }
             /* installed before this record (its copy never replaced to find out): the same version as the shipped
-               one - the copy compared with the bundle's files (unpacked into Mods\.compare): its record is the
-               bundle's, so the player's changes show as edits; another version - taken as edited (asked about, never
-               updated silently) */
+               one - its record is the bundle's files (unpacked into Mods\.compare; the copy's extra ones, e.g. its
+               movie fallbacks, as they are), so a file changed or added shows as an edit and one gone as missing (Fix
+               it); another version - unedited when none of its files is newer than its install (the old .bundled,
+               written after each; no .bundled: unedited too - its update keeps the copy in Mods\.backup), else
+               edited (asked about) */
             {
                 WCHAR man[MAX_PATH], cmp[MAX_PATH];
+                const WCHAR *how = L"as edited";
                 BundleRec shipped;
                 int i, k, same = 0;
                 ZeroMemory(&have, sizeof have);
@@ -1239,21 +1271,33 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
                 if (!wcscmp(have.version, bm.version) && unzip_file(zip, cmp)) {
                     record_files(&shipped, cmp, L"", 1);
                     same = shipped.n_files > 0;
-                    for (k = 0; k < shipped.n_files && same; ++k) {   /* (the bundle's files - the copy's extra
-                                                                         ones, e.g. its movie fallbacks, aside) */
-                        int found = 0;
-                        for (i = 0; i < r->n_files && !found; ++i)
-                            found = !_wcsicmp(r->files[i].rel, shipped.files[k].rel) &&
-                                    r->files[i].hash == shipped.files[k].hash;
-                        same = found;
+                    for (k = 0; k < shipped.n_files; ++k) {   /* (time 0: compared by its hash at the check) */
+                        const BundleFile *b = &shipped.files[k];
+                        int at = -1;
+                        for (i = 0; i < r->n_files && at < 0; ++i)
+                            if (!_wcsicmp(r->files[i].rel, b->rel)) at = i;
+                        if (at < 0)
+                            rec_file_add(r, b->rel, b->size, 0, b->hash);   /* (gone from the copy: missing) */
+                        else if (r->files[at].hash != b->hash)
+                            r->files[at].size = b->size, r->files[at].time = 0, r->files[at].hash = b->hash;
                     }
+                    if (same) how = L"as the bundle's";
+                } else if (wcscmp(have.version, bm.version)) {
+                    WIN32_FILE_ATTRIBUTE_DATA a;
+                    unsigned long long at = 0;
+                    if (GetFileAttributesExW(list, GetFileExInfoStandard, &a))
+                        at = (unsigned long long)a.ftLastWriteTime.dwHighDateTime << 32 | a.ftLastWriteTime.dwLowDateTime;
+                    same = 1;
+                    for (i = 0; i < r->n_files && same && at; ++i)
+                        same = r->files[i].time <= at + 20000000ull;   /* (2 s: the file system's times) */
+                    if (same) r->carried_old = 1, how = L"as unedited (no file newer than its install)";
                 }
                 remove_tree(cmp, 0);
                 free(shipped.files);
                 if (!same)   /* (an edited copy: its record no longer matches it) */
                     for (i = 0; i < r->n_files; ++i) r->files[i].hash ^= 1, r->files[i].time = 0;
                 swprintf_s(msg, 700, L"bundled %s: installed before (version %s) - carried over %s", fd.cFileName,
-                           have.version[0] ? have.version : L"?", same ? L"as the bundle's" : L"as edited");
+                           have.version[0] ? have.version : L"?", how);
                 install_log(game_dir, msg);
                 ++carried;
             }
@@ -1273,6 +1317,17 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
             WCHAR kept[48];
             swprintf_s(kept, 48, L"kept %s", bm.version);
             if (!wcscmp(r->state, kept)) continue;   /* (the player kept theirs over this version) */
+            if (!edited && !missing && r->carried_old) {   /* (unedited by its dates: its copy kept) */
+                WCHAR backup[MAX_PATH];
+                if (bundle_replace_keeping(game_dir, mods, kf, zip, dir, r, &bm, was_off, backup)) {
+                    changed = 1;
+                    swprintf_s(msg, 700, L"bundled %s: updated %s -> %s (carried over unedited), the old copy kept in %s",
+                               fd.cFileName, from[0] ? from : L"?", bm.version, backup);
+                    install_log(game_dir, msg);
+                }
+                r->carried_old = 0;
+                continue;
+            }
             if (!edited && !missing) {
                 if (bundle_install(game_dir, zip, dir, r, &bm, 0, was_off)) {
                     changed = 1;
@@ -1284,25 +1339,11 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
             switch (answer_for(fd.cFileName)) {
             case BUNDLED_YES: {   /* update: the player's copy to Mods\.backup first */
                 WCHAR backup[MAX_PATH];
-                SYSTEMTIME st;
-                GetLocalTime(&st);
-                swprintf_s(backup, MAX_PATH, L"%s\\.backup\\%s-%s-%04d%02d%02d-%02d%02d%02d", mods, kf, bm.id, st.wYear,
-                           st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-                { WCHAR parent[MAX_PATH]; swprintf_s(parent, MAX_PATH, L"%s\\.backup", mods); SHCreateDirectoryExW(NULL, parent, NULL); }
-                if (!MoveFileW(dir, backup)) {
-                    swprintf_s(msg, 700, L"bundled %s: couldn't back the edited copy up (Windows error %lu) - left as it is",
-                               fd.cFileName, GetLastError());
-                    install_log(game_dir, msg);
-                    continue;
-                }
-                if (bundle_install(game_dir, zip, dir, r, &bm, 0, was_off)) {
+                if (bundle_replace_keeping(game_dir, mods, kf, zip, dir, r, &bm, was_off, backup)) {
                     changed = 1;
                     swprintf_s(msg, 700, L"bundled %s: updated to %s, the edited copy kept in %s", fd.cFileName, bm.version, backup);
-                } else {
-                    MoveFileW(backup, dir);
-                    swprintf_s(msg, 700, L"bundled %s: the update failed - the edited copy put back", fd.cFileName);
+                    install_log(game_dir, msg);
                 }
-                install_log(game_dir, msg);
                 break;
             }
             case BUNDLED_NO:   /* keep theirs - not asked again for this version */

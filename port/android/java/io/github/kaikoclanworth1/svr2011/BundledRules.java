@@ -18,8 +18,12 @@
 //   again next time) - never fixed silently;
 // - the player's copy a newer version than the shipped one: left alone.
 // The old Mods/.bundled ("name|size|crc<hex>" lines; the PC's "name|size|time")
-// is read once, to carry its installs over: a copy of the shipped version that
-// still has the bundle's files is the bundle's, any other is taken as edited.
+// is read once, to carry its installs over: a copy of the shipped version is
+// recorded with the bundle's files, so only a file changed or added is an edit
+// and one gone is missing (Fix it); a copy of another version is unedited when
+// none of its files is newer than its install (the old .bundled, written after
+// each), else edited - and when unsure (no .bundled) unedited, its update
+// keeping the copy in Mods/.backup.
 // (It reinstalled a bundle whenever the shipped file changed, over the player's
 // edits, and brought a removed one back with a new version.) Every decision
 // goes to Mods/.install.log, as the PC's.
@@ -38,10 +42,12 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.Enumeration;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -76,6 +82,7 @@ final class BundledRules {
     final Map<String, Rec> recs = new LinkedHashMap<>();  // (by file name, lower case)
     String legacy;  // (the old Mods/.bundled, whole; null if none)
     int added, updated, fixed, kept, removed, asked, failed, carried;
+    final Set<String> carriedOld = new HashSet<>();  // (carried over this pass: another version, dated unedited)
     final StringBuilder bad = new StringBuilder();
 
     BundledRules(File mods, Host host) {
@@ -309,21 +316,28 @@ final class BundledRules {
                 save();
                 return;
             }
-            // installed before this record: the same version as the shipped one with the bundle's files - its record
-            // is the bundle's, so the player's changes show as edits; anything else - taken as edited
+            // installed before this record. The same version as the shipped one: its record is the bundle's files
+            // (the copy's extra ones as they are), so a file changed or added shows as an edit and one gone as missing.
+            // Another version: unedited when none of its files is newer than its install, else edited (asked about)
             String have = manifestVersion(dir);
             r.version = have;
             r.state = "on";
             setFiles(r, dir);
-            boolean same = have.equals(version) && sameAsShipped(r, svrmod);
-            if (!same)
+            String how;
+            if (have.equals(version) && baseOnShipped(r, svrmod)) {
+                how = "as the bundle's";
+            } else if (!have.equals(version) && datedByInstall(r)) {
+                carriedOld.add(file.toLowerCase(Locale.ROOT));
+                how = "as unedited (no file newer than its install)";
+            } else {
                 for (long[] s : r.sums) {
                     s[2] ^= 1;
                     s[1] = 0;
                 }
+                how = "as edited";
+            }
             carried++;
-            log("bundled " + file + ": installed before (version " + (have.isEmpty() ? "?" : have) + ") - carried over "
-                + (same ? "as the bundle's" : "as edited"));
+            log("bundled " + file + ": installed before (version " + (have.isEmpty() ? "?" : have) + ") - carried over " + how);
             save();
         }
         if (!dir.isDirectory()) {  // (the player removed it)
@@ -340,6 +354,16 @@ final class BundledRules {
             String from = r.version;
             if (r.state.equals("kept " + version)) return;  // (the player kept theirs over this version)
             if (edited == 0 && missing == 0) {
+                if (carriedOld.contains(file.toLowerCase(Locale.ROOT))) {  // (unedited by its dates: its copy kept)
+                    String backup = replaceKeeping(file, svrmod, dir, r, type, version, off, kind, id);
+                    if (backup != null) {
+                        updated++;
+                        log("bundled " + file + ": updated " + (from.isEmpty() ? "?" : from) + " -> " + version
+                            + " (carried over unedited), the old copy kept in " + mods.getName() + "/.backup/" + backup);
+                    }
+                    save();
+                    return;
+                }
                 if (install(file, svrmod, dir, r, type, version, false, off)) {
                     updated++;
                     log("bundled " + file + ": updated " + (from.isEmpty() ? "?" : from) + " -> " + version + " (unedited)");
@@ -350,21 +374,10 @@ final class BundledRules {
             Question q = question(kAskUpdate, file, bm, id, r.version, version, missing);
             int a = host.ask(q);
             if (a == kYes) {  // update: the player's copy to Mods/.backup first
-                File backup = new File(new File(mods, ".backup"), kind + "-" + id + "-"
-                    + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(new Date()));
-                backup.getParentFile().mkdirs();
-                if (!dir.renameTo(backup)) {
-                    log("bundled " + file + ": couldn't back the edited copy up - left as it is");
-                    fail(file, null);
-                    return;
-                }
-                if (install(file, svrmod, dir, r, type, version, false, off)) {
+                String backup = replaceKeeping(file, svrmod, dir, r, type, version, off, kind, id);
+                if (backup != null) {
                     updated++;
-                    log("bundled " + file + ": updated to " + version + ", the edited copy kept in " + mods.getName() + "/.backup/" + backup.getName());
-                } else {
-                    FileOps.deleteTree(dir);
-                    backup.renameTo(dir);
-                    log("bundled " + file + ": the update failed - the edited copy put back");
+                    log("bundled " + file + ": updated to " + version + ", the edited copy kept in " + mods.getName() + "/.backup/" + backup);
                 }
             } else if (a == kNo) {  // keep theirs - not asked again for this version
                 r.state = "kept " + version;
@@ -405,6 +418,24 @@ final class BundledRules {
         return q;
     }
 
+    // The copy to Mods/.backup and the bundle installed in its place (the copy put back if that fails): the
+    // backup's name, or null.
+    String replaceKeeping(String file, File svrmod, File dir, Rec r, String type, String version, boolean off, String kind, String id) {
+        File backup = new File(new File(mods, ".backup"), kind + "-" + id + "-"
+            + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(new Date()));
+        backup.getParentFile().mkdirs();
+        if (!dir.renameTo(backup)) {
+            log("bundled " + file + ": couldn't back the copy up - left as it is");
+            fail(file, null);
+            return null;
+        }
+        if (install(file, svrmod, dir, r, type, version, false, off)) return backup.getName();
+        FileOps.deleteTree(dir);
+        backup.renameTo(dir);
+        log("bundled " + file + ": the update failed - the copy put back");
+        return null;
+    }
+
     // Installs the bundle into dir (kept off when it was; a fresh one off unless a match type), recorded in r.
     boolean install(String file, File svrmod, File dir, Rec r, String type, String version, boolean fresh, boolean off) {
         File got;
@@ -425,8 +456,10 @@ final class BundledRules {
         return true;
     }
 
-    // The copy's files against the bundle's (the copy's extra ones aside).
-    boolean sameAsShipped(Rec r, File svrmod) {
+    // r (the copy's files) based on the bundle's: a file of the bundle the copy has with other contents - recorded
+    // as the bundle's, so it shows as edited; one it hasn't - recorded, so it shows as missing; the copy's extra ones
+    // (e.g. its movie fallbacks) as they are. False if the bundle can't be read or has no files.
+    boolean baseOnShipped(Rec r, File svrmod) {
         try (ZipFile zip = new ZipFile(svrmod)) {
             int n = 0;
             for (Enumeration<? extends ZipEntry> e = zip.entries(); e.hasMoreElements();) {
@@ -439,16 +472,31 @@ final class BundledRules {
                 try (InputStream in = zip.getInputStream(z)) {
                     h = hash(in);
                 }
-                boolean found = false;
-                for (int i = 0; i < r.files.size() && !found; i++)
-                    found = r.files.get(i).equalsIgnoreCase(rel) && r.sums.get(i)[2] == h;
-                if (!found) return false;
+                int at = -1;
+                for (int i = 0; i < r.files.size() && at < 0; i++)
+                    if (r.files.get(i).equalsIgnoreCase(rel)) at = i;
+                if (at < 0) {
+                    r.files.add(rel);
+                    r.sums.add(new long[] {z.getSize(), 0, h});
+                } else if (r.sums.get(at)[2] != h) {
+                    r.sums.set(at, new long[] {z.getSize(), 0, h});
+                }
                 n++;
             }
             return n > 0;
         } catch (IOException e) {
             return false;
         }
+    }
+
+    // None of r's files newer than the old record (Mods/.bundled, written after each install; 2 s for the file
+    // system's times) - or no old record to tell: unedited.
+    boolean datedByInstall(Rec r) {
+        long at = new File(mods, ".bundled").lastModified();
+        if (at == 0) return true;
+        for (long[] s : r.sums)
+            if (s[1] > at + 2000) return false;
+        return true;
     }
 
     void fail(String file, String why) {
