@@ -927,6 +927,38 @@ struct IkNumbers {
 };
 IkNumbers g_ik_last[4];  // (the last Pose's solve, per limb: for the pose-dump comparison)
 
+// The game's limb template: the standard 2011 skeleton's local translations (ch104's, tools/svr11_skeleton.json) of
+// the bones the arms' and legs' solve stands on. The game solves every character's limbs on it (scaled with its
+// height), not on the model's own bones (pose dump, 21 Oct: the parts' translations the same for a made model, Mickie
+// James' ch143, Hornswoggle and the rest; a made model's bends equal to a stock one's).
+const float* TemplateT(const std::string& n) {
+  static const struct {
+    const char* name;
+    float t[3];
+  } kT[] = {
+      // (not the root: its place is the motion's)
+      {"koshi", {-1.86908f, 1e-05f, 0}},
+      {"mune", {2.23149f, 0, 0}},
+      {"l_sakotsu", {1.7637f, -0.00014f, 0}},
+      {"l_ninoude", {2.0f, 0.00019f, 0}},
+      {"l_ninoude_x", {1.40795f, 0.00014f, 0}},
+      {"l_kote", {1.40696f, 0, 0}},
+      {"r_sakotsu", {1.7637f, -0.00014f, 0}},
+      {"r_ninoude", {1.99998f, 0, 0}},
+      {"r_ninoude_x", {1.40794f, 0, 0}},
+      {"r_kote", {1.40696f, 0, 0}},
+      {"l_momo", {0, -1.142f, -0.00014f}},
+      {"l_momo_x", {2.16597f, 0, 0}},
+      {"l_sune", {2.18203f, 0, 0}},
+      {"r_momo", {0, 1.1418f, -0.00014f}},
+      {"r_momo_x", {2.16535f, -8e-05f, 0}},
+      {"r_sune", {2.18264f, 0.00012f, 0}},
+  };
+  for (const auto& b : kT)
+    if (n == b.name) return b.t;
+  return nullptr;
+}
+
 bool BodyBone(const std::string& n) {
   for (const char* b : kBones)
     if (n == b) return true;
@@ -1070,6 +1102,22 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key, std::vecto
     return w;
   }
   const V3 root_p = w[size_t(root)].t;
+  // The limbs are solved as the game solves them: on its limb template (TemplateT) - the shoulder / hip and the
+  // segment lengths the template's, the rotations (the torso's keys) the pose's - and the angles put on the model's
+  // own bones. Solved on the model's own lengths, a made model with other proportions bent its arms further and
+  // locked its legs straight: the 3D view's hunched idle (user report 21 Oct), where the game stands it up. (A small
+  // rig - limbs well under the template's: Hornswoggle - keeps its own: the game retargets its targets,
+  // small_rig.cpp.)
+  std::vector<Xf> wt(nb);
+  {
+    std::vector<Xf> lt = local;
+    for (size_t i = 0; i < nb; ++i)
+      if (const float* t = TemplateT(ch.bones[i].name)) lt[i].t = {t[0], t[1], t[2]};
+    for (size_t i = 0; i < nb; ++i) {
+      const int p = ch.bones[i].parent;
+      wt[i] = p >= 0 && size_t(p) < i ? Mul(wt[size_t(p)], lt[i]) : lt[i];
+    }
+  }
   // the game's solve (sub_823A4DD8), in the parent frame: arms the sakotsu's, legs the root's
   struct Limb {
     const char *up, *lo, *parent;
@@ -1086,15 +1134,18 @@ std::vector<Xf> Pose(const Character& ch, const Motion& m, float key, std::vecto
     if (iu < 0 || il < 0 || ip < 0) continue;
     const int su = ch.bones[size_t(iu)].parent;  // (the upper bone's own parent in the skeleton)
     if (su < 0) continue;
-    const Xf& P = w[size_t(ip)];
+    // (the template's limb unless the model's is a small rig's)
+    const float Lt = 2 * Len(wt[size_t(il)].t - wt[size_t(iu)].t), Lm = 2 * Len(w[size_t(il)].t - w[size_t(iu)].t);
+    const std::vector<Xf>& on = Lt > 1e-4f && Lm >= 0.7f * Lt ? wt : w;
+    const Xf& P = on[size_t(ip)];
     const Xf Pi = Inverse(P);
-    const V3 S = Apply(Pi, w[size_t(iu)].t);  // the shoulder / hip in the parent frame
+    const V3 S = Apply(Pi, on[size_t(iu)].t);  // the shoulder / hip in the parent frame
     const V3 target = root_p + V3{Key(m.ik[size_t(l)][0], 2 * key, false, kMove), Key(m.ik[size_t(l)][1], 2 * key, false, kMove),
                                   Key(m.ik[size_t(l)][2], 2 * key, false, kMove)};
     V3 v = Apply(Pi, target) - S;
     // L: 2 x the upper segment (the game assumes equal segments) - shoulder / hip to elbow / knee, measured in
     // the world (the lower bone hangs off the twist bone half way down: its own offset is half a segment)
-    const float L = 2 * Len(w[size_t(il)].t - w[size_t(iu)].t);
+    const float L = &on == &wt ? Lt : Lm;
     float d = Len(v);
     if (L <= 1e-4f || d <= 1e-5f) continue;
     const float lim = (limbs[l].arm ? 0.99f : 0.99999f) * L;
@@ -2686,7 +2737,11 @@ std::string ComparePoseDump(const std::wstring& dump, std::shared_ptr<const std:
     while (std::fgets(buf, sizeof buf, f)) {
       unsigned F = 0, P = 0, M = 0, S = 0, Rq = 0;
       int used = 0;
-      if (std::sscanf(buf, "F %u P %u M %u S %u Rq %u Q%n", &F, &P, &M, &S, &Rq, &used) < 5 || int(M) != id) continue;
+      // (since the camera dump a line has its tick: "F <frame> T <tick> P ...")
+      if (std::sscanf(buf, "F %u T %*u P %u M %u S %u Rq %u Q%n", &F, &P, &M, &S, &Rq, &used) < 5 &&
+          std::sscanf(buf, "F %u P %u M %u S %u Rq %u Q%n", &F, &P, &M, &S, &Rq, &used) < 5)
+        continue;
+      if (int(M) != id) continue;
       Line l{};
       const char* p = buf + used;
       auto num = [&](float& v) { char* e; v = std::strtof(p, &e); p = e; };
