@@ -205,8 +205,11 @@ Next steps (none started):
   stage-light control found.
 - Room 30's button lamps (CGmSwitchLight 1246): drawn as grey slabs as plain objects - needs an additive /
   emissive draw.
-- Fountain throw (room 35) and treadmill / sandbag knock-down: coded, not driven by a test yet (a real Irish
-  whip / A mashing with the scripted pad).
+- Fountain throw (room 35): checked (21 Oct, ROOF=props puts both by the basin at 1100: 12627 x / y 0 and 1
+  found, the throw plays). Treadmill / sandbag knock-down: coded, not driven by a test yet.
+- Motion keys: a call's (x, y) match the bank entry's second / first field (logged with SVR2011_TEST_HCTP_LOG);
+  lookups the game makes itself for acts HCTP has in one part only (12679 y 1, 12606 / 12608 y 50 ..) miss
+  harmlessly.
 - Lion statue fade (HCTP draws it at 0.3 when a wrestler is behind it), broken-car crushed collision (2098),
   locker-door / TV / window weapons (2011 has no matching weapons), taxi and forklift solidity (static
   collision only).
