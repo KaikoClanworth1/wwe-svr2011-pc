@@ -35,6 +35,7 @@
 #include "jukebox.h"
 #include "backgrounds_page.h"
 #include "weapons_page.h"
+#include "weapon_mods.h"
 #include "caw_logos.h"
 #include "paint_pages.h"
 #include "match_types.h"
@@ -670,6 +671,9 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::KeepWindowAlive();
   svr2011::InstallArenaMods(runtime()->memory(), runtime()->file_system());
   svr2011::KeepWindowAlive();
+  // Weapon mods: new weapons in the game's weapon tables (weapon_mods.h).
+  svr2011::SetWeaponModsMemory(runtime()->memory());
+  svr2011::LoadWeaponMods();
   // Ring Kit: rope heights and rules from a custom arena's manifest (ring_rules.h).
   svr2011::InstallRingRules(runtime()->memory());
   svr2011::InstallJukebox(runtime()->memory());  // MY WWE -> JUKEBOX (jukebox.h)
