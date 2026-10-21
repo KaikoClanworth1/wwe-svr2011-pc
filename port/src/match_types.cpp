@@ -3277,6 +3277,38 @@ REX_HOOK_RAW(sub_82856B00) {
   __imp__sub_82856B00(ctx, base);
 }
 
+// ...and its conditions 400-483 (sub_82858B08(object, id), which sub_82859388 hands the 400s): the same kind
+// of unchecked reads. Road to WrestleMania, Jericho's week 12 (2.1.4.1, Android, every time, right after the
+// cutscene): with id 32 answered false, the script asked id 460 - the character's +4 handed to sub_821B4C70
+// (its +212 == 284) - and +4 was empty there: a read of 0xD4, the world update stuck. The ids whose case reads
+// the character's +4 (or hands it on) or its +20 - the one it handles - with nothing there answer false, as the
+// console's read near address 0 did; id 422 checks +4 itself (a missing character still answers false).
+REX_EXTERN(__imp__sub_82858B08);
+REX_HOOK_RAW(sub_82858B08) {
+  static constexpr uint16_t kPlus4[] = {424, 434, 435, 442, 448, 450, 451, 452, 457, 458, 459, 460, 461, 462, 464, 465};
+  static constexpr uint16_t kPlus20[] = {453, 454, 455, 456, 478};
+  const uint32_t id = ctx.r4.u32;
+  auto listed = [&](const auto& ids) {
+    for (const uint16_t v : ids)
+      if (v == id) return true;
+    return false;
+  };
+  if (ctx.r3.u32 && id >= 400 && id < 484) {
+    const bool plus4 = listed(kPlus4), plus20 = listed(kPlus20);
+    if (plus4 || plus20 || id == 422) {
+      const uint32_t ch = Rd32(base + ctx.r3.u32);
+      if (!ch || (plus4 && !Rd32(base + ch + 4)) || (plus20 && !Rd32(base + ch + 20))) {
+        static int logged = 0;
+        if (logged++ < 3)
+          REXLOG_INFO("[svr2011] event condition {} with no character to check - false (as on the console)", id);
+        ctx.r3.u64 = 0;
+        return;
+      }
+    }
+  }
+  __imp__sub_82858B08(ctx, base);
+}
+
 namespace svr2011 {
 
 void SetFightBox(uint8_t* base, float cx, float cz, float hx, float hz) {
