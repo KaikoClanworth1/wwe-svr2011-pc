@@ -1,6 +1,6 @@
 // WWE SmackDown vs. Raw 2011 - CREATE A SUPERSTAR without its limits
-// (caw_no_limits, OFF by default until the editor's part heap is guarded - see
-// the end of this comment; OPTIONS -> CAW LIMITS):
+// (caw_no_limits, on by default; OPTIONS -> CAW LIMITS: STOCK gives the
+// game's own back):
 //
 // - No REMAINING POINTS budget. Every part / layer costs a size class
 //   (sub_828DC468: a class from the layer's sub-record, table 0x8206E0B8
@@ -20,14 +20,11 @@
 // Nothing in the .cas or the online lobby block changes size: a CAW made so
 // still fits both; only its layers are more / dearer than the game allowed.
 //
-// NOT SAFE YET (21 Oct tests): the budget and the counts are what keeps a CAW
-// inside the editor's part heap. Opening a CAW in the editor whose ring
-// attire block 0 held 31 hoodies (16 points each) or 16+ extra T-shirts (0
-// points) crashed: the part loader (sub_828E3718 -> sub_826A1318) got no
-// buffer and the decoder (sub_826AEF10) wrote to F7F7F7F8. 24 hoodies / 10
-// extra shirts opened. Matches and the select screen took 50 hoodies. Before
-// this is on by default: a guard by the parts' real sizes (the edit pac's
-// models) or a bigger editor heap.
+// The budget and the counts were also what kept a CAW inside the editor's
+// part heap (heap 42) and its draw lists: opening a CAW whose ring block held
+// 31 hoodies or 16+ extra T-shirts crashed (21 Oct tests). Below: a full
+// heap 42 falls back to system memory (any CAW, any setting), and no-limits
+// stops at kMaxLayers layers a block (50 T-shirts still crashed the draw).
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
@@ -44,7 +41,7 @@
 
 #include "generated/default/svr2011_init.h"
 
-REXCVAR_DEFINE_BOOL(caw_no_limits, false, "Game",
+REXCVAR_DEFINE_BOOL(caw_no_limits, true, "Game",
                     "CREATE A SUPERSTAR without the REMAINING POINTS budget and with any number of parts of a kind "
                     "(OPTIONS -> CAW LIMITS)");
 
@@ -87,6 +84,19 @@ REX_HOOK_RAW(sub_828EFE70) {
     told = true;
     REXLOG_INFO("[svr2011] caw limits: any number of parts of a kind (category {} max {} -> 64)", cat, stock);
   }
+}
+
+// The editor's free layer slot: sub_828D6388(editor) -> the first free one of
+// 8..63 (0-7: the base parts), 64 when none ("... layers are maxed out").
+// Without the limits a CAW could fill all 56: the editor drew 40 layers of
+// T-shirts (with the heap fallback below) but crashed at 50 - another of its
+// lists ran out (a null draw object in sub_82915D98, from sub_828C5E78).
+// So no-limits stops at kMaxLayers layers per attire block, under that.
+constexpr uint32_t kMaxLayers = 36;
+REX_EXTERN(__imp__sub_828D6388);
+REX_HOOK_RAW(sub_828D6388) {
+  __imp__sub_828D6388(ctx, base);
+  if (NoLimits() && ctx.r3.u32 < 64 && ctx.r3.u32 >= 8 + kMaxLayers) ctx.r3.u64 = 64;
 }
 
 // -- The editor's part heap ----------------------------------------------------

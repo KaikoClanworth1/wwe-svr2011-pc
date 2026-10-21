@@ -395,7 +395,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool touch_ = false;  // the on-screen controller
   bool wide_ = true;    // matches as wide as the screen
   bool dof_ = true, blur_ = true, soft_ = false, replays_ = true;  // depth of field, motion blur (post_effects.cpp)
-  bool caw_no_limits_ = false;  // CAW LIMITS: OFF (the port's) / STOCK (caw_limits.cpp)
+  bool caw_no_limits_ = true;  // CAW LIMITS: OFF (the port's) / STOCK (caw_limits.cpp)
   int fast_start_ = 0;  // FAST START (fast_start.h): bit 0 skip_intros, bit 1 skip_training
   bool prepare_ = true;  // the known pipelines built ahead in the menus
   bool crowd_ = true, crowd_at_start_ = true;  // arena_crowd (read when the game starts)
