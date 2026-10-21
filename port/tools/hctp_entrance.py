@@ -273,7 +273,8 @@ def conv_char_pose(pose, ground_fix, rep, origin=None):
     return Y.encode_body({'subs': subs, 'trail': b''}, Y.TYPES_M1)
 
 
-def conv_obj_pose(pose):
+def conv_obj_pose(pose, origin=None):
+    """origin: the slot origin baked into the root (_add_origin; a vehicle with its own model)"""
     d = H.decode_obj(pose)
     if d['trail']:
         raise ValueError('trailing bytes in an object pose')
@@ -282,13 +283,13 @@ def conv_obj_pose(pose):
         op = s['op']
         if op == 0x7a:
             m = s['mask']
-            out += bytes([0x75, s['count']]) + struct.pack('<3h', *s['root']) + bytes([m & 0xff, m >> 8 & 0xff, m >> 16 & 0xff])
+            out += bytes([0x75, s['count']]) + struct.pack('<3h', *_s16root(s['root'], origin)) + bytes([m & 0xff, m >> 8 & 0xff, m >> 16 & 0xff])
             for k in range(21):
                 if m >> k & 1:
                     b = s['bones'][k]
                     out += struct.pack('<3h', b['x'], b['y'], b['z'])
         elif op in (0x7d, 0x7e):
-            out += bytes([0x7e, s['count']]) + struct.pack('<3h', *s['root'])
+            out += bytes([0x7e, s['count']]) + struct.pack('<3h', *_s16root(s['root'], origin))
         elif op == 0x7b:
             out += bytes([0x7b, s['ref'], s['count']]) + struct.pack('<3h', *s['trans'])
         else:
@@ -438,6 +439,125 @@ def bake_vehicle(rider_recs, bike_recs, nframes, veh):
     return out
 
 
+def _euler_m(e):
+    """s16 x / y / z -> rotation (row vectors: v' = v @ R), the YOBJ's order (yobj.euler: X, then Y, then Z)"""
+    rx, ry, rz = (v * Y.ANG for v in e)
+    cx, sx, cy, sy, cz, sz = math.cos(rx), math.sin(rx), math.cos(ry), math.sin(ry), math.cos(rz), math.sin(rz)
+    X = [[1, 0, 0], [0, cx, sx], [0, -sx, cx]]
+    Yr = [[cy, 0, -sy], [0, 1, 0], [sy, 0, cy]]
+    Z = [[cz, sz, 0], [-sz, cz, 0], [0, 0, 1]]
+    mul = lambda a, b: [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+    return mul(mul(X, Yr), Z)
+
+
+def _m_euler(R):
+    """_euler_m's inverse -> s16 x / y / z"""
+    ry = math.asin(max(-1.0, min(1.0, -R[0][2])))
+    rx = math.atan2(R[1][2], R[2][2])
+    rz = math.atan2(R[0][1], R[0][0])
+    return tuple(_wrap16(int(round(a / Y.ANG))) for a in (rx, ry, rz))
+
+
+def _obj_poses(recs):
+    """{frame: (root, {node: (x, y, z)})} of converted object records (0x75 / 0x7e / one-node keys), held"""
+    out, root, cur = {}, (0, 0, 0), {}
+    for f, r in recs:
+        _, pose = Y.split_record(r)
+        p = 0
+        while p < len(pose) - 1:
+            op = pose[p]
+            if op == 0x75:
+                root = struct.unpack_from('<3h', pose, p + 2)
+                m = pose[p + 8] | pose[p + 9] << 8 | pose[p + 10] << 16
+                q = p + 11
+                for k in range(24):
+                    if m >> k & 1:
+                        cur[k] = struct.unpack_from('<3h', pose, q); q += 6
+                p = q
+            elif op == 0x7e:
+                root = struct.unpack_from('<3h', pose, p + 2); p += 8
+            elif op == 0x7b:
+                p += 9
+            elif op < 21:
+                cur[op] = struct.unpack_from('<3h', pose, p + 2); p += 8
+            else:
+                break
+        out[f] = (root, dict(cur))
+    return out
+
+
+OWN_SEAT = (17.0, -804.0, 680.0)   # (the rider on HCTP's bike, root units in its frame: 3003 segment 3's first frame)
+
+
+def seat_of(rider_recs, bike_recs):
+    """where the rider sits on his own bike, from a world-track segment's first frame (both in world space): his root
+    in the bike's frame (root units) - None when either has no key there. The bike's node 0 is HCTP's (x, y, z) near
+    (180, y, 180), the same turn as a heading of 180 - y."""
+    data = Y.build_stream(Y.make_stream(list(rider_recs), max(f for f, _ in rider_recs) + 1))
+    ks = [k for k in Y.body_keys(data, S.T11) if k['has_pose']]
+    poses = _obj_poses(bike_recs)
+    if not ks or not poses:
+        return None
+    root, nodes = poses[min(poses)]
+    a = _yaw_of(nodes.get(0, (0, 0, 0)))
+    d = [ks[0]['root'][j] - root[j] for j in range(3)]
+    c, s = math.cos(a), math.sin(a)
+    return (d[0] * c - d[2] * s, d[1], d[0] * s + d[2] * c)        # (d @ R_y(a)^T: into the bike's frame)
+
+
+def _yaw_of(e):
+    """a node-0 turn (s16 x / y / z) -> its heading (radians) about y: (180, y, 180) and (0, 180 - y, 0) alike"""
+    R = _euler_m(e)
+    return math.atan2(-R[0][2], R[2][2]) if abs(R[1][1]) > 0.5 and R[1][1] > 0 else math.atan2(R[0][2], -R[2][2])
+
+
+def bake_own(rider_recs, bike_recs, nframes, seat):
+    """an HCTP bike attached to its rider, with its own model (hctp_bike), onto a world track: it heads where the rider
+    goes (his path; standing still, his bone 0's turn fitted to his path in this segment) with its wheels level, and
+    he sits on it where he sits in its world segments (seat_of); its wheels, steering and stand from its HCTP track"""
+    data = Y.build_stream(Y.make_stream(list(rider_recs), nframes))
+    ks = [k for k in Y.body_keys(data, S.T11) if k['has_pose']]
+    if not ks or seat is None:
+        return []
+    at = []
+    ki = 0
+    for f in range(nframes):
+        while ki + 1 < len(ks) and ks[ki + 1]['frame'] <= f:
+            ki += 1
+        at.append(ks[ki])
+    pos = [k['root'] for k in at]
+    path = [None] * nframes                       # (heading from the path over +-6 frames, when he moves)
+    for f in range(nframes):
+        a, b = max(0, f - 6), min(nframes - 1, f + 6)
+        dx, dz = pos[b][0] - pos[a][0], pos[b][2] - pos[a][2]
+        if math.hypot(dx, dz) > 60:
+            path[f] = math.atan2(dx, dz)
+    b0y = [((k['bones'].get(0) or {}).get('y', 0)) * Y.ANG for k in at]
+    diffs = sorted(((p - y + math.pi) % (2 * math.pi)) - math.pi for p, y in zip(path, b0y) if p is not None)
+    turn = diffs[len(diffs) // 2] if diffs else 0.0
+    poses = _obj_poses(bike_recs)
+    frames = sorted(poses)
+    out, last = [], ((0, 0, 0), {})
+    for f in range(nframes):
+        while frames and frames[0] <= f:
+            last = poses[frames.pop(0)]
+        a = path[f] if path[f] is not None else b0y[f] + turn
+        c, s = math.cos(a), math.sin(a)
+        off = (seat[0] * c + seat[2] * s, seat[1], -seat[0] * s + seat[2] * c)  # (seat @ R_y(a): back to world)
+        p = [pos[f][j] - off[j] for j in range(3)]
+        if abs(p[1] - BIKE_FLOOR) < BIKE_SNAP:
+            p[1] = BIKE_FLOOR
+        nodes = dict(last[1])
+        nodes[0] = (0, _wrap16(int(round(a / Y.ANG))), 0)
+        root = tuple(max(-32768, min(32767, int(round(v)))) for v in p)
+        msk = sum(1 << kk for kk in nodes)
+        pose = bytes([0x75, 0]) + struct.pack('<3h', *root) + bytes([msk & 0xff, msk >> 8 & 0xff, msk >> 16 & 0xff])
+        for kk in sorted(nodes):
+            pose += struct.pack('<3h', *nodes[kk])
+        out.append((f, Y.join_record(b'', pose)))
+    return out
+
+
 def world_root(data):
     """an object track whose root is far from its parent (> 15 units): a world position (HCTP 3411 segment 4's bike,
     parked by the ring under a slot that still names the rider)"""
@@ -527,7 +647,7 @@ def convert_records(kind, data, T, rep, ground_fix=True, fov=CAM_FOV, shifts=Non
             if vehicle and len(pose) > 1:
                 p2 = conv_vehicle_pose(pose, vehicle, attached, origin)
             else:
-                p2 = conv_obj_pose(pose) if len(pose) > 1 else pose
+                p2 = conv_obj_pose(pose, origin) if len(pose) > 1 else pose
         else:                                    # ropes: 5-byte scalar keys, same in 2011
             ev2 = filter_events(ev, T, set(), rep, kind)
             p2 = pose
@@ -627,8 +747,12 @@ def slot11(j, on, evt_id, params, parent):
 DEFAULT_HAND_LIB = {}             # (hand_tracks.library(game pac): set by entrance_port for every caller)
 
 
-def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, game='hctp', hand_lib=None):
-    """-> (evp bytes, evt bytes, report Counter, notes list); game: hctp / svr04 (GAMES)"""
+def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, game='hctp', hand_lib=None,
+          own_props=None):
+    """-> (evp bytes, evt bytes, report Counter, notes list); game: hctp / svr04 (GAMES). own_props: {HCTP vehicle:
+    2011 id} of vehicles whose own model the pack adds (hctp_bike / entrance_props): their HCTP tracks node for
+    node, no 2540 remap"""
+    own_props = own_props or {}
     cfg = GAMES[game]
     prop_map = PROP_MAP if prop_map is None else prop_map
     sevp = parse_sevp(src['sevp'])
@@ -675,7 +799,8 @@ def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, 
             if tk == 'char' and i == 0:
                 shifts[k] = char_keys_shift(e['data'], org) if ground_fix else []
             recs, n = convert_records(tk, e['data'], T, rep, ground_fix, fov,
-                                      shifts.get(k) if tk == 'camera' else None, veh, att, org)
+                                      shifts.get(k) if tk == 'camera' else None,
+                                      None if o['model'] in own_props else veh, att, org)
             if veh:
                 attached[(i, k)] = att
             conv[(i, k)] = (tk, recs, max(n, e['frames']))
@@ -684,10 +809,20 @@ def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, 
         veh = VEHICLES.get(o['model']) if kinds[i] == 'prop' else None
         if not veh:
             continue
+        seat = None
+        if o['model'] in own_props:   # (where he sits on it: its first world segment, else 3003's)
+            kw = next((k for k in range(nseg) if (i, k) in conv and (ent, k) in conv and attached.get((i, k)) is False
+                       and len(conv[(i, k)][1]) > 1), None)
+            seat = seat_of(conv[(ent, kw)][1], conv[(i, kw)][1]) if kw is not None else None
+            seat = seat or OWN_SEAT
+            notes.append('object %d: the rider sits at %s on his bike (%s)' % (
+                i, tuple(int(v) for v in seat), 'HCTP segment %d' % kw if kw is not None else '3003\'s seat'))
         for k, s in enumerate(o['slots'][:nseg]):
             if attached.get((i, k)) and (i, k) in conv and (ent, k) in conv:
                 n = conv[(ent, k)][2]
-                conv[(i, k)] = ('prop', bake_vehicle(conv[(ent, k)][1], conv[(i, k)][1], n, veh), n)
+                baked_recs = (bake_own(conv[(ent, k)][1], conv[(i, k)][1], n, seat) if o['model'] in own_props else
+                              bake_vehicle(conv[(ent, k)][1], conv[(i, k)][1], n, veh))
+                conv[(i, k)] = ('prop', baked_recs, n)
                 notes.append('object %d: HCTP segment %d - the bike on the rider, baked to a world track' % (i, k))
             elif (s['parent'] != S.NONE16 and (i, k) in conv and (i, k - 1) in conv and conv[(i, k - 1)][1]
                   and len(conv[(i, k)][1]) <= 1):
@@ -782,8 +917,13 @@ def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, 
         if kind == 'char':
             model = S.PREVIEW_CHAR_11 if i == ent else S.GENERIC_CHAR_11
         elif kind == 'prop':
-            new = VEHICLES[model]['model'] if model in VEHICLES else prop_map.get(model, model)
-            notes.append('object %d: HCTP prop %d -> 2011 evtobj %d%s' % (i, model, new, ' (the bike: its nodes mapped)'
+            if model in own_props:
+                new = own_props[model]
+                notes.append('object %d: HCTP prop %d -> evtobj %d (its own model, added by the pack; its own '
+                             'nodes)' % (i, model, new))
+            else:
+                new = VEHICLES[model]['model'] if model in VEHICLES else prop_map.get(model, model)
+                notes.append('object %d: HCTP prop %d -> 2011 evtobj %d%s' % (i, model, new, ' (the bike: its nodes mapped)'
                                                                           if model in VEHICLES else ''))
             model = new
         slots = []

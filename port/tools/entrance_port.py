@@ -59,6 +59,7 @@ import svrfmt  # noqa: E402
 import ymks  # noqa: E402
 import svr08_entrance as E08  # noqa: E402
 import hctp_entrance as EH  # noqa: E402
+import entrance_props as EPR  # noqa: E402
 import svr10_entrance as E10  # noqa: E402
 import wwe13_entrance as E13  # noqa: E402
 
@@ -593,8 +594,24 @@ def hctp_convert(src, entrance, number, name, parts, rep, game='hctp', game_pac=
     if entrance not in EH.parse_sevp(s['sevp']) or len(s['banks'].get(entrance, b'')) <= 512:
         raise InputError('%s has no entrance %d' % (GAMES[game]['name'], entrance))
     progress(20, 'converting the script and tracks')
+    own = {}
+    if game == 'hctp' and game_pac:   # (the bike's own model: entrance_props / hctp_bike; else 2011's 2540)
+        import hctp_bike
+        uses = {o['model'] for o in EH.parse_sevp(s['sevp'])[entrance]['objs'] if EH.kind_of(o) == 'prop'}
+        for (g, model), pid in EPR.PORTED.items():
+            if g != 'hctp' or model not in uses:
+                continue
+            try:
+                data, bike_notes = hctp_bike.build(src.read('PAC/BG.PAC'), game_pac)
+            except Exception as x:
+                rep['notes'].append('prop %d: its own model not built (%s): 2011\'s 2540 with its nodes mapped' % (model, x))
+                continue
+            own[model] = pid
+            PROPS.append((pid, EH.VEHICLES[model]['model'], data))
+            rep['notes'] += bike_notes + ['prop %d: HCTP\'s own as evtobj %d, added by the pack (2011\'s %d if it can\'t '
+                                          'be: propfallback)' % (model, pid, EH.VEHICLES[model]['model'])]
     evp, evt, r, notes = EH.build(entrance, number, s, name or names.get(entrance, '%s %d' % (game.upper(), entrance)),
-                                  game=game)
+                                  game=game, own_props=own)
     rep['notes'] += notes + ['%s: %d' % kv for kv in sorted(r.items())]
     rep['dropped'] += ['%s: %d' % kv for kv in sorted(r.items()) if 'dropped' in kv[0]]
     return evp, evt
@@ -775,6 +792,36 @@ def w13_convert(game):
 wwe13_list = w13_list('wwe13')
 
 
+PROPS = []   # (this conversion's own props: [(id, game prop id, entry bytes)] - entrance_props.write)
+
+
+def own_vehicles(src, game, evp11, game_pac, rep):
+    """the source game's own vehicle in place of 2011's (entrance_props.PORTED: same model, its textures) when
+    the script uses it: a new evtobj id added by the pack, 2011's prop as the fallback"""
+    used = {o['model'] for o in E08.parse_evp(evp11, '2011')['objs'] if E13.kind(o) == 'prop'}
+    for (g, model), pid in EPR.PORTED.items():
+        if g != game or model not in used or not game_pac:
+            continue
+        try:
+            raw = src.read('pac/evt/evtobj.pac')
+            if raw[:4] not in (b'EPAC', b'EPK8'):
+                raw = E13.xdec(raw, E13.find_svrmod(SVRMOD))
+            theirs = E13.epk8_entries(raw).get(('SOBJ', str(model)))
+            ours = EPR.game_prop(game_pac, model)
+            data = EPR.retextured(ours, theirs) if theirs and ours else None
+        except Exception as x:
+            rep['notes'].append('prop %d: the source\'s own not read (%s): 2011\'s kept' % (model, x))
+            continue
+        if data is None:
+            rep['notes'].append('prop %d: the source\'s is 2011\'s own (kept)' % model)
+            continue
+        PROPS.append((pid, model, data))
+        evp11 = EPR.set_prop(evp11, model, pid)
+        rep['notes'].append('prop %d: %s\'s own (its textures) as evtobj %d, added by the pack (2011\'s %d if it '
+                            'can\'t be: propfallback)' % (model, E13.GAMES[game]['name'], pid, model))
+    return evp11
+
+
 def wwe13_convert(src, entrance, number, name, parts, rep, game_pac=None, game='wwe13'):
     evp, evz = wwe13_entrances(src, game)
     if entrance not in evp or entrance not in evz:
@@ -788,6 +835,7 @@ def wwe13_convert(src, entrance, number, name, parts, rep, game_pac=None, game='
     evp11, evt11, r = E13.convert(evp[entrance], evz[entrance], number, game_pac, name, progress=prog, game=game)
     for k in ('notes', 'warnings', 'dropped'):
         rep[k] += r[k]
+    evp11 = own_vehicles(src, game, evp11, game_pac, rep)
     rep['notes'].append('not converted: theme, face / finger tracks; titantron only with --titantron (Bink 2: a decoder the player installs)')
     return evp11, evt11
 
@@ -1204,6 +1252,7 @@ def cmd_convert(a):
         rep['notes'] += ['lone file %s: %s' % (lone['file'], x) for x in lone['limits']]
         if 'warning' in lone:
             rep['warnings'].append(lone['warning'])
+    del PROPS[:]
     try:
         progress(5, 'reading the source')
         conv = CONVERTERS[g]
@@ -1229,6 +1278,7 @@ def cmd_convert(a):
         os.makedirs(out, exist_ok=True)
         label = '%s entrance %d as 2011 %d' % (GAMES[g]['name'], entrance, number)
         d = EH.write_pack(out, number, files, label)
+        EPR.write(d, PROPS)
         if '--no-pyro' not in a and not lone:
             pyro(src, g, entrance, number, d, rep)
         rep['files'] = sorted(os.path.relpath(os.path.join(r, f), out) for r, _, fs in os.walk(d) for f in fs)
