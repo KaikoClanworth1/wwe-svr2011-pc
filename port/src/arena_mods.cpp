@@ -1544,6 +1544,11 @@ std::string ArenaModInUse(int* tile) {
   return c->id;
 }
 
+std::string ArenaModManifest() {
+  const auto* c = static_cast<const CustomArena*>(g_redirected_custom);
+  return c && g_redirected_host >= 0 ? c->manifest : std::string();
+}
+
 // (tile: the arena of the host's tile - the session's arena; this game finds the mod's base itself, so the pages'
 // order may differ between the two games)
 bool UseArenaMod(const std::string& folder, int tile) {
