@@ -74,6 +74,10 @@ bool PictureBox(const char* id, Picture* shown, float w, float h, const wchar_t*
   if (ImGui::Button("Pick a picture...", ImVec2(w, 0))) {
     const std::wstring f = PickFile(false, title, kPictureFilter, 1);
     if (!f.empty() && LoadPicture(f, got)) picked = true;
+    else if (!f.empty()) {
+      Status("That file isn't a picture the Mod Maker can read (PNG, JPG, BMP, TGA, or a DXT1 / DXT5 DDS).");
+      Log("Simple arena: not a picture it reads - " + Utf8(f));
+    }
   }
   ImGui::EndGroup();
   std::vector<std::wstring> dropped;
@@ -371,6 +375,10 @@ void StepPictures() {
       Image img;
       if (PictureBox(name.c_str(), pic, tw, h, Wide("A picture for " + name).c_str(), img, name.c_str())) {
         if (ReplaceArenaTexture(name, img)) Log("Simple arena: " + name + " replaced");
+        else {
+          Status(name + " couldn't take that picture (its texture is of a kind the Mod Maker doesn't rewrite).");
+          Log("Simple arena: " + name + " NOT replaced (" + std::to_string(img.w) + "x" + std::to_string(img.h) + ")");
+        }
       }
       const auto sz = g_sizes.find(name);
       ImGui::TextDisabled("%s", name.c_str());
@@ -629,6 +637,7 @@ void TestRun() {
       std::string tex = v.substr(0, v.find(':')), file = v.substr(v.find(':') + 1);  // (the first colon: names have none)
       if (tex == "apron") tex = Groups()[0].names.empty() ? "" : Groups()[0].names[0];
       if (!tex.empty() && LoadPicture(Wide(file), img)) Log(std::string("simple arena test: ") + tex + (ReplaceArenaTexture(tex, img) ? " replaced" : " NOT replaced"));
+      else if (!tex.empty()) Log("simple arena test: " + tex + " - not a picture it reads: " + file);
     }
   }
   if (g_test_step >= 0) g_simple_step = g_test_step;

@@ -107,6 +107,8 @@ void Shutdown();
 // test aid: a camera preset (0 hard camera, 1 top, 2 from the stage; -1 none)
 // and an object to select (by name) once an arena is set
 void TestStart(int view, const std::string& select);
+// test aid: the selected object gets this picture, as "Use a picture..." gives one
+void TestPicture(const std::string& path);
 // test aid: moves the selection 2 m, adds a 2 m box at ringside, red top rope, warmer light
 void TestEdit();
 // test aid: every entrance-zone model of library arena `lib` added in its place
