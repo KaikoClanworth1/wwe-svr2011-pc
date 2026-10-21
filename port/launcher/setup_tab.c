@@ -406,18 +406,31 @@ static void mkdirs(const WCHAR *dir)
     CreateDirectoryW(p, NULL);
 }
 
+/* Deletes a folder tree directly - no shell (its FO_DELETE took 30 s on a just-renamed folder: mods_tab.h
+   mods_delete_tree, which the Mod Maker, using this file, doesn't link). A junction: the link only. */
 static void remove_tree(const WCHAR *dir)
 {
-    WCHAR from[MAX_PATH + 2];
-    SHFILEOPSTRUCTW op;
-    if (!exists(dir)) return;
-    memset(from, 0, sizeof from);
-    wcscpy_s(from, MAX_PATH, dir);
-    memset(&op, 0, sizeof op);
-    op.wFunc = FO_DELETE;
-    op.pFrom = from;
-    op.fFlags = FOF_NO_UI;
-    SHFileOperationW(&op);
+    WCHAR pat[MAX_PATH], p[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    const DWORD a = GetFileAttributesW(dir);
+    if (a == INVALID_FILE_ATTRIBUTES) return;
+    SetFileAttributesW(dir, FILE_ATTRIBUTE_NORMAL);
+    if (!(a & FILE_ATTRIBUTE_DIRECTORY)) {
+        DeleteFileW(dir);
+        return;
+    }
+    if (!(a & FILE_ATTRIBUTE_REPARSE_POINT) && swprintf_s(pat, MAX_PATH, L"%s\\*", dir) > 0) {
+        h = FindFirstFileW(pat, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+                if (swprintf_s(p, MAX_PATH, L"%s\\%s", dir, fd.cFileName) > 0) remove_tree(p);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
+    RemoveDirectoryW(dir);
 }
 
 /* The embeddable Python ignores site-packages unless its ._pth lists it (and "import site"). */

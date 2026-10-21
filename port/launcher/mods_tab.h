@@ -35,3 +35,9 @@ int mods_add_background(const WCHAR *game_dir, const WCHAR *image, int logo);
 /* Installs the mods shipped with the port (<bundle_dir>\*.svrmod) that the
    game hasn't had yet, or whose shipped file changed. */
 void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir);
+/* Told before each bundled mod mods_install_bundled installs: n of total (from any thread - it may run on a worker). */
+void mods_set_bundled_progress(void (*progress)(int n, int total));
+/* Deletes a folder tree directly (no shell, no Recycle Bin). The shell's FO_DELETE took 30 s on each folder a mod
+   update had just renamed into Mods\.old (2.1.4: an update installing four match types ran for two minutes before the
+   window showed). 1 when it is gone. */
+int mods_delete_tree(const WCHAR *dir);

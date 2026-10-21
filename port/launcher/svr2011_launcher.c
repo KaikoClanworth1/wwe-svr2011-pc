@@ -167,6 +167,7 @@ enum {
 #define WM_APP_VERIFY   (WM_APP + 12)    /* wParam permille, or 1001: done (s_verify) */
 #define WM_APP_FRIENDS  (WM_APP + 11)    /* wParam HTTP status (0: no answer), lParam heap char* answer */
 #define WM_APP_SIZE     (WM_APP + 14)    /* the Play page's game size / file check is in (size_thread) */
+#define WM_APP_BUNDLED  (WM_APP + 15)    /* wParam n << 16 | total installing, or 0xFFFFFFFF: done (bundled_thread) */
 #define HERO_TIMER      0x5F02           /* the Play page's picture scrolling */
 #define FRIENDS_TIMER   0x5F01           /* the Friends list's refresh while the Online tab shows */
 #define APK_OK          1001
@@ -831,6 +832,74 @@ static void install_bundled(const WCHAR *game, const WCHAR *dir)
     WCHAR b[MAX_PATH];
     if (game && game[0] && dir && dir[0] && join(b, dir, L"Bundled Mods") && dir_exists(b))
         mods_install_bundled(game, b);
+}
+
+/* The bundled mods installed on a worker (the window already shown; an update can bring many): the Play page says
+   "Installing the update's mods... (n of N)" and Play waits for it (refresh_play). */
+static volatile LONG s_bundled_busy;
+static WCHAR s_bundled_text[160];
+static HWND s_bundled_wnd;
+
+static void bundled_progress(int n, int total)
+{
+    if (s_bundled_wnd) PostMessageW(s_bundled_wnd, WM_APP_BUNDLED, (WPARAM)((n & 0xFFFF) << 16 | (total & 0xFFFF)), 0);
+}
+
+static DWORD WINAPI bundled_thread(LPVOID arg)
+{
+    WCHAR *dirs = (WCHAR *)arg;  /* (game \0 launcher folder) */
+    const WCHAR *game = dirs, *launcher = dirs + wcslen(dirs) + 1;
+    mods_set_bundled_progress(bundled_progress);
+    install_bundled(game, game);
+    if (launcher[0] && !same_dir(game, launcher))
+        install_bundled(game, launcher);
+    mods_set_bundled_progress(NULL);
+    free(dirs);
+    PostMessageW(s_bundled_wnd, WM_APP_BUNDLED, (WPARAM)0xFFFFFFFF, 0);
+    return 0;
+}
+
+static void refresh_play(void);
+
+static void start_bundled(void)
+{
+    WCHAR *dirs;
+    size_t g, l;
+    HANDLE t;
+    if (!is_game_folder(s_game_dir) || InterlockedCompareExchange(&s_bundled_busy, 1, 0))
+        return;
+    g = wcslen(s_game_dir), l = wcslen(s_launcher_dir);
+    dirs = (WCHAR *)calloc(g + l + 2, sizeof(WCHAR));
+    if (!dirs) {
+        InterlockedExchange(&s_bundled_busy, 0);
+        return;
+    }
+    memcpy(dirs, s_game_dir, g * sizeof(WCHAR));
+    memcpy(dirs + g + 1, s_launcher_dir, l * sizeof(WCHAR));
+    s_bundled_wnd = s_wnd;
+    wcscpy_s(s_bundled_text, 160, L"Checking the mods that came with the port\x2026");
+    refresh_play();
+    t = CreateThread(NULL, 0, bundled_thread, dirs, 0, NULL);
+    if (!t) {
+        free(dirs);
+        InterlockedExchange(&s_bundled_busy, 0);
+        refresh_play();
+        return;
+    }
+    CloseHandle(t);
+}
+
+static void bundled_message(WPARAM wp)
+{
+    if (wp == (WPARAM)0xFFFFFFFF) {
+        InterlockedExchange(&s_bundled_busy, 0);
+        refresh_play();
+        if (s_cur_tab == TAB_MODS) mods_show(s_game_dir);
+        return;
+    }
+    swprintf_s(s_bundled_text, 160, L"Installing the update's mods\x2026 (%u of %u)",
+               (unsigned)(wp >> 16 & 0xFFFF), (unsigned)(wp & 0xFFFF));
+    refresh_play();
 }
 
 static int cmp_sector(const void *a, const void *b)
@@ -2172,9 +2241,9 @@ static void refresh_play(void)
         ready = 1;
     }
     s_play_ready = ready;
-    set_text(ID_PLAY_STATUS, ready ? L"All systems ready. Have fun!" : t);
-    EnableWindow(ctl(ID_PLAY), ready && !s_busy);
-    EnableWindow(ctl(ID_PLAY_NOMODS), ready && !s_busy);
+    set_text(ID_PLAY_STATUS, ready && s_bundled_busy ? s_bundled_text : ready ? L"All systems ready. Have fun!" : t);
+    EnableWindow(ctl(ID_PLAY), ready && !s_busy && !s_bundled_busy);  /* (the bundled mods first) */
+    EnableWindow(ctl(ID_PLAY_NOMODS), ready && !s_busy && !s_bundled_busy);
     playtime_show();
     play_counts();
     play_size_start();
@@ -2696,7 +2765,7 @@ static void show_tab(int t)
         pt_refresh();
     if (t == TAB_MOVIES)
         mv_refresh();
-    if (t == TAB_MODS)
+    if (t == TAB_MODS && !s_bundled_busy)  /* (installing the bundled mods: shown when they're in) */
         mods_show(s_game_dir);
     if (t == TAB_MUSIC)
         music_show(s_game_dir);
@@ -3464,15 +3533,7 @@ static int unpack(const WCHAR *archive, const WCHAR *to)
 
 static void remove_tree(const WCHAR *dir)
 {
-    WCHAR from[MAX_PATH + 2];
-    SHFILEOPSTRUCTW op;
-    wcscpy_s(from, MAX_PATH, dir);
-    from[wcslen(from) + 1] = 0;                        /* double-terminated */
-    ZeroMemory(&op, sizeof op);
-    op.wFunc = FO_DELETE;
-    op.pFrom = from;
-    op.fFlags = FOF_NO_UI;
-    SHFileOperationW(&op);
+    mods_delete_tree(dir);  /* (directly: the shell's delete can take 30 s a folder - mods_tab.h) */
 }
 
 static void dlc_scan(const WCHAR *dir, int depth);
@@ -6777,11 +6838,7 @@ static void up_finished(int ok, WCHAR *err)
         free(err);
         return;
     }
-    install_bundled(s_game_dir, s_game_dir);
-    if (!same_dir(s_game_dir, s_launcher_dir))
-        install_bundled(s_game_dir, s_launcher_dir);
-    if (s_cur_tab == TAB_MODS)
-        mods_show(s_game_dir);
+    start_bundled();  /* (on a worker: the Play page says so; the Mods tab is rescanned when they're in) */
     up_status(L"Updated to version %s, with its bundled mods.", PORT_VERSION);
 }
 
@@ -7915,6 +7972,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     case WM_APP_UPD_FINISHED:
         up_finished((int)wp, (WCHAR *)lp);
         return 0;
+    case WM_APP_BUNDLED:
+        bundled_message(wp);
+        return 0;
     case WM_APP_MOVIE:
         SendMessageW(ctl(ID_MV_PROGRESS), PBM_SETPOS, wp, 0);
         return 0;
@@ -8196,6 +8256,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     RECT r;
     int argc = 0, capture_tab = -1, capture_seq[8], capture_seq_n = 0, capture_verify = 0, updated = 0;
     int capture_report = 0;
+    int capture_bundled = 0;  /* (--bundled-start: the start's bundled install too - timed, a shot while it runs) */
+    const ULONGLONG t_start = GetTickCount64();
+    ULONGLONG t_shown = 0;
     const WCHAR *capture_music = NULL, *const *capture_tag = NULL;
     WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc), *slash, *capture_file = NULL, **capture_account = NULL;
     (void)prev; (void)cmd;
@@ -8539,6 +8602,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         /* ... --report-window <1|2>: Report a problem's window (questions / where to post) is captured instead. */
         if (argc >= 6 && !wcscmp(argv[4], L"--report-window"))
             capture_report = _wtoi(argv[5]);
+        /* ... --bundled-start: the start's bundled-mod install runs as without --capture (after the window shows,
+           on a worker); <file>.during.png is taken while it runs, <file>.times.txt says when the window showed and
+           when the install was done (ms from the start), and the capture waits for it (2 minutes at most). */
+        if (argc >= 5 && !wcscmp(argv[4], L"--bundled-start"))
+            capture_bundled = 1;
     }
 
     icc.dwSize = sizeof icc;
@@ -8578,12 +8646,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         DwmSetWindowAttribute(s_wnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &on, sizeof on);
     }
     build_ui();
-    /* Mods that came with the port and aren't in the game yet (an update can bring new ones). */
-    if (is_game_folder(s_game_dir)) {
-        install_bundled(s_game_dir, s_game_dir);
-        if (!same_dir(s_game_dir, s_launcher_dir))
-            install_bundled(s_game_dir, s_launcher_dir);
-    }
     refresh_play();
     /* Restarted by an update (--updated): what an older launcher left out. */
     if (!capture_file && updated && up_unfinished())
@@ -8616,6 +8678,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     if (!capture_file && !IsWindowVisible(s_wnd))
         ShowWindow(s_wnd, SW_SHOWNORMAL);
     UpdateWindow(s_wnd);
+    t_shown = GetTickCount64() - t_start;
+    /* Mods that came with the port and aren't in the game yet (an update can bring new ones): once the window shows,
+       on a worker (start_bundled; they used to be installed before the window was, which an update with many to
+       replace left invisible for minutes). */
+    if ((!capture_file || capture_bundled) && is_game_folder(s_game_dir))
+        start_bundled();
     up_check_finished();
     if (!capture_file && GetPrivateProfileIntW(L"Launcher", L"CheckUpdates", 1, s_launcher_ini))
         up_check(1);
@@ -8652,6 +8720,35 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                     TranslateMessage(&pm);
                     DispatchMessageW(&pm);
                 }
+        }
+        if (capture_bundled) {
+            WCHAR during[MAX_PATH], times[MAX_PATH];
+            ULONGLONG t0 = GetTickCount64(), t_done = 0;
+            int shot = 0;
+            FILE *f;
+            swprintf_s(during, MAX_PATH, L"%s.during.png", capture_file);
+            while (s_bundled_busy && GetTickCount64() - t0 < 120000) {
+                if (MsgWaitForMultipleObjects(0, NULL, FALSE, 20, QS_ALLINPUT) == WAIT_OBJECT_0)
+                    while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&pm);
+                        DispatchMessageW(&pm);
+                    }
+                if (!shot && s_bundled_busy && wcschr(s_bundled_text, L'(')) {  /* (the "n of N" status shown) */
+                    capture(during);
+                    shot = 1;
+                }
+            }
+            t_done = GetTickCount64() - t_start;
+            while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&pm);
+                DispatchMessageW(&pm);
+            }
+            swprintf_s(times, MAX_PATH, L"%s.times.txt", capture_file);
+            if (_wfopen_s(&f, times, L"w") == 0 && f) {
+                fwprintf(f, L"window shown %llu ms\nbundled install done %llu ms%s\n", t_shown, t_done,
+                         s_bundled_busy ? L" (still running: stopped waiting)" : L"");
+                fclose(f);
+            }
         }
         if (capture_report)
             report_window(capture_report, capture_file);
