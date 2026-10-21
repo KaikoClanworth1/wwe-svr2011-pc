@@ -121,6 +121,7 @@ std::vector<std::pair<std::u16string, std::filesystem::path>> Playlists() {
 class Player {
  public:
   explicit Player(bool once = false) : once_(once) {}
+  void LogVolume() { log_volume_ = true; }
   void Play(std::filesystem::path path, bool once) {
     once_ = once;
     Play(std::move(path));
@@ -161,8 +162,7 @@ class Player {
       REXLOG_WARN("user music: Media Foundation unavailable (Windows N: the Media Feature Pack)");
       return;
     }
-    if (FAILED(XAudio2Create(&xaudio2_, 0, XAUDIO2_DEFAULT_PROCESSOR)) ||
-        FAILED(xaudio2_->CreateMasteringVoice(&master_))) {
+    if (!Engine()) {
       REXLOG_WARN("user music: no audio output");
       return;
     }
@@ -180,6 +180,14 @@ class Player {
       }
       if (has_request) {
         StopVoice();
+        if (engine_lost_) {  // (the audio device went away or changed: this engine plays nothing any more)
+          REXLOG_WARN("user music: the audio output stopped (XAudio2 error {:08X}: the audio device changed or "
+                      "was lost) - opened again", uint32_t(engine_error_.load()));
+          if (master_) master_->DestroyVoice();
+          master_ = nullptr;
+          xaudio2_.Reset();
+          if (!Engine()) REXLOG_WARN("user music: no audio output");
+        }
         song_ = request;
         if (!song_.empty() && !Open(song_)) song_.clear();
         if (song_.empty()) active_ = false;
@@ -192,6 +200,7 @@ class Player {
       UpdateVolume();
       if (voice_paused_) continue;
       Feed();
+      CheckRendering();
       if (ended_) {
         XAUDIO2_VOICE_STATE state = {};
         voice_->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
@@ -212,6 +221,44 @@ class Player {
   }
 
  private:
+  // The XAudio2 engine and its output (again after the device went away: OnCriticalError).
+  struct EngineEvents : IXAudio2EngineCallback {
+    Player* player = nullptr;
+    void STDMETHODCALLTYPE OnProcessingPassStart() noexcept override {}
+    void STDMETHODCALLTYPE OnProcessingPassEnd() noexcept override {}
+    void STDMETHODCALLTYPE OnCriticalError(HRESULT error) noexcept override {
+      player->engine_error_ = error;
+      player->engine_lost_ = true;
+    }
+  };
+  bool Engine() {
+    engine_lost_ = false;
+    if (FAILED(XAudio2Create(&xaudio2_, 0, XAUDIO2_DEFAULT_PROCESSOR)) || !xaudio2_ ||
+        FAILED(xaudio2_->CreateMasteringVoice(&master_)))
+      return false;
+    events_.player = this;
+    xaudio2_->RegisterForCallbacks(&events_);
+    static const bool test_lost = std::getenv("SVR2011_TEST_AUDIO_LOST") != nullptr;  // (test: the first song's engine "lost")
+    if (test_lost && log_volume_ && !test_lost_done_) test_lost_done_ = true, engine_error_ = 0x88890004, engine_lost_ = true;
+    return true;
+  }
+  // The user-music player: a song that rendered no sound in its first 2 s is noted (once a song).
+  void CheckRendering() {
+    if (!log_volume_ || checked_) return;
+    if (std::chrono::steady_clock::now() - opened_at_ < std::chrono::seconds(2)) return;
+    checked_ = true;
+    XAUDIO2_VOICE_STATE state = {};
+    voice_->GetState(&state);
+    XAUDIO2_PERFORMANCE_DATA perf = {};
+    xaudio2_->GetPerformanceData(&perf);
+    if (state.SamplesPlayed == 0 || engine_lost_)
+      REXLOG_WARN("user music: no sound after 2 s ({} samples played, {} buffers queued, volume {:.2f}, {} voice(s) "
+                  "active{})", state.SamplesPlayed, state.BuffersQueued, volume_, perf.ActiveSourceVoiceCount,
+                  engine_lost_ ? ", the audio device was lost" : "");
+    else
+      REXLOG_INFO("user music: playing ({} samples in 2 s, volume {:.2f})", state.SamplesPlayed, volume_);
+  }
+
   bool Open(const std::filesystem::path& path) {
     song_gain_ = SongGain(path);
     if (song_gain_ != 1.0f)
@@ -252,6 +299,8 @@ class Player {
     ended_ = false;
     voice_paused_ = true;  // started by the loop (unless paused)
     volume_ = -1.0f;
+    opened_at_ = std::chrono::steady_clock::now();
+    checked_ = false;
     return true;
   }
 
@@ -264,14 +313,18 @@ class Player {
   }
 
   void UpdateVolume() {
-    float v;
+    float game;
     {
       std::lock_guard lock(mutex_);
-      v = game_volume_;
+      game = game_volume_;
     }
-    v *= song_gain_;  // (the song's own: a mod's theme_gain=)
-    if (rex::cvar::GetFlagByName("audio_mute") == "true") v = 0.0f;
+    float v = game * song_gain_;  // (the song's own: a mod's theme_gain=)
+    const bool muted = rex::cvar::GetFlagByName("audio_mute") == "true";
+    if (muted) v = 0.0f;
     if (v != volume_) {
+      if (log_volume_)  // (as a song starts and when it changes: a silent song shows here)
+        REXLOG_INFO("user music: volume {:.2f} (the game's {:.2f}, theme_gain {:.2f}{})", v, game, song_gain_,
+                    muted ? ", audio_mute" : "");
       volume_ = v;
       voice_->SetVolume(v);
     }
@@ -331,10 +384,17 @@ class Player {
   bool paused_ = false;
   float game_volume_ = 1.0f;
   float song_gain_ = 1.0f;
+  std::atomic<bool> log_volume_{false};  // (the user-music player: LogVolume)
 
   // The player thread's own.
   ComPtr<IXAudio2> xaudio2_;
   IXAudio2MasteringVoice* master_ = nullptr;
+  EngineEvents events_;
+  std::atomic<bool> engine_lost_{false};
+  std::atomic<long> engine_error_{0};
+  bool test_lost_done_ = false;
+  std::chrono::steady_clock::time_point opened_at_{};
+  bool checked_ = true;
   IXAudio2SourceVoice* voice_ = nullptr;
   ComPtr<IMFSourceReader> reader_;
   std::filesystem::path song_;
@@ -354,6 +414,7 @@ class Player {
 class Player {
  public:
   explicit Player(bool once = false) : once_(once) {}
+  void LogVolume() { log_volume_ = true; }
   void Play(std::filesystem::path path, bool once) {
     once_ = once;
     Play(std::move(path));
@@ -520,14 +581,18 @@ class Player {
   }
 
   void UpdateVolume() {
-    float v;
+    float game;
     {
       std::lock_guard lock(mutex_);
-      v = game_volume_;
+      game = game_volume_;
     }
-    v *= song_gain_;  // (the song's own: a mod's theme_gain=)
-    if (rex::cvar::GetFlagByName("audio_mute") == "true") v = 0.0f;
+    float v = game * song_gain_;  // (the song's own: a mod's theme_gain=)
+    const bool muted = rex::cvar::GetFlagByName("audio_mute") == "true";
+    if (muted) v = 0.0f;
     if (v != volume_) {
+      if (log_volume_)  // (as a song starts and when it changes: a silent song shows here)
+        REXLOG_INFO("user music: volume {:.2f} (the game's {:.2f}, theme_gain {:.2f}{})", v, game, song_gain_,
+                    muted ? ", audio_mute" : "");
       volume_ = v;
       SDL_SetAudioStreamGain(stream_, v);
     }
@@ -596,6 +661,7 @@ class Player {
   bool paused_ = false;
   float game_volume_ = 1.0f;
   float song_gain_ = 1.0f;
+  std::atomic<bool> log_volume_{false};  // (the user-music player: LogVolume)
 
   // The player thread's own.
   std::filesystem::path song_;
@@ -701,6 +767,7 @@ void InstallUserMusic(const std::filesystem::path& folder) {
   std::error_code ec;
   std::filesystem::create_directories(folder, ec);  // so players can find it
   g_player = new Player();
+  g_player->LogVolume();
   std::thread([] {
 #if defined(_WIN32)
     rex::thread::set_current_thread_name("User music");
