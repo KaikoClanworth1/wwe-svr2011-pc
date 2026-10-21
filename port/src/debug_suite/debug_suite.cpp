@@ -30,6 +30,7 @@ REXCVAR_DEFINE_STRING(dbg_state, "", "Debug", "SVRDBG: state dumps at these seco
 REXCVAR_DEFINE_STRING(dbg_state_clock, "", "Debug",
                       "SVRDBG: state dumps at these match clock values (60 a second; on the game's thread, exact "
                       "positions - two lockstep games compare)");
+REXCVAR_DEFINE_INT32(dbg_burst, 0, "Debug", "SVRDBG: frames shot one by one when the world starts being held (a cinematic)");
 REXCVAR_DEFINE_DOUBLE(dbg_quit, 0.0, "Debug", "SVRDBG: the game ends itself at this second (0: never)");
 REXCVAR_DEFINE_INT32(dbg_speed, 1, "Debug", "SVRDBG: world updates a frame (fast-forward)");
 REXCVAR_DEFINE_STRING(dbg_out, "", "Debug", "SVRDBG: the folder for shots and states (default: dbg)");
@@ -50,6 +51,9 @@ std::atomic<int64_t> g_zero{0};       // the cues' zero (Clock ticks; 0: not yet
 std::atomic<bool> g_shot_due{false};  // the renderer takes the next frame
 std::atomic<int64_t> g_shot_ms{0};    // (its name)
 std::atomic<int> g_shots_done{0};
+std::atomic<int> g_burst_left{0}, g_burst_n{0};  // (dbg_burst: frames still to shoot, the burst's number)
+std::atomic<int64_t> g_held_at{0};               // (the world's last held update)
+std::atomic<uint32_t> g_burst_frame{0};
 
 // "5,10,every:2:5" -> seconds, sorted.
 std::vector<double> Times(const std::string& spec) {
@@ -166,10 +170,31 @@ void Install(rex::memory::Memory* memory) {
   InstallBoot();
 }
 
-bool ShotWanted() { return g_shot_due.load(std::memory_order_relaxed); }
+bool ShotWanted() { return g_shot_due.load(std::memory_order_relaxed) || g_burst_left.load(std::memory_order_relaxed) > 0; }
+
+void OnWorldHeld() {
+  const int n = REXCVAR_GET(dbg_burst);
+  if (n <= 0) return;
+  const int64_t now = Clock::now().time_since_epoch().count();
+  const int64_t last = g_held_at.exchange(now);
+  // (a new hold: none for half a second before)
+  if (!last || std::chrono::duration<double>(Clock::duration(now - last)).count() > 0.5) {
+    g_burst_frame = 0;
+    g_burst_n.fetch_add(1);
+    g_burst_left = n;
+    REXLOG_INFO("SVRDBG: burst {} - the world held (match clock {}), {} frames shot", g_burst_n.load(), MatchClock(g_base), n);
+  }
+}
 
 void WriteShot(const uint8_t* rgba, uint32_t width, uint32_t height, uint32_t row_bytes) {
   const int64_t ms = g_shot_ms.load();
+  std::string name;
+  if (g_burst_left.load() > 0 && !g_shot_due.load()) {  // (a burst's frame)
+    g_burst_left.fetch_sub(1);
+    name = fmt::format("burst{}_{:03d}.png", g_burst_n.load(), g_burst_frame.fetch_add(1));
+  } else {
+    name = fmt::format("shot_{:06d}.png", ms);
+  }
   g_shot_due = false;
   std::vector<uint8_t> px(size_t(width) * height * 4);
   for (uint32_t y = 0; y < height; ++y) {
@@ -177,9 +202,9 @@ void WriteShot(const uint8_t* rgba, uint32_t width, uint32_t height, uint32_t ro
     for (uint32_t x = 0; x < width; ++x) px[(size_t(y) * width + x) * 4 + 3] = 255;  // (the image's alpha: opaque)
   }
   // (encoded and written on a thread of its own: the renderer goes on)
-  std::thread([px = std::move(px), width, height, ms] {
+  std::thread([px = std::move(px), width, height, name] {
     const std::vector<uint8_t> png = native::texture_packs::EncodePng(px.data(), width, height);
-    const fs::path file = g_out / fmt::format("shot_{:06d}.png", ms);
+    const fs::path file = g_out / name;
     std::ofstream f(file, std::ios::binary | std::ios::trunc);
     f.write(reinterpret_cast<const char*>(png.data()), std::streamsize(png.size()));
     f.close();

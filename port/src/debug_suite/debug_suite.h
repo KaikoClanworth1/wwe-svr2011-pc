@@ -14,6 +14,8 @@
 //   dbg_state=8              state dumps -> <dbg_out>/state_<ms>.json (the match's people with their last
 //                            moves and positions, the match clock, fps, the perf numbers)
 //   dbg_quit=15              the game ends itself (exit code 0) at 15 s, after the cues before it
+//   dbg_burst=N              when the world starts being held (a move's cinematic, a match's end): the next N
+//                            frames each shot -> <dbg_out>/burst<k>_<frame>.png (camera cuts frame by frame)
 //   dbg_speed=N              N world updates a frame (fast-forward; 1 normal; online lockstep keeps 1)
 //   dbg_out=<folder>         where shots and states go (default: dbg in the working folder)
 //   dbg_boot=match           straight into dbg_match's match: no intros, no title, no menus (boot.cpp)
@@ -55,6 +57,7 @@ void WriteShot(const uint8_t* rgba, uint32_t width, uint32_t height, uint32_t ro
 void OnMatchStarted();
 int SpeedTicks();
 void ClockFrame();  // (each world update: dbg_state_clock)
+void OnWorldHeld();  // (frame_rate.cpp: a held world's update - a cinematic's: dbg_burst)
 
 // The direct boot (boot.cpp): set up at start (Install); fast_start.cpp presses START on the Start Screen too
 // while one is wanted; frame_rate.cpp's world update (the game's thread) starts it once the main menu is up.
