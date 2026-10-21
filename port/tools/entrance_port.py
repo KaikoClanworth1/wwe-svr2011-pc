@@ -594,8 +594,24 @@ def hctp_convert(src, entrance, number, name, parts, rep, game='hctp', game_pac=
     if entrance not in EH.parse_sevp(s['sevp']) or len(s['banks'].get(entrance, b'')) <= 512:
         raise InputError('%s has no entrance %d' % (GAMES[game]['name'], entrance))
     progress(20, 'converting the script and tracks')
+    own = {}
+    if game == 'hctp' and game_pac:   # (the bike's own model: entrance_props / hctp_bike; else 2011's 2540)
+        import hctp_bike
+        uses = {o['model'] for o in EH.parse_sevp(s['sevp'])[entrance]['objs'] if EH.kind_of(o) == 'prop'}
+        for (g, model), pid in EPR.PORTED.items():
+            if g != 'hctp' or model not in uses:
+                continue
+            try:
+                data, bike_notes = hctp_bike.build(src.read('PAC/BG.PAC'), game_pac)
+            except Exception as x:
+                rep['notes'].append('prop %d: its own model not built (%s): 2011\'s 2540 with its nodes mapped' % (model, x))
+                continue
+            own[model] = pid
+            PROPS.append((pid, EH.VEHICLES[model]['model'], data))
+            rep['notes'] += bike_notes + ['prop %d: HCTP\'s own as evtobj %d, added by the pack (2011\'s %d if it can\'t '
+                                          'be: propfallback)' % (model, pid, EH.VEHICLES[model]['model'])]
     evp, evt, r, notes = EH.build(entrance, number, s, name or names.get(entrance, '%s %d' % (game.upper(), entrance)),
-                                  game=game)
+                                  game=game, own_props=own)
     rep['notes'] += notes + ['%s: %d' % kv for kv in sorted(r.items())]
     rep['dropped'] += ['%s: %d' % kv for kv in sorted(r.items()) if 'dropped' in kv[0]]
     return evp, evt
