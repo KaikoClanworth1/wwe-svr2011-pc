@@ -188,12 +188,12 @@ REX_HOOK_RAW(sub_824B6A70) {
 
 REX_EXTERN(__imp__sub_82394520);
 REX_HOOK_RAW(sub_82394520) {
-  const uint32_t key = ctx.r4.u32;
+  const uint32_t key = ctx.r4.u32, x = ctx.r5.u32, y = ctx.r6.u32;
   __imp__sub_82394520(ctx, base);
-  if (g_log && key >= 12500 && key < 12600) {
+  if (g_log && key >= 12500 && key < 13600) {
     static int b = 0;
     static std::chrono::steady_clock::time_point t;
-    if (Allow(b, t)) REXLOG_INFO("hctp: motion key {} -> {:08X}", key, ctx.r3.u32);
+    if (Allow(b, t)) REXLOG_INFO("hctp: motion key {} ({}, {}) -> {:08X}", key, x, y, ctx.r3.u32);
   }
 }
 
@@ -2633,7 +2633,13 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
         p.who = f1, p.timer = 0;
         REXLOG_INFO("hctp: fighter 1 climbs {} (test)", p.name);
       }
-      if (p.kind == "fountainthrow" && at(1100) && &p == FindKind("fountainthrow")) FountainThrow(ctx, base, p, f1, 1);
+      if (p.kind == "fountainthrow" && at(1100) && &p == FindKind("fountainthrow") && p.has_zone) {
+        // (both by the basin first: the throw wants its thrower within 60)
+        const float cx = (p.zone[0] + p.zone[1]) / 2, cz = (p.zone[4] + p.zone[5]) / 2;
+        PlaceFighter(base, f1, cx, 0.0f, cz + 20.0f, 0.0f);
+        if (const uint32_t f0 = Rd32(base + kChars)) PlaceFighter(base, f0, cx, 0.0f, cz + 34.0f, 3.14159265f);
+        FountainThrow(ctx, base, p, f1, 1);
+      }
       // (room 33: fighter 1 goes through the first shop window at 300, climbs the first pole at 420)
       if (p.kind == "window" && at(300) && &p == FindKind("window")) WindowHit(ctx, base, p, f1, 1);
     }
