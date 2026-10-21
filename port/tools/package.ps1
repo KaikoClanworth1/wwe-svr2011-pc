@@ -45,7 +45,7 @@ if ($WithModMaker) {
                      "model_budget.py", "xact.py", "svr07_char.py", "wwise.py",
                      "svr11_build.py", "svr11_skeleton.json", "rig_maps.json", "rig_maps.py", "svr11_skeleton.py",
                      "moveset_maps.py", "moveset_maps.json", "moveset_port.py", "fix_model.py", "gear_port.py",
-                     "ps2_char.py", "ps2_port.py", "ps2_media.py", "lone_pac.py",  # (FBX import: builder + skeleton / rig maps; ps2_char: PS2 superstar models, imports discfs + the builder; ps2_media: their themes / titantrons)
+                     "ps2_char.py", "ps2_port.py", "ps2_media.py", "lone_pac.py", "threads_parts.py",  # (FBX import: builder + skeleton / rig maps; ps2_char: PS2 superstar models, imports discfs + the builder; ps2_media: their themes / titantrons)
                      "backstage_port.py")) {  # (backstage_port: HCTP backstage rooms - its scripts in hctp\ below)
         $f = Join-Path $PSScriptRoot $t
         if (Test-Path $f) { Copy-Item $f $mmtools } else { Write-Warning "Mod Maker Tools: no $t yet" }
@@ -80,7 +80,9 @@ if ($WithModMaker) {
             # (beside the script only counts when the script puts its own folder on sys.path: the Tools' embeddable
             # Python doesn't - 2.1.3's hctp_fake56.py: "Missing: hctp2jboy - install now?")
             if ((Test-Path (Join-Path $py.DirectoryName "$m.py")) -and
-                ((Get-Content $py.FullName -Raw) -match 'sys\.path\.insert\(0,\s*os\.path\.dirname\(os\.path\.abspath\(__file__\)\)\)')) { continue }
+                (((Get-Content $py.FullName -Raw) -match 'sys\.path\.insert\(0,\s*os\.path\.dirname\(os\.path\.abspath\(__file__\)\)\)') -or
+                 (((Get-Content $py.FullName -Raw) -match '(\w+)\s*=\s*os\.path\.dirname\(os\.path\.abspath\(__file__\)\)') -and
+                  ((Get-Content $py.FullName -Raw) -match ('sys\.path\.insert\(0,\s*' + $Matches[1] + '\)'))))) { continue }   # (or HERE = ...; sys.path.insert(0, HERE))
             $missing += "$($py.Name) imports $m (tools\$m.py)"
         }
     }
