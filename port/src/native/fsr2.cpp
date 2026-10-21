@@ -173,26 +173,28 @@ class Backend final : public Upscaler {
     samplers[1] = linear.get();
     // (Direct3D 12: each register kind from 0; Vulkan: apart in the one set)
     const uint32_t t = 0, u = host.vulkan ? 32 : 0, b = host.vulkan ? 48 : 0, smp = host.vulkan ? 56 : 0;
-    plume::RenderDescriptorRange ranges[5];
-    ranges[0].type = plume::RenderDescriptorRangeType::TEXTURE, ranges[0].count = kTextures, ranges[0].binding = t;
-    ranges[1].type = plume::RenderDescriptorRangeType::READ_WRITE_TEXTURE, ranges[1].count = kStorage,
-    ranges[1].binding = u;
-    ranges[2].type = plume::RenderDescriptorRangeType::CONSTANT_BUFFER, ranges[2].count = kConstants,
-    ranges[2].binding = b;
-    ranges[3].type = plume::RenderDescriptorRangeType::SAMPLER, ranges[3].count = 1, ranges[3].binding = smp,
-    ranges[3].immutableSampler = &samplers[0];
-    ranges[4].type = plume::RenderDescriptorRangeType::SAMPLER, ranges[4].count = 1, ranges[4].binding = smp + 1,
-    ranges[4].immutableSampler = &samplers[1];
-    set_desc = plume::RenderDescriptorSetDesc(ranges, 5);
-    std::memcpy(set_ranges, ranges, sizeof(ranges));
-    set_desc.descriptorRanges = set_ranges;
+    // (one range a register: Vulkan makes a range one binding - an array - and the shaders have a binding each)
+    size_t n = 0;
+    auto add = [&](plume::RenderDescriptorRangeType type, uint32_t binding, const plume::RenderSampler** immutable) {
+      plume::RenderDescriptorRange& rg = set_ranges[n++];
+      rg.type = type;
+      rg.count = 1;
+      rg.binding = binding;
+      rg.immutableSampler = immutable;
+    };
+    for (uint32_t i = 0; i < kTextures; ++i) add(plume::RenderDescriptorRangeType::TEXTURE, t + i, nullptr);
+    for (uint32_t i = 0; i < kStorage; ++i) add(plume::RenderDescriptorRangeType::READ_WRITE_TEXTURE, u + i, nullptr);
+    for (uint32_t i = 0; i < kConstants; ++i) add(plume::RenderDescriptorRangeType::CONSTANT_BUFFER, b + i, nullptr);
+    add(plume::RenderDescriptorRangeType::SAMPLER, smp, &samplers[0]);
+    add(plume::RenderDescriptorRangeType::SAMPLER, smp + 1, &samplers[1]);
+    set_desc = plume::RenderDescriptorSetDesc(set_ranges, uint32_t(n));
     plume::RenderPipelineLayoutDesc d;
     d.descriptorSetDescs = &set_desc;
     d.descriptorSetDescsCount = 1;
     layout = host.device->createPipelineLayout(d);
     return layout != nullptr;
   }
-  plume::RenderDescriptorRange set_ranges[5];
+  plume::RenderDescriptorRange set_ranges[kTextures + kStorage + kConstants + 2];
   plume::RenderDescriptorSetDesc set_desc;
 
   bool MakePipeline(int pass, const char* shader) {

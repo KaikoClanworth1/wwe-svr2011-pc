@@ -68,6 +68,9 @@
 #include "crash_report.h"
 #include "native/gpu.h"
 #include "native/recording_list.h"
+#if SVR2011_FSR2
+#include "native/fsr2.h"
+#endif
 #include "native/guest_d3d.h"
 #include "native/textures.h"
 #include "free_cam.h"
@@ -133,8 +136,10 @@ REXCVAR_DEFINE_INT32(native_scene_height, 0, "GPU",
 
 REXCVAR_DEFINE_STRING(native_upscale, "off", "GPU",
                       "Native renderer upscaling: off (the scene at the window's resolution or above, averaged "
-                      "down) or fsr1 (AMD FSR 1: the scene rendered smaller - native_upscale_quality - and "
-                      "scaled up to the window edge-adaptively, then sharpened). The HUD is scaled with it.");
+                      "down), fsr1 (AMD FSR 1: the scene rendered smaller - native_upscale_quality - and "
+                      "scaled up to the window edge-adaptively, then sharpened; the HUD scaled with it) or fsr2 "
+                      "(experimental, Direct3D 12 / Vulkan: AMD FSR 2 - the match scene gathered over frames from "
+                      "its depth, motion and native_jitter; FSR 1 where it can't run).");
 
 REXCVAR_DEFINE_BOOL(native_jitter, false, "GPU",
                     "Native renderer (temporal upscaling groundwork, experimental): the match scene's 3D draws "
@@ -568,6 +573,7 @@ struct ResolvedTexture {
   RenderFormat format = RenderFormat::UNKNOWN;
   uint32_t width = 0, height = 0;
   uint32_t scale = 1;  // (the resolved target's)
+  bool swap_rb = false;  // (red and blue swapped in the copy: its texture view swaps them back)
 };
 
 // A DrawVerticesUP waiting for its vertices (the game writes them into the
@@ -637,6 +643,19 @@ struct Renderer {
   std::shared_ptr<plume::RenderTexture> fsr_image;
   std::unique_ptr<plume::RenderTextureView> fsr_view;
   std::unique_ptr<plume::RenderFramebuffer> fsr_framebuffer;
+  bool fsr_image_fresh = true;  // (not drawn into since it was made)
+#if SVR2011_FSR2
+  // FSR 2 (experimental): its backend (made at the first use, again when the sizes change), the scene depth copied
+  // at the scene's resolve (fsr2_depth_frame: the frame it was), the motion vectors (zero: the camera's come with
+  // step 4).
+  std::unique_ptr<svr2011::fsr2::Upscaler> fsr2;
+  bool fsr2_failed = false;
+  std::shared_ptr<plume::RenderTexture> fsr2_depth, fsr2_motion;
+  RenderTextureLayout fsr2_depth_layout = RenderTextureLayout::UNKNOWN, fsr2_motion_layout = RenderTextureLayout::UNKNOWN;
+  uint32_t fsr2_depth_w = 0, fsr2_depth_h = 0;
+  uint64_t fsr2_depth_frame = ~0ull, fsr2_last_frame = ~0ull;
+  RenderTextureLayout fsr_image_layout = RenderTextureLayout::UNKNOWN;
+#endif
   uint32_t output_index = 0;
   std::unordered_map<uint64_t, ColorTarget> color_targets;
   std::unordered_map<uint64_t, DepthTarget> depth_targets;
@@ -756,6 +775,9 @@ float g_fsr_sharpness = 0.8f;
 // native_jitter: this frame's sub-pixel offset of the match scene's 3D draws (scene pixels, -0.5 to 0.5; y down)
 // - what a temporal upscaler needs to undo; zero when off.
 float g_jitter[2] = {0.0f, 0.0f};
+// native_upscale fsr2 (experimental): FSR 2 wanted - Present uses it in frames whose scene depth was caught at the
+// scene's resolve (fsr2_depth_frame), FSR 1 otherwise; the jitter on while it is.
+bool g_fsr2 = false;
 // The intermediate's place in the 2D texture table: after the three placeholders, before the texture cache's.
 constexpr uint32_t kFsrSrv = 3;
 
@@ -1317,8 +1339,16 @@ bool CreateOutputs(Renderer* r) {
   // FSR 1's intermediate, the frames' size (made with them: the GPU is idle), sampled from the 2D table at kFsrSrv.
   r->fsr_framebuffer.reset();
   r->fsr_view.reset();
+  // (FSR 2 writes it too: a storage texture where there is compute - not Direct3D 11)
   r->fsr_image = r->device->createTexture(plume::RenderTextureDesc::Texture2D(
-      g_out_w, g_out_h, 1, RenderFormat::R8G8B8A8_UNORM, plume::RenderTextureFlag::RENDER_TARGET));
+      g_out_w, g_out_h, 1, RenderFormat::R8G8B8A8_UNORM,
+      plume::RenderTextureFlag::RENDER_TARGET |
+          (SlotTables() ? 0u : plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS)));
+  r->fsr_image_fresh = true;
+#if SVR2011_FSR2
+  r->fsr_image_layout = RenderTextureLayout::UNKNOWN;
+  r->fsr2.reset();  // (its output size changed)
+#endif
   if (r->fsr_image) {
     r->fsr_image->setName("FSR 1 intermediate");
     const plume::RenderTexture* color = r->fsr_image.get();
@@ -1591,11 +1621,13 @@ void ApplyOutputSettings(Renderer* r) {
   (void)shadows_once;
   static float res = float(REXCVAR_GET(native_render_scale));
   static int32_t scene_height = REXCVAR_GET(native_scene_height);
-  static bool fsr = REXCVAR_GET(native_upscale) == "fsr1";
+  static bool fsr = REXCVAR_GET(native_upscale) != "off";
+  static bool fsr2 = REXCVAR_GET(native_upscale) == "fsr2";
   static int32_t fsr_quality = REXCVAR_GET(native_upscale_quality);
   static uint64_t aa_checked = 0;
   if (r->frames >= aa_checked + 30) {  // a cvar query isn't free: twice a second
-    fsr = REXCVAR_GET(native_upscale) == "fsr1";
+    fsr = REXCVAR_GET(native_upscale) != "off";
+    fsr2 = REXCVAR_GET(native_upscale) == "fsr2";
     fsr_quality = REXCVAR_GET(native_upscale_quality);
     g_fsr_sharpness = float(std::clamp(REXCVAR_GET(native_upscale_sharpness), 0.0, 1.0));
     aa = aa_level();
@@ -1642,6 +1674,11 @@ void ApplyOutputSettings(Renderer* r) {
     scale = (h + kHeight - 1) / kHeight;
     res = std::clamp(float(h) / float(kHeight * scale), 0.25f, 1.0f);
   }
+  // (FSR 2: Direct3D 12 / Vulkan - compute; not with the commands recorded on a second thread)
+#if SVR2011_FSR2
+  // (Direct3D 12: open - the device is removed at the first FSR 2 dispatch; FSR 1 there for now)
+  g_fsr2 = fsr2 && g_fsr && backend::ActiveApi() == backend::Api::kVulkan && !r->recorder && !r->fsr2_failed;
+#endif
   const bool res_changed = std::fabs(res - g_res) > 0.001f;
   if (scale == g_scale && effects == g_scale_effects && out_w == g_out_w && out_h == g_out_h &&
       !wide_changed && !res_changed) {
@@ -1674,7 +1711,8 @@ void ApplyOutputSettings(Renderer* r) {
   r->list_state = {};
   REXLOG_INFO("native renderer: output {}x{}, render scale {}x{}{}{}{}{}", g_out_w, g_out_h, g_scale,
               g_res < 1.0f ? fmt::format(" (scene at {:.0f}%)", g_res * 100) : std::string(),
-              g_fsr ? fmt::format(", FSR 1 from {}p", uint32_t(std::lround(kHeight * g_scale * g_res))) : std::string(),
+              g_fsr ? fmt::format(", FSR {} from {}p", g_fsr2 ? 2 : 1, uint32_t(std::lround(kHeight * g_scale * g_res)))
+                    : std::string(),
               aa > 1 ? fmt::format(" (anti-aliasing {}x)", aa) : std::string(), g_scale_effects ? "" : ", effects unscaled",
               g_wide > 1.0f   ? fmt::format(", wide {:.3f} (aspect {:.3f})", g_wide, kAspect16x9 * g_wide)
               : g_tall > 1.0f ? fmt::format(", tall {:.3f} (aspect {:.3f})", g_tall, kAspect16x9 / g_tall)
@@ -3843,6 +3881,92 @@ const plume::RenderPipeline* PresentPipeline(Renderer* r, const char* ps_name = 
 
 plume::RenderTexture* FrameImage(Renderer* r) { return r->outputs[r->output_index].get(); }
 
+#if SVR2011_FSR2
+// FSR 2 (experimental): the front buffer (the resolve copy at physical `base`; `region` the part shown) gathered with
+// this frame's scene depth (caught at the scene's resolve) into FSR 1's intermediate, the window's size; false if it
+// couldn't (Present uses FSR 1 then). `swap`: the copy's red and blue swapped.
+bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) {
+  auto it = r->resolved.find(base);
+  if (it == r->resolved.end() || !it->second.resource || !r->fsr_image) return false;
+  ResolvedTexture& color = it->second;
+  const uint32_t rw = std::min(uint32_t(float(color.host_w) * region[0] + 0.5f), r->fsr2_depth_w);
+  const uint32_t rh = std::min(uint32_t(float(color.host_h) * region[1] + 0.5f), r->fsr2_depth_h);
+  if (rw < 64 || rh < 64) return false;
+  auto* list = r->list;
+  if (!r->fsr2 || r->fsr2->MaxRenderWidth() != r->fsr2_depth_w || r->fsr2->MaxRenderHeight() != r->fsr2_depth_h ||
+      r->fsr2->DisplayWidth() != g_out_w || r->fsr2->DisplayHeight() != g_out_h) {
+    if (r->fsr2 && !WaitIdle(r, "FSR 2 sizes")) return false;
+    r->fsr2.reset();
+    svr2011::fsr2::Host host;
+    host.device = r->device.get();
+    host.format = backend::ShaderFormat();
+    host.vulkan = backend::ActiveApi() == backend::Api::kVulkan;
+    host.read_shader = [](const std::string& name) { return ReadShader(name); };
+    r->fsr2 = svr2011::fsr2::Create(host, r->fsr2_depth_w, r->fsr2_depth_h, g_out_w, g_out_h, kFrames);
+    if (!r->fsr2) {
+      r->fsr2_failed = true;  // (FSR 1 from now on)
+      g_fsr2 = false;
+      return false;
+    }
+    // The motion vectors: none yet (a still camera's) - cleared once.
+    if (r->fsr2_motion) Retire(r, std::move(r->fsr2_motion));
+    r->fsr2_motion = r->device->createTexture(plume::RenderTextureDesc::Texture2D(
+        r->fsr2_depth_w, r->fsr2_depth_h, 1, RenderFormat::R16G16_FLOAT, plume::RenderTextureFlag::RENDER_TARGET));
+    if (!r->fsr2_motion) return false;
+    const plume::RenderTexture* mv = r->fsr2_motion.get();
+    auto fb = r->device->createFramebuffer(plume::RenderFramebufferDesc(&mv, 1));
+    Barrier(r, r->fsr2_motion.get(), RenderTextureLayout::COLOR_WRITE);
+    list->setFramebuffer(fb.get());
+    list->clearColor(0, plume::RenderColor(0, 0, 0, 0));
+    Barrier(r, r->fsr2_motion.get(), RenderTextureLayout::SHADER_READ);
+    Retire(r, std::shared_ptr<plume::RenderFramebuffer>(std::move(fb)));
+    r->fsr2_motion_layout = RenderTextureLayout::SHADER_READ;
+    r->list_state = {};
+  }
+  if (r->fsr_image_fresh && r->fsr_framebuffer) {  // (a render target: cleared before any other use - Direct3D 12)
+    Barrier(r, r->fsr_image.get(), RenderTextureLayout::COLOR_WRITE);
+    list->setFramebuffer(r->fsr_framebuffer.get());
+    list->clearColor(0, plume::RenderColor(0, 0, 0, 1));
+    r->fsr_image_fresh = false;
+    r->list_state = {};
+  }
+  using svr2011::fsr2::Texture;
+  svr2011::fsr2::Frame f;
+  // (UNKNOWN: plume knows where each is - the backend's first barrier always goes)
+  f.color = Texture{color.resource.get(), color.format, color.host_w, color.host_h, RenderTextureLayout::UNKNOWN};
+  f.depth = Texture{r->fsr2_depth.get(), backend::DepthFormat(), r->fsr2_depth_w, r->fsr2_depth_h,
+                    RenderTextureLayout::UNKNOWN};
+  f.motion = Texture{r->fsr2_motion.get(), RenderFormat::R16G16_FLOAT, r->fsr2_depth_w, r->fsr2_depth_h,
+                     RenderTextureLayout::UNKNOWN};
+  f.output = Texture{r->fsr_image.get(), RenderFormat::R8G8B8A8_UNORM, g_out_w, g_out_h, RenderTextureLayout::UNKNOWN};
+  f.render_w = rw;
+  f.render_h = rh;
+  f.jitter_x = g_jitter[0];
+  f.jitter_y = g_jitter[1];
+  f.frame_ms = 1000.0f / 60.0f;
+  f.fov_y = 0.2967f;  // (a match camera's; step 4 reads the scene camera's)
+  f.sharpness = g_fsr_sharpness;
+  f.reset = r->fsr2_last_frame == ~0ull || r->fsr2_last_frame + 1 != r->frames;
+  if (!r->fsr2->Dispatch(list, r->back_index, f)) return false;
+  // (back to what the renderer tracks: the colour, depth and motion read; the result read by the present pass)
+  color.layout = RenderTextureLayout::SHADER_READ;
+  r->fsr2_depth_layout = RenderTextureLayout::SHADER_READ;
+  r->fsr2_motion_layout = RenderTextureLayout::SHADER_READ;
+  Barrier(r, color.resource.get(), RenderTextureLayout::SHADER_READ);
+  Barrier(r, r->fsr2_depth.get(), RenderTextureLayout::SHADER_READ);
+  Barrier(r, r->fsr_image.get(), RenderTextureLayout::SHADER_READ);
+  r->list_state = {};
+  r->fsr2_last_frame = r->frames;
+  *swap = color.swap_rb;
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    REXLOG_INFO("native renderer: FSR 2 {}x{} -> {}x{}", rw, rh, g_out_w, g_out_h);
+  }
+  return true;
+}
+#endif
+
 // Draws the front buffer texture Swap named into the frame image; false if
 // it can't be shown.
 bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
@@ -3894,12 +4018,25 @@ bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
     list->setViewports(plume::RenderViewport(0, 0, out_size[0], out_size[1], 0, 1));
     return true;
   };
+  // FSR 2 (experimental; this frame's scene depth caught): into the intermediate, shown through RCAS unsharpened.
+  bool fsr2 = false, fsr2_swap = false;
+#if SVR2011_FSR2
+  if (g_fsr2 && r->fsr2_depth && r->fsr2_depth_frame == r->frames)
+    fsr2 = PresentFsr2(r, fetch[1] & 0xFFFFF000u, scale, &fsr2_swap);  // (fetch[1]: physical by now)
+  // (the front buffer's fetch swizzle - ZYXW: red and blue swapped - on top of the copy's own swap)
+  if (fsr2 && ((fetch[3] >> 1) & 7) == 2) fsr2_swap = !fsr2_swap;
+#endif
   // FSR 1 (the scene smaller than the frame): EASU into the intermediate, then RCAS into the frame image below.
-  const plume::RenderPipeline* easu = g_fsr && r->fsr_framebuffer ? PresentPipeline(r, "fsr_easu.ps") : nullptr;
-  const plume::RenderPipeline* rcas = easu ? PresentPipeline(r, "fsr_rcas.ps") : nullptr;
-  if (rcas) {
+  const plume::RenderPipeline* easu =
+      !fsr2 && g_fsr && r->fsr_framebuffer ? PresentPipeline(r, "fsr_easu.ps") : nullptr;
+  const plume::RenderPipeline* rcas = easu || fsr2 ? PresentPipeline(r, "fsr_rcas.ps") : nullptr;
+  if (easu) {
     Barrier(r, r->fsr_image.get(), RenderTextureLayout::COLOR_WRITE);
     list->setFramebuffer(r->fsr_framebuffer.get());
+    if (r->fsr_image_fresh) {  // (a render target is cleared before its first draw - Direct3D 12)
+      list->clearColor(0, plume::RenderColor(0, 0, 0, 1));
+      r->fsr_image_fresh = false;
+    }
     if (!pass(easu, srv, scale)) return false;
     list->setScissors(plume::RenderRect(0, 0, int32_t(out_size[0]), int32_t(out_size[1])));
     list->drawInstanced(3, 1, 0, 0);
@@ -3909,7 +4046,9 @@ bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
   Barrier(r, FrameImage(r), RenderTextureLayout::COLOR_WRITE);
   list->setFramebuffer(r->output_framebuffers[r->output_index].get());
   // (RCAS's strength: 2 stops of sharpening over the 0-1 setting, 1 the most)
-  const float sharp[2] = {g_fsr_sharpness > 0.0f ? std::exp2(-2.0f * (1.0f - g_fsr_sharpness)) : 0.0f, 0.0f};
+  // (FSR 2 sharpened already; y: its result red / blue swapped back)
+  const float sharp[2] = {
+      !fsr2 && g_fsr_sharpness > 0.0f ? std::exp2(-2.0f * (1.0f - g_fsr_sharpness)) : 0.0f, fsr2_swap ? 1.0f : 0.0f};
   if (!(rcas ? pass(rcas, kFsrSrv, sharp) : pass(pso, srv, scale))) return false;
   if (g_frame_2d && g_wide > 1.0f) {
     // A 2D screen on a wide one: its 16:9 middle, black sides.
@@ -4105,14 +4244,20 @@ void OnPresent(uint32_t front_buffer) {
     // native_jitter: the next frame's offset - Halton (2, 3), 8 frames, centred on the pixel.
     static bool jitter = REXCVAR_GET(native_jitter);
     if ((r->frames & 31) == 0) jitter = REXCVAR_GET(native_jitter);
+    // (FSR 2 gathers the jittered frames: on with it, in the frames it runs)
+#if SVR2011_FSR2
+    const bool fsr2_jitter = g_fsr2 && r->fsr2_last_frame + 2 >= r->frames;
+#else
+    const bool fsr2_jitter = false;
+#endif
     auto halton = [](uint32_t i, uint32_t b) {
       float f = 1.0f, v = 0.0f;
       for (; i; i /= b) v += (f /= float(b)) * float(i % b);
       return v;
     };
     const uint32_t i = uint32_t(r->frames % 8) + 1;
-    g_jitter[0] = jitter ? halton(i, 2) - 0.5f : 0.0f;
-    g_jitter[1] = jitter ? halton(i, 3) - 0.5f : 0.0f;
+    g_jitter[0] = jitter || fsr2_jitter ? halton(i, 2) - 0.5f : 0.0f;
+    g_jitter[1] = jitter || fsr2_jitter ? halton(i, 3) - 0.5f : 0.0f;
   }
   g_frame_2d =(g_wide > 1.0f || g_tall > 1.0f) && r->frame_stats.drawn > 0 && r->frame_stats.wide_3d == 0;
   {
@@ -4455,6 +4600,33 @@ void OnResolve(const PPCContext& ctx) {
     dst.host_h = dst_host_h;
   }
   auto* list = r->list;
+#if SVR2011_FSR2
+  if (g_fsr2 && !depth && t.depth && g_match_scene.load() && SceneTarget(src_w, src_h) &&
+      t.depth->host_w == src_host_w && t.depth->host_h == src_host_h) {
+    // FSR 2's depth: the scene's, copied as the scene is resolved (its colour - the front buffer - comes later).
+    if (!r->fsr2_depth || r->fsr2_depth_w != src_host_w || r->fsr2_depth_h != src_host_h) {
+      if (r->fsr2_depth) Retire(r, std::move(r->fsr2_depth));
+      plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
+          src_host_w, src_host_h, 1, backend::DepthFormat(),
+          backend::ActiveApi() == backend::Api::kVulkan ? plume::RenderTextureFlag::DEPTH_TARGET
+                                                        : plume::RenderTextureFlag::NONE);
+      d.committed = true;
+      r->fsr2_depth = r->device->createTexture(d);
+      r->fsr2_depth_layout = RenderTextureLayout::UNKNOWN;
+      r->fsr2_depth_w = src_host_w, r->fsr2_depth_h = src_host_h;
+      if (r->fsr2_depth) r->fsr2_depth->setName("FSR 2 depth");
+    }
+    if (r->fsr2_depth) {
+      const RenderTextureLayout before = t.depth->layout;
+      Transition(r, t.depth->resource.get(), t.depth->layout, RenderTextureLayout::COPY_SOURCE);
+      Transition(r, r->fsr2_depth.get(), r->fsr2_depth_layout, RenderTextureLayout::COPY_DEST);
+      list->copyTexture(r->fsr2_depth.get(), t.depth->resource.get());
+      Transition(r, r->fsr2_depth.get(), r->fsr2_depth_layout, RenderTextureLayout::SHADER_READ);
+      if (before != RenderTextureLayout::UNKNOWN) Transition(r, t.depth->resource.get(), t.depth->layout, before);
+      r->fsr2_depth_frame = r->frames;
+    }
+  }
+#endif
   const RenderTextureLayout src_before = *src_layout;
   Transition(r, src, *src_layout, RenderTextureLayout::COPY_SOURCE);
   Transition(r, dst.resource.get(), dst.layout, RenderTextureLayout::COPY_DEST);
@@ -4476,6 +4648,7 @@ void OnResolve(const PPCContext& ctx) {
     // so the view swaps them back. (The mirror doesn't hold the resolve's
     // RB_COPY_DEST_INFO: the destination's swizzle tells.)
     const bool swap_rb = t.color->components == 4 && ((fetch[3] >> 1) & 7) == 2;
+    dst.swap_rb = swap_rb;
     textures::RegisterResolved(base, dst.resource.get(), t.color->view_format,
                                t.color->view_gamma_format, t.color->components, swap_rb,
                                dst_w * dst_h * 4);
