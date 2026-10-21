@@ -1101,6 +1101,18 @@ REX_HOOK_RAW(sub_8217DCE8) {
   __imp__sub_8217DCE8(ctx, base);
 }
 
+// The live match settings' arena (0x82E3DE00 +0x40) holds the tile's number from the pick until the match record
+// copies the screen's: the first load's show branding, the host announcer and the interfaces read it there (a RAW
+// port on the Judgment Day tile: its first entrance as Judgment Day, 21 Oct report) - it plays as its base too.
+void LiveArenaPlaysAs(uint8_t* base) {
+  uint8_t* q = base + 0x82E3DE40;
+  const uint32_t arena = uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
+  if (arena >= 100 || !g_plays_as[arena]) return;
+  const uint32_t as = uint32_t(g_plays_as[arena]);
+  q[0] = uint8_t(as >> 24), q[1] = uint8_t(as >> 16), q[2] = uint8_t(as >> 8), q[3] = uint8_t(as);
+  REXLOG_INFO("[svr2011] arena mods: the live settings' arena {} plays as arena {}", arena, as);
+}
+
 REX_EXTERN(__imp__sub_82773F00);
 REX_HOOK_RAW(sub_82773F00) {
   constexpr uint32_t kMatchScreen = 0x82EDEB48, kScreenArena = 244;
@@ -1109,12 +1121,27 @@ REX_HOOK_RAW(sub_82773F00) {
     return uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
   };
   g_crowd_guard_logged = false, g_crowd_frames = 0;  // (the crowd guard: once per match)
+  LiveArenaPlaysAs(base);
   if (const uint32_t screen = rd(kMatchScreen)) {
     const uint32_t arena = rd(screen + kScreenArena);
     g_crowd_arena = int(arena);
     const int as = svr2011::ArenaNumberFor(int(arena));
     REXLOG_INFO("[svr2011] arena mods: a match loads in arena {}{}", arena,
                 g_redirected_custom ? " - " + static_cast<const CustomArena*>(g_redirected_custom)->name + " chosen" : "");
+    // Test aid: SVR2011_TEST_ARENA_SCAN=1 - where else the tile's arena number sits (the match screen, the live settings)
+    if (std::getenv("SVR2011_TEST_ARENA_SCAN") && g_redirected_host >= 0) {
+      const uint32_t tile = uint32_t(g_redirected_host);
+      std::string s;
+      for (uint32_t o = 0; o < 0x1000; ++o) {
+        if (o % 4 == 0 && rd(screen + o) == tile) s += fmt::format(" screen+{:X}(w)", o);
+        if (base[screen + o] == tile) s += fmt::format(" screen+{:X}(b)", o);
+      }
+      for (uint32_t o = 0; o < 0x800; ++o) {
+        if (o % 4 == 0 && rd(0x82E3DE00 + o) == tile) s += fmt::format(" live+{:X}(w)", o);
+        if (base[0x82E3DE00 + o] == tile) s += fmt::format(" live+{:X}(b)", o);
+      }
+      REXLOG_INFO("[svr2011] arena mods: test - tile arena {} at:{}", tile, s);
+    }
     if (as != int(arena)) {
       uint8_t* q = base + screen + kScreenArena;
       q[0] = uint8_t(uint32_t(as) >> 24), q[1] = uint8_t(uint32_t(as) >> 16), q[2] = uint8_t(uint32_t(as) >> 8), q[3] = uint8_t(as);
@@ -1490,6 +1517,7 @@ int ArenaNumberFor(int arena) {
 // once one is picked: a WWE Universe match picked on page 2 played the tile's stock arena without it.)
 void ScreenArenaRead(uint8_t* base, uint32_t screen) {
   constexpr uint32_t kScreenArena = 244;
+  LiveArenaPlaysAs(base);
   if (!screen) return;
   uint8_t* q = base + screen + kScreenArena;
   const uint32_t arena = uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
