@@ -195,6 +195,17 @@ superstar mod (docs/SUPERSTAR_MODS.md) and a move pack (docs/MOVE_PACKS.md).
 Entrances have their own file: [OTHER_GAMES_ENTRANCES.md](OTHER_GAMES_ENTRANCES.md)
 (HCTP Entrance chat).
 
+**Vehicle entrances (2.1.5).** The bike is 2011's own prop 2540 (`evtobj.pac`,
+entrances 518/519): parent 9999, one world track, one 0x75 key a frame (root =
+cm x 10, node 0 = body heading, 1/4 steering about y, 2/3 wheels about x), lights
+on at the first move, off after the last. `wwe13_entrance.py` builds it from a
+2K14 bike (prop 2540, channels `#0c5879e5` root, `#fdd95b24/25` wheels,
+`#fdd95b27` steering). `hctp_entrance.py` maps HCTP prop 2035 to 2540 (HCTP nodes
+1/4 wheels, 2 steering; world heading = 32768 - y). HCTP segments where the bike
+is the rider's child are baked onto a world track from the rider (offset
+(10, -790, -32) root units, heading +150). Tested: 2K14 Undertaker 210 and HCTP
+3003. New vehicle models (jeep, car) are not done.
+
 States: **decoded** = we read it and a tool uses it or could; **partly** =
 layout known, some fields not; **unknown** = not looked at or not found.
 
