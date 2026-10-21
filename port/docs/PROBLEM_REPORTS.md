@@ -47,3 +47,13 @@ IP addresses are blanked in the logs (x.x.x.x).
   the match clock.
 - `SVR2011_TEST_ROSTER_DUMP=1`: each match person's roster record (260 bytes; +0x20
   is the superstar id, +0x22 the name).
+
+## Universe teams and the character select (21 Oct)
+
+- `universe teams: N in this save: ...` when a save comes in (slot, name, member superstar ids, mods by folder),
+  then `team K "NAME" made / changed / dissolved - it had ..., now ... (during a match | outside a match)`.
+  Universe keeps 70 teams of 270 bytes at save + 0xF5C8 (+0 u16 members, +2 five u16 ids, 0x200 none, +0x50 name);
+  a team is also an ally pair (Universe asks "added as an Ally of all the current Team Members").
+- `character select: open (screen ...)` when a select screen sets its players up, and
+  `character select: player P A on the tile at column C row R` for every A on a tile - where a "stuck select screen"
+  report was.

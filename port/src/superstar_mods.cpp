@@ -2573,6 +2573,7 @@ void ExportCreatedEntrances(const uint8_t* base) {
 void CheckModProfiles(uint8_t* base) {
   ExportCreatedEntrances(base);
   UniverseModsTick(base);  // (the game wrote its save: the mods' Universe side table beside it)
+  UniverseTeamsTick(base);  // (Universe's teams and stables made / changed / dissolved: logged)
   UniverseWelcomeTick(base);  // (the Universe welcome accepted: kept as seen in the save file at once)
   std::lock_guard lock(g_slots_mutex);
   for (const auto& m : g_mods) {

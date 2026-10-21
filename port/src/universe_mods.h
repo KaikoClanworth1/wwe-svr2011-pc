@@ -29,5 +29,10 @@ void UniverseModsReset();
 void UniverseModsLoaded(uint8_t* base);
 // Once a frame: the game wrote SaveData.dat -> the side table written beside it (tmp + rename).
 void UniverseModsTick(uint8_t* base);
+// Universe's teams and stables (player report 21 Oct: they disband after a match): 70 x 270 B at save + 0xF5C8 -
+// +0 u16 members, +2 five u16 superstar ids (0x200 none), +0x50 the name. About twice a second: a team made,
+// changed or gone is logged with its members and what was going on (a match running or not), and the whole list
+// when a save comes in.
+void UniverseTeamsTick(uint8_t* base);
 
 }  // namespace svr2011
