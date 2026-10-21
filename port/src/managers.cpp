@@ -20,6 +20,7 @@
 // Picking one goes through the game's own checks (sub_82734CA0).
 // Modded characters: add their ids to kManagers.
 
+#include <chrono>
 #include <cstdint>
 
 #include <rex/cvar.h>
@@ -73,12 +74,24 @@ void FillManagers(uint8_t* base, uint32_t list) {
 
 bool ManagersOpen(uint8_t* base, uint32_t cursor) { return Rd32(base, cursor + kListIndex) == kManagerList; }
 
+// Problem reports ("the select screen got stuck"): a line when a character select sets its players up - once per
+// screen, again after 15 s (the same screen object comes back for the next match).
+void NoteSelectOpen(uint32_t screen) {
+  static uint32_t last = 0;
+  static auto at = std::chrono::steady_clock::time_point{};
+  const auto now = std::chrono::steady_clock::now();
+  if (screen == last && now - at < std::chrono::seconds(15)) return;
+  last = screen, at = now;
+  REXLOG_INFO("[svr2011] character select: open (screen {:08X})", screen);
+}
+
 }  // namespace
 
 // The cursor's lists copied from the screen's (cursor, source).
 REX_EXTERN(__imp__sub_8245DE00);
 REX_HOOK_RAW(sub_8245DE00) {
   const uint32_t cursor = ctx.r3.u32;
+  NoteSelectOpen(Rd32(base, cursor + kScreen));
   __imp__sub_8245DE00(ctx, base);
   if (REXCVAR_GET(managers_tile)) FillManagers(base, cursor + kLists + kManagerList * kListSize);
 }
@@ -87,6 +100,7 @@ REX_HOOK_RAW(sub_8245DE00) {
 REX_EXTERN(__imp__sub_82448A90);
 REX_HOOK_RAW(sub_82448A90) {
   const uint32_t out = ctx.r4.u32;
+  NoteSelectOpen(ctx.r3.u32);
   __imp__sub_82448A90(ctx, base);
   if (REXCVAR_GET(managers_tile) && out) FillManagers(base, out + kManagerList * kListSize);
 }
@@ -95,6 +109,8 @@ REX_HOOK_RAW(sub_82448A90) {
 REX_EXTERN(__imp__sub_824621F8);
 REX_HOOK_RAW(sub_824621F8) {
   const uint32_t cursor = ctx.r3.u32;
+  REXLOG_INFO("[svr2011] character select: player {} A on the tile at column {} row {}{}", Rd32(base, cursor + kPlayer),
+              Rd32(base, cursor + kCol), Rd32(base, cursor + kRow), Rd32(base, cursor + kListMode) ? " (a list is open)" : "");
   // (Match Creator sets the lists up without the two calls above: fill them here)
   if (REXCVAR_GET(managers_tile) && Rd32(base, cursor + kListMode) == 0 &&
       Rd32(base, cursor + kLists + kManagerList * kListSize) == 0)
