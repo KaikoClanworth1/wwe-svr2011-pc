@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <atomic>
 #include <cfloat>
 #include <chrono>
@@ -29,7 +30,9 @@
 #include "generated/default/svr2011_init.h"
 
 #include "graphics_page.h"
+#include "online_mods.h"
 #include "p2p.h"
+#include "weapon_mods.h"
 
 REXCVAR_DEFINE_STRING(extreme_weapons, "", "UI",
                       "MY WWE -> OPTIONS -> WEAPONS: the Extreme Rules weapons, <bgEtc weapon id>:<count 0-3>,... "
@@ -46,7 +49,7 @@ struct Weapon {
   int id;
   const char* name;
   int game;  // how many the game's own set has
-  int kb;    // its pack in bgEtc.pac (KB): what loading it takes, roughly
+  int kb;    // its pack in bgEtc.pac unpacked (KB): what loading it takes
 };
 constexpr Weapon kWeapons[] = {
     {87, "DRINK CUP", 1, 37},       {15, "TITLE BELT", 1, 83},    {60, "CRUTCH", 1, 42},        {89, "GUITAR", 1, 374},
@@ -54,71 +57,123 @@ constexpr Weapon kWeapons[] = {
     {90, "MOP", 1, 221},            {4, "STEEL CHAIR", 0, 305},   {102, "SLEDGEHAMMER", 0, 59}, {65, "FIRE EXTINGUISHER", 0, 115},
     {27, "DUMBBELL", 0, 122},       {21, "BASEBALL BAT", 0, 198}, {84, "TIRE", 0, 216},
 };
-// The match's weapons keep the game's own shape: its nine Extreme Rules entries in the load list (one a weapon), nine
-// weapons made from them - only their models change (the chosen ones, then the lightest chosen one again to make up
-// nine: those stay hidden, never under the ring), within the KB of the game's nine. A longer list (22 models)
-// crashed the load (lr 8215A008), so did weapons skipped or made twice from one entry (20 Oct).
-int KbOf(uint32_t id) {
-  for (const Weapon& w : kWeapons)
-    if (uint32_t(w.id) == id) return w.kb;
-  return 200;
-}
 constexpr int kCount = int(std::size(kWeapons));
 static_assert(kCount <= 15, "the online property holds 15 weapons");
 constexpr int kMaxEach = 3;
 constexpr int kMaxTotal = 9;  // (the game's nine places)
 constexpr uint32_t kProperty = 0x1000F002;
+constexpr uint32_t kModProperty = 0x1000F003;  // (the host's mod weapons, weapon_mods.h: their keys' hash, 0 none)
 constexpr uint32_t kListCount = 72;
 
-std::mutex g_mutex;
-std::array<int, kCount> g_count;  // under g_mutex: this game's choice
-bool g_custom = false;             // under g_mutex: not the game's own set
+// The page's rows: the game's weapons (kWeapons, in that order - the property's), then the weapon mods that may be
+// in Extreme Rules matches (weapon_mods.h, pool=extreme), by id.
+struct Row {
+  int id;
+  std::string name;
+  int game;  // how many the game's own set has
+  int kb;    // unpacked pack (KB)
+  const svr2011::WeaponMod* mod;  // (a weapon mod's row)
+};
+const std::vector<Row>& Rows() {
+  static const std::vector<Row> rows = [] {
+    std::vector<Row> r;
+    for (const Weapon& w : kWeapons) r.push_back({w.id, w.name, w.game, w.kb, nullptr});
+    for (const auto& m : svr2011::WeaponMods()) {
+      if (!m.extreme) continue;
+      std::string n = m.name;
+      for (char& c : n) c = char(std::toupper(static_cast<unsigned char>(c)));
+      r.push_back({m.id, n, 0, m.kb, &m});
+    }
+    return r;
+  }();
+  return rows;
+}
+int RowCount() { return int(Rows().size()); }
+using Counts = std::vector<int>;  // (a count a row)
 
-std::array<int, kCount> GameSet() {
-  std::array<int, kCount> c{};
-  for (int i = 0; i < kCount; ++i) c[i] = kWeapons[i].game;
+// The match's weapons keep the game's own shape: its nine Extreme Rules entries in the load list (one a weapon), nine
+// weapons made from them - only their models change (the chosen ones, then the lightest chosen one again to make up
+// nine: those stay hidden, never under the ring), within the KB of the game's nine. A longer list (22 models)
+// crashed the load (lr 8215A008), so did weapons skipped or made twice from one entry (20 Oct).
+int KbOf(uint32_t id) {
+  for (const Row& r : Rows())
+    if (uint32_t(r.id) == id) return r.kb;
+  return 200;
+}
+std::string NameOf(uint32_t id) {
+  for (const Row& r : Rows())
+    if (uint32_t(r.id) == id) return r.name;
+  return std::to_string(id);
+}
+
+std::mutex g_mutex;
+Counts g_count;        // under g_mutex: this game's choice
+bool g_custom = false;  // under g_mutex: not the game's own set
+
+Counts GameSet() {
+  Counts c(size_t(RowCount()), 0);
+  for (int i = 0; i < RowCount(); ++i) c[size_t(i)] = Rows()[size_t(i)].game;
   return c;
 }
 
-int Total(const std::array<int, kCount>& c) {
+int Total(const Counts& c) {
   int n = 0;
   for (int v : c) n += v;
   return n;
 }
 
-// The session property: bit 31 set (never 0), 2 bits a weapon.
-uint32_t Encode(const std::array<int, kCount>& c) {
+// The session property: bit 31 set (never 0), 2 bits a weapon (the game's weapons only).
+uint32_t Encode(const Counts& c) {
   uint32_t v = 0x80000000u;
-  for (int i = 0; i < kCount; ++i) v |= uint32_t(std::clamp(c[i], 0, kMaxEach)) << (2 * i);
+  for (int i = 0; i < kCount && i < int(c.size()); ++i) v |= uint32_t(std::clamp(c[size_t(i)], 0, kMaxEach)) << (2 * i);
   return v;
 }
-std::array<int, kCount> Decode(uint32_t v) {
-  std::array<int, kCount> c{};
-  for (int i = 0; i < kCount; ++i) c[i] = int(v >> (2 * i) & 3);
+Counts Decode(uint32_t v) {
+  Counts c(size_t(RowCount()), 0);
+  for (int i = 0; i < kCount; ++i) c[size_t(i)] = int(v >> (2 * i) & 3);
   return c;
 }
 
-// The host's property for the sessions this game hosts (its choice, or the game's set).
+// This game's weapon mods in a choice: {key, count} (the online tables carry them - online_mods.h).
+std::vector<std::pair<std::string, int>> ModPicks(const Counts& c) {
+  std::vector<std::pair<std::string, int>> out;
+  for (int i = kCount; i < RowCount() && i < int(c.size()); ++i)
+    if (c[size_t(i)] > 0) out.emplace_back(Rows()[size_t(i)].mod->key, c[size_t(i)]);
+  std::sort(out.begin(), out.end());
+  return out;
+}
+uint32_t PicksHash(const std::vector<std::pair<std::string, int>>& picks) {
+  if (picks.empty()) return 0;
+  uint32_t h = 2166136261u;
+  for (const auto& [key, n] : picks) {
+    for (unsigned char ch : key) h = (h ^ ch) * 16777619u;
+    h = (h ^ uint32_t(n)) * 16777619u;
+  }
+  return 0x80000000u | (h & 0x7FFFFFFFu);
+}
+
+// The host's properties for the sessions this game hosts (its choice, or the game's set).
 void Publish() {
-  std::array<int, kCount> c;
+  Counts c;
   {
     std::lock_guard lock(g_mutex);
     c = g_custom ? g_count : GameSet();
   }
   svr2011::P2PSetHostProperty(kProperty, Encode(c));
+  if (!svr2011::WeaponMods().empty()) svr2011::P2PSetHostProperty(kModProperty, PicksHash(ModPicks(c)));
 }
 
 void LoadSettings() {
-  std::array<int, kCount> c = GameSet();
+  Counts c = GameSet();
   const std::string s = rex::cvar::Query<std::string>("extreme_weapons");
   if (!s.empty()) {
-    c.fill(0);
+    std::fill(c.begin(), c.end(), 0);
     std::stringstream ss(s);
     for (std::string item; std::getline(ss, item, ',');) {
       const size_t colon = item.find(':');
       const int id = std::atoi(item.c_str()), n = colon == std::string::npos ? 1 : std::atoi(item.c_str() + colon + 1);
-      for (int i = 0; i < kCount; ++i)
-        if (kWeapons[i].id == id) c[i] = std::clamp(n, 0, kMaxEach);
+      for (int i = 0; i < RowCount(); ++i)
+        if (Rows()[size_t(i)].id == id) c[size_t(i)] = std::clamp(n, 0, kMaxEach);
     }
   }
   {
@@ -135,7 +190,8 @@ void SaveSettings() {
     std::lock_guard lock(g_mutex);
     g_custom = g_count != GameSet();
     if (g_custom)
-      for (int i = 0; i < kCount; ++i) s += (s.empty() ? "" : ",") + std::to_string(kWeapons[i].id) + ":" + std::to_string(g_count[i]);
+      for (int i = 0; i < RowCount(); ++i)
+        s += (s.empty() ? "" : ",") + std::to_string(Rows()[size_t(i)].id) + ":" + std::to_string(g_count[size_t(i)]);
   }
   rex::cvar::SetFlagByName("extreme_weapons", s);
   svr2011::SaveConfigSetting("extreme_weapons", "\"" + s + "\"");
@@ -154,7 +210,7 @@ constexpr uint32_t kObjects = 0x82DE0220, kObjectSlots = 72, kObjectSlot = 1152;
 constexpr uint32_t kMakerFirst = 0x8227B938, kMakerEnd = 0x8227C0A0;
 
 // The set this match uses, when it isn't the game's (whose: for the log).
-bool WantedSet(std::array<int, kCount>& want, const char*& whose) {
+bool WantedSet(Counts& want, const char*& whose) {
   // Online the session's (the host's; Ranked: the game's), offline this game's.
   whose = "this game's";
   const svr2011::P2PLobby lobby = svr2011::P2PMatchLobby();
@@ -163,6 +219,10 @@ bool WantedSet(std::array<int, kCount>& want, const char*& whose) {
     const bool ranked = svr2011::P2PRanked().value_or(false);
     if (ranked || !v) return false;
     want = Decode(*v), whose = lobby.host ? "this game's (hosting)" : "the host's";
+    // (the host's weapon mods that every player has: the lobby's tables, each in this game's ids - online_mods.h)
+    for (const auto& [id, n] : svr2011::OnlineModWeapons())
+      for (int i = kCount; i < RowCount(); ++i)
+        if (Rows()[size_t(i)].id == id) want[size_t(i)] = std::clamp(n, 0, kMaxEach);
   } else {
     std::lock_guard lock(g_mutex);
     if (!g_custom) return false;
@@ -176,10 +236,10 @@ std::vector<uint32_t> g_nine;
 size_t g_real = 0;
 
 // The chosen weapons as nine models (empty: the game's set).
-std::vector<uint32_t> NineOf(const std::array<int, kCount>& want, std::string& names, std::string& dropped) {
+std::vector<uint32_t> NineOf(const Counts& want, std::string& names, std::string& dropped, size_t* real_n = nullptr) {
   std::vector<uint32_t> real;
-  for (int i = 0; i < kCount; ++i)
-    for (int k = 0; k < want[i]; ++k) real.push_back(uint32_t(kWeapons[i].id));
+  for (int i = 0; i < RowCount() && i < int(want.size()); ++i)
+    for (int k = 0; k < want[size_t(i)]; ++k) real.push_back(uint32_t(Rows()[size_t(i)].id));
   int room = 0;
   for (uint32_t id : kGameNine) room += KbOf(id);
   auto fits = [&] {
@@ -189,15 +249,14 @@ std::vector<uint32_t> NineOf(const std::array<int, kCount>& want, std::string& n
     return kb + int(std::size(kGameNine) - real.size()) * light <= room;
   };
   while (!real.empty() && !fits()) {
-    for (const Weapon& w : kWeapons)
-      if (uint32_t(w.id) == real.back()) dropped += fmt::format("{}{}", dropped.empty() ? "" : ", ", w.name);
+    dropped += fmt::format("{}{}", dropped.empty() ? "" : ", ", NameOf(real.back()));
     real.pop_back();
   }
-  for (int i = 0; i < kCount; ++i) {
-    const int n = int(std::count(real.begin(), real.end(), uint32_t(kWeapons[i].id)));
-    if (n) names += fmt::format("{}{} x{}", names.empty() ? "" : ", ", kWeapons[i].name, n);
+  for (int i = 0; i < RowCount(); ++i) {
+    const int n = int(std::count(real.begin(), real.end(), uint32_t(Rows()[size_t(i)].id)));
+    if (n) names += fmt::format("{}{} x{}", names.empty() ? "" : ", ", Rows()[size_t(i)].name, n);
   }
-  g_real = real.size();
+  if (real_n) *real_n = real.size();
   uint32_t light = 87;  // (the make-up: the lightest chosen one; none chosen - the drink cup)
   for (uint32_t id : real)
     if (KbOf(id) < KbOf(light) || light == 87) light = id;
@@ -266,7 +325,7 @@ void ExtremeWeaponsMaking(uint8_t* base, bool begin, PPCContext& ctx) {
     GiveBackStock(base);  // (a new match: none of ours left in the game's stock)
     g_making = false;
     g_made.clear();
-    std::array<int, kCount> want;
+    Counts want;
     const char* whose;
     if (!base[kLiveSettings + kExtremeOption] || !WantedSet(want, whose)) return;
     if (g_nine.size() != std::size(kGameNine)) return;
@@ -356,7 +415,7 @@ void ExtremeWeaponsPlaced(uint8_t* base, rex::memory::Memory* memory) {
 void ChooseExtremeWeapons(uint8_t* base, uint32_t list) {
   g_nine.clear(), g_real = 0;
   if (!list) return;
-  std::array<int, kCount> want;
+  Counts want;
   const char* whose;
   if (!WantedSet(want, whose)) {
     if (P2PMatchLobby().in) REXLOG_INFO("[svr2011] weapons: online - the game's Extreme Rules weapons");
@@ -373,7 +432,7 @@ void ChooseExtremeWeapons(uint8_t* base, uint32_t list) {
     return;
   }
   std::string names, dropped;
-  const std::vector<uint32_t> nine = NineOf(want, names, dropped);
+  const std::vector<uint32_t> nine = NineOf(want, names, dropped, &g_real);
   const uint32_t at = uint32_t(run - ids.begin());
   for (size_t k = 0; k < nine.size(); ++k) Wr32(l + 4 + 4 * (at + uint32_t(k)), nine[k]);
   g_nine = nine;
@@ -502,9 +561,9 @@ void WeaponsPage::OnDraw(ImGuiIO& io) {
   }
   if (!wait_release_) prev_buttons_ = buttons;
   auto key = [](ImGuiKey k) { return ImGui::IsKeyPressed(k, true); };
-  if ((act & X_INPUT_GAMEPAD_DPAD_UP) || key(ImGuiKey_UpArrow)) sel_ = (sel_ + kCount - 1) % kCount;
-  if ((act & X_INPUT_GAMEPAD_DPAD_DOWN) || key(ImGuiKey_DownArrow)) sel_ = (sel_ + 1) % kCount;
-  sel_ = std::clamp(sel_, 0, kCount - 1);
+  if ((act & X_INPUT_GAMEPAD_DPAD_UP) || key(ImGuiKey_UpArrow)) sel_ = (sel_ + RowCount() - 1) % RowCount();
+  if ((act & X_INPUT_GAMEPAD_DPAD_DOWN) || key(ImGuiKey_DownArrow)) sel_ = (sel_ + 1) % RowCount();
+  sel_ = std::clamp(sel_, 0, RowCount() - 1);
   bool more = (pressed & (X_INPUT_GAMEPAD_A)) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
               ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false);
   const bool right = (pressed & X_INPUT_GAMEPAD_DPAD_RIGHT) || ImGui::IsKeyPressed(ImGuiKey_RightArrow, false);
@@ -528,7 +587,7 @@ void WeaponsPage::OnDraw(ImGuiIO& io) {
               kGold = IM_COL32(255, 200, 60, 255);
   const float row_h = 62, gap = 6, list_top = 134;
   if (tap) {
-    for (int r = 0; r < kVisible && top_ + r < kCount; ++r) {
+    for (int r = 0; r < kVisible && top_ + r < RowCount(); ++r) {
       const float y = list_top + r * (row_h + gap);
       if (inside(P(80, y), P(744, y + row_h))) {
         sel_ = top_ + r;
@@ -539,7 +598,7 @@ void WeaponsPage::OnDraw(ImGuiIO& io) {
   if (more || right) Change(sel_, +1);
   if (less) Change(sel_, -1);
   if (game) GameSetBack();
-  std::array<int, kCount> count;
+  Counts count;
   bool custom;
   {
     std::lock_guard lock(g_mutex);
@@ -548,7 +607,7 @@ void WeaponsPage::OnDraw(ImGuiIO& io) {
   }
   if (sel_ < top_) top_ = sel_;
   if (sel_ >= top_ + kVisible) top_ = sel_ - kVisible + 1;
-  top_ = std::clamp(top_, 0, std::max(0, kCount - kVisible));
+  top_ = std::clamp(top_, 0, std::max(0, RowCount() - kVisible));
   const int total = Total(count);
 
   ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -580,7 +639,7 @@ void WeaponsPage::OnDraw(ImGuiIO& io) {
     const ImVec2 nz = TextSize(g_menu_font, 17 * s, note);
     Text(dl, g_menu_font, 17 * s, ImVec2(P(1196, 0).x - nz.x, cy - nz.y * 0.5f), custom ? kGold : kGrey, note);
   }
-  for (int r = 0; r < kVisible && top_ + r < kCount; ++r) {
+  for (int r = 0; r < kVisible && top_ + r < RowCount(); ++r) {
     const int i = top_ + r;
     const float y = list_top + r * (row_h + gap);
     const bool sel = i == sel_;
@@ -593,9 +652,9 @@ void WeaponsPage::OnDraw(ImGuiIO& io) {
       dl->AddRectFilled(a, b, IM_COL32(34, 34, 40, 235), 3 * s);
     }
     const float ns = 21 * s, ds = 16 * s;
-    Text(dl, g_menu_font, ns, P(100, y + 7), count[i] || sel ? kWhite : kGrey, kWeapons[i].name);
+    Text(dl, g_menu_font, ns, P(100, y + 7), count[i] || sel ? kWhite : kGrey, Rows()[size_t(i)].name.c_str());
     char sub[64];
-    std::snprintf(sub, sizeof sub, "%s", kWeapons[i].game ? "In the game's Extreme Rules set" : "Not in the game's set");
+    if (const auto* m = Rows()[size_t(i)].mod) std::snprintf(sub, sizeof sub, "A weapon mod (%s)", m->folder.c_str()); else std::snprintf(sub, sizeof sub, "%s", Rows()[size_t(i)].game ? "In the game's Extreme Rules set" : "Not in the game's set");
     Text(dl, g_menu_font, ds, P(100, y + 35), sel ? IM_COL32(235, 205, 205, 255) : kDim, sub);
     for (int k = 0; k < kMaxEach; ++k) {  // (the count: three pips)
       const ImVec2 c = P(640 + k * 30, y + row_h * 0.5f);
@@ -610,8 +669,8 @@ void WeaponsPage::OnDraw(ImGuiIO& io) {
   {
     const float tp = list_top, h = kVisible * (row_h + gap) - gap;
     dl->AddRectFilled(P(750, tp), P(754, tp + h), IM_COL32(40, 40, 48, 255), 2 * s);
-    const float bh = h * std::min(1.0f, float(kVisible) / float(kCount));
-    const float by = kCount > kVisible ? tp + (h - bh) * top_ / float(kCount - kVisible) : tp;
+    const float bh = h * std::min(1.0f, float(kVisible) / float(RowCount()));
+    const float by = RowCount() > kVisible ? tp + (h - bh) * top_ / float(RowCount() - kVisible) : tp;
     dl->AddRectFilled(P(750, by), P(754, by + bh), IM_COL32(200, 200, 208, 255), 2 * s);
   }
   const ImVec2 da = P(766, list_top), db = P(1200, list_top + kVisible * (row_h + gap) - gap);
@@ -620,7 +679,7 @@ void WeaponsPage::OnDraw(ImGuiIO& io) {
   {
     auto line = [&](float y, float size, const char* text, ImU32 colour) { Text(dl, g_menu_font, size, P(790, y), colour, text); };
     line(list_top + 14, 16 * s, "EXTREME RULES", kDim);
-    line(list_top + 52, 24 * s, kWeapons[sel_].name, kWhite);
+    line(list_top + 52, 24 * s, Rows()[size_t(sel_)].name.c_str(), kWhite);
     char buf[64];
     std::snprintf(buf, sizeof buf, count[sel_] ? "%d IN EACH MATCH" : "NOT IN THE MATCHES", count[sel_]);
     line(list_top + 84, 17 * s, buf, count[sel_] ? kGreen : kGold);
@@ -632,6 +691,20 @@ void WeaponsPage::OnDraw(ImGuiIO& io) {
     line(list_top + 292, 16 * s, "Ranked matches keep the game's.", kDim);
     std::snprintf(buf, sizeof buf, "UP TO %d WEAPONS IN ALL", kMaxTotal);
     line(list_top + 340, 16 * s, buf, kDim);
+    // (the room: the chosen ones share what the game's nine take - heavier picks leave the last ones out)
+    std::string names, dropped;
+    NineOf(count, names, dropped);
+    if (!dropped.empty()) {
+      const size_t n = size_t(std::count(dropped.begin(), dropped.end(), ',')) + 1;
+      std::snprintf(buf, sizeof buf, "NO ROOM FOR %zu: %s", n, dropped.substr(0, dropped.find(',')).c_str());
+      line(list_top + 372, 16 * s, buf, kGold);
+      line(list_top + 396, 16 * s, "The weapons share the room of the", kDim);
+      line(list_top + 420, 16 * s, "game's nine; heavy ones take more.", kDim);
+    } else {
+      line(list_top + 372, 16 * s, "They take no more room than the", kDim);
+      line(list_top + 396, 16 * s, "game's nine: with big custom arenas", kDim);
+      line(list_top + 420, 16 * s, "keep the set light.", kDim);
+    }
   }
   {
     const float cy = P(0, 660).y;
@@ -653,8 +726,8 @@ void WeaponsPage::OnDraw(ImGuiIO& io) {
   }
   if (back) {
     std::string s2;
-    for (int i = 0; i < kCount; ++i)
-      if (count[i]) s2 += fmt::format("{}{} x{}", s2.empty() ? "" : ", ", kWeapons[i].name, count[i]);
+    for (int i = 0; i < RowCount(); ++i)
+      if (count[i]) s2 += fmt::format("{}{} x{}", s2.empty() ? "" : ", ", Rows()[size_t(i)].name, count[size_t(i)]);
     REXLOG_INFO("[svr2011] weapons: page closed - {}: {}", custom ? "your set" : "the game's set", s2.empty() ? "none" : s2);
     g_wait_release = true;
     g_open = false;
@@ -664,6 +737,15 @@ void WeaponsPage::OnDraw(ImGuiIO& io) {
 }  // namespace
 
 namespace svr2011 {
+
+std::vector<std::pair<std::string, int>> HostModWeaponPicks() {
+  Counts c;
+  {
+    std::lock_guard lock(g_mutex);
+    c = g_custom ? g_count : GameSet();
+  }
+  return ModPicks(c);
+}
 
 void InstallWeaponsPage(rex::ui::ImGuiDrawer* drawer, rex::input::InputSystem* input) {
   g_input = input;

@@ -35,6 +35,7 @@
 #include "jukebox.h"
 #include "backgrounds_page.h"
 #include "weapons_page.h"
+#include "weapon_mods.h"
 #include "caw_logos.h"
 #include "paint_pages.h"
 #include "match_types.h"
@@ -667,6 +668,10 @@ void Svr2011App::OnPostLoadXexImage() {
     svr2011::InstallMovePacks(runtime()->file_system(),  // (arenas branch: before the game mounts its pacs)
                               g_user_data / "0000000000000000" / title / "00000002");
   }
+  // Weapon mods: new weapons in the game's weapon tables (weapon_mods.h) - before the arena mods: backstage rows name
+  // them in load_weapons= / weapons=.
+  svr2011::SetWeaponModsMemory(runtime()->memory());
+  svr2011::LoadWeaponMods();
   svr2011::KeepWindowAlive();
   svr2011::InstallArenaMods(runtime()->memory(), runtime()->file_system());
   svr2011::KeepWindowAlive();

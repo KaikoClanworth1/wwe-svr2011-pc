@@ -2855,6 +2855,30 @@ REX_HOOK_RAW(sub_82301148) {
   __imp__sub_82301148(ctx, base);
   // (the Extreme Rules option on: its weapons as chosen on MY WWE -> OPTIONS -> WEAPONS - weapons_page.h)
   if (list && base[0x82E3DE00 + 56]) svr2011::ChooseExtremeWeapons(base, list);
+  // Test aid: SVR2011_TEST_EXTRA_WEAPONS=<model>,... - more entries in the load list (how much room the weapons'
+  // memory has: with SVR2011_TEST_HEAP_LOG the failing heap); <model>=<model> swaps an entry instead (a weapon
+  // mod in a stock weapon's place, the list as long as it was).
+  if (const char* v = std::getenv("SVR2011_TEST_EXTRA_WEAPONS"); v && *v && list && base[0x82E3DE00 + 56]) {
+    for (const char* p = v; *p;) {
+      const uint32_t n = Rd32(base + list);
+      const uint32_t a = uint32_t(std::atoi(p));
+      while (*p && *p != ',' && *p != '=') ++p;
+      if (*p == '=') {
+        const uint32_t b = uint32_t(std::atoi(++p));
+        for (uint32_t i = 0; i < n && i < 72; ++i)
+          if (Rd32(base + list + 4 + 4 * i) == a) {
+            Wr32(base + list + 4 + 4 * i, b);
+            break;
+          }
+        while (*p && *p != ',') ++p;
+      } else if (n < 72) {
+        Wr32(base + list + 4 + 4 * n, a);
+        Wr32(base + list, n + 1);
+      }
+      if (*p) ++p;
+    }
+    REXLOG_INFO("match types: test - the weapon load list has {} entries", Rd32(base + list));
+  }
   // (for reports: each load's list - a longer one than the game's crashed loads)
   if (list) REXLOG_INFO("match types: the weapon load list has {} models (rule {:02X})", Rd32(base + list), base[0x82E3DE00]);
   const int r = svr2011::g_active_row;

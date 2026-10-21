@@ -13,11 +13,15 @@
 //     without it holds the match back the same way;
 //   - a mod superstar's id is each PC's own (slots.txt): ids are translated
 //     where the lobby's records, picks and superstar blocks arrive;
-//   - the lobby's CHAT says what each player lacks.
+//   - the lobby's CHAT says what each player lacks;
+//   - weapon mods (weapon_mods.h) by their own keys: the host's mod weapons
+//     that every player has play in its Extreme Rules matches.
 #pragma once
 
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 struct PPCContext;
 
@@ -52,5 +56,8 @@ bool OnlineModEveryoneHas(uint32_t id);
 // every player of the lobby has (and the stock game can't play it) - then it
 // plays its category's default, the same on every game (cam_mod_moves.cpp).
 bool OnlinePackMoveAllowed(uint16_t id);
+// The host's mod weapons for this lobby's Extreme Rules matches, those every player has (weapon_mods.h; the host
+// decides from its WEAPONS page, the others echo it before START): {this game's weapon id, count}.
+std::vector<std::pair<int, int>> OnlineModWeapons();
 
 }  // namespace svr2011
