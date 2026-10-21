@@ -136,6 +136,11 @@ REXCVAR_DEFINE_STRING(native_upscale, "off", "GPU",
                       "down) or fsr1 (AMD FSR 1: the scene rendered smaller - native_upscale_quality - and "
                       "scaled up to the window edge-adaptively, then sharpened). The HUD is scaled with it.");
 
+REXCVAR_DEFINE_BOOL(native_jitter, false, "GPU",
+                    "Native renderer (temporal upscaling groundwork, experimental): the match scene's 3D draws "
+                    "moved by a sub-pixel offset each frame (Halton 2,3; 8 frames). On its own it only shakes "
+                    "the picture by under a pixel - for a temporal upscaler (FSR 2 / DLSS) to gather.");
+
 REXCVAR_DEFINE_INT32(native_upscale_quality, 1, "GPU",
                      "FSR 1's render size: 0 Ultra Quality (77% of the window's height), 1 Quality (67%), "
                      "2 Balanced (59%), 3 Performance (50%)");
@@ -748,6 +753,9 @@ float g_res = 1.0f;
 // frame-size intermediate, RCAS into the frame image) - g_fsr_sharpness RCAS's strength (0-1).
 bool g_fsr = false;
 float g_fsr_sharpness = 0.8f;
+// native_jitter: this frame's sub-pixel offset of the match scene's 3D draws (scene pixels, -0.5 to 0.5; y down)
+// - what a temporal upscaler needs to undo; zero when off.
+float g_jitter[2] = {0.0f, 0.0f};
 // The intermediate's place in the 2D texture table: after the three placeholders, before the texture cache's.
 constexpr uint32_t kFsrSrv = 3;
 
@@ -3427,6 +3435,13 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   vp.y = vp.y * sy + pad_y;
   vp.width *= sx;
   vp.height *= sy;
+  // native_jitter: the match scene's 3D draws (projected, depth tested, into the scene target) moved by this frame's
+  // sub-pixel offset - in NDC, through g_HalfPixelOffset (the shaders add it times w: the same in every depth).
+  if ((g_jitter[0] != 0.0f || g_jitter[1] != 0.0f) && g_match_scene.load() && !g_frame_2d && !middle && (vte & 1) && depth_test &&
+      SceneTarget(uint32_t(tw), uint32_t(th))) {
+    ndc[2] += 2.0f * g_jitter[0] / vp.width;
+    ndc[3] -= 2.0f * g_jitter[1] / vp.height;
+  }
   // Window scissor: D3D keeps it in the mirrored 0x2000 group (0x2011 top-left,
   // 0x2012 bottom-right; x in bits 0-14, y in bits 16-30), already clamped to
   // the scissor rect when the game enables one (device +0x2F00).
@@ -4067,7 +4082,7 @@ void OnPresent(uint32_t front_buffer) {
           std::fwrite(row.data(), 1, row.size(), f);
         }
         std::fclose(f);
-        REXLOG_INFO("native renderer: test frame shot {}x{} -> {}", g_out_w, g_out_h, frame_shot);
+        REXLOG_INFO("native renderer: test frame shot {}x{} -> {} (jitter {} {})", g_out_w, g_out_h, frame_shot, g_jitter[0], g_jitter[1]);
       }
       shot->unmap();
     }
@@ -4086,7 +4101,20 @@ void OnPresent(uint32_t front_buffer) {
     backend::PublishFrame(r->outputs[r->output_index], g_out_w, g_out_h, r->fences[r->back_index].get());
   r->frame_open = false;
   ++r->frames;
-  g_frame_2d = (g_wide > 1.0f || g_tall > 1.0f) && r->frame_stats.drawn > 0 && r->frame_stats.wide_3d == 0;
+  {
+    // native_jitter: the next frame's offset - Halton (2, 3), 8 frames, centred on the pixel.
+    static bool jitter = REXCVAR_GET(native_jitter);
+    if ((r->frames & 31) == 0) jitter = REXCVAR_GET(native_jitter);
+    auto halton = [](uint32_t i, uint32_t b) {
+      float f = 1.0f, v = 0.0f;
+      for (; i; i /= b) v += (f /= float(b)) * float(i % b);
+      return v;
+    };
+    const uint32_t i = uint32_t(r->frames % 8) + 1;
+    g_jitter[0] = jitter ? halton(i, 2) - 0.5f : 0.0f;
+    g_jitter[1] = jitter ? halton(i, 3) - 0.5f : 0.0f;
+  }
+  g_frame_2d =(g_wide > 1.0f || g_tall > 1.0f) && r->frame_stats.drawn > 0 && r->frame_stats.wide_3d == 0;
   {
     static const std::string drawlog = [] {
       char* e = nullptr;
