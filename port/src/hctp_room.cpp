@@ -65,7 +65,8 @@ const bool g_tour_now = g_roof_env && std::strcmp(g_roof_env, "tour") == 0;
 const bool g_fork_now = g_roof_env && std::strcmp(g_roof_env, "fork") == 0;
 // (=walkin: wrestlers go through a door by walking into it, as the CPU does - not with Y)
 const bool g_walk_in = g_roof_env && std::strcmp(g_roof_env, "walkin") == 0;
-// (=door: the world mod's first door - fighter 0 put on its trigger 5 seconds in; the script walks him)
+// (=door: the world mod's current room's first door - fighter 0 put on its trigger 5 seconds in, fighter 1
+// 15 seconds in (a LAN pair: each side's player presses Y there))
 const bool g_door_now = g_roof_env && std::strcmp(g_roof_env, "door") == 0;
 // (=nograb: no cage-wall grabs or climbs, so strikes reach the fence)
 const bool g_no_grab = g_roof_env && std::strcmp(g_roof_env, "nograb") == 0;
@@ -2668,14 +2669,15 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
     size_t& n = next[Cur().number];
     GoThrough(ctx, base, Cur().doors[n++ % Cur().doors.size()], 0);
   }
-  if (g_door_now && World() && frame >= 300 && !Cur().doors.empty() && Rd32(base + kChars)) {
-    static bool done = false;
-    if (!done) {
-      done = true;
-      const Door& d = Cur().doors[0];
-      PlaceFighter(base, Rd32(base + kChars), d.x, d.y, d.z, d.eyaw + 3.14159265f);
-      REXLOG_INFO("hctp: fighter 0 put at door {} (test)", d.id);
-    }
+  if (g_door_now && World() && !Cur().doors.empty()) {
+    static bool done[2] = {};
+    for (uint32_t i = 0; i < 2; ++i)
+      if (!done[i] && frame >= (i ? 900u : 300u) && Rd32(base + kChars + 4 * i)) {
+        done[i] = true;
+        const Door& d = Cur().doors[0];
+        PlaceFighter(base, Rd32(base + kChars + 4 * i), d.x, d.y, d.z, d.eyaw + 3.14159265f);
+        REXLOG_INFO("hctp: fighter {} put at door {} (test)", i, d.id);
+      }
   }
   UpdateWorld(ctx, base);
   SetUp(ctx, base);
