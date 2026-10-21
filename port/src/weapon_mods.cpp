@@ -10,6 +10,8 @@
 
 #include "weapon_mods.h"
 
+#include "crowd_fight.h"
+
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
@@ -196,6 +198,13 @@ REX_HOOK_RAW(sub_826A0D98) {
   static const bool log = std::getenv("SVR2011_TEST_WEAPON_LOOKUP") != nullptr;  // (test aid: the settings' look-ups)
   const uint32_t handle = ctx.r3.u32, id = ctx.r4.u32, lr = uint32_t(ctx.lr);
   PointAtCopy(base, handle);
+  if (const uint32_t crowd = svr2011::CrowdCollisionId(base, lr, id); crowd != id) {  // (crowd_fight.h)
+    const auto saved = ctx;
+    ctx.r4.u64 = crowd;
+    __imp__sub_826A0D98(ctx, base);
+    if (ctx.r3.s32 >= 0) return;
+    ctx = saved;  // (no crowd collision in this arena: its own)
+  }
   __imp__sub_826A0D98(ctx, base);
   if (log && ctx.r3.s32 < 0 && lr >= 0x8227DD80 && lr < 0x8227ED88)  // (the loader: a search that found nothing)
     REXLOG_INFO("[svr2011] weapon lookup: id {} not in PACH {:08X} ({} children, first id {}) (lr {:08X})", id,

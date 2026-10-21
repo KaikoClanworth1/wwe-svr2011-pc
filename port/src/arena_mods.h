@@ -39,6 +39,8 @@ void SetMatchLoading(bool loading);
 // on; "" when a stock arena), and another game's pick played here too (on
 // that tile; "" back to none) - false when it isn't installed here.
 std::string ArenaModInUse(int* tile);
+// The manifest text of the custom arena the next match loads ("" when a stock arena): crowd_fight.cpp.
+std::string ArenaModManifest();
 bool UseArenaMod(const std::string& folder, int tile);
 
 // String lookups (menu_hooks.cpp, r3 for the lookup from `caller`, 0 for the
