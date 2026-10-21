@@ -5,22 +5,27 @@
 #   sudo bash ~/svr2011-src/port/server/vps_switch.sh /home/<user>/community-cutover.db
 # Puts the database in place, starts the core, adds the nginx include (backup first;
 # put back automatically if nginx -t fails) and runs the checks.
+# Only the nginx step (the core already running): ... vps_switch.sh --nginx-only
 # Undo: sudo bash ~/svr2011-src/port/server/vps_switch.sh --rollback
 set -euo pipefail
 [ "$(id -u)" = 0 ] || { echo "run it with sudo"; exit 1; }
 inc='include /etc/nginx/svr2011/svr-location.conf;'
-conf="$(grep -lR 'server_name[^;]*sho-ti\.me' /etc/nginx/conf.d /etc/nginx/sites-enabled 2>/dev/null | head -1 || true)"
+# the file holding the HTTPS server block for exactly sho-ti.me (not convert. / status. / www. ...)
+conf="$(grep -lRE '^[[:space:]]*server_name[[:space:]]+sho-ti\.me[[:space:]]*;' /etc/nginx/conf.d /etc/nginx/sites-enabled 2>/dev/null | head -1 || true)"
 [ -n "$conf" ] || { echo "no nginx file with server_name sho-ti.me found"; exit 1; }
 bak=/root/$(basename "$conf").bak-cutover
 
 if [ "${1:-}" = --rollback ]; then
-    [ -f "$bak" ] && cp -a "$bak" "$conf" && nginx -t && systemctl reload nginx && echo "nginx: back to the PC"
+    [ -f "$bak" ] && cat "$bak" > "$conf" && nginx -t && systemctl reload nginx && echo "nginx: back to the PC"
     systemctl disable --now svr2011 || true
     echo "The core is stopped. On the PC: restore config.json.bak-cutover / service.py.bak-cutover and start the app."
     exit 0
 fi
 
-db="${1:?give the copied database, e.g. /home/<user>/community-cutover.db}"
+nginx_only=0
+[ "${1:-}" = --nginx-only ] && nginx_only=1
+if [ $nginx_only = 0 ]; then
+db="${1:?give the copied database, e.g. ~/community-cutover.db (or --nginx-only)}"
 [ -s "$db" ] || { echo "$db not found"; exit 1; }
 
 echo "== the database"
@@ -37,23 +42,24 @@ systemctl enable --now svr2011
 sleep 3
 curl -fsS http://127.0.0.1:8101/__health; echo
 tail -n 15 /var/log/svr2011/server.log
+fi
 
 echo "== nginx ($conf)"
 if grep -qF "$inc" "$conf"; then
     echo "  the include is there already"
 else
-    cp -a "$conf" "$bak"
+    cp -L "$conf" "$bak"   # (the file itself, also when sites-enabled holds a link)
     # the include goes on the line before the first "location /" inside the sho-ti.me server block
     # (the HTTPS block: server_name sho-ti.me and listen 443 - not a port-80 redirect block)
     awk -v inc="    $inc" '
         /^[ \t]*server[ \t]*\{/ { named = 0; tls = 0 }
-        /server_name[^;]*sho-ti\.me/ { named = 1 }
+        /^[ 	]*server_name[ 	]+sho-ti\.me[ 	]*;/ { named = 1 }
         /listen[^;]*443/ { tls = 1 }
         named && tls && !done && /^[ \t]*location[ \t]+\/[ \t]*\{/ { print inc; done = 1 }
         { print }
-        END { if (!done) exit 3 }' "$bak" > "$conf" || { cp -a "$bak" "$conf"; echo "no 'location / {' found - add the include by hand"; exit 1; }
+        END { if (!done) exit 3 }' "$bak" > "$conf" || { cat "$bak" > "$conf"; echo "no 'location / {' found - add the include by hand"; exit 1; }
     if nginx -t; then systemctl reload nginx; echo "  include added (backup: $bak)"
-    else cp -a "$bak" "$conf"; echo "  nginx -t failed - put back as it was"; exit 1; fi
+    else cat "$bak" > "$conf"; echo "  nginx -t failed - put back as it was"; exit 1; fi
 fi
 
 echo "== from the outside"
