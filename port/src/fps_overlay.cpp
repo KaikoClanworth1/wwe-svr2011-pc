@@ -20,6 +20,7 @@
 #include "native/native_renderer.h"
 #include "net_sim.h"
 #include "perf_stats.h"
+#include "touch_controls.h"
 
 REXCVAR_DEFINE_BOOL(show_fps, true, "UI", "Show the frame rate counter (toggle in game: F2)");
 REXCVAR_DEFINE_INT32(perf_overlay, -1, "UI",
@@ -205,7 +206,12 @@ void FpsOverlay::OnDraw(ImGuiIO& io) {
   const float pad = 6.0f;
   // (top right: under the online ping when it shows)
   const float ping_h = right && !bottom && REXCVAR_GET(show_ping) && !NetLinks().empty() ? 34.0f : 0.0f;
-  ImGui::SetNextWindowPos(ImVec2(right ? io.DisplaySize.x - pad : pad, bottom ? io.DisplaySize.y - pad : pad + ping_h),
+  // (the touch controls' buttons in that corner - MENU, EDIT: beside them, not under them; the window's height
+  // from the last frame)
+  static float last_h = 0;
+  const float y0 = bottom ? io.DisplaySize.y - pad - last_h : pad + ping_h;
+  const float side = pad + TouchControlsSideInset(right, y0, y0 + last_h);
+  ImGui::SetNextWindowPos(ImVec2(right ? io.DisplaySize.x - side : side, bottom ? io.DisplaySize.y - pad : pad + ping_h),
                           ImGuiCond_Always, ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f));
   ImGui::SetNextWindowBgAlpha(level >= 2 ? 0.6f : 0.45f);
   const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
@@ -238,6 +244,7 @@ void FpsOverlay::OnDraw(ImGuiIO& io) {
       ImGui::TextColored(dim, "Textures %.0f MB (%u)   render targets %.0f MB", c.texture_mb, c.textures, c.targets_mb);
     }
 #endif
+    last_h = ImGui::GetWindowHeight();
   }
   ImGui::End();
 }

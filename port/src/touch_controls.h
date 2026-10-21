@@ -53,6 +53,12 @@ void InstallTouchControls(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
 // Font for the labels (null: ImGui's default, scaled).
 void SetTouchControlsFont(ImFont* font);
 
+// How far from the left (right) edge something drawn in the band top..bottom
+// (the overlay's display units) has to start to keep clear of the visible
+// touch controls on that half - 0 when none are there (the performance
+// overlay: fps_overlay.cpp). UI thread.
+float TouchControlsSideInset(bool right, float top, float bottom);
+
 // True while the editor or the controls sheet is open (the game then sees
 // an idle controller).
 bool TouchControlsHoldInput();
