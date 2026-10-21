@@ -43,6 +43,13 @@ def source_parts(bg_pac_bytes, model=MODEL):
 def _dds(img):
     """RGBA uint8 (h, w, 4) -> DDS (DXT1 when opaque, else DXT5) with mips"""
     import svr08_char
+    # (magenta fill - the PS2's key colour, n35_09 beside the headlight lens - drawn pink on the lens: the
+    # texture's own average colour instead)
+    rgb = img[..., :3].astype(int)
+    key = (rgb[..., 0] > 180) & (rgb[..., 1] < 90) & (rgb[..., 2] > 150)
+    if key.any() and (~key).any():
+        img = img.copy()
+        img[key, :3] = rgb[~key].mean(0).astype(np.uint8)
     im = Image.fromarray(img, 'RGBA')
     opaque = int(img[..., 3].min()) >= 250
     return svr08_char.dds_encode(im, 'DXT1' if opaque else 'DXT5')
