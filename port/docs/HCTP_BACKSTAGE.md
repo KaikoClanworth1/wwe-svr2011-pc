@@ -184,7 +184,9 @@ l(101)).
 
 Facing conventions (2011): a fighter's yaw y faces (sin y, cos y); a gimmick object's local +z at yaw a
 points (-sin a, cos a) - objects turn the other way. The traffic car (atan2(-dx, dz)) and the forklift
-(model yaw pi - heading) were driving mirrored ("wrong way").
+(model yaw pi - heading) were driving mirrored ("wrong way"). Wrestlers put at a prop take FighterYaw(prop yaw) = -yaw
+(+ the HCTP turn): with the prop's own yaw they faced the mirrored way on props turned 90 (room 35's lions
+at +-3pi/4, room 30's crate at -pi/2; props at 0 / pi are the same either way).
 
 PS2 culling: the room shells wind like stock 2011 (every triangle agrees with its normals; normals unit),
 but the PS2 drew everything from both sides. Converted meshes now clear render flag 0x2 (back-face cull) for

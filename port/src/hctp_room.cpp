@@ -801,6 +801,11 @@ bool InZone(const Prop& p, float x, float y, float z) {
 // A fighter put at (x, y, z) facing yaw (his position and his physics body's).
 // (After his act starts, as the game's own T22 snap does - sub_824B67D0: the
 // act's root motion counts from where he is then.)
+// A wrestler's yaw facing the way a prop at object yaw a faces (turned by 'turn' as the HCTP code turns
+// its own): -a + turn. An object's local +z at yaw a points (-sin a, cos a), a wrestler's yaw y faces
+// (sin y, cos y) - the prop's own a put him the mirrored way on props turned 90 (room 35's lions).)
+float FighterYaw(float object_yaw, float turn = 0.0f) { return -object_yaw + turn; }
+
 void PlaceFighter(uint8_t* base, uint32_t f, float x, float y, float z, float yaw) {
   WrF(base + f + 288, x), WrF(base + f + 292, y), WrF(base + f + 296, z);
   WrF(base + f + 276, yaw);
@@ -1049,8 +1054,8 @@ void ShutIn(PPCContext& ctx, uint8_t* base, Prop& cr, uint32_t victim, int vi) {
   if (!att || best > 60.0f * 60.0f) return;
   JumpAct(ctx, base, att, kCrateIn, 0, 0);
   JumpAct(ctx, base, victim, kCrateIn, 0, 1);
-  PlaceFighter(base, att, cr.x, cr.y, cr.z, cr.ry);
-  PlaceFighter(base, victim, cr.x, cr.y, cr.z, cr.ry);
+  PlaceFighter(base, att, cr.x, cr.y, cr.z, FighterYaw(cr.ry));
+  PlaceFighter(base, victim, cr.x, cr.y, cr.z, FighterYaw(cr.ry));
   PlayProp(ctx, base, cr, kCrateIn, 0, 2);
   Cur().crate = 1, Cur().crate_t = 0, Cur().crate_victim = victim;
   REXLOG_INFO("hctp: fighter {} is shut in {}", vi, cr.name);
@@ -1066,11 +1071,11 @@ void UpdateCrate(PPCContext& ctx, uint8_t* base) {
     const int n = Frames(kCrateIn, 170);
     if (t > 20 && (Rd32(base + v + 212) != kCrateIn || RdF(base + v + 24) >= float(n - 2))) {
       JumpAct(ctx, base, v, kCrateIn, 0, 1, float(n - 2));
-      PlaceFighter(base, v, cr->x, cr->y, cr->z, cr->ry);
+      PlaceFighter(base, v, cr->x, cr->y, cr->z, FighterYaw(cr->ry));
     }
     if (t >= 2 * 420) {
       JumpAct(ctx, base, v, kCrateOut, 0, 0);
-      PlaceFighter(base, v, cr->x, cr->y, cr->z, cr->ry);
+      PlaceFighter(base, v, cr->x, cr->y, cr->z, FighterYaw(cr->ry));
       PlayProp(ctx, base, *cr, kCrateOut, 0, 1);
       Cur().crate = 2;
       REXLOG_INFO("hctp: the crate opens - he climbs out");
@@ -1334,7 +1339,7 @@ void HoldVictim(PPCContext& ctx, uint8_t* base, const Prop& p, uint32_t key) {
   if (!v) return;
   const int n = Frames(key, 60);
   if (Rd32(base + v + 212) != key || RdF(base + v + 24) >= float(n - 2)) JumpAct(ctx, base, v, key, 0, 0, float(n - 2));
-  PlaceFighter(base, v, p.x, p.y, p.z, p.ry);
+  PlaceFighter(base, v, p.x, p.y, p.z, FighterYaw(p.ry));
 }
 
 // GmLocker (400): whipped in, he is shut inside (door 69 / body 70, him 12071) for 120 HCTP frames, then
@@ -1345,7 +1350,7 @@ void LockerHit(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t v, int i) {
   PlayModel(ctx, base, p, p.models[1], ObjAct() + uint32_t(Param(p, 4)));
   PlayModel(ctx, base, p, p.models[0], ObjAct() + uint32_t(Param(p, 3)));
   JumpAct(ctx, base, v, RoomKey(Param(p, 2)));
-  PlaceFighter(base, v, p.x, p.y, p.z, p.ry);
+  PlaceFighter(base, v, p.x, p.y, p.z, FighterYaw(p.ry));
   REXLOG_INFO("hctp: fighter {} is shut in {}", i, p.name);
 }
 
@@ -1358,7 +1363,7 @@ void UpdateLocker(PPCContext& ctx, uint8_t* base, Prop& p) {
       PlayModel(ctx, base, p, p.models[1], ObjAct() + uint32_t(Param(p, 9)));
       PlayModel(ctx, base, p, p.models[0], ObjAct() + uint32_t(Param(p, 8)));
       JumpAct(ctx, base, p.who, RoomKey(Param(p, 7)));
-      PlaceFighter(base, p.who, p.x, p.y, p.z, p.ry);
+      PlaceFighter(base, p.who, p.x, p.y, p.z, FighterYaw(p.ry));
       p.state = 2, p.timer = 0;
       REXLOG_INFO("hctp: {} opens - he comes out", p.name);
     }
@@ -1375,7 +1380,7 @@ void ToiletHit(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t v, int i) {
   p.state = 1, p.timer = 0, p.who = v;
   if (!p.models.empty()) ShowModel(ctx, base, p, p.models[0], false);
   JumpAct(ctx, base, v, RoomKey(Param(p, 5)));
-  PlaceFighter(base, v, p.x, p.y, p.z, p.ry);
+  PlaceFighter(base, v, p.x, p.y, p.z, FighterYaw(p.ry));
   REXLOG_INFO("hctp: fighter {} is thrown into {}", i, p.name);
 }
 
@@ -1386,7 +1391,7 @@ void UpdateToilet(PPCContext& ctx, uint8_t* base, Prop& p) {
   if (p.timer > 2 * 101 && p.timer < 2 * 254) HoldVictim(ctx, base, p, RoomKey(Param(p, 5)));
   if (p.timer == 2 * 254) {
     JumpAct(ctx, base, p.who, RoomKey(Param(p, 7)));
-    PlaceFighter(base, p.who, p.x, p.y, p.z, p.ry);
+    PlaceFighter(base, p.who, p.x, p.y, p.z, FighterYaw(p.ry));
     if (!p.models.empty()) ShowModel(ctx, base, p, p.models[0], true);
     p.state = 0, p.cooldown = 2 * 60;
   }
@@ -1535,7 +1540,7 @@ constexpr uint32_t kButtonA = 0x40;  // (input +52)
 void TreadmillOn(PPCContext& ctx, uint8_t* base, Prop& p, uint32_t f, int i) {
   p.who = f, p.state = 1, p.count = 0, p.timer = 0;
   JumpAct(ctx, base, f, RoomKey(12073));
-  PlaceFighter(base, f, p.x, p.y, p.z, p.ry - 1.5707963f);
+  PlaceFighter(base, f, p.x, p.y, p.z, FighterYaw(p.ry, -1.5707963f));
   PlayProp(ctx, base, p, ObjAct() + uint32_t(Param(p, 6)));
   REXLOG_INFO("hctp: fighter {} gets on {}", i, p.name);
 }
@@ -1553,7 +1558,7 @@ void UpdateTreadmill(PPCContext& ctx, uint8_t* base, Prop& p) {
     p.who = 0, p.state = 0;
     return;
   }
-  PlaceFighter(base, f, p.x, p.y, p.z, p.ry - 1.5707963f);
+  PlaceFighter(base, f, p.x, p.y, p.z, FighterYaw(p.ry, -1.5707963f));
   const uint32_t input = svr2011::FighterInput(f);
   const uint32_t pressed = input ? Rd32(base + input + 52) : 0;
   ++p.timer;
@@ -2586,7 +2591,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
   // (room 31: fighter 0 - the test's pad - stands by the forklift at 1100, after the trailer slam)
   if (g_props_now && HctpRoom() == 31 && frame >= 1100 && frame < 1102)
     if (Prop* fl = FindKind("forklift"); fl && Rd32(base + kChars))
-      PlaceFighter(base, Rd32(base + kChars), fl->x - 10.0f * std::cos(fl->ry), 0.0f, fl->z - 10.0f * std::sin(fl->ry), fl->ry);
+      PlaceFighter(base, Rd32(base + kChars), fl->x - 10.0f * std::cos(fl->ry), 0.0f, fl->z - 10.0f * std::sin(fl->ry), FighterYaw(fl->ry));
   if (g_fork_now && HctpRoom() == 31 && frame >= 300 && !g_fork.rider && g_fork.state == 0 && Rd32(base + kChars))
     if (Prop* fl = FindKind("forklift")) {
       static bool done = false;
@@ -2594,7 +2599,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
         done = true;
         const uint32_t f0 = Rd32(base + kChars);
         const float x = fl->x - 10.0f * std::cos(fl->ry), z = fl->z - 10.0f * std::sin(fl->ry);
-        PlaceFighter(base, f0, x, 0.0f, z, fl->ry);
+        PlaceFighter(base, f0, x, 0.0f, z, FighterYaw(fl->ry));
         ForkliftGetOn(ctx, base, *fl, f0, 0, x, z);
       }
     }
@@ -2629,7 +2634,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
       // (rooms 35 / 36: fighter 1 climbs the first lion at 300; the fountain throw at 1100)
       if (p.kind == "lion" && at(300) && &p == FindKind("lion") && !p.who) {
         JumpAct(ctx, base, f1, RoomKey(Param(p, 3)));
-        PlaceFighter(base, f1, p.x, p.y, p.z, p.ry);
+        PlaceFighter(base, f1, p.x, p.y, p.z, FighterYaw(p.ry));
         p.who = f1, p.timer = 0;
         REXLOG_INFO("hctp: fighter 1 climbs {} (test)", p.name);
       }
