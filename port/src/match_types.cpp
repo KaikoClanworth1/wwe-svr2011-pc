@@ -51,6 +51,8 @@
 namespace svr2011 {
 std::atomic<uint32_t> g_match_rule{~0u}, g_match_arena{~0u};  // (the last match placed: LastMatch)
 void LastMatch(uint32_t* rule, uint32_t* arena) { *rule = g_match_rule.load(), *arena = g_match_arena.load(); }
+std::atomic<uint32_t> g_match_placements{0};
+uint32_t MatchPlacements() { return g_match_placements.load(); }
 // (the whole backstage 0x19 / 0x1A, the 1 on 1 rooms 0x1B.. and the 2 on 2 rooms 0x70-0x76: arena 78)
 bool BackstageRule(uint32_t rule) { return (rule >= 0x19 && rule <= 0x21) || (rule >= 0x70 && rule <= 0x76); }
 }  // namespace svr2011
@@ -1837,6 +1839,7 @@ REX_EXTERN(__imp__sub_822AD738);
 REX_HOOK_RAW(sub_822AD738) {
   const uint32_t placer = ctx.r3.u32;
   svr2011::SetMatchLoading(false);  // (its loading screen is up)
+  svr2011::g_match_placements.fetch_add(1);
   LogMatch(ctx, base, ctx.r4.u32);
   // Research aid (Hell in a Cell roof): SVR2011_TEST_CELL_START=<y tenths> -
   // in a cell match people 0 and 1 start at that height (x -150 / +150, z 0).
@@ -2832,6 +2835,8 @@ REX_HOOK_RAW(sub_82301148) {
   __imp__sub_82301148(ctx, base);
   // (the Extreme Rules option on: its weapons as chosen on MY WWE -> OPTIONS -> WEAPONS - weapons_page.h)
   if (list && base[0x82E3DE00 + 56]) svr2011::ChooseExtremeWeapons(base, list);
+  // (for reports: each load's list - a longer one than the game's crashed loads)
+  if (list) REXLOG_INFO("match types: the weapon load list has {} models (rule {:02X})", Rd32(base + list), base[0x82E3DE00]);
   const int r = svr2011::g_active_row;
   if (!list || r < 0 || size_t(r) >= svr2011::BackstageRows().size() || Rd32(base + kStoryContext)) return;
   const auto& row = svr2011::BackstageRows()[size_t(r)];
