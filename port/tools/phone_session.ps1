@@ -44,9 +44,11 @@ switch ($Action) {
         Sh "rm -f $(Q "$run/input.txt"); touch $(Q "$run/input.txt")" | Out-Null
         # (SVR2011_PHONE_MUSIC=<folder in test_run>: the test's Music folder)
         $music = if ($env:SVR2011_PHONE_MUSIC) { @("--es", "SVR2011_MUSIC", "'$run/$env:SVR2011_PHONE_MUSIC'") } else { @() }
-        # (test aids set on the PC go along: a route at start, the match a test asks for - src/test_match.cpp)
+        # (test aids set on the PC go along: a route at start, every SVR2011_TEST_* - the match a test asks for,
+        # src/test_match.cpp, and the others)
         $aids = @()
-        foreach ($k in "SVR2011_ROUTE", "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_FPS_PROBE") {
+        $tests = @(Get-ChildItem Env: | Where-Object { $_.Name -like "SVR2011_TEST_*" } | ForEach-Object { $_.Name })
+        foreach ($k in @("SVR2011_ROUTE", "SVR2011_FPS_PROBE") + $tests) {
             $v = [Environment]::GetEnvironmentVariable($k)
             if ($v) { $aids += @("--es", $k, "'$v'") }
         }

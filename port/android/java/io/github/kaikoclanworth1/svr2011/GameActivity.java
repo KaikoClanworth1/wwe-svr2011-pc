@@ -198,12 +198,31 @@ public class GameActivity extends SDLActivity {
         if (hasFocus) PreferSixtyHz();  // (the Fold: the other screen has its own modes)
     }
 
-    // Settings on the command line (tests: --es args "--audio_mute=true ...").
+    // Settings on the command line (tests: --es args "--audio_mute=true ..."); a value with spaces in double
+    // quotes stays one (--dbg_match="people=EDGE,KANE cpu=all"), the quotes left out.
     @Override
     protected String[] getArguments() {
         Bundle extras = getIntent().getExtras();
         String args = extras != null ? extras.getString("args") : null;
-        return args == null || args.trim().isEmpty() ? new String[0] : args.trim().split("\\s+");
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (args == null) return new String[0];
+        StringBuilder word = new StringBuilder();
+        boolean quoted = false, any = false;
+        for (char ch : args.toCharArray()) {
+            if (ch == '"') {
+                quoted = !quoted;
+                any = true;
+            } else if (Character.isWhitespace(ch) && !quoted) {
+                if (any) out.add(word.toString());
+                word.setLength(0);
+                any = false;
+            } else {
+                word.append(ch);
+                any = true;
+            }
+        }
+        if (any) out.add(word.toString());
+        return out.toArray(new String[0]);
     }
 
     @Override
