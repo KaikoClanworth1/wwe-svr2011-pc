@@ -1104,6 +1104,8 @@ REX_HOOK_RAW(sub_8217DCE8) {
 // The live match settings' arena (0x82E3DE00 +0x40) holds the tile's number from the pick until the match record
 // copies the screen's: the first load's show branding, the host announcer and the interfaces read it there (a RAW
 // port on the Judgment Day tile: its first entrance as Judgment Day, 21 Oct report) - it plays as its base too.
+int g_loads_since_pick = 0;  // (a match's loads, for the log: counted from the match screen's arena read)
+
 void LiveArenaPlaysAs(uint8_t* base) {
   uint8_t* q = base + 0x82E3DE40;
   const uint32_t arena = uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
@@ -1146,6 +1148,16 @@ REX_HOOK_RAW(sub_82773F00) {
       uint8_t* q = base + screen + kScreenArena;
       q[0] = uint8_t(uint32_t(as) >> 24), q[1] = uint8_t(uint32_t(as) >> 16), q[2] = uint8_t(uint32_t(as) >> 8), q[3] = uint8_t(as);
       REXLOG_INFO("[svr2011] arena mods: the match in arena {} plays as arena {}", arena, as);
+    }
+    // (for reports: each load since the pick - an entrance, the match - with the arena file it reads)
+    {
+      std::string file;
+      if (as >= 0 && as < 100) {
+        std::lock_guard lock(g_mutex);
+        file = g_redirect[as];
+      }
+      REXLOG_INFO("[svr2011] arena mods: load {} since the pick - arena {} (screen {}, live {}), BG{:02} -> {}", ++g_loads_since_pick,
+                  as, arena, rd(0x82E3DE40), as, file.empty() ? "original" : file);
     }
     // (for reports: a custom arena chosen whose file the match doesn't load - the stock arena plays)
     if (const auto* c = static_cast<const CustomArena*>(g_redirected_custom); c && g_redirected_file >= 0) {
@@ -1312,6 +1324,11 @@ REX_HOOK_RAW(sub_823D4FC0) {
   if (pressed & 0x1000) {
     g_committed_custom = g_redirected_custom;
     g_committed_host = g_redirected_host;
+    // (for reports: the tile the cursor was on as seen here - the match's own arena follows at its load)
+    if (new_row < 4 && new_col < 5)
+      REXLOG_INFO("[svr2011] arena select: A on page {} row {} col {} - {} (tile arena {})", g_page + 1, new_row, new_col,
+                  g_redirected_custom ? static_cast<const CustomArena*>(g_redirected_custom)->name : std::string("stock"),
+                  g_page == 0 ? g_tiles[new_row * 5 + new_col].arena : g_redirected_host);
   } else if (pressed & 0x2000) {
     if (g_committed_custom != g_redirected_custom || g_committed_host != g_redirected_host) {
       const auto* c = static_cast<const CustomArena*>(g_committed_custom);
@@ -1518,6 +1535,7 @@ int ArenaNumberFor(int arena) {
 void ScreenArenaRead(uint8_t* base, uint32_t screen) {
   constexpr uint32_t kScreenArena = 244;
   LiveArenaPlaysAs(base);
+  g_loads_since_pick = 0;
   if (!screen) return;
   uint8_t* q = base + screen + kScreenArena;
   const uint32_t arena = uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
