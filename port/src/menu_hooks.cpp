@@ -50,6 +50,9 @@
 #include "superstar_mods.h"
 #include "touch_controls.h"
 #include "native/native_renderer.h"
+#if SVR2011_DEBUG_SUITE
+#include "debug_suite/debug_suite.h"
+#endif
 
 namespace {
 
@@ -553,6 +556,9 @@ REX_HOOK_RAW(sub_826E1C88) {
   svr2011::native::SetMatchScene(true);  // (wide screens: full width)
   svr2011::SetDiscordScene(svr2011::DiscordScene::kEntrances);
   svr2011::ArmMatchStart(nullptr);  // (switched here already)
+#if SVR2011_DEBUG_SUITE
+  svr2011::dbg::OnEntrances(true);
+#endif
   if (!REXCVAR_GET(unlock_30fps)) svr2011::SetSceneThirtyFps(true);
 }
 
@@ -578,6 +584,9 @@ REX_HOOK_RAW(sub_823EEB98) {
 REX_EXTERN(__imp__sub_826E1D28);
 REX_HOOK_RAW(sub_826E1D28) {
   REXLOG_INFO("[svr2011] entrances over");
+#if SVR2011_DEBUG_SUITE
+  svr2011::dbg::OnEntrances(false);
+#endif
   svr2011::MysteryOpponentReveal("the entrances' end");  // (mystery_opponent.h)
   svr2011::SetDiscordScene(svr2011::DiscordScene::kMatch);
   __imp__sub_826E1D28(ctx, base);

@@ -14,6 +14,9 @@
 //   dbg_quit=15              the game ends itself (exit code 0) at 15 s, after the cues before it
 //   dbg_speed=N              N world updates a frame (fast-forward; 1 normal; online lockstep keeps 1)
 //   dbg_out=<folder>         where shots and states go (default: dbg in the working folder)
+//   dbg_boot=match           straight into dbg_match's match: no intros, no title, no menus (boot.cpp)
+//   dbg_match="people=EDGE,KANE attires=1,1 arena=1 rule=0 cpu=all"   (names as the "match:" lines; rule hex)
+//   dbg_entrances=true       a booted match plays its entrances (default: skipped, A on pad 1 while they run)
 // Each cue logs a "SVRDBG: ..." line (svrtest reads them).
 
 #pragma once
@@ -23,6 +26,8 @@
 #endif
 
 #include <cstdint>
+
+struct PPCContext;
 
 namespace rex::memory {
 class Memory;
@@ -45,5 +50,15 @@ void WriteShot(const uint8_t* rgba, uint32_t width, uint32_t height, uint32_t ro
 // the world updates this frame (dbg_speed; 0: the normal rule).
 void OnMatchStarted();
 int SpeedTicks();
+
+// The direct boot (boot.cpp): set up at start (Install); fast_start.cpp presses START on the Start Screen too
+// while one is wanted; frame_rate.cpp's world update (the game's thread) starts it once the main menu is up.
+void InstallBoot();
+bool BootWanted();
+void BootFrame(PPCContext& ctx, uint8_t* base);
+// menu_hooks.cpp: the entrances start / end; frame_rate.cpp: pad 1's state as the game reads it (A while
+// a booted match's entrances run).
+void OnEntrances(bool on);
+void BootInput(uint8_t* base, uint32_t state);
 
 }  // namespace svr2011::dbg

@@ -148,6 +148,7 @@ void Install(rex::memory::Memory* memory) {
               g_out.string());
   if (!REXCVAR_GET(dbg_shot).empty() || !REXCVAR_GET(dbg_state).empty() || REXCVAR_GET(dbg_quit) > 0)
     std::thread(CueThread).detach();
+  InstallBoot();
 }
 
 bool ShotWanted() { return g_shot_due.load(std::memory_order_relaxed); }
