@@ -9,8 +9,12 @@
 //   - the key that signs login certificates: the server's own.
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
+
+#include <rex/ppc.h>
 
 namespace rex::memory {
 class Memory;
@@ -31,6 +35,12 @@ void InstallOnline(rex::memory::Memory* memory, const std::filesystem::path& sav
 // address of the port's replacement, or 0 for the game's own. Removes what
 // the PC doesn't have (gamer cards, Xbox LIVE Party).
 uint32_t OnlineString(uint32_t id);
+
+// Community Creations: the mods a Created Superstar's profile record needs (its moveset's pack moves the
+// stock game can't play, its entrance's pack parts) - empty when none; and, at an upload's confirm step
+// (sub_82511C18), refuse one that needs mods with the game's message box and the reason (true: refused).
+std::vector<std::string> CawModUses(uint8_t* base, uint32_t profile);
+bool CcUploadModsRefused(PPCContext& ctx, uint8_t* base, uint32_t screen);
 // The ONLINE screen's NEWS panel: the server's news (the presence poll's
 // config "news", UTF-8, already in the game font's characters) for the next
 // visit. No server answer: the game keeps what it fetched.

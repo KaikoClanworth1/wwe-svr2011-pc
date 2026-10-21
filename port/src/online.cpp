@@ -32,6 +32,7 @@
 
 #include "caw_logos.h"
 #include "entrance_media.h"
+#include "move_packs.h"
 #include "online_files.h"
 #include "online_net.h"
 #include "online_overlay.h"
@@ -166,6 +167,10 @@ constexpr uint32_t kPlayerInfoId = 0xB0A7;  // PLAYER INFO: the lobby's own Y la
 constexpr uint32_t kYIconGuess = 0xAFCA;    // (before one was seen; 0xAFCB is X's)
 uint32_t g_cpu_labels[3] = {};
 uint32_t g_scratch = 0;  // (OnlineScratch)
+// guest: CC's "uses mods" refusal (CcUploadModsRefused, below)
+constexpr uint32_t kModsRefusedId = 0xEF13;  // (16-bit, blank in the game's table, as 0xEF10-0xEF12)
+uint32_t g_mods_text = 0;
+std::string g_mods_reason;
 // (string ids: from SVR2011_DUMP_STRINGS)
 constexpr uint32_t kNoSessionsId = 0xC6D4;  // "No game sessions were found. Search again?"
 constexpr uint32_t kJoinFailedId = 0xC67F;  // "Failed to find a session. Please try again." (an invite)
@@ -377,6 +382,7 @@ uint32_t OnlineString(uint32_t id) {
       break;
   }
   if (id >= kAddCpuId && id <= kWaitingId && g_cpu_labels[id - kAddCpuId]) return g_cpu_labels[id - kAddCpuId];
+  if (id == kModsRefusedId && !g_mods_reason.empty()) return GuestText(g_mods_text, g_mods_reason);  // (CC: uses mods)
   // (the match ended because its host left: say so - the game's own words were
   // "An error occurred during the match")
   if (id == 0xC6A2 && P2PHostLeft())
@@ -428,6 +434,7 @@ void InstallOnline(rex::memory::Memory* memory, const std::filesystem::path& sav
   g_online_memory = memory;
   g_online_off_text = memory->SystemHeapAlloc(kOffTextSize);
   g_hidden_text = memory->SystemHeapAlloc(kOffTextSize);
+  g_mods_text = memory->SystemHeapAlloc(kOffTextSize);
   g_scratch = memory->SystemHeapAlloc(4096);
   {
     static const char* const kLabels[3] = {"ADD CPU", "REMOVE CPU", "WAITING FOR ONE MORE PLAYER"};
@@ -550,11 +557,21 @@ REX_HOOK_RAW(sub_82746358) {
       for (uint32_t k = 0; k < 50; ++k) {
         const uint32_t profile = save + 0x13F9C + k * 0x6BC;
         if (!base[profile + 34]) continue;  // (sub_8257B000: a CAW in this slot)
+        // (SVR2011_TEST_CC_MODMOVE=<slot>:<move id>: that move into the CAW's first moveset slot - in memory)
+        if (const char* v = std::getenv("SVR2011_TEST_CC_MODMOVE"); v && uint32_t(std::atoi(v)) == k)
+          if (const char* c = std::strchr(v, ':')) {
+            const int id = std::atoi(c + 1);
+            base[profile + 0x104 + 2 * 3] = uint8_t(id >> 8), base[profile + 0x104 + 2 * 3 + 1] = uint8_t(id);
+          }
         auto c = ctx;
         c.r3.u64 = profile, c.r4.u64 = 0;
         sub_8257BCD0(c, base);
         ++n;
-        REXLOG_INFO("online test: CAW slot {} upload check: {}", k, c.r3.u32 ? "can be uploaded" : "left out");
+        const auto uses = svr2011::CawModUses(base, profile);
+        std::string list;
+        for (const auto& u : uses) list += (list.empty() ? "" : ", ") + u;
+        REXLOG_INFO("online test: CAW slot {} upload check: {}; mods: {}", k, c.r3.u32 ? "can be uploaded" : "left out",
+                    list.empty() ? "none" : list);
       }
       REXLOG_INFO("online test: {} CAWs checked", n);
     }
@@ -990,3 +1007,105 @@ REX_HOOK_RAW(sub_824FDFC8) {
                 ctx.r3.u32 == 113 ? "" : " - it says 'a difference in downloadable content'");
   }
 }
+
+// -- Community Creations: no uploads that need mods ---------------------------
+//
+// A creation naming a mod's move or entrance works only for players with that mod - CC refuses
+// it at the upload's confirm step (sub_82511C18, paint_pages.cpp's hook calls
+// CcUploadModsRefused first) with the game's own message box (sub_82510668(screen, id, 1, 51), as
+// its "contains downloadable content" 50999) and the reason: string kModsRefusedId, answered by
+// OnlineString. The upload's kind is its manager's type (*0x82E3DD9C + 12: 1 Superstar, 2 Story,
+// 3 Finisher, 4 Paint logo, 5 highlight reel, 6 Move-set; the data: sub_824C5768(manager, 1)).
+//  - Superstar: its profile record (screen+36484 -> sub_827ACA10 -> sub_8257A450): the moveset's
+//    224 u16 slots at +0x104 (only CREATE A MOVE-SET's move slots, cam_mod_moves.cpp) - a move a
+//    pack gives that the stock game can't play (PackMove && !StockPlays); its entrance (284 bytes
+//    at +0x2C4) naming a pack's CREATE AN ENTRANCE part (10000 + 1000 k + n, ModEntrances).
+//  - Move-set / Finisher / Story / reel: not checked yet (their data's layout: the confirm step logs
+//    its first bytes for that).
+// Every upload this build lets through carries the relay's X-Svr-ModFree header (online_net.cpp):
+// the server refuses unmarked ones once the release with this check is out (its cc_unmarked setting).
+namespace {
+
+
+constexpr uint8_t kCamSlot[224] = {  // (cam_mod_moves.cpp kSlotCategory != 128: a CREATE A MOVE-SET slot)
+    0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1,
+    1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1,
+    0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1,
+    1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1,
+    1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0};
+
+uint16_t Rd16(const uint8_t* base, uint32_t a) { return uint16_t(base[a] << 8 | base[a + 1]); }
+
+// The pack a move comes from (its folder's name), "" if none.
+std::string PackOfMove(uint16_t id) {
+  for (const auto& [kind, folder] : svr2011::MovePacks())
+    for (uint16_t m : svr2011::MovePackMoves(kind, folder))
+      if (m == id) return folder;
+  return "";
+}
+
+void AddUse(std::vector<std::string>& out, const std::string& what) {
+  if (std::find(out.begin(), out.end(), what) == out.end()) out.push_back(what);
+}
+
+}  // namespace
+
+namespace svr2011 {
+
+std::vector<std::string> CawModUses(uint8_t* base, uint32_t profile) {
+  std::vector<std::string> out;
+  if (!profile) return out;
+  for (uint32_t slot = 0; slot < 224; ++slot) {
+    if (!kCamSlot[slot]) continue;
+    const uint16_t id = Rd16(base, profile + 0x104 + 2 * slot);
+    if (!id || id == 0xFFFF || !PackMove(id) || StockPlays(id)) continue;
+    const std::string pack = PackOfMove(id);
+    AddUse(out, "move " + std::to_string(id) + (pack.empty() ? "" : " (" + pack + ")"));
+  }
+  // its entrance: a CREATE AN ENTRANCE part number from a pack (10000 + 1000 k + n)
+  const auto mods = ModEntrances();
+  for (uint32_t at = 0; at + 2 <= 284; at += 2) {
+    const uint16_t v = Rd16(base, profile + 0x2C4 + at);
+    if (v < 10000 || v >= 20000) continue;
+    for (const auto& e : mods)
+      if (int(v) % 1000 == e.number && (e.parts >> ((v - 10000) / 1000) & 1)) AddUse(out, "entrance " + e.label);
+  }
+  return out;
+}
+
+bool CcUploadModsRefused(PPCContext& ctx, uint8_t* base, uint32_t screen) {
+  const uint32_t manager = Rd32(base, 0x82E3DD9C);
+  if (!manager || !screen) return false;
+  const uint32_t kind = Rd32(base, manager + 12);
+  const auto saved = ctx;
+  std::vector<std::string> uses;
+  if (kind == 1) {
+    ctx.r3.u64 = Rd32(base, screen + 36484);
+    sub_827ACA10(ctx, base);
+    ctx.r3.u64 = ctx.r3.u32;
+    sub_8257A450(ctx, base);
+    uses = CawModUses(base, ctx.r3.u32);
+  } else if (kind == 2 || kind == 3 || kind == 5 || kind == 6) {
+    ctx.r3.u64 = manager, ctx.r4.u64 = 1;
+    sub_824C5768(ctx, base);
+    const uint32_t data = ctx.r3.u32;
+    std::string head;
+    for (uint32_t k = 0; data && k < 64; ++k) head += fmt::format("{:02X}", base[data + k]);
+    REXLOG_INFO("online: CC upload kind {} - its data at {:08X}: {} (not checked for mods yet)", kind, data, head);
+  }
+  ctx = saved;
+  if (uses.empty()) return false;
+  std::string list;
+  for (size_t i = 0; i < uses.size() && i < 3; ++i) list += (i ? ", " : "") + uses[i];
+  if (uses.size() > 3) list += fmt::format(" and {} more", uses.size() - 3);
+  g_mods_reason = "This uses mods: " + list + ".\nPlayers without them couldn't use it, so it can't be uploaded.";
+  REXLOG_INFO("online: CC upload refused (kind {}): uses mods - {}", kind, list);
+  ctx.r3.u64 = screen, ctx.r4.u64 = kModsRefusedId, ctx.r5.u64 = 1, ctx.r6.u64 = 51;
+  sub_82510668(ctx, base);
+  ctx = saved;
+  return true;
+}
+
+}  // namespace svr2011

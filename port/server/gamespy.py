@@ -949,6 +949,9 @@ class Sake:
     # (set by the service: the dashboard's news as the record's Text1-5, or None
     # for the stored record's own)
     news_text = None
+    # (set by the service: whether a Community Creations record without the game's "checked for mods"
+    # mark - a build before the check - is refused (True) or only logged)
+    refuse_unmarked = None
 
     def news_panel(self):
         """The NEWS panel's whole text as the game's fetch gets it (the prefix, then
@@ -1015,7 +1018,7 @@ class Sake:
                 out.append(rec)
         return out
 
-    def handle(self, func, call, owner, xuid):
+    def handle(self, func, call, owner, xuid, modfree=False):
         """A Sake call from the player with profile `owner` and XUID `xuid`."""
         tableid = text_of(call, "tableid")
         fields = [s.text or "" for s in (child(call, "fields") or [])]
@@ -1033,6 +1036,14 @@ class Sake:
                 values["UserID"] = ["binaryDataValue", base64.b64encode(xuid.to_bytes(8, "big")).decode()]
             if self.store.count_owned(tableid, owner) >= RECORD_LIMIT:
                 return reply("RecordLimitReached")
+            # a creation from a build that doesn't check for mods (no X-Svr-ModFree from the relay): it may
+            # need mods others don't have
+            if tableid == "UserContent" and not modfree:
+                if self.refuse_unmarked and self.refuse_unmarked():
+                    log("sake: UserContent record refused: not checked for mods (a build before the check)")
+                    return reply("NoPermission")
+                log("sake: UserContent record from a build that doesn't check for mods (allowed: cc_unmarked / "
+                    "latest_release)")
             # its files: uploaded by the same player, the size the record says (a
             # big upload - a story, a highlight reel - comes in 2 MB parts, F00
             # on: FileSize is all of them)
