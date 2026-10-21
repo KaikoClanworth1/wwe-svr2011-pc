@@ -2940,6 +2940,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       std::string dir = Utf8(v.substr(b + 1));
       // (test: "<dir>|<mesh>=spec:1.5&tint:1,0.3,0.3&cut:1&both:1&flip:1&alpha:flat&normal:<png>&shine:<png>;..." - the builder's per-mesh material)
       svrfmt::FbxImportOptions mopts;
+      if (const wchar_t* r = _wgetenv(L"SVR2011_TEST_FBX_REDUCE")) mopts.max_vertices = _wtoi(r), mopts.keep_face = !wcsstr(r, L"all");  // ("<n>[all]")
+      if (const wchar_t* h = _wgetenv(L"SVR2011_TEST_FBX_HAIR")) mopts.hair = _wtoi(h);  // (-1 auto, 0, 1)
       if (const size_t bar = dir.find('|'); bar != std::string::npos) {
         const std::string spec = dir.substr(bar + 1);
         dir.resize(bar);
@@ -3086,6 +3088,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       full_preview::TestOpen(e, s, key, cam != 0);
     }
     else if (!wcscmp(argv[i], L"--full-preview-song") && more) full_preview::TestSong(argv[++i]);
+    else if (!wcscmp(argv[i], L"--full-preview-model") && more) full_preview::TestModel(argv[++i]);
     else if (!wcscmp(argv[i], L"--full-preview-movie") && more) full_preview::TestMovie(argv[++i]);
     else if (!wcscmp(argv[i], L"--full-preview-dump") && more) full_preview::TestDump(argv[++i]);
     else if (!wcscmp(argv[i], L"--pose-dump-motion") && more) char_preview::g_test_pose_dump = argv[++i];

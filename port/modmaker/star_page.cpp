@@ -1350,6 +1350,7 @@ struct FbxRig {
   std::vector<std::string> auto_map;  // MapRig's
   std::vector<int> depth;
   std::string rig, error;
+  std::vector<std::string> notes;  // what the matching decided on its own (a doubled eye bone)
   std::vector<FbxMeshInfo> meshes;
 };
 FbxRig g_fbx_rig;
@@ -1368,6 +1369,22 @@ const FbxRig& FbxSkeleton() {
   for (const auto& b : g_fbx_rig.bones) rb.push_back({b.name, b.parent});
   g_fbx_rig.auto_map = MapRig(rb);
   g_fbx_rig.rig = DetectRig(rb);
+  // two bones for one eye (Eye_L and LeftEye): the one holding weights stays, the other moves with its parent
+  for (const char* eye : {"l_eye", "r_eye"}) {
+    std::vector<size_t> on;
+    for (size_t i = 0; i < g_fbx_rig.auto_map.size(); ++i)
+      if (g_fbx_rig.auto_map[i] == eye) on.push_back(i);
+    if (on.size() < 2) continue;
+    size_t keep = on[0];
+    for (size_t i : on)
+      if (g_fbx_rig.bones[i].skinned && !g_fbx_rig.bones[keep].skinned) keep = i;
+    std::string dropped;
+    for (size_t i : on)
+      if (i != keep) g_fbx_rig.auto_map[i].clear(), dropped += (dropped.empty() ? "" : ", ") + g_fbx_rig.bones[i].name;
+    g_fbx_rig.notes.push_back(std::string(eye[0] == 'l' ? "Two left eye bones: " : "Two right eye bones: ") + g_fbx_rig.bones[keep].name +
+                              (g_fbx_rig.bones[keep].skinned ? " (it holds the eye's weights)" : "") + " is the eye; " + dropped +
+                              " moves with its parent.");
+  }
   std::string merr;
   FbxListMeshes(Utf8(g_star.fbx), g_fbx_rig.meshes, merr);
   for (size_t i = 0; i < g_fbx_rig.bones.size(); ++i) {
@@ -1420,6 +1437,9 @@ FbxImportOptions FbxOptions() {
   FbxImportOptions opts;
   for (const auto& [k, v] : g_star.fbx_on) opts.include[k] = v == "1";
   opts.kind = g_star.fbx_kind, opts.picture = g_star.fbx_pic;
+  opts.max_vertices = g_star.fbx_reduce, opts.keep_face = g_star.fbx_keep_face;
+  opts.hair = g_star.fbx_hair;
+  for (const auto& [k, v] : g_star.fbx_cloth) opts.cloth[k] = v == "1";
   for (const auto& [name, e] : g_star.fbx_mat) {  // (the builder's per-mesh material)
     svrfmt::FbxMaterial f;
     if (e.has_spec) f.specular = e.spec;
@@ -1452,7 +1472,8 @@ void FbxReportPanel(const FbxRig& r, bool show = true) {
   std::error_code ec;
   const auto t = fs::last_write_time(g_star.fbx, ec);
   const std::string key = Utf8(g_star.fbx) + "|" + std::to_string(t.time_since_epoch().count()) + "|" + FbxMapText() + "|" +
-                          PairsText(g_star.fbx_on) + "|" + PairsText(g_star.fbx_pic);
+                          PairsText(g_star.fbx_on) + "|" + PairsText(g_star.fbx_pic) + "|" + std::to_string(g_star.fbx_reduce) +
+                          (g_star.fbx_keep_face ? "f" : "") + "|" + std::to_string(g_star.fbx_hair) + "|" + PairsText(g_star.fbx_cloth);
   if (key != g_fbx_report_key && !g_fbx_report_busy && !Busy()) {
     g_fbx_report_busy = true;
     std::vector<std::string> targets;
@@ -1794,6 +1815,17 @@ bool FbxMaterials(bool simple, bool intro) {
                         "The cut is at an alpha of about 0.2-0.3 (50-80 of 255): fainter than that is a hole, the rest is solid -\n"
                         "the game has no half see-through on superstars. Needs a picture with transparency (PNG).\n"
                         "On a skin part its sweat is turned off (the game's skin shader can't cut).");
+    {  // (the flat look: no shine, no bumps - the game's superstar shaders have no unlit / self-lit setting)
+      bool flat = e.has_spec && e.spec <= 0.0f && e.spec_alpha == 2;
+      if (ImGui::Checkbox("Flat look", &flat))
+        apply([&](MatEdit& x) {
+          if (flat) x.has_spec = true, x.spec = 0, x.spec_alpha = 2, x.normal = 0, x.normal_file.clear(), x.shine_mask.clear();
+          else x.has_spec = false, x.spec_alpha = 0;
+        });
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Flat, cartoon-like shading: no shine (specular 0, even) and no bumps (a flat normal map) - the closest the\n"
+                          "game's superstar shaders get to unlit: they have no self-lit setting, so the arena's lights still shade it.");
+    }
     if (cut && pic && !pic->Empty() && !HasClearPlaces(pic))
       ImGui::TextColored(ImVec4(1, 0.8f, 0.35f, 1), "Its picture has no transparent places: nothing will be cut.");
     if (ImGui::TreeNode("more", "More: shine level, colour")) {
@@ -1949,19 +1981,49 @@ void FbxRows(bool simple) {
         ImGui::TextColored(ImVec4(1, 0.8f, 0.35f, 1), "Not matched yet: %s - those body parts won't move in the game.", missing_list.c_str());
         ImGui::PopTextWrapPos();
       }
+      for (const auto& n : r.notes) ImGui::TextDisabled("%s", n.c_str());
       ImGui::BeginDisabled(g_star.fbx_map.empty());
       if (ImGui::SmallButton("Back to the automatic matching")) g_star.fbx_map.clear(), Touch();
       ImGui::EndDisabled();
       ImGui::SameLine();
       ImGui::TextDisabled("(%d changed by hand; a bone left unmatched moves with its parent)", int(g_star.fbx_map.size()));
+      // moving hair and cloth: the game's spring chains
+      std::vector<std::string> cur_targets;
+      for (size_t i = 0; i < r.bones.size(); ++i) cur_targets.push_back(FbxTarget(r, i));
+      std::map<std::string, bool> cloth_ticks;
+      for (const auto& [k, v] : g_star.fbx_cloth) cloth_ticks[k] = v == "1";
+      const FbxChains chains = FindFbxChains(r.bones, cur_targets, g_star.fbx_hair, cloth_ticks);
+      std::vector<int> chain_of(r.bones.size(), -1);  // (the bone's chain: 0 hair, 1 cloth)
+      for (const auto& c : chains.hair)
+        for (int b : c) chain_of[size_t(b)] = 0;
+      for (const auto& c : chains.cloth)
+        for (int b : c) chain_of[size_t(b)] = 1;
+      {
+        static const char* kHair[] = {"its hair bones, not VRChat's secondary (J_Sec_*) ones", "none (the hair moves with the head)", "every hair bone"};
+        int h = g_star.fbx_hair < 0 ? 0 : g_star.fbx_hair == 0 ? 1 : 2;
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Moving hair:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(320 * g_scale);
+        if (ImGui::Combo("##hair", &h, kHair, 3)) g_star.fbx_hair = h == 0 ? -1 : h == 1 ? 0 : 1, Touch();
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("The game moves up to 16 chains of hair or cloth with springs (4 bones or more each). Bones left out move\n"
+                            "with the head: VRChat's secondary hair bones aren't needed for that.");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%d strand(s)%s", int(chains.hair.size()), chains.secondary ? (", " + std::to_string(chains.secondary) + " J_Sec_* left out").c_str() : "");
+        ImGui::TextDisabled("Moving cloth: %d chain(s) from the bones ticked in the Cloth column (jacket, coat, skirt, cape... ticked by their name).",
+                            int(chains.cloth.size()));
+        if (chains.over) ImGui::TextColored(ImVec4(1, 0.8f, 0.35f, 1), "%d chain(s) past the 16 the game moves: they ride on their bone.", chains.over);
+      }
       ImGui::Spacing();
       const auto& targets = TargetBones();
       const float h = std::max(260.0f * g_scale, ImGui::GetContentRegionAvail().y - 60 * g_scale);
-      if (ImGui::BeginTable("fbxmap", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY, ImVec2(0, h))) {
+      if (ImGui::BeginTable("fbxmap", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY, ImVec2(0, h))) {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("Your model's bone");
         ImGui::TableSetupColumn("The game's bone");
         ImGui::TableSetupColumn("Moves with");
+        ImGui::TableSetupColumn("Cloth", ImGuiTableColumnFlags_WidthFixed, 56 * g_scale);
         ImGui::TableHeadersRow();
         for (size_t i = 0; i < r.bones.size(); ++i) {
           const auto& b = r.bones[i];
@@ -1997,7 +2059,22 @@ void FbxRows(bool simple) {
             ImGui::SetTooltip("Changed (the automatic choice: %s)", r.auto_map[i].empty() ? "moves with its parent" : r.auto_map[i].c_str());
           ImGui::TableNextColumn();
           const std::string to = FbxWeightsTo(r, i);
-          if (cur.empty()) ImGui::TextDisabled("%s", to.empty() ? "nothing (above the hips)" : to.c_str());
+          if (chain_of[i] == 0) ImGui::TextColored(ImVec4(0.55f, 0.75f, 1, 1), "moving hair");
+          else if (chain_of[i] == 1) ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1), "moving cloth");
+          else if (cur.empty()) ImGui::TextDisabled("%s", to.empty() ? "nothing (above the hips)" : to.c_str());
+          ImGui::TableNextColumn();
+          if (cur.empty()) {  // (only an unmatched bone can be cloth)
+            const auto ov = g_star.fbx_cloth.find(b.name);
+            bool tick = ov != g_star.fbx_cloth.end() ? ov->second == "1" : IsClothBoneName(b.name);
+            if (ImGui::Checkbox("##cloth", &tick)) {
+              if (tick == IsClothBoneName(b.name)) g_star.fbx_cloth.erase(b.name);
+              else g_star.fbx_cloth[b.name] = tick ? "1" : "0";
+              Touch();
+            }
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Loose cloth (a jacket's tail, a skirt, a cape, a ribbon): the game swings it with a spring chain - 3 bones\n"
+                                "in a row or more. Unticked: it moves stiffly with its parent bone.");
+          }
           ImGui::PopID();
         }
         ImGui::EndTable();
@@ -2056,11 +2133,12 @@ void FbxRows(bool simple) {
         }
         ImGui::EndTable();
       }
-      ImGui::TextDisabled("%d of %d parts, %d triangles (the game takes about 10,500 vertices: more is reduced at Make)", on, int(r.meshes.size()), tris);
+      ImGui::TextDisabled("%d of %d parts, %d triangles (the game takes about 10,500 vertices - step 5 checks it)", on, int(r.meshes.size()), tris);
       break;
     }
     default: {
       heading("The model checked, then made into the game's model file. Make it again after any change.");
+      for (const auto& n : r.notes) ImGui::TextColored(ImVec4(0.6f, 0.75f, 1, 1), "Note:"), ImGui::SameLine(), ImGui::TextWrapped("%s", n.c_str());
       if (g_fbx_report_key.empty()) ImGui::TextDisabled("Checking the model ...");
       else if (g_fbx_report.empty()) ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1), "Nothing wrong found.");
       else {
@@ -2068,6 +2146,23 @@ void FbxRows(bool simple) {
         ImGui::Indent();
         IssueList(g_fbx_report);
         ImGui::Unindent();
+      }
+      ImGui::Spacing();
+      {  // Reduce detail: only when asked (it used to cut every big model, a face too)
+        bool reduce = g_star.fbx_reduce > 0;
+        if (ImGui::Checkbox("Reduce detail", &reduce)) g_star.fbx_reduce = reduce ? 10000 : 0, Touch();
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Fewer vertices so it fits the game (about 10,500 for a wrestler). Off: the model as it is - Make says\n"
+                            "when it's too big. For full control reduce it in Blender instead (Decimate modifier).");
+        if (reduce) {
+          ImGui::SameLine();
+          ImGui::SetNextItemWidth(200 * g_scale);
+          int v = g_star.fbx_reduce;
+          if (ImGui::SliderInt("vertices##reduce", &v, 4000, 10500, "to about %d")) g_star.fbx_reduce = std::clamp(v, 4000, 10500), Touch();
+          ImGui::SameLine();
+          if (ImGui::Checkbox("Keep the face", &g_star.fbx_keep_face)) Touch();
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("The head and its hair left as they are: only the rest of the model is reduced.");
+        }
       }
       ImGui::Spacing();
       FbxMakeButton(made ? "Make the model again" : "Make the model", 260);
@@ -3486,6 +3581,9 @@ void WriteProject(ProjectOut& out) {
   out.Key("fbx_on", PairsText(g_star.fbx_on));
   out.Key("fbx_kind", PairsText(g_star.fbx_kind));
   out.Key("fbx_pic", PairsText(g_star.fbx_pic));
+  if (g_star.fbx_reduce > 0) out.Key("fbx_reduce", std::to_string(g_star.fbx_reduce) + (g_star.fbx_keep_face ? "" : ",all"));
+  if (g_star.fbx_hair != -1) out.Key("fbx_hair", std::to_string(g_star.fbx_hair));
+  out.Key("fbx_cloth", PairsText(g_star.fbx_cloth));
   {
     std::string t;
     for (const auto& [name, e] : g_star.fbx_mat) {
@@ -3628,6 +3726,13 @@ bool Read(const ProjectIn& in, bool mod) {
   ParsePairs(in.Get("fbx_on"), g_star.fbx_on);
   ParsePairs(in.Get("fbx_kind"), g_star.fbx_kind);
   ParsePairs(in.Get("fbx_pic"), g_star.fbx_pic);
+  {  // (Reduce detail: "<vertices>[,all]"; none: off)
+    const std::string t = in.Get("fbx_reduce");
+    g_star.fbx_reduce = t.empty() ? 0 : std::clamp(std::atoi(t.c_str()), 0, 10500);
+    g_star.fbx_keep_face = t.find(",all") == std::string::npos;
+  }
+  g_star.fbx_hair = in.Get("fbx_hair").empty() ? -1 : std::clamp(std::atoi(in.Get("fbx_hair").c_str()), -1, 1);
+  ParsePairs(in.Get("fbx_cloth"), g_star.fbx_cloth);
   {
     const std::string t = in.Get("fbx_mat");
     for (size_t at = 0; at < t.size();) {

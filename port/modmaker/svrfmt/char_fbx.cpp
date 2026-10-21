@@ -340,6 +340,68 @@ CharModelIssues CheckCharacterModel(const Bytes& pac, int attire) {
   return out;
 }
 
+bool IsSecondaryBoneName(const std::string& name) {
+  std::string l;
+  for (char c : name) l += char(std::tolower(uint8_t(c)));
+  return l.rfind("j_sec_", 0) == 0 || l.find("_sec_") != std::string::npos;
+}
+
+bool IsClothBoneName(const std::string& name) {
+  std::string l;
+  for (char c : name) l += char(std::tolower(uint8_t(c)));
+  for (const char* k : {"jacket", "coat", "skirt", "cape", "cloak", "cloth", "scarf", "ribbon", "sleeve", "hood", "robe",
+                        "dress", "apron", "tassel", "parka", "hoodie", "physbone", "spring"})
+    if (l.find(k) != std::string::npos) return true;
+  return false;
+}
+
+FbxChains FindFbxChains(const std::vector<FbxBone>& bones, const std::vector<std::string>& targets, int hair,
+                        const std::map<std::string, bool>& cloth) {
+  FbxChains r;
+  const size_t nb = std::min(bones.size(), targets.size());
+  std::vector<std::vector<int>> kids(nb);
+  for (size_t i = 0; i < nb; ++i)
+    if (bones[i].parent >= 0 && size_t(bones[i].parent) < nb) kids[size_t(bones[i].parent)].push_back(int(i));
+  int head = -1;
+  for (size_t i = 0; i < nb && head < 0; ++i)
+    if (targets[i] == "atama") head = int(i);
+  auto under = [&](int i, int a) {
+    for (int p = bones[size_t(i)].parent, n = 0; p >= 0 && n <= int(nb); p = bones[size_t(p)].parent, ++n)
+      if (p == a) return true;
+    return false;
+  };
+  auto is_cloth = [&](int i) {
+    if (!targets[size_t(i)].empty()) return false;
+    const auto o = cloth.find(bones[size_t(i)].name);
+    return o != cloth.end() ? o->second : IsClothBoneName(bones[size_t(i)].name);
+  };
+  auto is_hair = [&](int i) {
+    return hair != 0 && head >= 0 && targets[size_t(i)].empty() && !is_cloth(i) && IsHairBoneName(bones[size_t(i)].name) && under(i, head);
+  };
+  // (runs: from where one starts - its parent isn't one, or branches - down its single children)
+  auto runs = [&](const std::function<bool(int)>& in, size_t need, std::vector<std::vector<int>>& out, int& short_ones) {
+    for (size_t i = 0; i < nb; ++i) {
+      const int pa = bones[i].parent;
+      if (!in(int(i)) || (pa >= 0 && in(pa) && kids[size_t(pa)].size() == 1)) continue;
+      std::vector<int> s{int(i)};
+      while (kids[size_t(s.back())].size() == 1 && in(kids[size_t(s.back())][0]) && s.size() < 24) s.push_back(kids[size_t(s.back())][0]);
+      if (s.size() >= need) out.push_back(std::move(s));
+      else if (s.size() >= 2) ++short_ones;
+    }
+    std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.size() > b.size(); });
+  };
+  std::vector<std::vector<int>> hair_runs;
+  runs(is_hair, 4, hair_runs, r.short_hair);
+  for (auto& h : hair_runs) {
+    if (hair < 0 && IsSecondaryBoneName(bones[size_t(h[0])].name)) ++r.secondary;
+    else r.hair.push_back(std::move(h));
+  }
+  runs(is_cloth, 3, r.cloth, r.short_cloth);
+  if (r.hair.size() > 16) r.over += int(r.hair.size() - 16), r.hair.resize(16);
+  if (r.hair.size() + r.cloth.size() > 16) r.over += int(r.hair.size() + r.cloth.size() - 16), r.cloth.resize(16 - r.hair.size());
+  return r;
+}
+
 bool IsHairBoneName(const std::string& name) {
   std::string l;
   for (char c : name) l += char(std::tolower(uint8_t(c)));
@@ -825,7 +887,7 @@ struct Quadric {
   }
 };
 
-int Decimate(OutMesh& m, int keep) {
+int Decimate(OutMesh& m, int keep, std::vector<bool>* lock = nullptr) {
   const int nv = int(m.pos.size());
   if (keep >= nv || m.tris.empty()) return nv;
   // positions welded: a seam vertex's copies (UV / normal splits) are one position
@@ -839,6 +901,12 @@ int Decimate(OutMesh& m, int keep) {
     members[size_t(it->second)].push_back(i);
   }
   const int np = int(members.size());
+  // (positions to keep: the face - made dear to remove, not locked: a head-heavy model's face held a third of its
+  // vertices, and locked, the rest was cut to nothing - the legs gone)
+  std::vector<bool> plock(static_cast<size_t>(np));
+  if (lock)
+    for (int i = 0; i < nv && i < int(lock->size()); ++i)
+      if ((*lock)[size_t(i)]) plock[size_t(pid[size_t(i)])] = true;
   std::vector<std::vector<int>> vt(static_cast<size_t>(nv));  // vertex -> its triangles
   for (int t = 0; t < int(m.tris.size()); ++t)
     for (int c = 0; c < 3; ++c) vt[size_t(m.tris[size_t(t)][size_t(c)])].push_back(t);
@@ -897,7 +965,8 @@ int Decimate(OutMesh& m, int keep) {
           if (!fadj[size_t(pu)].empty() && !is_feature(pu, pv)) continue;  // (a feature vertex slides along its line only)
           Quadric s = q[size_t(pu)];
           s.Add(q[size_t(pv)]);
-          heap.push_back({s.Eval(m.pos[size_t(x)]), pu, pv, stamp[size_t(pu)]});
+          const double cost = s.Eval(m.pos[size_t(x)]);
+          heap.push_back({plock[size_t(pu)] ? cost * 30 + 2e-4 : cost, pu, pv, stamp[size_t(pu)]});  // (the face: last)
           std::push_heap(heap.begin(), heap.end(), worse);
         }
       }
@@ -985,10 +1054,14 @@ int Decimate(OutMesh& m, int keep) {
   OutMesh f;
   f.name = m.name, f.kind = m.kind, f.texture_key = m.texture_key;
   std::vector<int> remap(static_cast<size_t>(nv), -1);
+  std::vector<bool> kept_lock;
   for (int i = 0; i < nv; ++i)
-    if (used[size_t(i)] && !dead[size_t(i)])
+    if (used[size_t(i)] && !dead[size_t(i)]) {
       remap[size_t(i)] = int(f.pos.size()), f.pos.push_back(m.pos[size_t(i)]), f.nrm.push_back(m.nrm[size_t(i)]),
       f.uv.push_back(m.uv[size_t(i)]), f.w.push_back(m.w[size_t(i)]);
+      if (lock) kept_lock.push_back(i < int(lock->size()) && (*lock)[size_t(i)]);
+    }
+  if (lock) *lock = std::move(kept_lock);  // (renumbered with the vertices: the next pass keeps them too)
   for (size_t t = 0; t < m.tris.size(); ++t) {
     if (tri_dead[t]) continue;
     const auto& tr = m.tris[t];
@@ -1168,7 +1241,9 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
   for (size_t i = 0; i < nb; ++i)
     if (!targets[i].empty()) {
       auto [it, fresh] = src_of.emplace(targets[i], int(i));
-      if (!fresh && depth[i] < depth[size_t(it->second)]) it->second = int(i);
+      // (two source bones on one 2011 bone - Eye_L and LeftEye: the one holding weights, else the topmost)
+      const bool w_new = skinned.count(nodes[i]) > 0, w_old = skinned.count(nodes[size_t(it->second)]) > 0;
+      if (!fresh && (w_new != w_old ? w_new : depth[i] < depth[size_t(it->second)])) it->second = int(i);
     }
   for (const char* need : {"root", "l_ninoude", "r_ninoude", "atama", "l_ashi", "r_ashi"})
     if (!src_of.count(need)) return fail(std::string("the mapping has no ") + need + " (the Skeleton step)");
@@ -1264,38 +1339,27 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
       }
     if (wbone[i].empty()) wbone[i] = "root";
   }
-  // Hair strands (svr11_build's "hair_chains": the game's kami_b chains, docs/HAIR_PHYSICS_PLAN.md B): unmapped
-  // bones under the head named like hair, from where one starts (its parent isn't hair, or branches) down its
-  // single children; 4 joints or more, the 16 longest. Their weights go on the builder's names - joint k of
-  // strand i "kami_b<i>" (k 0) / "kami_b<i>_<k-1>", the tip's on the joint before (the game never moves a tip).
+  // Moving hair and cloth (svr11_build's "hair_chains": the game's kami_b spring chains, docs/HAIR_PHYSICS_PLAN.md
+  // B; FindFbxChains): hair first, then cloth - each cloth chain hangs from its nearest mapped bone (the chain's
+  // root parent: the solver reads it from the node table) and gets a tip past its last bone, so 3 bones move. The
+  // weights go on the builder's names - joint k of chain i "kami_b<i>" (k 0) / "kami_b<i>_<k-1>"; a hair strand's tip
+  // on the joint before (the game never moves a tip).
   std::vector<std::vector<int>> strands;
-  if (const auto head = src_of.find("atama"); head != src_of.end()) {
-    std::vector<std::vector<int>> kids(nb);
-    for (size_t i = 0; i < nb; ++i)
-      if (parent[i] >= 0) kids[size_t(parent[i])].push_back(int(i));
-    auto hairy = [&](int i) {
-      return targets[size_t(i)].empty() && IsHairBoneName(std::string(nodes[size_t(i)]->name.data, nodes[size_t(i)]->name.length));
-    };
-    auto under_head = [&](int i) {
-      for (int p = parent[size_t(i)], n = 0; p >= 0 && n <= int(nb); p = parent[size_t(p)], ++n)
-        if (p == head->second) return true;
-      return false;
-    };
-    int short_ones = 0;
-    for (size_t i = 0; i < nb; ++i) {
-      const int pa = parent[i];
-      if (!hairy(int(i)) || !under_head(int(i)) || (pa >= 0 && hairy(pa) && kids[size_t(pa)].size() == 1)) continue;
-      std::vector<int> s{int(i)};
-      while (kids[size_t(s.back())].size() == 1 && hairy(kids[size_t(s.back())][0]) && s.size() < 24) s.push_back(kids[size_t(s.back())][0]);
-      if (s.size() >= 4) strands.push_back(std::move(s));
-      else if (s.size() >= 2) ++short_ones;
-    }
-    std::stable_sort(strands.begin(), strands.end(), [](const auto& a, const auto& b) { return a.size() > b.size(); });
-    if (strands.size() > 16) rep.warnings.push_back(std::to_string(strands.size()) + " hair strands: the game moves 16 - the longest kept, the rest ride on the head"), strands.resize(16);
-    if (short_ones) rep.warnings.push_back(std::to_string(short_ones) + " hair strand(s) with under 4 bones ride on the head (the game's chains need 4)");
+  std::vector<std::string> strand_parent;  // ("" hair: atama)
+  {
+    std::vector<FbxBone> fb(nb);
+    for (size_t i = 0; i < nb; ++i) fb[i].name.assign(nodes[i]->name.data, nodes[i]->name.length), fb[i].parent = parent[i];
+    const FbxChains ch = FindFbxChains(fb, targets, opts.hair, opts.cloth);
+    for (const auto& h : ch.hair) strands.push_back(h), strand_parent.push_back("");
+    for (const auto& c : ch.cloth) strands.push_back(c), strand_parent.push_back(c.front() >= 0 && parent[size_t(c.front())] >= 0 ? wbone[size_t(parent[size_t(c.front())])] : "koshi");
+    if (ch.over) rep.warnings.push_back(std::to_string(ch.over) + " moving hair / cloth chain(s) past the 16 the game moves: they ride on their bone");
+    if (ch.short_hair) rep.warnings.push_back(std::to_string(ch.short_hair) + " hair strand(s) with under 4 bones ride on the head (the game's chains need 4)");
+    if (ch.short_cloth) rep.warnings.push_back(std::to_string(ch.short_cloth) + " cloth chain(s) with under 3 bones ride on their bone");
+    if (ch.secondary) rep.mesh_lines.push_back("hair: " + std::to_string(ch.secondary) + " VRChat secondary hair chain(s) (J_Sec_*) left out - their weights on the head");
     for (size_t si = 0; si < strands.size(); ++si)
       for (size_t k = 0; k < strands[si].size(); ++k) {
-        const size_t j = k + 1 == strands[si].size() ? k - 1 : k;  // (the tip's weights on the joint before)
+        const bool cloth_chain = !strand_parent[si].empty();
+        const size_t j = !cloth_chain && k + 1 == strands[si].size() ? k - 1 : k;  // (a hair tip's weights on the joint before)
         char n[32];
         if (j == 0) std::snprintf(n, sizeof n, "kami_b%02d", int(si));
         else std::snprintf(n, sizeof n, "kami_b%02d_%02d", int(si), int(j - 1));
@@ -1479,7 +1543,28 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
       for (auto& v : m.pos) v = {v[0] * scale, v[1] * scale, v[2] * scale};
   }
   rep.scale = scale;
-  // the game's budget: fewer vertices on the big meshes (eyes and lashes are left as they are)
+  // Reduce detail (only when asked: max_vertices > 0 - it used to cut every model over the budget, a face too,
+  // crumpled - user report 21 Oct): fewer vertices on the big meshes (eyes and lashes are left as they are);
+  // keep_face: vertices that are mostly the head's (atama and the bones under it) stay
+  std::vector<std::vector<bool>> locks(meshes.size());
+  if (opts.max_vertices > 0 && opts.keep_face) {
+    std::set<std::string> head{"atama"};
+    for (bool grew = true; grew;) {
+      grew = false;
+      for (const auto& b : tpl.bones)
+        if (b.parent >= 0 && head.count(tpl.bones[size_t(b.parent)].name) && head.insert(b.name).second) grew = true;
+    }
+    for (size_t mi = 0; mi < meshes.size(); ++mi) {
+      const OutMesh& m = meshes[mi];
+      locks[mi].resize(m.pos.size());
+      for (size_t k = 0; k < m.w.size(); ++k) {
+        double hw = 0;
+        for (const auto& [b, w] : m.w[k])
+          if (b >= 0 && b < int(out_bones.size()) && (head.count(out_bones[size_t(b)]) || out_bones[size_t(b)].rfind("kami_b", 0) == 0)) hw += w;
+        locks[mi][k] = hw >= 0.5;
+      }
+    }
+  }
   {
     int total = 0, small = 0;
     for (const auto& m : meshes) total += int(m.pos.size()), small += (m.kind == "eye" || m.kind == "lash") ? int(m.pos.size()) : 0;
@@ -1489,15 +1574,19 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
         const int big = total - small;
         const double ratio = std::max(0.05, double(opts.max_vertices - small) / std::max(1, big));
         total = small;
-        for (auto& m : meshes) {
+        for (size_t mi = 0; mi < meshes.size(); ++mi) {
+          OutMesh& m = meshes[mi];
           if (m.kind == "eye" || m.kind == "lash") continue;
-          total += Decimate(m, std::max(24, int(double(m.pos.size()) * ratio)));
+          total += Decimate(m, std::max(24, int(double(m.pos.size()) * ratio)), locks[mi].empty() ? nullptr : &locks[mi]);
         }
       }
       rep.vertices = 0, rep.triangles = 0;
       for (const auto& m : meshes) rep.vertices += int(m.pos.size()), rep.triangles += int(m.tris.size());
       if (total > opts.max_vertices)
-        rep.warnings.push_back("still " + std::to_string(total) + " vertices after reducing (many UV seams or open edges hold them): turn off a mesh or two");
+        rep.warnings.push_back("still " + std::to_string(total) + " vertices after reducing (" +
+                               (opts.keep_face ? std::string("the face kept, ") : std::string()) +
+                               "UV seams and open edges hold the rest): pick a lower level, " +
+                               (opts.keep_face ? std::string("untick Keep the face, ") : std::string()) + "or leave out a part");
     }
   }
 
@@ -1685,16 +1774,24 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
   std::string hair_json;  // "hair_chains": each strand's joints, root to tip, in the game's space
   if (!strands.empty()) {
     hair_json = "\"hair_chains\": [";
+    int cloth_n = 0;
     for (size_t si = 0; si < strands.size(); ++si) {
-      hair_json += std::string(si ? ", " : "") + "[";
-      for (size_t k = 0; k < strands[si].size(); ++k) {
-        const V3 p = out_pos(origin(posed[size_t(strands[si][k])]));
-        hair_json += std::string(k ? ", " : "") + "[" + Num(p[0]) + ", " + Num(p[1]) + ", " + Num(p[2]) + "]";
+      const bool cloth_chain = !strand_parent[si].empty();
+      cloth_n += cloth_chain;
+      hair_json += std::string(si ? ", " : "") + (cloth_chain ? "{\"parent\": " + JsonStr(strand_parent[si]) + ", \"joints\": [" : "[");
+      std::vector<V3> pts;
+      for (size_t k = 0; k < strands[si].size(); ++k) pts.push_back(out_pos(origin(posed[size_t(strands[si][k])])));
+      if (cloth_chain && pts.size() >= 2) {  // (a tip past the last bone, its length again: the last bone moves too)
+        const V3& a = pts[pts.size() - 2];
+        const V3& b = pts.back();
+        pts.push_back({2 * b[0] - a[0], 2 * b[1] - a[1], 2 * b[2] - a[2]});
       }
-      hair_json += "]";
+      for (size_t k = 0; k < pts.size(); ++k) hair_json += std::string(k ? ", " : "") + "[" + Num(pts[k][0]) + ", " + Num(pts[k][1]) + ", " + Num(pts[k][2]) + "]";
+      hair_json += cloth_chain ? "]}" : "]";
     }
     hair_json += "],\n ";
-    rep.mesh_lines.push_back("hair: " + std::to_string(strands.size()) + " strand(s) move in the game (kami_b00..)");
+    rep.mesh_lines.push_back("moving: " + std::to_string(strands.size() - size_t(cloth_n)) + " hair strand(s), " + std::to_string(cloth_n) +
+                             " cloth chain(s) move in the game (kami_b00..)");
   }
   const std::string textures = "{\"color\": \"color.png\"" + std::string(any_normal ? ", \"normal\": \"normal.png\"" : "") + "}";
   std::string j;
@@ -1900,16 +1997,16 @@ std::vector<FbxIssue> FbxInspect(const std::string& fbx_path, const std::vector<
     for (size_t i = 0; i < v.size() && i < 4; ++i) s += (i ? ", " : "") + v[i];
     return v.size() > 4 ? s + " and " + std::to_string(v.size() - 4) + " more" : s;
   };
-  // polycount: the game gives a wrestler 192 memory pages - about 10,500 vertices
-  const int limit = opts.max_vertices > 0 ? opts.max_vertices : 10500;
-  if (verts > limit * 3)
-    add(1, Thousands(verts) + " vertices, " + Thousands(tris) + " triangles: far over what the game holds (about " + Thousands(limit) +
-               "). Make will cut it to about " + Thousands(limit) + ", losing a lot of detail.",
-        "Reduce it in Blender first (Decimate modifier, or remove hidden parts), then import again: you choose what to keep.");
-  else if (verts > limit)
-    add(0, Thousands(verts) + " vertices, " + Thousands(tris) + " triangles: Make will cut it to about " + Thousands(limit) +
-               " to fit the game (some detail will be lost).",
-        "For full control, reduce it in Blender first (Decimate modifier).");
+  // polycount: the game gives a wrestler 192 memory pages - about 10,500 vertices. Nothing is cut unless asked
+  // (Reduce detail: max_vertices).
+  constexpr int kBudget = 10500;
+  if (opts.max_vertices > 0 && verts > opts.max_vertices)
+    add(0, Thousands(verts) + " vertices: Reduce detail cuts it to about " + Thousands(opts.max_vertices) + (opts.keep_face ? ", the face kept as it is." : "."),
+        "Look it over in the 3D view after Make; for full control reduce it in Blender instead (Decimate modifier).");
+  else if (verts > kBudget)
+    add(2, Thousands(verts) + " vertices, " + Thousands(tris) + " triangles: over what the game holds for a wrestler (about " +
+               Thousands(kBudget) + "). It won't build like this.",
+        "Turn on Reduce detail below (pick how much), leave parts out in the Outfit step, or reduce it in Blender (Decimate modifier).");
   // skin
   if (!rigid.empty())
     add(1, "No skin on " + list(rigid) + ": " + (rigid.size() == 1 ? "it moves" : "they move") + " stiffly with the bone above, or the hips.",

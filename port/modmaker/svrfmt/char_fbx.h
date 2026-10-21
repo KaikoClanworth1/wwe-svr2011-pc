@@ -22,6 +22,12 @@ struct CharExportReport {
 // A source bone named like hair (hair, ponytail, braid, bangs, fringe, pigtail, dread, kami, ...): FBX import
 // turns chains of them under the head into the game's moving hair (svr11_build "hair_chains").
 bool IsHairBoneName(const std::string& name);
+// VRChat's secondary bones (J_Sec_*: the avatar's own hair / cloth physics) - not needed in the game (their weights
+// go to the bone above) unless asked for.
+bool IsSecondaryBoneName(const std::string& name);
+// A bone named like loose cloth (jacket, coat, skirt, cape, scarf, ribbon, sleeve ...): the import's suggestion for
+// the game's spring cloth chains.
+bool IsClothBoneName(const std::string& name);
 
 bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir, const std::string& name, CharExportReport& rep);
 
@@ -34,6 +40,17 @@ struct FbxBone {
   bool skinned = false;  // a skin cluster uses it (it has weights)
 };
 bool ReadFbxSkeleton(const std::string& path, std::vector<FbxBone>& out, std::string& err);
+
+// The FBX's moving chains (the game's spring kami_b chains, docs/HAIR_PHYSICS.md): runs of unmapped bones (targets
+// "" - ReadFbxSkeleton order) root to tip. Hair: named like hair, under the head's source bone; hair -1 (auto) leaves
+// out VRChat's secondary J_Sec_* ones, 0 none, 1 all. Cloth: the bones `cloth` says (by name; a name not in it: by
+// IsClothBoneName). Hair needs 4 joints, cloth 3 (a tip is added past the last); the game moves 16 at most, hair first.
+struct FbxChains {
+  std::vector<std::vector<int>> hair, cloth;
+  int short_hair = 0, short_cloth = 0, secondary = 0, over = 0;  // (too short; J_Sec_ left out; past the 16)
+};
+FbxChains FindFbxChains(const std::vector<FbxBone>& bones, const std::vector<std::string>& targets, int hair,
+                        const std::map<std::string, bool>& cloth);
 
 // FBX import (F3): the FBX's meshes posed into the 2011 bind pose (the template's A-pose: each mapped source bone turned
 // to the template bone's direction, the hands rolled to its knuckle line; the mesh follows by its own skin), in game
@@ -66,7 +83,10 @@ struct FbxImportOptions {
   std::map<std::string, FbxMaterial> material;  // by mesh name (as `include`)
   std::map<std::string, bool> include;
   std::map<std::string, std::string> kind, picture;
-  int max_vertices = 10500;  // all meshes together (the game's budget; 0 = as they are)
+  int max_vertices = 0;      // Reduce detail: all meshes together cut to about this (0 = as they are; never on its own)
+  bool keep_face = true;     // ... the head's vertices kept (only the rest is reduced)
+  int hair = -1;             // moving hair (FindFbxChains): -1 auto (no J_Sec_*), 0 none, 1 every hair bone
+  std::map<std::string, bool> cloth;  // spring cloth bones by source name (left out: by name, IsClothBoneName)
   bool gear_json = false;    // write gear.json (entrance gear pieces for svr11_build --gear-json --onto) instead of build.json
 };
 bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>& targets, const Bytes& template_pac,

@@ -1075,6 +1075,8 @@ void TestView(const std::wstring& spec) {
   if (n >= 18) g_test_xs = v[17];
 }
 
+std::wstring g_test_model;  // (--full-preview-model: a model pac in place of the superstar's own)
+void TestModel(const std::wstring& pac) { g_test_model = pac; }
 void TestOpen(int entrance, int star, float key, bool camera) {
   g_test_pending = true, g_test_entrance = entrance, g_test_star = star, g_test_key = key, g_test_camera = camera;
 }
@@ -1084,7 +1086,7 @@ void Draw() {
     g_test_pending = false;
     Request r;
     r.entrance = g_test_entrance, r.star = g_test_star;
-    r.model = (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(g_test_star) + L".pac")).wstring();
+    r.model = !g_test_model.empty() ? g_test_model : (fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(g_test_star) + L".pac")).wstring();
     r.gear = true;
     r.song = g_test_song;
     r.movie = g_test_movie;
@@ -1141,8 +1143,10 @@ void Draw() {
       }
       if (g_playing && g_music_on && audio_out::State() == 1 && !audio_out::Playing() && g_key / 30.0 < audio_out::Length())
         audio_out::Play(g_key / 30.0);  // (the song became ready while playing)
-      // which segment
-      float rest = g_key;
+      // which segment - while playing, at the game's 60 Hz world (half keys): the entrant, the camera and the hair's
+      // spring steps (2 a key) move together, as in the game. On the frame clock the springs took 0 or 2 steps a frame
+      // now and then (a frame a hair under or over 1/60 s) and the hair / cloth stuttered against the body.
+      float rest = g_playing ? std::floor(g_key * 2) / 2 : g_key;
       int si = 0;
       while (si + 1 < int(L.segs.size()) && rest >= float(L.segs[size_t(si)].keys)) rest -= float(L.segs[size_t(si)].keys), ++si;
       g_seg_now = si, g_local_key = rest;

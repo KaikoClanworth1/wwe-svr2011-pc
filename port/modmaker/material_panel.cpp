@@ -194,6 +194,18 @@ bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int vi
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Turns its faces the other way round (winding and normals): for a part that shows inside out in the game -\n"
                         "dark where it should be lit, its inside showing. The 3D view draws it as the game does.");
+    // the flat look (no shine, a flat normal map): the closest to unlit the game's superstar shaders allow
+    if (m.has_spec) {
+      bool flat = e.has_spec && e.spec <= 0.0f && (e.normal == 2 || !m.normal_slot);
+      if (ImGui::Checkbox("Flat look", &flat)) {
+        if (flat) e.has_spec = true, e.spec = 0, e.normal = m.normal_slot ? 2 : e.normal, e.normal_file.clear();
+        else e.has_spec = false, e.normal = 0;
+        ch = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Flat, cartoon-like shading: no shine (specular 0, even) and no bumps (a flat normal map) - the closest the\n"
+                          "game's superstar shaders get to unlit: they have no self-lit setting, so the arena's lights still shade it.");
+    }
     // the picture sheet
     const bool open = g_atlas_for == std::make_pair(m.model_id, m.mesh);
     if (ImGui::SmallButton(open ? "Hide the picture sheet" : (simple ? "Show where it is on the picture" : "Picture sheet (atlas)"))) g_atlas_for = open ? std::make_pair(~0u, -1) : std::make_pair(m.model_id, m.mesh);
