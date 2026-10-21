@@ -12,6 +12,9 @@
 // game state *0x82E3DDFC +16 = 1; sub_828BC5E8 the commit to the live record; sub_828C3EA8; sub_82574050(live
 // +288).
 //
+// Tried and dropped: not building the practice ring (sub_8258A870, from the Start Screen's vtable[15] once
+// the saves are loaded) - it runs before the Start Screen shows, and without it the game stays on NOW LOADING.
+//
 // Not done (the select screens' work): the port's match-type extras hung on sub_827374A0 (match_types.cpp:
 // runtime rules, MYSTERY OPPONENT ...), CAW people's fighter entries, the exhibition flow object (after the match
 // its menus may need it - a dbg run quits before).
@@ -119,6 +122,11 @@ const uint8_t* Record(const uint8_t* base, uint32_t id) {
 
 // A roster name (as the "match:" lines print it) or id -> the superstar id (0: none). As test_match.cpp.
 uint32_t FindSuperstar(const uint8_t* base, const std::string& want) {
+  // (CAW<N>: the Created Superstar in save slot N - character id N, below 50)
+  if (want.size() > 3 && Upper(want.substr(0, 3)) == "CAW" && std::isdigit(static_cast<unsigned char>(want[3]))) {
+    const uint32_t slot = uint32_t(std::atoi(want.c_str() + 3));
+    return slot < 50 ? slot : ~0u;
+  }
   if (!want.empty() && std::isdigit(static_cast<unsigned char>(want[0]))) {
     const uint32_t id = uint32_t(std::atoi(want.c_str()));
     return Record(base, id) ? id : 0;
@@ -142,6 +150,50 @@ void Call(PPCContext& ctx, uint8_t* base, F fn, std::initializer_list<int64_t> a
   fn(ctx, base);
 }
 
+// A Created Superstar person: what the select screen's pick commit (sub_82462650) does for one (character id
+// below 50, sub_828B6CB0) - the fighter entry (sub_8257C280(*0x82EC1A68, person): 44 bytes, reset by
+// sub_823BF228; +4 person, +5 0 (2 a manager), +28 1 and +32 the attire (chosen), +12 the person record
+// (sub_828B5E28 + sub_828B5A18 on the roster *0x82EDEA88), +0 the attire code (sub_828B8190), +8
+// sub_825743A0(person)) and its CAS data: a 0x2DC70-byte buffer from the CAS heap (sub_8269A178; the current one
+// sub_8269A478, set with sub_8269AC60), sub_828CDBC8(buf + 576), 348 bytes at +0x2DB14 cleared, then built from
+// the CAW record (sub_828CE8D0(buf, sub_828B6950(id))); +16 = buf.
+void SetUpCaw(PPCContext& ctx, uint8_t* base, uint32_t person, uint32_t id, uint32_t attire) {
+  constexpr uint32_t kFighters = 0x82EC1A68, kRoster = 0x82EDEA88, kCasSize = 0x2DC70;
+  Call(ctx, base, sub_8257C280, {Rd32(base + kFighters), person});
+  const uint32_t e = ctx.r3.u32;
+  if (!e) return;
+  Call(ctx, base, sub_822AF098, {e});
+  Call(ctx, base, sub_823BF228, {e});
+  base[e + 5] = 0, base[e + 4] = uint8_t(person);
+  Wr32(base + e + 28, 1), base[e + 32] = uint8_t(attire);
+  Call(ctx, base, sub_828B5E28, {Rd32(base + kRoster), person, id, 0});
+  Call(ctx, base, sub_828B5A18, {Rd32(base + kRoster), person});
+  Wr32(base + e + 12, ctx.r3.u32);
+  Call(ctx, base, sub_828B8190, {id, attire, 1});
+  Wr32(base + e + 0, ctx.r3.u32);
+  if (const uint32_t old = Rd32(base + e + 16)) Call(ctx, base, sub_8269B2D0, {old, 1});
+  Call(ctx, base, sub_8269A178, {});
+  const uint32_t cas_heap = ctx.r3.u32;
+  Call(ctx, base, sub_8269A478, {});
+  const uint32_t heap = ctx.r3.u32;
+  Call(ctx, base, sub_8269AC60, {cas_heap});
+  Call(ctx, base, sub_82150000, {kCasSize});
+  const uint32_t buf = ctx.r3.u32;
+  if (buf) {
+    Call(ctx, base, sub_828CDBC8, {buf + 576});
+    Call(ctx, base, sub_82953D58, {buf + 0x2DB14, 348});
+    // (built from the CAW record: the select screen's per-person copy, sub_82739920, reads select-screen
+    // state a boot doesn't have - a null read)
+    Call(ctx, base, sub_828B6950, {id});
+    Call(ctx, base, sub_828CE8D0, {buf, ctx.r3.u32});
+  }
+  Wr32(base + e + 16, buf);
+  Call(ctx, base, sub_8269AC60, {heap});
+  Call(ctx, base, sub_825743A0, {person});
+  Wr32(base + e + 8, ctx.r3.u32);
+  REXLOG_INFO("SVRDBG: boot: person {} is Created Superstar {} (CAS data {})", person, id, buf ? "set" : "MISSING");
+}
+
 bool g_done = false;
 Clock::time_point g_menu_since{};
 std::atomic<bool> g_booted{false}, g_entrances{false};
@@ -155,7 +207,7 @@ void StartMatch(PPCContext& ctx, uint8_t* base) {
   std::string line;
   for (const std::string& who : m.people) {
     const uint32_t id = FindSuperstar(base, who);
-    if (!id) {
+    if (id == ~0u || (!id && Upper(who) != "CAW0")) {
       REXLOG_ERROR("SVRDBG: boot: no superstar '{}' - not booted", who);
       g_done = true;
       return;
@@ -181,6 +233,7 @@ void StartMatch(PPCContext& ctx, uint8_t* base) {
     Call(ctx, base, sub_828B9D80, {setup, i, i});  // a team of its own
     Call(ctx, base, sub_828B9E30, {setup, i, 0});
     Call(ctx, base, sub_828B9E40, {setup, i, -1});
+    if (ids[i] < 50) SetUpCaw(ctx, base, i, ids[i], uint32_t(attire));
   }
   Call(ctx, base, sub_828BB418, {setup});
   if (const uint32_t game = Rd32(base + kGame)) Wr32(base + game + 16, 1);
