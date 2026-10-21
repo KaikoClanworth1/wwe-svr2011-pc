@@ -468,6 +468,7 @@ REX_HOOK_RAW(sub_8269D768) {
                     want ? "every frame shown (the world can't keep 60 Hz)" : "every other frame shown again", avg_ticks);
     }
   }
+  svr2011::HctpBeforeFrame(base);  // (match_types.h: a door's placements held)
   __imp__sub_8269D768(ctx, base);
 #if SVR2011_DEBUG_SUITE
   svr2011::dbg::BootFrame(ctx, base);  // (dbg_boot: debug_suite.h)
