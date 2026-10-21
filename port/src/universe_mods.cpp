@@ -249,9 +249,17 @@ int64_t UniverseModPlace(uint8_t* base, uint32_t id) {
   return int64_t(k);
 }
 
-int64_t UniverseModPair(uint8_t* base, uint32_t table, uint32_t a, int64_t place_a, uint32_t b, int64_t place_b) {
+int64_t UniverseModPair(uint8_t* base, uint32_t table, uint32_t a, int64_t place_a, uint32_t b, int64_t place_b,
+                        bool working_copy) {
   const uint32_t p = P(base);
-  if (!p || !g_rows || a == b || table != p + kRivalry) return -1;
+  if (!p || !g_rows || a == b || (table != p + kRivalry && !working_copy)) return -1;
+  if (table != p + kRivalry) {  // (a working copy: its mod pairs are the side bytes themselves - see the header)
+    static bool said = false;
+    if (!said) {
+      said = true;
+      REXLOG_INFO("[svr2011] universe mods: rivalry working copy at {:08X} - its mod pairs use the side table", table);
+    }
+  }
   const int ia = Index(a), ib = Index(b);
   int row = -1;
   uint32_t col = 0;
