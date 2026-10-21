@@ -696,6 +696,9 @@ REX_HOOK_RAW(sub_8216ED38) {
   }
   if (!old_way) g_job_owed = JobOwed::kNone;
   svr2011::ThreeStagesCinematic();  // (the world held: a finisher's / signature's cinematic - match_types.h)
+#if SVR2011_DEBUG_SUITE
+  svr2011::dbg::OnWorldHeld();  // (dbg_burst)
+#endif
   // Research aid: SVR2011_TEST_PAUSE_LOG=1 - when the world starts being
   // held (a move's cinematic, a match's end), with the match frame.
   if (static const bool pause_log = std::getenv("SVR2011_TEST_PAUSE_LOG") != nullptr; pause_log) {
