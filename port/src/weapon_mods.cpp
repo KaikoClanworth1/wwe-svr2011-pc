@@ -30,6 +30,7 @@
 #include "generated/default/svr2011_init.h"
 
 #include "no_mods.h"
+#include "../modmaker/svrfmt/jboy.h"
 #include "../modmaker/svrfmt/pac.h"
 
 namespace {
@@ -57,6 +58,29 @@ std::vector<std::string> Lines(const fs::path& file) {
 uint32_t Le32(const uint8_t* p) { return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24; }
 void PutLe32(uint8_t* p, uint32_t v) { p[0] = uint8_t(v), p[1] = uint8_t(v >> 8), p[2] = uint8_t(v >> 16), p[3] = uint8_t(v >> 24); }
 
+// Why a weapon pack's model (PACH entry 0) can't be used, or null.
+const char* BadModel(const svrfmt::Bytes& pack) {
+  std::vector<svrfmt::PachEntry> kids;
+  if (!svrfmt::PachRead(pack, kids)) return "can't be read";
+  for (const auto& k : kids) {
+    if (k.id != 0) continue;
+    const svrfmt::Bytes d = svrfmt::Unpack(k.data);
+    if (!svrfmt::IsJboy(d)) return "is missing (no JBOY at entry 0)";
+    auto Be32 = [](const uint8_t* p) {
+      return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+    };
+    // (WWE '13's layout: the first mesh, at 8 + the mesh table's offset, names its material at +0x7C)
+    const uint32_t meshes = Be32(&d[0x18]);
+    const size_t o = 8 + size_t(Be32(&d[0x1C]));
+    if (meshes && o + 0xB8 <= d.size() && Be32(&d[o + 0x78]) < 0x10000 && d[o + 0x7C] == 'y')
+      return "is in WWE '13's / 2K14's format (not a SvR2011 model)";
+    svrfmt::Model model;
+    if (!svrfmt::JboyRead(d, model)) return "can't be read";
+    return nullptr;
+  }
+  return "is missing (no entry 0)";
+}
+
 // Stable ids: Mods/Weapons/ids.txt ("<folder>\t<id>" a line); new folders get the first free id.
 std::map<std::string, int> ReadIds(const fs::path& file) {
   std::map<std::string, int> ids;
@@ -79,6 +103,7 @@ svrfmt::Bytes AddRecords(const svrfmt::Bytes& table, std::vector<svr2011::Weapon
     if (r[0] | r[1]) records.emplace_back(r, r + kRecord);
   }
   for (auto& m : mods) {
+    if (!m.id) continue;  // (left out)
     const svrfmt::Bytes* like = nullptr;
     for (const auto& r : records)
       if (int(r[0] | r[1] << 8) == m.like * 10) like = &r;
@@ -311,6 +336,13 @@ void LoadWeaponMods() {
     svrfmt::Bytes p;
     if (!svrfmt::ReadFile((dir / m.folder / "weapon.pac").string(), p) || !svrfmt::IsPach(svrfmt::Unpack(p))) {
       REXLOG_WARN("[svr2011] weapon mods: {} - weapon.pac is no weapon pack (a PACH): left out", m.folder);
+      m.id = 0;
+      continue;
+    }
+    // Its model (entry 0) must be a SvR2011 JBOY: WWE '13 / 2K14 ones (0xB8-byte meshes, a material name at +0x7C)
+    // crash the game as it makes the weapon.
+    if (const char* why = BadModel(svrfmt::Unpack(p))) {
+      REXLOG_WARN("[svr2011] weapon mods: {} - weapon.pac's model {}: left out", m.folder, why);
       m.id = 0;
       continue;
     }
