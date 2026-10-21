@@ -28,13 +28,19 @@
 // extra shirts opened. Matches and the select screen took 50 hoodies. Before
 // this is on by default: a guard by the parts' real sizes (the edit pac's
 // models) or a bigger editor heap.
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
+#include <mutex>
+#include <unordered_map>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
+#include <rex/system/xmemory.h>
+
+#include "caw_limits.h"
 
 #include "generated/default/svr2011_init.h"
 
@@ -82,3 +88,67 @@ REX_HOOK_RAW(sub_828EFE70) {
     REXLOG_INFO("[svr2011] caw limits: any number of parts of a kind (category {} max {} -> 64)", cat, stock);
   }
 }
+
+// -- The editor's part heap ----------------------------------------------------
+//
+// CREATE A SUPERSTAR loads every layer of the CAW being edited into heap 42
+// (45 MB, A52FEE00-A7FFEE00 - its render object's heap, sub_828D8DC8 ->
+// sub_828C76A8(.., 42, ..); matches and the select screen use each fighter's
+// own heap). A heavy CAW (about 30 hoodies, or 16 more T-shirts, in one
+// attire) filled it: the part loader's buffer (sub_828E3718 ->
+// sub_8269A8D8) came back 0 and the decoder (sub_826AEF10) wrote to it - a
+// crash on opening the CAW, whatever the limits setting. A failed heap-42
+// allocation now takes the block from the emulator's physical system heap
+// (4 KB aligned, up to kFallbackMax in all) and the game's free of it
+// (sub_8269B2D0) gives it back there.
+namespace {
+rex::memory::Memory* g_memory = nullptr;
+constexpr uint32_t kFallbackMax = 192u << 20;
+std::mutex g_fallback_mutex;
+std::unordered_map<uint32_t, uint32_t> g_fallback;  // guest pointer -> size
+uint32_t g_fallback_bytes = 0;
+std::atomic<uint32_t> g_fallback_blocks{0};  // (every game free asks: no lock while there are none)
+}  // namespace
+
+namespace svr2011 {
+
+void InstallCawLimits(rex::memory::Memory* memory) { g_memory = memory; }
+
+uint32_t CawHeapFallback(uint32_t size) {
+  static const bool off = std::getenv("SVR2011_TEST_CAW_HEAP_FALLBACK_OFF") != nullptr;  // (test aid: the game's way)
+  if (!g_memory || !size || off) return 0;
+  std::lock_guard lock(g_fallback_mutex);
+  if (g_fallback_bytes + size > kFallbackMax) {
+    REXLOG_WARN("[svr2011] caw limits: the editor's part heap is full and the fallback too ({} MB) - {} bytes not given",
+                g_fallback_bytes >> 20, size);
+    return 0;
+  }
+  const uint32_t ptr = g_memory->SystemHeapAlloc(size, 0x1000, rex::memory::kSystemHeapPhysical);
+  if (!ptr) {
+    REXLOG_WARN("[svr2011] caw limits: the editor's part heap is full, no fallback memory for {} bytes", size);
+    return 0;
+  }
+  g_fallback[ptr] = size;
+  g_fallback_bytes += size;
+  g_fallback_blocks = uint32_t(g_fallback.size());
+  static int told = 0;
+  if (told++ < 3 || told % 100 == 0)
+    REXLOG_INFO("[svr2011] caw limits: the editor's part heap (42) is full - {} bytes at {:08X} from the system heap "
+                "({:.1f} MB so, {} blocks)",
+                size, ptr, g_fallback_bytes / 1048576.0, g_fallback.size());
+  return ptr;
+}
+
+bool CawHeapFree(uint32_t ptr) {
+  if (!ptr || !g_fallback_blocks.load(std::memory_order_relaxed)) return false;
+  std::lock_guard lock(g_fallback_mutex);
+  const auto it = g_fallback.find(ptr);
+  if (it == g_fallback.end()) return false;
+  g_fallback_bytes -= it->second;
+  g_fallback.erase(it);
+  g_fallback_blocks = uint32_t(g_fallback.size());
+  g_memory->SystemHeapFree(ptr);
+  return true;
+}
+
+}  // namespace svr2011
