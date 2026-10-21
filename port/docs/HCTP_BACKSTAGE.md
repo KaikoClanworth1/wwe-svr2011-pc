@@ -208,7 +208,8 @@ Next steps (none started):
 - Room 30's button lamps (CGmSwitchLight 1246): drawn as grey slabs as plain objects - needs an additive /
   emissive draw.
 - Fountain throw (room 35): checked (21 Oct, ROOF=props puts both by the basin at 1100: 12627 x / y 0 and 1
-  found, the throw plays). Treadmill / sandbag knock-down: coded, not driven by a test yet.
+  found, the throw plays). Treadmill: checked (ROOF=props puts fighter 0 on it at 800;
+  A mashed: level 1, 12674; he runs facing the console). Sandbag knock-down: coded, not driven by a test yet.
 - Motion keys: a call's (x, y) match the bank entry's second / first field (logged with SVR2011_TEST_HCTP_LOG);
   lookups the game makes itself for acts HCTP has in one part only (12679 y 1, 12606 / 12608 y 50 ..) miss
   harmlessly.
