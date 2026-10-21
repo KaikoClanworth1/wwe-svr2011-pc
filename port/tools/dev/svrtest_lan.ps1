@@ -14,7 +14,8 @@
 # SVR2011_TEST_* the caller sets (e.g. SVR2011_TEST_BACKSTAGE_ROW) reach both games. Once the match runs: --pad1 / --pad2 (script_input.h steps, one a line) go to
 # the host's / joiner's scripted pad (default: both move and strike every 3 s) for --play seconds. Both games dump
 # their state at the same match clock values (--clock, 60 a second: dbg_state_clock) and the dumps are compared -
-# people, last moves and the positions' exact bits: lockstep games have the very same.
+# people, last moves, current motions (character +212) and the body / root positions' exact bits (+304's,
+# +288): lockstep games have the very same.
 # Writes runs\svrtest\<stamp>_<name>\ (host\ and join\ dumps, host.log, join.log, server.log, result.json); stops
 # both games and the server by their PIDs.
 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
@@ -170,7 +171,7 @@ foreach ($n in ($o.clock -split ',' | Where-Object { $_ })) {
     foreach ($pa in $a.people) {
         $pb = $b.people | Where-Object { $_.index -eq $pa.index }
         if (-not $pb) { $diff += "person $($pa.index) only on the host"; continue }
-        foreach ($f in "superstar", "last_move", "position_bits") { if ([string]$pa.$f -ne [string]$pb.$f) { $diff += "person $($pa.index) $f $($pa.$f) / $($pb.$f)" } }
+        foreach ($f in "superstar", "last_move", "position_bits", "motion", "root_bits") { if ([string]$pa.$f -ne [string]$pb.$f) { $diff += "person $($pa.index) $f $($pa.$f) / $($pb.$f)" } }
     }
     $checks += [ordered]@{ clock = [int]$n; same = ($diff.Count -eq 0); differences = $diff }
 }

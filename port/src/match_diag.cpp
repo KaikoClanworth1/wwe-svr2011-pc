@@ -121,10 +121,12 @@ std::vector<MatchPerson> MatchPeople(uint8_t* base) {
       break;
     }
     // (the character's position: +304 points at x, y, z - match_types.cpp's lumberjack framing)
-    if (const uint32_t pos = Rd32(base, ch + 304); pos >= 0x40000000u && !(pos & 3)) {
-      auto f = [&](uint32_t a) { const uint32_t v = Rd32(base, a); float r; std::memcpy(&r, &v, 4); return r; };
+    auto f = [&](uint32_t a) { const uint32_t v = Rd32(base, a); float r; std::memcpy(&r, &v, 4); return r; };
+    if (const uint32_t pos = Rd32(base, ch + 304); pos >= 0x40000000u && !(pos & 3))
       p.has_position = true, p.x = f(pos), p.y = f(pos + 4), p.z = f(pos + 8);
-    }
+    // (the current motion and the root - what hctp_room's PlaceFighter writes, +288, besides the body at +304)
+    p.motion = Rd32(base, ch + 212);
+    p.root_x = f(ch + 288), p.root_y = f(ch + 292), p.root_z = f(ch + 296);
     out.push_back(std::move(p));
   }
   return out;
