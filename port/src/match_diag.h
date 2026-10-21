@@ -27,7 +27,9 @@ struct MatchPerson {
   uint32_t last_move = 0xFFFF;                         // (0xFFFF: none asked yet)
   double move_age_s = -1;
   bool has_position = false;
-  float x = 0, y = 0, z = 0;
+  float x = 0, y = 0, z = 0;             // (the body: the pointer at character +304)
+  uint32_t motion = 0;                   // the current motion id (character +212)
+  float root_x = 0, root_y = 0, root_z = 0;  // the root position (character +288 / +292 / +296)
 };
 std::vector<MatchPerson> MatchPeople(uint8_t* base);
 uint32_t MatchClock(uint8_t* base);  // the match clock (60 a second)

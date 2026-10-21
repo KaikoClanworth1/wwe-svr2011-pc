@@ -104,6 +104,12 @@ void WriteState(int64_t ms, const std::string& name = "", bool exact = false) {
       std::memcpy(&b[0], &m.x, 4), std::memcpy(&b[1], &m.y, 4), std::memcpy(&b[2], &m.z, 4);
       j += fmt::format(", \"position_bits\": \"{:08X} {:08X} {:08X}\"", b[0], b[1], b[2]);
     }
+    j += fmt::format(", \"motion\": {}, \"root\": [{:.2f}, {:.2f}, {:.2f}]", m.motion, m.root_x, m.root_y, m.root_z);
+    if (exact) {
+      uint32_t b[3];
+      std::memcpy(&b[0], &m.root_x, 4), std::memcpy(&b[1], &m.root_y, 4), std::memcpy(&b[2], &m.root_z, 4);
+      j += fmt::format(", \"root_bits\": \"{:08X} {:08X} {:08X}\"", b[0], b[1], b[2]);
+    }
     j += "}";
   }
   j += people.empty() ? "]\n}\n" : "\n  ]\n}\n";
