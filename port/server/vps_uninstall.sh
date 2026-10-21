@@ -40,6 +40,7 @@ fi
 
 echo "== files"
 run rm -rf /etc/nginx/svr2011 /opt/svr2011
+run rm -f /usr/local/sbin/svr2011-admin-password
 if [ $purge = 1 ]; then
     run rm -rf /var/lib/svr2011 /var/log/svr2011 /etc/svr2011
     if id svr2011 >/dev/null 2>&1; then run userdel svr2011; fi

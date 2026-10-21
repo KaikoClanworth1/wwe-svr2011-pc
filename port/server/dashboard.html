@@ -140,7 +140,8 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   <h2>Settings <span class="spacer"></span></h2>
   <div class="set" id="settings"><span class="empty">Loading&hellip;</span></div>
   <div class="row"><button class="btn" id="save-set">Save settings</button>
-    <button class="btn danger" id="restart">Restart online</button><span class="note" id="set-note"></span></div>
+    <button class="btn danger" id="restart">Restart online</button><span class="note" id="set-note"></span>
+    <button class="btn" id="signout" hidden>Sign out</button></div>
 
   <h2>Server log <span class="spacer"></span><input class="filter" id="f-log" placeholder="Filter (e.g. error, relay, a name)">
     <select class="filter" id="n-log"><option>100</option><option selected>300</option><option>1000</option><option>3000</option></select>
@@ -195,8 +196,15 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
     if (s < 129600) return Math.round(s / 3600) + ' h ago';
     return Math.round(s / 86400) + ' days ago';
   }
+  // (signed in under /svr-admin/: every POST carries the session's CSRF token)
+  var csrf = document.querySelector('meta[name="csrf-token"]');
   function api(path, opts) {
-    return fetch(path, opts || {}).then(function (r) {
+    opts = opts || {};
+    if (csrf && opts.method && opts.method !== 'GET') {
+      opts.headers = Object.assign({}, opts.headers || {}, {'X-CSRF-Token': csrf.content});
+    }
+    return fetch(path, opts).then(function (r) {
+      if (r.status === 401 && csrf) { location.href = 'login?e=expired'; throw new Error('signed out'); }
       if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
       return r.json();
     });
@@ -482,6 +490,13 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   window.addEventListener('resize', charts);
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') el('viewer').classList.remove('on'); });
 
+  if (csrf) {  // (signed in under /svr-admin/)
+    el('signout').hidden = false;
+    el('signout').addEventListener('click', function () {
+      fetch('logout', {method: 'POST', headers: {'X-CSRF-Token': csrf.content}})
+        .finally(function () { location.href = 'login'; });
+    });
+  }
   stats(); lists(); live(); settings(); log();
   setInterval(live, 5000);
   setInterval(log, 15000);
