@@ -57,3 +57,9 @@ IP addresses are blanked in the logs (x.x.x.x).
 - `character select: open (screen ...)` when a select screen sets its players up, and
   `character select: player P A on the tile at column C row R` for every A on a tile - where a "stuck select screen"
   report was.
+
+## Two wrestlers frozen in a hold (21 Oct)
+
+- `match state (two wrestlers held in one motion frame for 10 s while the match clock runs (motion M))` - once a
+  match, when two wrestlers (people 0-5) keep the same motion (+212) and frame (+24, a float) for 10 s of the match
+  clock (checked once a second). Every `match state:` person line now also shows `motion M frame F`.
