@@ -15,6 +15,8 @@
 //   dbg_speed=N              N world updates a frame (fast-forward; 1 normal; online lockstep keeps 1)
 //   dbg_out=<folder>         where shots and states go (default: dbg in the working folder)
 //   dbg_boot=match           straight into dbg_match's match: no intros, no title, no menus (boot.cpp)
+//   dbg_boot=<page>          straight to a menu page: caw, threads, paint, cae, options, options:<ROW>,
+//                            match_creator, universe ... or menu:<LABEL>LABEL>... (boot.cpp kPages)
 //   dbg_match="people=EDGE,KANE attires=1,1 arena=1 rule=0 cpu=all"   (names as the "match:" lines; rule hex)
 //   dbg_entrances=true       a booted match plays its entrances (default: skipped, A on pad 1 while they run)
 // Each cue logs a "SVRDBG: ..." line (svrtest reads them).
