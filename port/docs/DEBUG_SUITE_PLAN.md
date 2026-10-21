@@ -79,6 +79,14 @@ errors, the match line, paths).
 - `tools/dev/` (svrtest and its helpers) is outside the Mod Maker Tools allow-list; package.ps1's audit
   already copies only listed files.
 - Android: the same option in the NDK build (a dbg .so for the phone tests), same package check on the APK.
+  Built: `python tools/build_apk.py --debug-suite [--version-code <the phone's>]` -> its own
+  out/build/DebugSuiteAndroid and out/android-dbg/SvR2011-dbg.apk (release_guard.ps1 refuses it). Run:
+  `tools/dev/svrtest_android.ps1 -Boot match -Match "people=EDGE,KANE cpu=all" -Shot 5,10 -Quit 15`
+  (or `-Boot options -From start`, page names in lower case): the cues go as the `args` extra (GameActivity keeps
+  a double-quoted value whole), the output to <game>/dbg, which is pulled to port\runs\dbg_android\<Name> with
+  the log and removed from the phone. The test saves are the PC tests' (test_run/userdata), the game muted.
+  `--version-code` is for a player's phone: Android never downgrades a release app, so a test APK carries the
+  installed code and the player's own APK can go back on (adb install -r, never an uninstall).
 
 ## 4. Order (a commit and a report each)
 
