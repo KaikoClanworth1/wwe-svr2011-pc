@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -396,6 +397,29 @@ uint32_t OnlineString(uint32_t id) {
     return GuestText(g_hidden_text, head + "\n" + why);
   }
   return 0;
+}
+
+// The game fetches the news (the server's Sake "Newsfeed" record) once a
+// session into its online state - UTF-8 at *0x82E3DDFC + 0x2248 - and builds
+// the panel from there at each visit to ONLINE. The dashboard's news (the
+// server's online_news) is written there, so it shows the next time without a
+// restart. Only over a news text from our server (its "N players online now."
+// line): never into memory that isn't the news. (8 KB stored there by the game
+// itself in a test; the server sends 600 characters at most.)
+void SetOnlineNews(const std::string& text) {
+  constexpr uint32_t kOnlineState = 0x82E3DDFC, kNewsAt = 0x2248, kNewsMax = 4096;
+  if (!g_online_memory || text.empty() || text.size() >= kNewsMax) return;
+  const uint8_t* p = g_online_memory->TranslateVirtual<const uint8_t*>(kOnlineState);
+  const uint32_t state = uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+  if (state < 0x40000000 || state >= 0xF0000000) return;
+  char* news = g_online_memory->TranslateVirtual<char*>(state + kNewsAt);
+  const size_t now = strnlen(news, kNewsMax);
+  if (now == kNewsMax || std::string_view(news, now).find(" online now. ") == std::string_view::npos) return;
+  if (std::string_view(news, now) == text) return;
+  std::memcpy(news + 1, text.data() + 1, text.size() - 1);  // (the first byte last: never half a text)
+  news[text.size()] = 0;
+  news[0] = text[0];
+  REXLOG_INFO("online: news panel updated ({} bytes, shows at the next visit)", text.size());
 }
 
 void InstallOnline(rex::memory::Memory* memory, const std::filesystem::path& saves) {

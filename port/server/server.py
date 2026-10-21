@@ -60,6 +60,59 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]{2,14}$")  # 3-15, what the g
 XUID_BASE = 0x0009000100000000  # + account id: the player's XUID on every device
 PBKDF2_ROUNDS = 240000
 MAX_FRIENDS = 200  # (a player's list)
+NEWS_MAX = 600  # (the NEWS panel shows about 14 lines of 30 characters, then scrolls)
+# The game's menu font (every Latin-1 character drawn on the NEWS panel, 21 Oct
+# 2026): ASCII, the Latin-1 letters (but x and / signs), the signs in NEWS_LATIN,
+# curly double quotes, the ellipsis and TM; anything else drew as "*" (an emoji
+# as "????", "o" ordinal as nothing). Look-alikes become ASCII, the rest goes.
+NEWS_SAME = {"\u2018": "'", "\u2019": "'", "\u201a": "'", "\u2032": "'", "\u00b4": "'", "\u201e": '"',
+             "\u2033": '"', "\u00ab": '"', "\u00bb": '"', "\u2039": "'", "\u203a": "'",
+             "\u2013": "-", "\u2014": "-", "\u2012": "-", "\u2015": "-", "\u2212": "-", "\u2022": "-",
+             "\u00b7": "-", "\u25cf": "-", "\u2605": "*", "\u2606": "*", "\u00d7": "x", "\u00f7": "/",
+             "\u00bd": " 1/2", "\u00bc": " 1/4", "\u00be": " 3/4", "\u00b9": "1", "\u00b2": "2", "\u00b3": "3",
+             "\u00ba": "o", "\u00aa": "a", "\u00b1": "+/-", "\u00b5": "u", "\u00a6": "|", "\u00a5": "YEN",
+             "\u20ac": "EUR", "\t": " ", "\u00a0": " ", "\u2009": " ", "\u200a": " ", "\u202f": " "}
+NEWS_LATIN = set("\u00a1\u00a2\u00a3\u00a9\u00ae\u00b0\u00bf")
+NEWS_EXTRA = set("\u201c\u201d\u2026\u2122")
+
+
+def news_char(ch):
+    return (ch == "\n" or " " <= ch <= "~" or ch in NEWS_LATIN or ch in NEWS_EXTRA
+            or ("\u00c0" <= ch <= "\u00ff" and ch not in "\u00d7\u00f7"))
+
+
+def news_clean(text):
+    """The dashboard's news as the game can show it: plain text, new lines kept
+    (at most two in a row), characters the font lacks replaced or left out."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    out = []
+    for c in text:
+        c = NEWS_SAME.get(c, c)
+        out.extend(ch for ch in c if news_char(ch))
+    text = "".join(out)
+    text = "\n".join(" ".join(line.split()) for line in text.split("\n"))  # (no runs of spaces)
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    return text.strip()
+
+
+def news_fields(text, parts=5, size=NEWS_MAX // 5 + 20):
+    """The NEWS record's Text1-5 for the dashboard's news (the game joins them as
+    they are: cut after a space or a new line), or None (empty: the stored record)."""
+    if not text:
+        return None
+    out = []
+    while text and len(out) < parts - 1:
+        if len(text) <= size:
+            break
+        cut = max(text.rfind(" ", 0, size), text.rfind("\n", 0, size))
+        cut = cut + 1 if cut > 0 else size
+        out.append(text[:cut])
+        text = text[cut:]
+    out.append(text)
+    return out + [""] * (parts - len(out))
+
+
 # Settings the dashboard edits (data/settings.json, read at start; "live" ones
 # apply at once, the others at the next start).
 SETTINGS_SPEC = {
@@ -74,6 +127,10 @@ SETTINGS_SPEC = {
                               "relay = every match through this server's relay; p2p = matches directly only (the "
                               "relay just helps games find each other) - for when the server struggles. New "
                               "sessions follow it (games ask every 20 s); running matches keep theirs"},
+    "online_news": {"default": "", "text": True, "max_len": NEWS_MAX, "live": True,
+                    "help": "the NEWS panel on the game's ONLINE screen (after the players-online count): plain "
+                            "text, new lines kept; characters the game's font lacks are replaced or left out. "
+                            "Empty = the built-in welcome. Games show it the next time they open ONLINE"},
     "max_connections": {"default": 100, "min": 10, "max": 1000, "live": False,
                         "help": "game requests at once (more wait up to 10 s, then 503)"},
 }
@@ -102,6 +159,8 @@ def check_setting(k, v):
         return (True, v) if isinstance(v, bool) else (False, None)
     if "choices" in spec:
         return (True, v) if v in spec["choices"] else (False, None)
+    if spec.get("text"):
+        return (True, news_clean(v)[:spec["max_len"]]) if isinstance(v, str) else (False, None)
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return False, None
     v = int(v)
@@ -552,9 +611,11 @@ class Service:
                                  edge=(edge.rsplit(":", 1)[0], int(edge.rsplit(":", 1)[1])) if edge else None,
                                  secret=relay.rl.read_secret(args.relay_secret) if edge else None)
         self.leaderboards = leaderboards.Leaderboards(self.store)
-        # the ONLINE menu's NEWS: how many play now, first
+        # the ONLINE menu's NEWS: how many play now, first; then the dashboard's
+        # text (online_news) when it has one, else the stored record's
         self.sake.news_prefix = lambda: "%d player%s online now. " % (
             self.stats.playing_now(), "" if self.stats.playing_now() == 1 else "s")
+        self.sake.news_text = lambda: news_fields(SETTINGS["online_news"])
         self.invites = collections.defaultdict(dict)  # account id -> {inviter id: invite} (in memory)
         self.max_connections = args.max_connections
         self.attempts = collections.defaultdict(collections.deque)  # ip -> login/register times
@@ -724,7 +785,10 @@ class Service:
         friends.sort(key=lambda f: ("playing", "online", "offline").index(f["status"]))  # (online first)
         return {
             "ok": True,
-            "config": {"mods_online": bool(SETTINGS["mods_online"]), "match_network": SETTINGS["match_network"]},
+            "config": {"mods_online": bool(SETTINGS["mods_online"]), "match_network": SETTINGS["match_network"],
+                       # (the NEWS panel's text as the game's Sake fetch gets it: the game shows it at the
+                       # next visit to ONLINE, without a restart)
+                       "news": self.sake.news_panel()},
             "online_now": len(self.in_online_mode()),
             "friends": friends,
             "added_you": [a["name"] for a in theirs if a["id"] not in added and not a["banned"]],
@@ -1498,7 +1562,10 @@ class Service:
             for k, v in changed.items():
                 if SETTINGS_SPEC[k]["live"]:
                     SETTINGS[k] = v
-            gs.log("settings: %s (dashboard)" % ", ".join("%s=%s" % kv for kv in sorted(changed.items())))
+            gs.log("settings: %s (dashboard)" % ", ".join(
+                "%s=%s" % (k, (repr(v[:60] + ("..." if len(v) > 60 else "")) + " (%d characters)" % len(v))
+                           if isinstance(v, str) and SETTINGS_SPEC[k].get("text") else v)
+                for k, v in sorted(changed.items())))
         try:
             stored = json.load(open(self.settings_path, encoding="utf-8"))
         except (OSError, ValueError):

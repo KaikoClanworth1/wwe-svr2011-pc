@@ -43,6 +43,7 @@
 #include "json_lite.h"
 #include "keyboard_typing.h"
 #include "online_files.h"
+#include "online.h"
 #include "online_net.h"
 #include "graphics_page.h"
 #include "p2p.h"
@@ -218,6 +219,7 @@ void Poll() {
     s.answered = true;
     if (const Json* c = j["config"]; c && (*c)["mods_online"]) SetOnlineModsAllowed((*c)["mods_online"]->b);
     if (const Json* c = j["config"]; c && (*c)["match_network"]) P2PSetServerNetwork((*c)["match_network"]->s);
+    if (const Json* c = j["config"]; c && (*c)["news"]) SetOnlineNews((*c)["news"]->s);
     for (const Json& f : j["friends"]->items) s.friends.push_back({f.Str("name"), f.Str("status"),
                                                                    f["mutual"] && f["mutual"]->b});
     if (const Json* a = j["added_you"])

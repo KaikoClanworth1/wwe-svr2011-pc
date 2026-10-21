@@ -76,9 +76,11 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
        background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
 .set .h { color: var(--faint); font-size: 12.5px; }
 .set input[type=number] { width: 110px; }
+.set textarea { grid-column: 2 / 4; width: 100%; min-height: 120px; resize: vertical; box-sizing: border-box; }
+.set .wide { grid-column: 2 / 4; }
 .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
 .note { color: var(--faint); font-size: 12.5px; }
-@media (max-width: 640px) { .set { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .set { grid-template-columns: 1fr; } .set textarea, .set .wide { grid-column: auto; } }
 .viewer .cap small { color: var(--dim, #8a93a0); display: block; margin-top: 2px; }
 </style>
 </head>
@@ -388,11 +390,14 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
       el('settings').innerHTML = d.settings.map(function (x) {
         var input = typeof x.default === 'boolean'
           ? '<input type="checkbox" data-set="' + x.key + '"' + (x.saved ? ' checked' : '') + '>'
+          : x.text ? '<textarea class="filter" data-set="' + x.key + '" maxlength="' + x.max_len + '">' + esc(x.saved) +
+            '</textarea>'
           : x.choices ? '<select class="filter" data-set="' + x.key + '">' + x.choices.map(function (c) {
               return '<option' + (c === x.saved ? ' selected' : '') + '>' + esc(c) + '</option>';
             }).join('') + '</select>'
           : '<input class="filter" type="number" data-set="' + x.key + '" min="' + x.min + '" max="' + x.max + '" value="' + x.saved + '">';
-        return '<b>' + esc(x.key.replace(/_/g, ' ')) + '</b>' + input + '<span class="h">' + esc(x.help) +
+        return '<b>' + esc(x.key.replace(/_/g, ' ')) + '</b>' + input + (x.text ? '<span></span>' : '') +
+          '<span class="h' + (x.text ? ' wide' : '') + '">' + esc(x.help) +
           (x.live ? '' : ' (applies at the next start' + (x.value !== x.saved ? ': now ' + x.value : '') + ')') + '</span>';
       }).join('');
       el('restart').disabled = !d.supervised;
@@ -409,7 +414,7 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
   el('save-set').addEventListener('click', function () {
     var body = {};
     document.querySelectorAll('[data-set]').forEach(function (i) {
-      body[i.dataset.set] = i.type === 'checkbox' ? i.checked : i.tagName === 'SELECT' ? i.value : Number(i.value);
+      body[i.dataset.set] = i.type === 'checkbox' ? i.checked : i.tagName === 'SELECT' || i.tagName === 'TEXTAREA' ? i.value : Number(i.value);
     });
     api('api/admin/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
       .then(function () { el('set-note').textContent = 'Saved ' + new Date().toLocaleTimeString(); settings(); })
