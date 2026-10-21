@@ -1445,6 +1445,16 @@ REX_HOOK_RAW(sub_828BD278) {
     ctx.r4.u64 = uint32_t(g_test_rule);
     static int told = 0;
     if (told++ < 4) REXLOG_INFO("match types: online ONE ON ONE NORMAL plays rule {:02X} (SVR2011_TEST_RULE)", g_test_rule);
+    // (and SVR2011_TEST_BACKSTAGE_ROW's row when the rule is its area's: online, the menus' own-row
+    // choice in sub_827374A0's hook isn't made)
+    if (const char* v = std::getenv("SVR2011_TEST_BACKSTAGE_ROW"); v && *v) {
+      const auto& own = svr2011::BackstageRows();
+      for (size_t i = 0; i < own.size(); ++i)
+        if (own[i].label == v && uint32_t(g_test_rule) == kBackstage1v1FirstRule + uint32_t(own[i].area)) {
+          svr2011::UseBackstageRow(int(i));
+          REXLOG_INFO("match types: online backstage area '{}' (SVR2011_TEST_BACKSTAGE_ROW)", own[i].label);
+        }
+    }
   }
   __imp__sub_828BD278(ctx, base);
 }
