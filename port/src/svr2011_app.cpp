@@ -668,12 +668,13 @@ void Svr2011App::OnPostLoadXexImage() {
     svr2011::InstallMovePacks(runtime()->file_system(),  // (arenas branch: before the game mounts its pacs)
                               g_user_data / "0000000000000000" / title / "00000002");
   }
+  // Weapon mods: new weapons in the game's weapon tables (weapon_mods.h) - before the arena mods: backstage rows name
+  // them in load_weapons= / weapons=.
+  svr2011::SetWeaponModsMemory(runtime()->memory());
+  svr2011::LoadWeaponMods();
   svr2011::KeepWindowAlive();
   svr2011::InstallArenaMods(runtime()->memory(), runtime()->file_system());
   svr2011::KeepWindowAlive();
-  // Weapon mods: new weapons in the game's weapon tables (weapon_mods.h).
-  svr2011::SetWeaponModsMemory(runtime()->memory());
-  svr2011::LoadWeaponMods();
   // Ring Kit: rope heights and rules from a custom arena's manifest (ring_rules.h).
   svr2011::InstallRingRules(runtime()->memory());
   svr2011::InstallJukebox(runtime()->memory());  // MY WWE -> JUKEBOX (jukebox.h)

@@ -24,6 +24,7 @@
 #include "backgrounds_page.h"
 #include "arena_lights.h"
 #include "no_mods.h"
+#include "weapon_mods.h"
 #include "arena_mods.h"
 #include "crowd_off.h"
 #include "move_packs.h"
@@ -1388,6 +1389,20 @@ uint32_t ArenaSelectString(uint32_t caller) {
 // bg78 plays only in matches started from that row (UseBackstageRow).
 std::vector<BackstageRow> g_backstage_rows;
 
+// A weapon in a backstage row's load_weapons= / weapons=: a model number, or a weapon mod's folder (weapon_mods.h,
+// pool=backstage; 0: none such).
+int BackstageWeaponModel(std::string token, const std::string& row) {
+  while (!token.empty() && token.front() == ' ') token.erase(0, 1);
+  while (!token.empty() && token.back() == ' ') token.pop_back();
+  if (token.empty()) return 0;
+  if (std::all_of(token.begin(), token.end(), [](unsigned char c) { return std::isdigit(c); })) return std::atoi(token.c_str());
+  for (const auto& m : svr2011::WeaponMods())
+    if (m.folder == token && m.backstage) return m.id;
+  REXLOG_WARN("[svr2011] arena mods: backstage row '{}' - weapon '{}' is no weapon mod for backstage areas: left out", row,
+              token);
+  return 0;
+}
+
 void LoadBackstage() {
   if (svr2011::NoMods()) return;  // (Start Without Mods: no_mods.h)
   std::error_code ec;
@@ -1418,7 +1433,7 @@ void LoadBackstage() {
           std::string v = l.substr(13);
           for (size_t at = 0; at < v.size();) {
             const size_t end = std::min(v.find(',', at), v.size());
-            if (const int m = std::atoi(v.substr(at, end - at).c_str()); m > 0) r.load_weapons.push_back(m);
+            if (const int m = BackstageWeaponModel(v.substr(at, end - at), r.label); m > 0) r.load_weapons.push_back(m);
             at = end + 1;
           }
         }
@@ -1438,9 +1453,12 @@ void LoadBackstage() {
           while (at < l.size()) {
             const size_t end = std::min(l.find(';', at), l.size());
             BackstageRow::Weapon w{};
-            if (std::sscanf(l.substr(at, end - at).c_str(), "%d,%f,%f,%f,%f", &w.model, &w.x, &w.y, &w.z, &w.yaw) ==
-                    5 &&
-                w.model > 0 && w.model < 256)
+            const std::string item = l.substr(at, end - at);
+            const size_t comma = item.find(',');
+            w.model = BackstageWeaponModel(item.substr(0, comma), r.label);
+            if (comma != std::string::npos &&
+                std::sscanf(item.c_str() + comma + 1, "%f,%f,%f,%f", &w.x, &w.y, &w.z, &w.yaw) == 4 && w.model > 0 &&
+                w.model < 256)
               r.weapons.push_back(w);
             at = end + 1;
           }

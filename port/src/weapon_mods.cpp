@@ -197,6 +197,9 @@ REX_HOOK_RAW(sub_826A0D98) {
   const uint32_t handle = ctx.r3.u32, id = ctx.r4.u32, lr = uint32_t(ctx.lr);
   PointAtCopy(base, handle);
   __imp__sub_826A0D98(ctx, base);
+  if (log && ctx.r3.s32 < 0 && lr >= 0x8227DD80 && lr < 0x8227ED88)  // (the loader: a search that found nothing)
+    REXLOG_INFO("[svr2011] weapon lookup: id {} not in PACH {:08X} ({} children, first id {}) (lr {:08X})", id,
+                Be32(base + handle), Le32(base + Be32(base + handle) + 4), Le32(base + Be32(base + handle) + 8), lr);
   if (log && (id & 0xFFFF) == kSettingsTable)
     REXLOG_INFO("[svr2011] weapon lookup: settings in PACH {:08X} ({} children) -> {} (lr {:08X})", Be32(base + handle),
                 Le32(base + Be32(base + handle) + 4), ctx.r3.s32, lr);
@@ -313,7 +316,7 @@ void LoadWeaponMods() {
   for (const auto& g : e.groups) {
     if (g.type != "STG " && g.type != "STG3") continue;  // (matches and backstage areas)
     for (const auto& en : g.entries) {
-      // (WPBS: STG's second copy of the weapons the matches use)
+      // (WPBS: STG's backstage weapons - the loader's second pass in a backstage match looks there)
       if (en.name != "WPON" && en.name != "WPBS") continue;
       std::vector<svrfmt::PachEntry> kids;
       if (!svrfmt::PachRead(svrfmt::Unpack(en.data), kids)) continue;
