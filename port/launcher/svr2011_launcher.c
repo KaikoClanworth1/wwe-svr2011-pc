@@ -2051,7 +2051,7 @@ static void settings_load(void)
     if (arena_light < 50 || arena_light > 200)
         arena_light = 100;
     SendMessageW(ctl(ID_ARENA_LIGHT), CB_SETCURSEL, (WPARAM)((arena_light - 50 + 5) / 10), 0);
-    SendMessageW(ctl(ID_MATCH_CAMERA), CB_SETCURSEL, (WPARAM)(match_camera >= 0 && match_camera <= 4 ? match_camera : 0), 0);
+    SendMessageW(ctl(ID_MATCH_CAMERA), CB_SETCURSEL, (WPARAM)(match_camera >= 0 && match_camera <= 5 ? match_camera : 0), 0);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, (WPARAM)frame_rate_index(frame_rate), 0);
     s_settings_dirty = 0;
     set_text(ID_SETTINGS_STATUS, L"");
@@ -2151,9 +2151,9 @@ static int settings_save(void)
                                : ui >= 9 && ui <= 12 ? "\"dlss\"" : "\"off\"");
         sprintf_s(vals[36], 64, "%d", ui >= 1 && ui <= 12 ? (ui - 1) % 4 : 1);
     }
-    {   /* (the game's GRAPHICS -> MATCH CAMERA: free_cam.h, 0 NORMAL .. 4 LOW) */
+    {   /* (the game's GRAPHICS -> MATCH CAMERA: free_cam.h, 0 NORMAL .. 5 RAMP) */
         const int ci = (int)SendMessageW(ctl(ID_MATCH_CAMERA), CB_GETCURSEL, 0, 0);
-        sprintf_s(vals[37], 64, "%d", ci >= 0 && ci <= 4 ? ci : 0);
+        sprintf_s(vals[37], 64, "%d", ci >= 0 && ci <= 5 ? ci : 0);
     }
     sprintf_s(vals[19], 160, "\"%s\"", s_online_token);
     sprintf_s(vals[20], 160, "\"%s\"", s_online_xuid);
@@ -3364,6 +3364,7 @@ static void build_ui(void)
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Camera: Close");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Camera: High");
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Camera: Low");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Camera: Ramp");
     add(TAB_SETTINGS, L"Button", L"Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, X0, 534, 140, 30, ID_DEFAULTS);
     add(TAB_SETTINGS, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 534, 108, 30, ID_SAVE);
     add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 568, 560, 32, ID_SETTINGS_STATUS);

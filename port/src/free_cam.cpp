@@ -25,7 +25,7 @@
 #include "keyboard_typing.h"
 
 REXCVAR_DEFINE_INT32(match_camera, 0, "UI",
-                     "The match camera: 0 NORMAL, 1 FAR, 2 CLOSE, 3 HIGH, 4 LOW (ring matches; BACK + R3 / F4 cycle it)");
+                     "The match camera: 0 NORMAL, 1 FAR, 2 CLOSE, 3 HIGH, 4 LOW, 5 RAMP (ring matches; BACK + R3 / F4 cycle it)");
 
 namespace svr2011 {
 namespace {
@@ -141,6 +141,8 @@ void Notice(const char* text) { ShowNotice(text, 3.0f); }
 
 // MATCH CAMERA (free_cam.h): the preset, and the eye / direction put back after the view is built.
 std::atomic<int> g_preset{-1};  // (-1: from the setting at first use)
+// (RAMP: the fighters' sphere the match camera frames - centre, radius; radius < 0 none yet)
+std::atomic<float> g_sx{0}, g_sy{0}, g_sz{0}, g_sr{-1};
 thread_local bool g_follow = false;  // (inside the follow camera's update: sub_822285F0's hook)
 struct Saved {
   bool active = false;
@@ -337,6 +339,8 @@ void FreeCamPad(uint32_t user, uint8_t* s) {
 
 bool FreeCamPaused() { return g_paused; }
 
+void MatchCameraSphere(float x, float y, float z, float radius) { g_sx = x, g_sy = y, g_sz = z, g_sr = radius; }
+
 int MatchCamera() {
   int p = g_preset.load();
   if (p < 0) g_preset = p = std::clamp(REXCVAR_GET(match_camera), 0, kMatchCameras - 1);
@@ -344,7 +348,7 @@ int MatchCamera() {
 }
 
 const char* MatchCameraName(int preset) {
-  static const char* const kNames[kMatchCameras] = {"NORMAL", "FAR", "CLOSE", "HIGH", "LOW"};
+  static const char* const kNames[kMatchCameras] = {"NORMAL", "FAR", "CLOSE", "HIGH", "LOW", "RAMP"};
   return kNames[std::clamp(preset, 0, kMatchCameras - 1)];
 }
 
@@ -394,7 +398,16 @@ void MatchCameraBefore(uint8_t* base, uint32_t lr, uint32_t view, uint32_t eye, 
     case 3: ne.y = e.y - dist * 0.45f; break;           // HIGH (-Y is up)
     case 4: ne.y = std::min(e.y + dist * 0.25f, -14.0f); break;  // LOW (kept above the ring: the mat is at -12)
   }
-  const V3 nd = Unit(target + ne * -1.0f);
+  V3 nd = Unit(target + ne * -1.0f);
+  if (p == 5 && g_sr.load() >= 0) {
+    // RAMP: the Royal Rumble's camera (sub_82331980) - its direction locked, looking from the hard-camera side
+    // toward the ramp and stage (+z), a little down; its eye follows the fighters (their sphere's centre) from
+    // a distance that keeps them all in the shot. Any arena: the ring's at the origin in every one.
+    const V3 c{g_sx.load(), g_sy.load(), g_sz.load()};
+    nd = Unit(V3{0.0f, 0.3f, 0.95f});
+    const float back = std::clamp(g_sr.load() * 2.5f + 80.0f, 95.0f, 180.0f);  // (the Rumble's: about 95 away)
+    ne = c + nd * -back;
+  }
   static int logged_preset = -1;
   if (p != logged_preset) {
     logged_preset = p;

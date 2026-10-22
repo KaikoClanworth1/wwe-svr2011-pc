@@ -852,6 +852,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     Load();
     tab_ = kDisplayTab;
     row_ = 0;
+    if (const char* v = std::getenv("SVR2011_TEST_GFX_ROW")) row_ = std::atoi(v);  // (test aid: the cursor's row)
     mode_ = g_requested_mode.exchange(kGraphicsMode);
     control_row_ = control_top_ = 0;
     // The A that opened the page is still down: wait for everything to be
@@ -1217,7 +1218,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kFpsCounter: return "FPS: the frame rate. FULL: also the game's video memory (its textures and render targets). F2 switches it.";
       case kOverlayCorner: return "Which corner of the screen the performance numbers sit in.";
       case kMatchCamera:
-        return "The camera in ring matches: NORMAL, FAR, CLOSE, HIGH or LOW. In a match BACK + R3 (F4) changes it.";
+        return "The camera in ring matches: NORMAL, FAR, CLOSE, HIGH, LOW or RAMP (the Royal Rumble's view). In a "
+               "match BACK + R3 (F4) changes it.";
       case kRouterPort: return "Online: your router opens the game's port while you play (UPnP), so far-off players connect directly. OFF: never touched.";
       case kPing: return "Online matches: the delay to the other players at the top right (bars: green under 150 ms, yellow under 250, red above).";
       case kFullSpeed:
@@ -1276,13 +1278,33 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     return "";
   };
   row_ = std::clamp(row_, 0, n - 1);
-  // (9-10 rows: a little tighter, so the help line below stays clear)
-  const float row_h = n > 9 ? 28.0f : n > 7 ? 30.0f : 34.0f, gap = n > 9 ? 6.0f : n > 7 ? 8.0f : 13.0f;
-  const float top = 310 - (float(n) * (row_h + gap) - gap) * 0.5f;
+  // At most kShown rows on screen (the help line below stays clear on any tab): more scroll with the cursor,
+  // arrows above / below saying so.
+  constexpr int kShown = 9;
+  static int first = 0;
+  if (n <= kShown) first = 0;
+  first = std::clamp(first, std::max(0, row_ - kShown + 1), std::min(row_, std::max(0, n - kShown)));
+  const int shown = std::min(n, kShown);
+  // (9 rows: a little tighter, so the help line below stays clear)
+  const float row_h = shown > 7 ? 30.0f : 34.0f, gap = shown > 7 ? 7.0f : 13.0f;
+  const float top = 310 - (float(shown) * (row_h + gap) - gap) * 0.5f;
   const float fs = 22 * s;
-  for (int i = 0; i < n; ++i) {
+  {
+    const float ah = 7 * s, cx = P(639, 0).x;
+    if (first > 0) {
+      const float ay = P(0, top - 12).y;
+      dl->AddTriangleFilled(ImVec2(cx, ay - ah), ImVec2(cx - ah * 1.4f, ay + ah * 0.6f),
+                            ImVec2(cx + ah * 1.4f, ay + ah * 0.6f), IM_COL32(255, 255, 255, 220));
+    }
+    if (first + shown < n) {
+      const float ay = P(0, top + shown * (row_h + gap) - gap + 12).y;
+      dl->AddTriangleFilled(ImVec2(cx, ay + ah), ImVec2(cx - ah * 1.4f, ay - ah * 0.6f),
+                            ImVec2(cx + ah * 1.4f, ay - ah * 0.6f), IM_COL32(255, 255, 255, 220));
+    }
+  }
+  for (int i = first; i < first + shown; ++i) {
     const Row id = rows[i];
-    const float y = top + i * (row_h + gap);
+    const float y = top + (i - first) * (row_h + gap);
     const bool sel = i == row_;
     const ImVec2 a = P(166, y), b = P(1112, y + row_h);
     if (sel) {
