@@ -68,8 +68,11 @@ CUTOUT_TRIS = 0.15   # an opaque-drawn mesh with more triangle middles on see-th
 BLEND_SOLID_TRIS = 0.9
 BLEND_SOLID_MIN = 8
 
-# a bone's segment: bone -> the child it points at (2011 names)
-SEGMENT = {'koshi': 'mune', 'mune': 'kubi', 'kubi': 'atama'}
+# a bone's segment: bone -> the child it points at (2011 names). Not the neck (kubi -> atama): the PS2 head joint
+# isn't where 2011's is (HCTP / SYM: low and back, at the neck's base), so turning the neck onto 2011's neck line tipped
+# the whole head back - the head "looking up" (user report 22 Oct, HCTP / SYM Undertaker). The neck and head keep the
+# chest's turn: the head as upright as the source made it.
+SEGMENT = {'koshi': 'mune', 'mune': 'kubi'}
 for _s in 'lr':
     SEGMENT.update({'%s_momo' % _s: '%s_sune' % _s, '%s_sune' % _s: '%s_ashi' % _s,
                     '%s_ashi' % _s: '%s_tsumasaki' % _s, '%s_sakotsu' % _s: '%s_ninoude' % _s,
