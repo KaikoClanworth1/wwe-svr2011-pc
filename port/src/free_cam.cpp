@@ -89,6 +89,7 @@ Clock::time_point g_last_tick;
 
 // Held keys (the window's key events) and script-held keys (test aid); the pads.
 bool g_held[256] = {};
+std::atomic<bool> g_keyboard_used{false};  // (a key pressed in the game's window this session: the hints are for it)
 Clock::time_point g_script_until[256] = {};
 float g_lx = 0, g_ly = 0, g_rx = 0, g_ry = 0, g_lt = 0, g_rt = 0;
 bool g_lb = false, g_rb = false;
@@ -217,6 +218,7 @@ class FreeCamListener final : public rex::ui::WindowInputListener, public rex::u
   void OnKeyDown(rex::ui::KeyEvent& e) override {
     const uint32_t vk = uint32_t(e.virtual_key());
     if (vk >= 256 || GameKeyboardOpen()) return;
+    g_keyboard_used = true;
     if (vk >= 0x73 && vk <= 0x77) {
       if (!e.is_ctrl_pressed() && !e.is_alt_pressed()) {
         Hotkey(uint8_t(vk));
@@ -306,10 +308,19 @@ void FreeCamSceneView(uint8_t* base, uint32_t view, uint32_t eye, uint32_t dir) 
 void FreeCamFrame(uint8_t* base) {
   static bool hinted = false;
   std::lock_guard lock(g_mutex);
-  if (!hinted && InMatch() && Rd32(base + kMatchFrames) > 180) {
+  // The keys, briefly, once a session: in a match, for someone playing on the keyboard (a pad or touch player
+  // never presses one, so never sees it; not on Android). While the camera flies, its keys stay up (not with
+  // the UI hidden: F7 is for pictures).
+#if !defined(__ANDROID__)
+  if (!hinted && g_keyboard_used.load() && InMatch() && Rd32(base + kMatchFrames) > 180) {
     hinted = true;
-    ShowNotice("Free camera: F6   back: F5   hide UI: F7", 5.0f);
+    ShowNotice("Free camera: F6   back: F5   hide UI: F7", 4.0f);
   }
+  if (g_mode == Mode::kFlying && !g_hide_ui.load())
+    ShowNotice("Free camera: W A S D  Q E  arrows  [ ]   F6 keep   F5 back   F7 hide UI", 0.5f);
+#else
+  (void)base, (void)hinted;
+#endif
   // (F8 holds the camera too: without world updates nothing builds the view - written here it isn't drawn.
   // Frame the shot, then F8.)
 }
@@ -436,6 +447,7 @@ bool FreeCamScriptKey(const char* name, int ms) {
                {"LEFT", 0x25}, {"RIGHT", 0x27}, {"SHIFT", 0x10}, {"CTRL", 0x11}, {"[", 0xDB},    {"]", 0xDD}};
   for (const auto& k : kKeys)
     if (std::strcmp(name, k.name) == 0) {
+      g_keyboard_used = true;  // (a key, as from the window)
       if (k.vk >= 0x73 && k.vk <= 0x77) {
         Hotkey(k.vk);
       } else {
