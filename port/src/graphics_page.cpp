@@ -1232,10 +1232,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kSoft: return "The game's 720p smoothing filter: blurs wide shots at higher resolutions.";
       case kReplays: return "Instant replays after finishers and the highlights at the end of a match.";
       case kCawLimits:
-        return caw_no_limits_ ? "CREATE A SUPERSTAR: no Remaining Points budget, and any number of parts of a kind "
-                                "(layers may clip). STOCK: the game's own limits."
-                              : "CREATE A SUPERSTAR with the game's own limits: the Remaining Points budget and its "
-                                "part counts. OFF: no budget, parts stack freely.";
+        return caw_no_limits_ ? "CREATE A SUPERSTAR: no points budget, stack any parts (they may clip)."
+                              : "CREATE A SUPERSTAR with the game's own points budget and part counts.";
       case kFastStart:
         return "At launch: no logo movies (straight to the Start Screen) and / or no practice ring (straight to the "
                "main menu). Next start.";
