@@ -773,26 +773,36 @@ EXTRAS_DONOR = 560
 
 def place_extras(e, tracked, stock, rep):
     don = stock.get(EXTRAS_DONOR) if stock else None
-    if not don:
-        return
-    dobjs = don[0]['objs']
-    placed = []
+    dobjs = don[0]['objs'] if don else []
+    placed, hidden = [], []
     for i, o in enumerate(e['objs']):
-        if i == 0 or i in tracked or kind(o) != 'char' or i >= len(dobjs) or kind(dobjs[i]) != 'char':
+        if i == 0 or i in tracked or kind(o) != 'char':
             continue
         slots, changed = list(o['slots']), False
-        for j, s in enumerate(slots):
-            if j >= len(dobjs[i]['slots']) or any(struct.unpack_from('>6f', s, 12)):
-                continue
-            ds = dobjs[i]['slots'][j]
-            slots[j] = s[:12] + ds[12:36] + s[36:]
-            changed = changed or any(struct.unpack_from('>6f', ds, 12))
+        if i < len(dobjs) and kind(dobjs[i]) == 'char':
+            for j, s in enumerate(slots):
+                if j >= len(dobjs[i]['slots']) or any(struct.unpack_from('>6f', s, 12)):
+                    continue
+                ds = dobjs[i]['slots'][j]
+                slots[j] = s[:12] + ds[12:36] + s[36:]
+                changed = changed or any(struct.unpack_from('>6f', ds, 12))
+            if changed:
+                placed.append(i)
+        # (and drawn only where 2011's own are: never - their slots are off there. 2K17 105's object 8 had its
+        # segment slots on: with no motion it stood in the ring in the bind pose, the entrant's model on it -
+        # the T-posed AJ Styles of the arena intro, user report 22 Oct)
+        if any(s[2] for s in slots):
+            slots = [s[:2] + b'\0' + s[3:] for s in slots]
+            changed = True
+            hidden.append(i)
         if changed:
             o['slots'] = slots
-            placed.append(i)
     if placed:
         rep['notes'].append('objects %s (extras / referee, no track, no place): 2011\'s places (entrance %d)'
                             % (', '.join(map(str, placed)), EXTRAS_DONOR))
+    if hidden:
+        rep['notes'].append('objects %s (characters without a track): not drawn, as 2011\'s own (a bind pose)'
+                            % ', '.join(map(str, hidden)))
 
 
 def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None, ik=True):
