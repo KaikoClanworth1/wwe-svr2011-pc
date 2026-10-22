@@ -149,11 +149,11 @@ class D3D12Dlss final : public Upscaler {
     e.Feature.pInOutput = D3d(f.output.texture);
     e.pInDepth = D3d(f.depth.texture);
     e.pInMotionVectors = D3d(f.motion.texture);
-    // The jitter: FSR 2's x, its y turned over (DLSS's y runs the other way - with FSR 2's sign the edges show a
-    // checker pattern, with both turned stairs; compared on a still camera).
+    // The jitter as FSR 2's (render pixels, y down): compared on a still camera with all four signs against a 3x
+    // reference - any other leaves stairs along the edges.
     // (test aid SVR2011_TEST_DLSS_JITTER=<x sign>,<y sign>: other signs, to compare)
     static const std::pair<float, float> jitter_sign = [] {
-      std::pair<float, float> v{1.0f, -1.0f};
+      std::pair<float, float> v{1.0f, 1.0f};
       if (const char* e = std::getenv("SVR2011_TEST_DLSS_JITTER")) std::sscanf(e, "%f,%f", &v.first, &v.second);
       return v;
     }();
