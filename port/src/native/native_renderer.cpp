@@ -37,6 +37,7 @@
 #include <vector>
 #if defined(_WIN32)
 #include <windows.h>
+#include <dxgi.h>  // (VideoMemoryBytes)
 #else
 #include <sys/resource.h>
 #endif
@@ -156,9 +157,9 @@ REXCVAR_DEFINE_INT32(native_upscale_quality, 1, "GPU",
 
 REXCVAR_DEFINE_DOUBLE(native_upscale_sharpness, 0.8, "GPU", "FSR 1's sharpening, 0 (none) - 1 (the most)");
 
-REXCVAR_DEFINE_INT32(native_max_scale, 4, "GPU",
-                     "Native renderer: the largest render scale (1 = the Xbox 360's 720p, up to 4). "
-                     "The scale follows the window; phones start at 1.");
+REXCVAR_DEFINE_INT32(native_max_scale, 8, "GPU",
+                     "Native renderer: the largest render scale (1 = the Xbox 360's 720p, up to 8 = 5760 lines; "
+                     "4, AUTO before 8K, counts as 8). The scale follows the window; phones start at 1.");
 
 REXCVAR_DEFINE_STRING(native_texture_quality, "high", "GPU",
                       "Native renderer texture quality: high - as the game has them; medium / low - big "
@@ -1669,12 +1670,67 @@ textures::Context TextureContext(Renderer* r) {
 // 16:9 area) and the render scale is the smallest that covers them - twice
 // over with anti-aliasing (supersampling, averaged down by Present), at
 // most 4x. A change rebuilds the scaled resources once the GPU is idle.
+// [svr2011] Render scales above 4 (5K / 8K screens): the largest scaled
+// target must stay within 16384 a side (D3D11 / D3D12 / Vulkan alike), and
+// the scaled targets' memory within half the GPU's own memory.
+constexpr uint32_t kMaxRenderScale = 8;
+constexpr float kMaxTargetSide = 16384.0f;
+// (bytes a scene pixel costs at a scale: the scene's colour and depth
+// targets, their resolve copies and the frame images - measured: see the
+// 8K commit)
+constexpr uint64_t kBytesPerScenePixel = 48;
+
+// The GPU's own memory (the largest hardware adapter's; 0: unknown - no guard).
+uint64_t VideoMemoryBytes() {
+#if defined(_WIN32)
+  static const uint64_t bytes = [] {
+    uint64_t best = 0;
+    HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
+    using Create = HRESULT(WINAPI*)(REFIID, void**);
+    auto create = dxgi ? reinterpret_cast<Create>(GetProcAddress(dxgi, "CreateDXGIFactory1")) : nullptr;
+    IDXGIFactory1* factory = nullptr;
+    if (create && SUCCEEDED(create(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory))) && factory) {
+      IDXGIAdapter1* adapter = nullptr;
+      for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_ADAPTER_DESC1 desc = {};
+        if (SUCCEEDED(adapter->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
+          best = std::max<uint64_t>(best, desc.DedicatedVideoMemory);
+        adapter->Release();
+      }
+      factory->Release();
+    }
+    return best;
+  }();
+  return bytes;
+#else
+  return 0;
+#endif
+}
+
+// The highest scale up to `s` that fits (`why`: what lowered it).
+uint32_t FitRenderScale(uint32_t s, float wide, float tall, const char*& why) {
+  const float tw = float(kWidth) * wide, th = float(kHeight) * tall;
+  while (s > 1 && (tw * float(s) > kMaxTargetSide || th * float(s) > kMaxTargetSide)) --s, why = "the 16384 texture limit";
+  if (const uint64_t vram = VideoMemoryBytes())
+    while (s > 4 && uint64_t(tw * float(s)) * uint64_t(th * float(s)) * kBytesPerScenePixel > vram / 2) --s, why = "video memory";
+  return s;
+}
+
 void ApplyOutputSettings(Renderer* r) {
   uint32_t win_w = kWidth, win_h = kHeight;
   if (g_window_size) {
     const auto [w, h] = g_window_size();
     if (w >= 64 && h >= 64) win_w = w, win_h = h;
   }
+  // (test: SVR2011_TEST_OUTPUT_SIZE=7680x4320 - render for a window that size
+  // on any screen: Windows keeps a window within about the desktop's size)
+  static const std::pair<uint32_t, uint32_t> test_size = [] {
+    unsigned w = 0, h = 0;
+    const char* v = std::getenv("SVR2011_TEST_OUTPUT_SIZE");
+    return v && std::sscanf(v, "%ux%u", &w, &h) == 2 && w >= 64 && h >= 64 ? std::pair<uint32_t, uint32_t>{w, h}
+                                                                         : std::pair<uint32_t, uint32_t>{0, 0};
+  }();
+  if (test_size.first) win_w = test_size.first, win_h = test_size.second;
   static bool widescreen = REXCVAR_GET(native_widescreen);
   // A match on a window wider than 16:9: as wide as the window.
   float wide = 1.0f;
@@ -1688,6 +1744,12 @@ void ApplyOutputSettings(Renderer* r) {
   if (out_h > win_h) out_h = win_h, out_w = win_h * 16 / 9;
   if (wide > 1.0f) out_h = win_h, out_w = std::min(win_w, uint32_t(std::lround(win_h * kAspect16x9 * wide)));
   if (tall > 1.0f) out_w = win_w, out_h = std::min(win_h, uint32_t(std::lround(win_w / kAspect16x9 * tall)));
+  // (the frame images too stay within 16384 a side: a bigger window - wider
+  // than any screen - gets them that size, the same shape, scaled up)
+  if (float(out_w) > kMaxTargetSide || float(out_h) > kMaxTargetSide) {
+    const float k = kMaxTargetSide / float(std::max(out_w, out_h));
+    out_w = uint32_t(float(out_w) * k), out_h = uint32_t(float(out_h) * k);
+  }
   out_w = std::max(out_w & ~1u, 64u);
   out_h = std::max(out_h & ~1u, 36u);
   // Anti-aliasing: native_aa, else the older on / off setting (on = 2x).
@@ -1738,7 +1800,13 @@ void ApplyOutputSettings(Renderer* r) {
     }
   }
   const uint32_t need = out_h * aa;
-  const uint32_t limit = d3d11_auto ? 1u : uint32_t(std::clamp<int32_t>(max_scale, 1, 4));
+  // (4 was AUTO before 8K: the same now. Above 4 only for the window's own
+  // lines - a 5K / 8K screen - never more supersampling than before.)
+  const int32_t asked = max_scale == 4 ? int32_t(kMaxRenderScale) : max_scale;
+  const uint32_t window_scale = (out_h + kHeight - 1) / kHeight;
+  const uint32_t limit = d3d11_auto ? 1u
+                                    : std::min<uint32_t>(uint32_t(std::clamp<int32_t>(asked, 1, int32_t(kMaxRenderScale))),
+                                                         std::max<uint32_t>(4u, window_scale));
   uint32_t scale = std::clamp<uint32_t>((need + kHeight - 1) / kHeight, 1, limit);
   const bool wide_changed = std::fabs(wide - g_wide) > 0.002f || std::fabs(tall - g_tall) > 0.002f;
   res = std::clamp(res, 0.25f, 1.0f);
@@ -1749,15 +1817,21 @@ void ApplyOutputSettings(Renderer* r) {
   if (fsr) {
     constexpr float kShare[4] = {1.0f / 1.3f, 1.0f / 1.5f, 1.0f / 1.7f, 1.0f / 2.0f};
     const uint32_t h = std::clamp<uint32_t>(uint32_t(std::lround(float(out_h) * kShare[std::clamp(fsr_quality, 0, 3)])),
-                                            kHeight / 4, kHeight * 4);
-    scale = std::min<uint32_t>((h + kHeight - 1) / kHeight, 4);
+                                            kHeight / 4, kHeight * kMaxRenderScale);
+    scale = std::min<uint32_t>((h + kHeight - 1) / kHeight, kMaxRenderScale);
     res = std::clamp(float(h) / float(kHeight * scale), 0.25f, 1.0f);
     g_fsr = h < out_h;
   } else if (scene_height > 0) {  // A chosen height (1080P): the 720p step above it, the scene scaled down to it.
-    const uint32_t h = uint32_t(std::clamp<int32_t>(scene_height, int32_t(kHeight / 4), int32_t(kHeight * 4)));
+    const uint32_t h = uint32_t(std::clamp<int32_t>(scene_height, int32_t(kHeight / 4), int32_t(kHeight * kMaxRenderScale)));
     scale = (h + kHeight - 1) / kHeight;
     res = std::clamp(float(h) / float(kHeight * scale), 0.25f, 1.0f);
   }
+  // Large scales (5K / 8K): what the GPU can hold; the window is filled by
+  // scaling the scene up (or FSR, when it's on).
+  const char* fit_why = nullptr;
+  const uint32_t wanted_scale = scale;
+  scale = FitRenderScale(scale, wide, tall, fit_why);
+  if (scale != wanted_scale) res = 1.0f;  // (the whole of the lower scale)
   // (FSR 2: Direct3D 12 / Vulkan - compute; not with the commands recorded on a second thread)
 #if SVR2011_FSR2
   g_fsr2 = fsr2 && g_fsr && !SlotTables() && !r->recorder && !r->fsr2_failed;
@@ -1795,6 +1869,9 @@ void ApplyOutputSettings(Renderer* r) {
     CreateOutputs(r);
   }
   r->list_state = {};
+  if (fit_why)
+    REXLOG_INFO("native renderer: render scale {} instead of {} for {}x{} ({}; video memory {} MB)", scale,
+                wanted_scale, g_out_w, g_out_h, fit_why, VideoMemoryBytes() >> 20);
   REXLOG_INFO("native renderer: output {}x{}, render scale {}x{}{}{}{}{}", g_out_w, g_out_h, g_scale,
               g_res < 1.0f ? fmt::format(" (scene at {:.0f}%)", g_res * 100) : std::string(),
               g_fsr ? fmt::format(", FSR {} from {}p", g_fsr2 ? 2 : 1, uint32_t(std::lround(kHeight * g_scale * g_res)))

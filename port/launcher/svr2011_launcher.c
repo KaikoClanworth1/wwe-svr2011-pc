@@ -220,20 +220,107 @@ typedef struct { HWND h; int x, y, w, hh, big; } Placed;
 static Placed s_placed[192];
 static int    s_nplaced;
 
-static const struct { int w, h, scale; const WCHAR *label; } k_res[] = {
-    { 1280,  720, 1, L"1280 \x00D7 720  (the console's)" },
-    { 1600,  900, 2, L"1600 \x00D7 900" },
-    { 1920, 1080, 2, L"1920 \x00D7 1080" },
-    { 2560, 1440, 2, L"2560 \x00D7 1440" },
-    { 3840, 2160, 3, L"3840 \x00D7 2160  (4K)" },
-};
-#define N_RES ((int)(sizeof k_res / sizeof k_res[0]))
+/* Window sizes: the ones the screen reports to Windows (EnumDisplaySettings on the launcher's monitor: distinct,
+   at least 854 x 480, at most the desktop's, and the desktop's own) - 5K, 8K and ultrawide where the screen has
+   them, as the game's GRAPHICS -> RESOLUTION row (display_modes.cpp); else (Proton, fewer than two) this fixed
+   list. Test aid: SVR2011_TEST_DISPLAY_MODES=7680x4320,5120x2880,... */
+static const int k_res_fixed[][2] = { { 1280, 720 }, { 1600, 900 }, { 1920, 1080 }, { 2560, 1440 }, { 3840, 2160 } };
+typedef struct { int w, h, scale; WCHAR label[48]; } ResRow;
+static ResRow k_res[64];
+static int N_RES;
+
+static int res_cmp(const void *a, const void *b)
+{
+    const ResRow *x = (const ResRow *)a, *y = (const ResRow *)b;
+    long long ax = (long long)x->w * x->h, ay = (long long)y->w * y->h;
+    return ax != ay ? (ax < ay ? -1 : 1) : x->w - y->w;
+}
+
+/* Adds w x h (once); its label and the emulated renderer's scale for it. */
+static void res_add(int w, int h)
+{
+    int i;
+    for (i = 0; i < N_RES; i++)
+        if (k_res[i].w == w && k_res[i].h == h)
+            return;
+    if (N_RES >= (int)(sizeof k_res / sizeof k_res[0]))
+        return;
+    k_res[N_RES].w = w;
+    k_res[N_RES].h = h;
+    k_res[N_RES].scale = h <= 720 ? 1 : h <= 1440 ? 2 : 3;
+    swprintf_s(k_res[N_RES].label, 48, L"%d \x00D7 %d%s", w, h,
+               w == 1280 && h == 720 ? L"  (the console's)" : w == 3840 && h == 2160 ? L"  (4K)"
+               : w == 5120 && h == 2880 ? L"  (5K)" : w == 7680 && h == 4320 ? L"  (8K)" : L"");
+    N_RES++;
+}
+
+static void res_list_build(HWND near_wnd)
+{
+    static const POINT k_origin = { 0, 0 };
+    char test[512];
+    size_t n = 0;
+    N_RES = 0;
+    if (!getenv_s(&n, test, sizeof test, "SVR2011_TEST_DISPLAY_MODES") && n > 1) {
+        char *ctx = NULL, *tok = strtok_s(test, ",", &ctx);
+        for (; tok; tok = strtok_s(NULL, ",", &ctx)) {
+            int w = 0, h = 0;
+            if (sscanf_s(tok, "%dx%d", &w, &h) == 2 && w >= 640 && h >= 360)
+                res_add(w, h);
+        }
+    } else if (!GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version")) {
+        HMONITOR mon = near_wnd ? MonitorFromWindow(near_wnd, MONITOR_DEFAULTTONEAREST)
+                                : MonitorFromPoint(k_origin, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFOEXW mi;
+        DEVMODEW dm;
+        ZeroMemory(&mi, sizeof mi);
+        mi.cbSize = sizeof mi;
+        ZeroMemory(&dm, sizeof dm);
+        dm.dmSize = sizeof dm;
+        if (mon && GetMonitorInfoW(mon, (MONITORINFO *)&mi) &&
+            EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmPelsWidth) {
+            const int dw = (int)dm.dmPelsWidth, dh = (int)dm.dmPelsHeight;
+            DWORD i;
+            for (i = 0;; i++) {
+                DEVMODEW m;
+                ZeroMemory(&m, sizeof m);
+                m.dmSize = sizeof m;
+                if (!EnumDisplaySettingsW(mi.szDevice, i, &m))
+                    break;
+                if ((int)m.dmPelsWidth >= 854 && (int)m.dmPelsHeight >= 480 && (int)m.dmPelsWidth <= dw &&
+                    (int)m.dmPelsHeight <= dh)
+                    res_add((int)m.dmPelsWidth, (int)m.dmPelsHeight);
+            }
+            res_add(dw, dh);
+        }
+        if (N_RES < 2)
+            N_RES = 0;
+    }
+    if (!N_RES) {
+        int i;
+        for (i = 0; i < (int)(sizeof k_res_fixed / sizeof k_res_fixed[0]); i++)
+            res_add(k_res_fixed[i][0], k_res_fixed[i][1]);
+    }
+    qsort(k_res, (size_t)N_RES, sizeof k_res[0], res_cmp);
+    {  /* (test: SVR2011_TEST_RES_LIST=<file> - the list's entries written there, one a line) */
+        WCHAR path[MAX_PATH];
+        if (GetEnvironmentVariableW(L"SVR2011_TEST_RES_LIST", path, MAX_PATH)) {
+            FILE *f = NULL;
+            if (!_wfopen_s(&f, path, L"w, ccs=UTF-8") && f) {
+                int i;
+                for (i = 0; i < N_RES; i++)
+                    fwprintf(f, L"%s\n", k_res[i].label);
+                fclose(f);
+            }
+        }
+    }
+}
 /* The render resolution: the game's GRAPHICS -> RENDER RESOLUTION steps (graphics_page.cpp kScales), saved
    in the same keys - native_max_scale, native_render_scale, native_scene_height. */
 static const struct { int max_scale; double res; int height; const WCHAR *label; } k_render[] = {
-    { 4, 1.0, 0, L"Auto (follows the window)" }, { 1, 0.5, 0, L"360p" }, { 1, 2.0 / 3.0, 0, L"480p" },
+    { 8, 1.0, 0, L"Auto (follows the window)" }, { 1, 0.5, 0, L"360p" }, { 1, 2.0 / 3.0, 0, L"480p" },
     { 1, 1.0, 0, L"720p (Xbox 360)" }, { 2, 1.0, 900, L"900p" }, { 2, 1.0, 1080, L"1080p" },
-    { 2, 1.0, 0, L"1440p" }, { 3, 1.0, 0, L"2160p (4K)" },
+    { 2, 1.0, 0, L"1440p" }, { 3, 1.0, 0, L"2160p (4K)" }, { 4, 1.0, 2880, L"2880p" },
+    { 6, 1.0, 4320, L"4320p (8K)" },
 };
 #define N_RENDER ((int)(sizeof k_render / sizeof k_render[0]))
 
@@ -2021,6 +2108,16 @@ static void settings_load(void)
     } else if (on_steam_deck()) {
         fullscreen = 1;  /* no settings yet: the Deck's screen is the window */
     }
+    if (w >= 640 && h >= 360) {  /* (a saved size the list lacks: kept as a choice) */
+        int had = N_RES;
+        res_add(w, h);
+        if (N_RES != had) {
+            qsort(k_res, (size_t)N_RES, sizeof k_res[0], res_cmp);
+            SendMessageW(ctl(ID_RESOLUTION), CB_RESETCONTENT, 0, 0);
+            for (i = 0; i < N_RES; i++)
+                SendMessageW(ctl(ID_RESOLUTION), CB_ADDSTRING, 0, (LPARAM)k_res[i].label);
+        }
+    }
     for (i = 0; i < N_RES; i++)
         if (k_res[i].w == w && k_res[i].h == h)
             res = i;
@@ -3275,6 +3372,7 @@ static void build_ui(void)
     add(TAB_SETTINGS, L"Static", L"Window size", SS_LEFT, X0 + 16, 76, 120, 20, 0);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP | WS_GROUP,
             X0 + 150, 72, 240, 200, ID_RESOLUTION);
+    res_list_build(s_wnd);
     for (i = 0; i < N_RES; i++)
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)k_res[i].label);
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 400, 72, 146, 200,

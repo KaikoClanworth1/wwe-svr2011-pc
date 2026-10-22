@@ -11,6 +11,7 @@
 #include "frame_rate.h"
 #include "free_cam.h"
 #include "graphics_page.h"
+#include "display_modes.h"
 #include "arena_lights.h"
 #include "port_map.h"
 #include "backgrounds_page.h"
@@ -60,15 +61,13 @@ using Clock = std::chrono::steady_clock;
 
 struct Resolution {
   int w, h;
-  const char* label;
+  std::string label;
 };
-// Window sizes (the render scale follows the window: native_renderer.cpp).
-constexpr Resolution kResolutions[] = {
-    {854, 480, "854 X 480"},     {1280, 720, "1280 X 720"},   {1600, 900, "1600 X 900"},   {1920, 1080, "1920 X 1080"},
-    {2560, 1440, "2560 X 1440"}, {3840, 2160, "3840 X 2160"},
-};
-constexpr int kNumResolutions = int(std::size(kResolutions));
-constexpr int kDefaultResolution = 3;  // (1920 x 1080)
+// Window sizes (the render scale follows the window: native_renderer.cpp):
+// the ones the screen reports to Windows (display_modes.h - 5K, 8K and
+// ultrawide sizes where the screen has them), else this fixed list.
+constexpr int kFixedResolutions[][2] = {{854, 480}, {1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
+std::vector<Resolution> g_resolutions;
 // GRAPHICS -> RENDER RESOLUTION: native_max_scale (AUTO: follow the window,
 // up to 4x; the phone's screen is the window), and below the Xbox 360's 720p
 // native_render_scale (360P / 480P: the scene smaller, scaled up); between
@@ -79,9 +78,12 @@ struct Scale {
   int height;  // (native_scene_height; 0: off)
   const char* label;
 };
-constexpr Scale kScales[] = {{4, 1.0, 0, "AUTO"},       {1, 0.5, 0, "360P"},     {1, 2.0 / 3.0, 0, "480P"},
+// (AUTO: up to 8x - 4320 lines, an 8K screen; saves from before it say 4,
+// which the renderer reads as AUTO too. 2880P / 4320P: 4x / 6x exactly.)
+constexpr Scale kScales[] = {{8, 1.0, 0, "AUTO"},       {1, 0.5, 0, "360P"},     {1, 2.0 / 3.0, 0, "480P"},
                              {1, 1.0, 0, "720P (XBOX 360)"}, {2, 1.0, 900, "900P"}, {2, 1.0, 1080, "1080P"},
-                             {2, 1.0, 0, "1440P"},       {3, 1.0, 0, "2160P"}};
+                             {2, 1.0, 0, "1440P"},       {3, 1.0, 0, "2160P"},  {4, 1.0, 2880, "2880P"},
+                             {6, 1.0, 4320, "4320P (8K)"}};
 constexpr int kNumScales = int(std::size(kScales));
 // GRAPHICS -> TEXTURES: native_texture_quality (MEDIUM / LOW: big textures
 // from the game's own half / quarter size mipmaps - native/textures.h).
@@ -392,7 +394,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int tab_ = kDisplayTab;
   int mode_ = kGraphicsMode;  // (Mode)
   int row_ = 0;  // (in the tab)
-  int resolution_ = kDefaultResolution;
+  int resolution_ = 0;
   int scale_ = 0;  // (kScales)
   int textures_ = 0;  // (kTextureQualities)
   int brightness_ = 100;  // ARENA BRIGHTNESS, percent (arena_lights.h)
@@ -440,9 +442,37 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
 void GraphicsPage::Load() {
   const int w = rex::cvar::Query<int32_t>("window_width");
   const int h = rex::cvar::Query<int32_t>("window_height");
-  resolution_ = kDefaultResolution;
-  for (int i = 0; i < kNumResolutions; ++i) {
-    if (kResolutions[i].w == w && kResolutions[i].h == h) resolution_ = i;
+  {
+    std::vector<svr2011::DisplaySize> sizes;
+#if defined(_WIN32)
+    sizes = svr2011::DisplaySizes(GameWindow());
+#endif
+    const bool fixed = sizes.empty();
+    if (fixed)
+      for (const auto& f : kFixedResolutions) sizes.push_back({f[0], f[1]});
+    // (the saved size, when the list doesn't have it: kept as a choice)
+    if (w >= 640 && h >= 360 &&
+        std::none_of(sizes.begin(), sizes.end(), [&](const svr2011::DisplaySize& d) { return d.w == w && d.h == h; }))
+      sizes.push_back({w, h});
+    std::sort(sizes.begin(), sizes.end(), [](const auto& a, const auto& b) {
+      return int64_t(a.w) * a.h != int64_t(b.w) * b.h ? int64_t(a.w) * a.h < int64_t(b.w) * b.h : a.w < b.w;
+    });
+    g_resolutions.clear();
+    for (const auto& d : sizes) g_resolutions.push_back({d.w, d.h, std::to_string(d.w) + " X " + std::to_string(d.h)});
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      std::string list;
+      for (const auto& r : g_resolutions) list += (list.empty() ? "" : ", ") + r.label;
+      REXLOG_INFO("[svr2011] graphics: window sizes {}: {}", fixed ? "(fixed list)" : "(the screen's)", list);
+    }
+  }
+  resolution_ = 0;
+  for (int i = 0; i < int(g_resolutions.size()); ++i) {
+    if (g_resolutions[i].w == 1920 && g_resolutions[i].h == 1080) resolution_ = i;  // (the default)
+  }
+  for (int i = 0; i < int(g_resolutions.size()); ++i) {
+    if (g_resolutions[i].w == w && g_resolutions[i].h == h) resolution_ = i;
   }
   {
     const int32_t level = rex::cvar::Query<int32_t>("native_aa");
@@ -577,8 +607,10 @@ void GraphicsPage::Change(int row, int dir) {
       SaveSetting("unlock_30fps", fps60_ ? "true" : "false");
       break;
     case kResolution: {
-      resolution_ = (resolution_ + dir + kNumResolutions) % kNumResolutions;
-      const Resolution& r = kResolutions[resolution_];
+      const int n = std::max(1, int(g_resolutions.size()));
+      resolution_ = (resolution_ + dir + n) % n;
+      if (g_resolutions.empty()) break;
+      const Resolution& r = g_resolutions[resolution_];
       ResizeWindow(r.w, r.h);
       SaveSetting("window_width", std::to_string(r.w));
       SaveSetting("window_height", std::to_string(r.h));
@@ -719,8 +751,8 @@ void GraphicsPage::Change(int row, int dir) {
     case kDisplay:
       display_ = (display_ + dir + kDisplayModes) % kDisplayModes;
       SetDisplayMode(display_);
-      if (display_ == kWindowed) {
-        const Resolution& r = kResolutions[resolution_];
+      if (display_ == kWindowed && resolution_ < int(g_resolutions.size())) {
+        const Resolution& r = g_resolutions[resolution_];
         ResizeWindow(r.w, r.h);
       }
       break;
@@ -1115,7 +1147,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
   const bool restart_crowd = crowd_ != crowd_at_start_;
   auto value = [&](Row id) -> const char* {
     switch (id) {
-      case kResolution: return display_ != kWindowed ? "FULL SCREEN" : kResolutions[resolution_].label;
+      case kResolution:
+        return display_ != kWindowed || resolution_ >= int(g_resolutions.size()) ? "FULL SCREEN"
+                                                                                 : g_resolutions[resolution_].label.c_str();
       case kDisplay: return kDisplayModeNames[display_];
       case kVsync: return vsync_ ? "ON" : "OFF";
       case kFrameRate: {
