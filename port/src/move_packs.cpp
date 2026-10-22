@@ -1304,24 +1304,47 @@ void LinkDlcCopies(rex::filesystem::VirtualFileSystem* vfs, const fs::path& over
 }
 
 // One merge at a time across games sharing the folder (Mods\PacOverlay\merge.lock, a folder: made or not, in
-// one step). A lock left by a game that died goes after 10 minutes.
+// one step; its owner.txt names the game's process). A lock whose game is gone - closed from Task Manager while
+// merging, a crash - is taken over at once: it used to hold every start on a black screen for up to 2 minutes
+// (report 2026-10-22 09:42: "another game is merging - waiting", closed, start after start). A lock with no
+// owner.txt (a game before this change, or one stopped between the two steps) counts as left after 15 s.
+bool ProcessRunning(uint32_t pid);  // (end of the file: the OS headers)
+uint32_t OwnPid();
+
 struct MergeLock {
   fs::path dir;
   bool held = false;
   explicit MergeLock(const fs::path& overlay) : dir(overlay / "merge.lock") {
     std::error_code ec;
     fs::create_directories(overlay, ec);
-    for (int t = 0; t < 1200; ++t) {  // (up to 2 minutes)
+    const auto start = std::chrono::steady_clock::now();
+    for (int t = 0; t < 1200; ++t) {  // (up to 2 minutes while its game runs)
       if (fs::create_directory(dir, ec)) {
         held = true;
+        std::ofstream(dir / "owner.txt", std::ios::binary) << OwnPid() << "\n";
+        if (t)
+          REXLOG_INFO("[svr2011] move packs: merge lock free after {} ms",
+                      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
         return;
       }
+      uint32_t owner = 0;
+      {
+        std::ifstream in(dir / "owner.txt", std::ios::binary);
+        if (!(in >> owner)) owner = 0;
+      }
       const auto age = fs::file_time_type::clock::now() - fs::last_write_time(dir, ec);
-      if (!ec && age > std::chrono::minutes(10)) {
-        fs::remove(dir, ec);
+      const bool old = !ec && age > std::chrono::minutes(10);
+      const bool gone = owner ? (owner == OwnPid() || !ProcessRunning(owner)) : (!ec && age > std::chrono::seconds(15));
+      if (old || gone) {
+        REXLOG_WARN("[svr2011] move packs: merge lock left by {} ({} s old) - taken over",
+                    owner ? "game process " + std::to_string(owner) + ", no longer running" : std::string("a game that stopped"),
+                    ec ? int64_t(-1) : int64_t(std::chrono::duration_cast<std::chrono::seconds>(age).count()));
+        fs::remove_all(dir, ec);
         continue;
       }
-      if (t == 0) REXLOG_INFO("[svr2011] move packs: another game is merging - waiting");
+      if (t == 0)
+        REXLOG_INFO("[svr2011] move packs: another game is merging ({}) - waiting",
+                    owner ? "process " + std::to_string(owner) : std::string("no owner yet"));
       svr2011::KeepWindowAlive();
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -1329,7 +1352,7 @@ struct MergeLock {
   }
   ~MergeLock() {
     std::error_code ec;
-    if (held) fs::remove(dir, ec);
+    if (held) fs::remove_all(dir, ec);
   }
 };
 
@@ -1997,3 +2020,43 @@ REX_HOOK_RAW(sub_82154F00) {
   static std::atomic<bool> told[0x8000] = {};
   if (!told[id].exchange(true)) REXLOG_INFO("[svr2011] move packs: motion {} streamed (YMBs, a pack's)", id);
 }
+
+// The merge lock's owner check (MergeLock above).
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <cerrno>
+#include <signal.h>
+#include <unistd.h>
+#endif
+
+namespace {
+
+uint32_t OwnPid() {
+#if defined(_WIN32)
+  return uint32_t(GetCurrentProcessId());
+#else
+  return uint32_t(getpid());
+#endif
+}
+
+bool ProcessRunning(uint32_t pid) {
+#if defined(_WIN32)
+  HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, DWORD(pid));
+  if (!h) return GetLastError() == ERROR_ACCESS_DENIED;  // (there, but not ours to look at: still running)
+  DWORD code = 0;
+  const bool running = GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
+  CloseHandle(h);
+  return running;
+#else
+  return kill(pid_t(pid), 0) == 0 || errno == EPERM;
+#endif
+}
+
+}  // namespace
