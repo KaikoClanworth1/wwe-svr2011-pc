@@ -496,7 +496,6 @@ def model_from_2008_family(src_pac, cid, pac11, out, portrait, hex_names):
     whole wrestler in a coat / hat for the entrance - 2008's Undertaker 0304) the same way. -> [(entry, 2011 name)];
     .gear the gear entries made ([2011 name])"""
     import svr08_char
-    tp = svr08_char.Template(os.path.join(pac11, 'ch', 'ch104.pac'))
     h, g, t = svrfmt.epac_read(open(src_pac, 'rb').read())
     emd = next(es for ty, es in g if ty == b'EMD ')
     ents, gear_src = [], {}
@@ -513,9 +512,11 @@ def model_from_2008_family(src_pac, cid, pac11, out, portrait, hex_names):
         raise RuntimeError('no wrestler (kind 2) model in %s' % os.path.basename(src_pac))
     ents.sort(key=lambda e: e[1])
     first = ents[0][2]
+    # (the skeleton the source is bound to: ch104's, or 2011's diva skeleton for a diva - svr08_char.template_for)
+    tp, tcid = svr08_char.template_for(os.path.join(pac11, 'ch', 'ch104.pac'), first[0])
     entries, kept = [], []
     import model_budget
-    budget_notes = []
+    budget_notes = ['skeleton: ch%d\'s (a diva\'s)' % tcid] if tcid else []
     for k, (s, att, kids) in enumerate(ents[:4]):
         o = svr08_char.attire(kids, tp, portrait, [0x20], first)
         # a wrestler's vertex buffers get 192 pages in a match (model_budget.py): over that the
@@ -1375,6 +1376,7 @@ def model_w(g, cid, pac11, out, portrait):
         open(ptmp, 'wb').write(portrait)
     with contextlib.redirect_stdout(sys.stderr):
         w13_char.convert(tmp, out, os.path.join(pac11, 'ch', 'ch104.pac'), ptmp)
+    model_w.extras = list(getattr(w13_char.convert, 'extras', []))   # (extra models left out: the report's dropped[])
     for f in (tmp, ptmp):
         try:
             if f:
@@ -1409,6 +1411,17 @@ def fit_budget(path, tmpl):
                 if bad:
                     raise BadInput('attire %s: its hair settings are ones the game can\'t take (%s) - a converter bug, '
                                    'please report it' % (n, '; '.join(bad)))
+            if (0x3c in kids and n.endswith('4') and w13_char.hair_chain_count(kids[0x3c])
+                    and w13_char.model_bytes(kids) > w13_char.CHAIN_MODEL_BYTES_MAX):
+                # (entrance gear - kind 4 - too big for moving hair: its hair stands still for the entrance rather
+                # than the gear going - 2K14 Hollywood Hogan's T-shirt and feather boa, 1 025 384 bytes. 2011's own
+                # gear models have no hair settings either: Undertaker 00010104, Cena 00013904)
+                kids.pop(0x3c, None)
+                kids.pop(0x3d, None)
+                blob = w13_char.pack_kids(kids)
+                changed = True
+                out.append('entrance gear %s: its hair stands still (too big for moving hair: %d bytes)'
+                           % (n, w13_char.model_bytes(kids)))
             if 0x3c in kids and w13_char.hair_chain_count(kids[0x3c]):
                 # (moving hair: the models must fit the room the largest stock attire takes, or the match load
                 # crashes / hangs - Asuka 2K17; the blood overlays go first, then the eyelashes)
@@ -1765,12 +1778,16 @@ def build_single(cid, outdir, o, rep):
                                                                       str(e)[:120]))
         if left:
             drop('attires past %d (2011 has 4 at most): %s' % (g.max_attires, ', '.join(left)))
+        for e in getattr(model_w, 'extras', []):
+            drop(e)
         gear = [n for n in pac_children(out) if n.endswith('4')]
     elif game == 'svr2007':
         import svr07_char
         with contextlib.redirect_stdout(sys.stderr):
             kept7, extra = svr07_char.convert(pac, out, os.path.join(pac11, 'ch', 'ch104.pac'), cid, None)
         note('attires %s (svr07_char)' % ', '.join('%s -> %s' % k[:2] for k in kept7))
+        if getattr(svr07_char.convert, 'skeleton', None):
+            note('skeleton: ch%d (a diva)' % svr07_char.convert.skeleton)
         for e in extra:
             drop('attire %s (a mod holds 4)' % e)
     elif game in ('svr2008', 'svr2009', 'low'):
