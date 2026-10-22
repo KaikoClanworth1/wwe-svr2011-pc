@@ -1,4 +1,4 @@
-"""PlayStation button pictures for the PC port (src/pad_icons.cpp).
+﻿"""PlayStation button pictures for the PC port (src/pad_icons.cpp).
 
 The game's button icons are glyphs of its fonts: each font has an icon page
 (a DXT5 texture, U+E000.. in the strings) - four different ones in all (HD /
@@ -431,6 +431,79 @@ def write_dds_rgba(path, img):
         f.write(Image.merge('RGBA', (b, g, r, a)).tobytes())
 
 
+# Keyboard prompts: the match HUD's button pictures (game2d pacs: GA2D English, GI2D / GG2D / GS2D / GF2D the
+# Italian / German / Spanish / French copies - their BASE/<...> entries hold the same buttons) and the buttons in
+# each, left to right (checked by eye: E007 Y, E008 B, E009 A, E00A X, E00B LB, E00E RB, E00F RT, E010 R3,
+# E011 the right stick, E012 the left stick). The sheet BASE/1/0/1 and the stick pictures are left as they are.
+PROMPT_BUTTONS = {
+    'BASE/0/0/0': [0xE00E], 'BASE/0/4/0': [0xE007], 'BASE/0/6/0': [0xE007], 'BASE/0/7/1': [0xE008],
+    'BASE/0/9/0': [0xE011], 'BASE/0/10/1': [0xE00B], 'BASE/0/12/1': [0xE007], 'BASE/0/18/1': [0xE008],
+    'BASE/0/21/0': [0xE010], 'BASE/0/27/1': [0xE008], 'BASE/0/27/2': [0xE009], 'BASE/0/29/1': [0xE008],
+    'BASE/0/29/2': [0xE00A], 'BASE/0/33/2': [0xE007], 'BASE/0/33/3': [0xE009], 'BASE/0/90/60': [0xE00F],
+    'BASE/6/0/1': [0xE009], 'BASE/6/1/2': [0xE010], 'BASE/7/0/0': [0xE011], 'BASE/8/0/1': [0xE00E, 0xE007],
+    'BASE/8/6/1': [0xE012, 0xE009], 'BASE/12/90/13': [0xE012], 'BASE/13/11/0': [0xE012],
+}
+
+
+def button_boxes(xi, pi, codes, glyphs):
+    """Where the buttons `codes` (left to right) are in a 360 picture: the parts its PS3 version changes - for
+    one button the part most like its Xbox glyph -> [(code, x, y, w, h)]. (PIL only.)"""
+    from PIL import ImageChops, ImageFilter, ImageStat
+
+    def flat(im):  # (colour times alpha, and the alpha: what shows)
+        bg = Image.new('RGBA', im.size, (0, 0, 0, 0))
+        rgb = Image.alpha_composite(bg, im).convert('RGB')
+        return Image.merge('RGBA', (*rgb.split(), im.split()[3]))
+    xf, pf = flat(xi), flat(pi)
+    d = ImageChops.difference(xf, pf)
+    m = d.split()[0]
+    for band in d.split()[1:]:
+        m = ImageChops.lighter(m, band)
+    mask = m.point(lambda v: 255 if v > 40 else 0).filter(ImageFilter.MaxFilter(5))
+    w, h = mask.size
+    px = mask.load()
+    seen = set()
+    parts = []
+    for y0 in range(h):
+        for x0 in range(w):
+            if not px[x0, y0] or (x0, y0) in seen:
+                continue
+            stack, xs, ys = [(x0, y0)], [], []
+            seen.add((x0, y0))
+            while stack:
+                x, y = stack.pop()
+                xs.append(x), ys.append(y)
+                for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                    if 0 <= nx < w and 0 <= ny < h and px[nx, ny] and (nx, ny) not in seen:
+                        seen.add((nx, ny))
+                        stack.append((nx, ny))
+            bx0, by0, bx1, by1 = min(xs), min(ys), max(xs) + 1, max(ys) + 1
+            if bx1 - bx0 >= 8 and by1 - by0 >= 8:
+                parts.append((bx0, by0, bx1 - bx0, by1 - by0))
+    if not parts:
+        return []
+    if len(codes) == 1:  # (the part most like the button's glyph)
+        g = dict(glyphs).get({0xE011: 0xE010, 0xE012: 0xE00D}.get(codes[0], codes[0]))  # (a stick: its click's cap)
+        def score(r):
+            if g is None:
+                return -r[2] * r[3]
+            crop = xf.crop((r[0], r[1], r[0] + r[2], r[1] + r[3]))
+            return sum(ImageStat.Stat(ImageChops.difference(crop, flat(g.resize((r[2], r[3]), Image.BILINEAR)))).mean)
+        # (a part wider than the button - its text changed too: the button-shaped window in it most like it)
+        windows = []
+        for r in parts:
+            gw = max(8, round(r[3] * (g.width / g.height))) if g is not None else r[2]
+            if r[2] <= gw * 1.3:
+                windows.append(r)
+            else:
+                windows += [(x, r[1], gw, r[3]) for x in range(r[0], r[0] + r[2] - gw + 1)]
+        return [(codes[0],) + min(windows, key=score)]
+    parts.sort()
+    if len(parts) != len(codes):
+        return []
+    return [(c,) + r for c, r in zip(codes, parts)]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--ps3', required=True, help='the PS3 game\'s USRDIR')
@@ -477,6 +550,7 @@ def main():
              '# xbox <code>:<x>,<y>,<w>,<h> ...  (Xbox glyphs that identify the page)',
              '# ps <code> <x> <y> <w> <h>      (section 1)',
              '# pair <code> <x> <y> <w> <h>    (section 2: Xbox / PlayStation)']
+    ref_glyphs = []  # (code, its Xbox glyph picture): the largest font's - what prompt buttons are matched to
     for n, (hsh, a) in enumerate(sorted(atlases.items(), key=lambda kv: (kv[1]['w'], kv[1]['source']))):
         w, h = a['w'], a['h']
         x360 = Image.open(io.BytesIO(a['x360'])).convert('RGBA')
@@ -524,6 +598,9 @@ def main():
         if args.previews:
             tall.save(os.path.join(args.out, 'pad_icons', name[:-4] + '.png'))
         lines.append(f'atlas {hsh:016x} {w} {h} {total} {name}   # {a["source"]}')
+        if 0xE009 in tx and (not ref_glyphs or tx[0xE009][3] > ref_glyphs[0][1].height):
+            ref_glyphs = [(c, x360.crop((tx[c][0], tx[c][1], tx[c][0] + tx[c][2], tx[c][1] + tx[c][3])))
+                          for c in BUTTONS if c in tx and c not in (0xE011, 0xE012)]
         # (how a font's icon page is recognized: its Xbox glyphs' places)
         lines.append('xbox ' + ' '.join(f'{c:04x}:{tx[c][0]},{tx[c][1]},{tx[c][2]},{tx[c][3]}'
                                         for c in (0xE000, 0xE009, 0xE00B) if c in tx))
@@ -563,6 +640,16 @@ def main():
                 seen.add((hsh, 'ps'))
                 sprites.append(f'sprite ps {hsh:016x} {w} {h} {fcc.decode()} {len(blob)} {n}   # {rel}:{key}')
                 blob += pb
+                # (keyboard prompts: where its buttons are; the 360 picture the game paints keycaps into)
+                codes = PROMPT_BUTTONS.get(key[key.find('BASE/'):]) if rel.startswith('game2d') and '2D/BASE/' in key else None
+                if fcc == b'DXT5' and codes:
+                    boxes = button_boxes(Image.open(io.BytesIO(xd)).convert('RGBA'),
+                                         Image.open(io.BytesIO(p[key])).convert('RGBA'), codes, ref_glyphs)
+                    if boxes:
+                        sprites.append(f'sprite xb {hsh:016x} {w} {h} DXT5 {len(blob)} {n}   # {rel}:{key}')
+                        blob += xb
+                        for c, bx, by, bw, bh in boxes:
+                            sprites.append(f'kbbox {hsh:016x} {c:04x} {bx} {by} {bw} {bh}')
             # (character select: keyboard versions of the controller pictures, RGBA)
             if name in ('contro02', 'contro03') and (hsh, 'kb') not in seen:
                 seen.add((hsh, 'kb'))
@@ -577,7 +664,8 @@ def main():
                 blob += data
     with open(os.path.join(args.out, 'pad_icons', 'sprites.bin'), 'wb') as f:
         f.write(blob)
-    lines.append('# sprite <ps|kb> <fnv64 of the 360 picture> <w> <h> <DXT1|DXT5> <offset> <size> (sprites.bin, as the DDS)')
+    lines.append('# sprite <ps|kb|xb> <fnv64 of the 360 picture> <w> <h> <DXT1|DXT5> <offset> <size> (sprites.bin, as the DDS)')
+    lines.append('# kbbox <fnv64> <code> <x> <y> <w> <h>  (a button in that picture: the keyboard version gets its keycap there)')
     lines += sprites
     print(f'sprites: {len(sprites)} ({len(blob) // 1024} KB)')
     with open(os.path.join(args.out, 'pad_icons', 'pad_icons.txt'), 'w', newline='\n') as f:
