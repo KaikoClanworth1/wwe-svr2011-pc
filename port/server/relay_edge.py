@@ -80,6 +80,7 @@ class Edge:
         self.link = None     # the link socket
         self.home = None     # home's address (its last good datagram)
         self.home_seen = 0.0
+        self.other_logged = 0.0  # (a second server's link attempts: logged once a minute)
         self.relayed = 0     # since the last state sent home
         self.total_local = self.total_home = self.total_from_home = 0
 
@@ -103,6 +104,17 @@ class Edge:
         if not got:
             return
         kind, body = got
+        # One server: while it's linked (keepalives every second), another one -
+        # an old server left running with --relay-edge (22 Oct: the PC's, next to
+        # the VPS core) - is ignored; taking whichever spoke last flipped home every
+        # second and sent half the players' packets and searches to the wrong
+        # server. (A restarted core takes over once the old link is HOME_QUIET.)
+        if self.home_up() and addr != self.home:
+            now = time.monotonic()
+            if now - self.other_logged >= 60:
+                self.other_logged = now
+                self.log("edge: a second server tried to link from %s:%d - ignored (linked: %s:%d)" % (addr + self.home))
+            return
         if not self.home_up() or addr != self.home:
             self.log("edge: server linked from %s:%d" % addr)
         self.home, self.home_seen = addr, time.monotonic()

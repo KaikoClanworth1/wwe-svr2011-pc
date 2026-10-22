@@ -1940,6 +1940,10 @@ def main():
         return aa.set_password_cli(args.admin_password_file or os.path.join(args.data, "admin_password"))
     if args.relay_edge and (not args.relay_secret or not args.relay_udp_port):
         ap.error("--relay-edge needs --relay-secret and --relay-udp-port")
+    # (a storage node never relays: linked to the edge too, it took half the
+    # players' packets from the core - relay_edge.py now keeps one server)
+    if args.role == "storage" and (args.relay_edge or args.relay_udp_port):
+        ap.error("--role storage doesn't relay: no --relay-edge / --relay-udp-port (the core does)")
     if args.supervise:
         return supervise(args)
     if args.role in ("core", "storage") and not args.storage_key:

@@ -113,6 +113,18 @@ def main():
             check(False, "edge: a link packet without the secret is ignored")
         except socket.timeout:
             check(True, "edge: a link packet without the secret is ignored")
+        # a second server with the secret (an old one left running, 22 Oct): while
+        # the real one is linked the edge doesn't take it as home (no state back)
+        second = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        second.settimeout(2.5)
+        for _ in range(3):
+            second.sendto(rl.link_packet(secret, rl.STATE, b""), ("127.0.0.1", p + 1))
+            time.sleep(0.3)
+        try:
+            second.recvfrom(4096)
+            check(False, "edge: a second server doesn't take the link while the first is linked")
+        except socket.timeout:
+            check(True, "edge: a second server doesn't take the link while the first is linked")
         for proc in procs:
             proc.terminate()
         for proc in procs:
