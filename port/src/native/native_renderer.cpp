@@ -865,6 +865,7 @@ std::atomic<bool> g_match_scene{false};
 // screen): 2D art filling the screen - all of it goes in the 16:9 middle,
 // with black sides.
 bool g_frame_2d = false;
+bool g_flat_frame_seen = false;  // (a match frame without the scene came: SVR2011_TEST_FRAME_SHOT_ON_2D)
 constexpr uint32_t kAspectConstant = 0x82007724;
 constexpr float kAspect16x9 = 16.0f / 9.0f;
 constexpr float kMaxWide = 2.0f;  // (32:9)
@@ -3782,7 +3783,9 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   }
   if (reshaped && depth_test) ++r->frame_stats.wide_3d;
   if (reshaped && g_frame_2d) {
-    middle = (vte & 1) != 0;  // (screen-space passes keep the target's width)
+    // (screen-space passes keep the target's width; so does the scene - a 2D screen has no depth-tested draws, the
+    // first frame after one does)
+    middle = (vte & 1) != 0 && !depth_test;
   } else if (reshaped && (vte & 1) && !depth_test) {
     bool full = false;
     middle = FlatPixels(decl, up, indexed, start, count, base_vertex, tw, th, &full) && !full;
@@ -4742,7 +4745,8 @@ void OnPresent(uint32_t front_buffer) {
   }
   // Test aid: SVR2011_TEST_FRAME_SHOT=<file.ppm> - the frame image as it is (the window's pixels, not a desktop
   // capture), once, 10 s into a match (upscaling comparisons); SVR2011_TEST_FRAME_SHOTS=<n>: n frames in a row
-  // (<file>_<i>.ppm - motion bursts), SVR2011_TEST_FRAME_SHOT_AT=<match frames> instead of 600.
+  // (<file>_<i>.ppm - motion bursts), SVR2011_TEST_FRAME_SHOT_AT=<match frames> instead of 600;
+  // SVR2011_TEST_FRAME_SHOT_ON_2D=1: from the frame after the match's first frame without the scene after that.
   static const std::string frame_shot = [] {
     char* v = nullptr;
     size_t n = 0;
@@ -4752,9 +4756,12 @@ void OnPresent(uint32_t front_buffer) {
   }();
   static const int frame_shots = std::max(1, EnvInt("SVR2011_TEST_FRAME_SHOTS", 1));
   static const uint32_t frame_shot_at = uint32_t(std::max(1, EnvInt("SVR2011_TEST_FRAME_SHOT_AT", 600)));
+  static const bool frame_shot_on_2d = EnvInt("SVR2011_TEST_FRAME_SHOT_ON_2D", 0) != 0;
   static int frame_shots_taken = 0;
   const bool test_shot = !frame_shot.empty() && frame_shots_taken < frame_shots && !r->hidden_frame &&
-                         g_match_scene.load() && Be32(Virtual(0x82E3CD0C)) > frame_shot_at;
+                         g_match_scene.load() &&
+                         Be32(Virtual(0x82E3CD0C)) > frame_shot_at && (!frame_shot_on_2d || g_flat_frame_seen);
+  if (frame_shot_on_2d && g_match_scene.load() && Be32(Virtual(0x82E3CD0C)) <= frame_shot_at) g_flat_frame_seen = false;
   std::shared_ptr<plume::RenderBuffer> shot;
   const uint32_t shot_row = (g_out_w + 63) & ~63u;  // (256-byte rows)
   std::string shot_file = frame_shot;
@@ -4880,7 +4887,25 @@ void OnPresent(uint32_t front_buffer) {
     g_jitter[0] = jitter || fsr2_jitter ? halton(i, 2) - 0.5f : 0.0f;
     g_jitter[1] = jitter || fsr2_jitter ? halton(i, 3) - 0.5f : 0.0f;
   }
-  g_frame_2d =(g_wide > 1.0f || g_tall > 1.0f) && r->frame_stats.drawn > 0 && r->frame_stats.wide_3d == 0;
+  {
+    // A 2D screen (no depth-tested draws into the wide / tall targets): the next frame's 2D in the 16:9 middle,
+    // black bars around it. In a match only once it lasts (kFrames2d): a big move's camera cut has a lone frame
+    // or two without the scene (2 draws), which got the bars and the next frame's scene squeezed into the
+    // 16:9 band - a "cut in half" flash with a black line (16:10 report, 23 Oct).
+    constexpr int kFrames2d = 4;
+    static int run_2d = 0;
+    const bool flat =
+        (g_wide > 1.0f || g_tall > 1.0f) && r->frame_stats.drawn > 0 && r->frame_stats.wide_3d == 0;
+    run_2d = flat ? run_2d + 1 : 0;
+    g_frame_2d = flat && (run_2d >= kFrames2d || !g_match_scene.load());
+    if (flat && run_2d == 1 && g_match_scene.load()) {
+      g_flat_frame_seen = true;  // (test aid: SVR2011_TEST_FRAME_SHOT_ON_2D)
+      static int logged = 0;
+      if (logged++ < 20)
+        REXLOG_INFO("native renderer: frame {} without the scene in a match ({} draws) - kept full size", r->frames,
+                    r->frame_stats.drawn);
+    }
+  }
   {
     static const std::string drawlog = [] {
       char* e = nullptr;
