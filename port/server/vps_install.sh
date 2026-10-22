@@ -191,6 +191,27 @@ location /svr/ {
     client_max_body_size 8m;
 }
 
+# The relay's upload (POST /svr/api/relay/<id>) is one stream for as long as
+# the game is online: nginx counts a chunked body against client_max_body_size
+# too, so /svr/'s 8m cut a long relayed session off at 8 MB. No limit here.
+location /svr/api/relay/ {
+    proxy_pass http://127.0.0.1:8101;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Portal-Role "";
+    proxy_set_header X-Portal-Public "";
+    proxy_set_header X-Portal-User "";
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $http_connection;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_read_timeout 14400s;
+    proxy_send_timeout 14400s;
+    client_max_body_size 0;
+}
+
 # The dashboard with its own sign-in (admin_auth.py): /svr-admin/... is passed as it is.
 # There only a valid admin session is an admin - no header is (X-Forwarded-For is set
 # here, the portal's headers emptied, as above). Five wrong passwords lock an address out.
