@@ -125,8 +125,73 @@ def log(*a):
     print(*a, file=sys.stderr, flush=True)
 
 
+_step = ['starting']   # (the step under way: a crash names it - explain)
+_template_note = []    # (a warning when ch104.pac wasn't the game's own - template104)
+_template_ok = {}
+
+
+def _complete_template(path):
+    """A stock-like template: its first model has the body, the face animation / collision / offsets parts
+    (0x28 0x32 0x50 0x64) and the standard 2011 skeleton (koshi, l_ashi as ch104's)."""
+    if path in _template_ok:
+        return _template_ok[path]
+    ok = False
+    try:
+        import ch_tool
+        import jboy
+        import svrfmt
+        _, groups = ch_tool.epk8_read(open(path, 'rb').read())
+        kids = {i: d for i, d in svrfmt.pach_read(ch_tool.unpack(groups[0][1][0][1]))}
+        if all(k in kids for k in (0, 0x28, 0x32, 0x50, 0x64)):
+            nodes = {n['name']: n for n in jboy.read(ch_tool.unpack(kids[0])).nodes}
+            ok = (abs(nodes['koshi']['t'][0] + 1.869) < 0.02 and abs(nodes['l_ashi']['t'][0] - 4.348) < 0.02)
+    except Exception:   # noqa: BLE001
+        ok = False
+    _template_ok[path] = ok
+    return ok
+
+
+def template104(pac11):
+    """2011's template for a built model: ch104.pac (skeleton frames, face animation, collision, cube map). One that
+    was replaced - no face animation / offsets parts ("KeyError: 40", user report 22 Oct) or another skeleton -
+    gives way to a stock superstar with the same skeleton, with a warning."""
+    for cid in (104, 103, 100, 106, 115, 126):
+        path = os.path.join(pac11, 'ch', 'ch%d.pac' % cid)
+        if _complete_template(path):
+            if cid != 104 and not _template_note:
+                _template_note.append('your game\'s pac\\ch\\ch104.pac isn\'t the original (the converter builds on it): '
+                                      'ch%d.pac, the same skeleton, was used instead - put the original back with the '
+                                      'launcher\'s Install tab (Verify game files)' % cid)
+                progress(1, 'template: ch%d.pac (ch104.pac is not the original)' % cid)
+            return path
+    return os.path.join(pac11, 'ch', 'ch%d.pac' % 104)   # (none: the converter's own error names it)
+
+
 def progress(pct, text):
+    _step[0] = text
     print('progress %d %s' % (pct, text), file=sys.stderr, flush=True)
+
+
+def explain(e, a):
+    """An unexpected error in plain words - the step, the tool file and line, what went wrong - never a bare
+    'KeyError: 40' (user report 22 Oct). The whole traceback goes to stderr (the Mod Maker's log) and detail."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    tb = traceback.extract_tb(e.__traceback__)
+    ours = [f for f in tb if os.path.dirname(os.path.abspath(f.filename)) == here] or tb
+    f = ours[-1] if ours else None
+    what = {KeyError: 'something it looked up (%s) isn\'t there - a part, entry or bone the file was expected to have'
+                      % (e.args[0] if e.args else '?'),
+            IndexError: 'a table in the file is shorter than expected',
+            struct.error: 'the file\'s data didn\'t read as expected (%s)' % e,
+            ValueError: 'a value in the file wasn\'t what the converter expected (%s)' % e,
+            ZeroDivisionError: 'a size or count in the file is zero',
+            MemoryError: 'the computer ran out of memory'}
+    text = next((v for t, v in what.items() if isinstance(e, t)), '%s' % (e or type(e).__name__))
+    item = a.get('item') or (os.path.basename(a.get('src') or '') if a.get('src') else '')
+    return ('Converting %s stopped at the "%s" step: %s.%s The full details are in the Mod Maker\'s log (Report a '
+            'problem sends them).' % (('"%s"' % item) if item else 'it', _step[0], text,
+                                     (' (%s in %s line %d, %s.)' % (type(e).__name__, os.path.basename(f.filename),
+                                                                    f.lineno, f.name)) if f else ''))
 
 
 # --------------------------------------------------------------------------- source
@@ -513,7 +578,7 @@ def model_from_2008_family(src_pac, cid, pac11, out, portrait, hex_names):
     ents.sort(key=lambda e: e[1])
     first = ents[0][2]
     # (the skeleton the source is bound to: ch104's, or 2011's diva skeleton for a diva - svr08_char.template_for)
-    tp, tcid = svr08_char.template_for(os.path.join(pac11, 'ch', 'ch104.pac'), first[0])
+    tp, tcid = svr08_char.template_for(template104(pac11), first[0])
     entries, kept = [], []
     import model_budget
     budget_notes = ['skeleton: ch%d\'s (a diva\'s)' % tcid] if tcid else []
@@ -554,7 +619,7 @@ def model_from_2008_family(src_pac, cid, pac11, out, portrait, hex_names):
         name = b'%06d%02d' % (cid, k * 10 + 4)
         entries.append((name, svrfmt.pach_write([(i, svrfmt.bpe_encode(o[i], compress=True)) for i in sorted(o)])))
         gear_made.append(name.decode())
-    svr08_char.write_epk8(os.path.join(pac11, 'ch', 'ch104.pac'), entries, out)
+    svr08_char.write_epk8(template104(pac11), entries, out)
     model_from_2008_family.notes = budget_notes
     model_from_2008_family.gear = gear_made
     return kept, [e[0] for e in ents[4:]]
@@ -605,7 +670,7 @@ def write_mod(mod, man, out_svrmod, rep=None, pac11=None):
             except Exception as e:   # noqa: BLE001
                 if rep is not None:
                     rep['warnings'].append('%s: bone rests not checked (prop_bones: %s)' % (f_, e))
-        for d_ in fit_budget(os.path.join(mod, 'ch.pac'), os.path.join(pac11, 'ch', 'ch104.pac')):
+        for d_ in fit_budget(os.path.join(mod, 'ch.pac'), template104(pac11)):
             if rep is not None:
                 rep['dropped'].append(d_)
     order = ['type', 'id', 'name', 'short', 'base', 'author', 'made_with', 'version', 'ratings', 'abilities', 'moves',
@@ -714,7 +779,7 @@ def build09(cid, outdir, o, rep):
         note('model: 2011\'s own ch%d.pac (--model 11)' % i11)
     elif g9.has_chpac(cid) and g9.year == 7:   # (per-part textures: baked into 2011's sheets)
         import svr07_char
-        kept7, extra = svr07_char.convert(g9.chpac(cid), os.path.join(mod, 'ch.pac'), os.path.join(pac11, 'ch', 'ch104.pac'),
+        kept7, extra = svr07_char.convert(g9.chpac(cid), os.path.join(mod, 'ch.pac'), template104(pac11),
                                           cid, portrait)
         note('model: %s ch%02d.pac attires %s converted (svr07_char: %s)' % (
             g9.label, cid, ', '.join('%s -> %s' % k[:2] for k in kept7), '; '.join(k[2] for k in kept7)))
@@ -1367,7 +1432,7 @@ def model_w(g, cid, pac11, out, portrait):
             gear = [(n, b) for t, es in g.MP.read_pac(raw) if t == b'EMD ' for n, b in es
                     if len(n) == 8 and n.endswith(b'4') and n[:7] in own]
         model_w.gear = [n.decode('latin1') for n, _ in gear]
-        w13_char.write_epk8(os.path.join(pac11, 'ch', 'ch104.pac'), [(b'EMD ', n, b) for n, b in kept + gear], tmp)
+        w13_char.write_epk8(template104(pac11), [(b'EMD ', n, b) for n, b in kept + gear], tmp)
         raw = open(tmp, 'rb').read()
     open(tmp, 'wb').write(raw)
     ptmp = None
@@ -1375,7 +1440,7 @@ def model_w(g, cid, pac11, out, portrait):
         ptmp = tmp + '.portrait.dds'
         open(ptmp, 'wb').write(portrait)
     with contextlib.redirect_stdout(sys.stderr):
-        w13_char.convert(tmp, out, os.path.join(pac11, 'ch', 'ch104.pac'), ptmp)
+        w13_char.convert(tmp, out, template104(pac11), ptmp)
     model_w.extras = list(getattr(w13_char.convert, 'extras', []))   # (extra models left out: the report's dropped[])
     for f in (tmp, ptmp):
         try:
@@ -1784,7 +1849,7 @@ def build_single(cid, outdir, o, rep):
     elif game == 'svr2007':
         import svr07_char
         with contextlib.redirect_stdout(sys.stderr):
-            kept7, extra = svr07_char.convert(pac, out, os.path.join(pac11, 'ch', 'ch104.pac'), cid, None)
+            kept7, extra = svr07_char.convert(pac, out, template104(pac11), cid, None)
         note('attires %s (svr07_char)' % ', '.join('%s -> %s' % k[:2] for k in kept7))
         if getattr(svr07_char.convert, 'skeleton', None):
             note('skeleton: ch%d (a diva)' % svr07_char.convert.skeleton)
@@ -1810,7 +1875,7 @@ def build_single(cid, outdir, o, rep):
         def base_bust(pac_dir, group, i):   # (the 2010 bust is in the disc's DLC_HD.pac: the base's portrait)
             p = os.path.join(pac11, 'ch', 'ch%d.pac' % base)
             if not os.path.exists(p):
-                p = os.path.join(pac11, 'ch', 'ch104.pac')
+                p = template104(pac11)
             emd = [b for t, n, b in svr10_char.epk8_entries(p) if t == b'EMD ']
             return dict(svrfmt.pach_read(ch_tool.unpack(emd[0])))[0xc8]
         svr10_char.dlc_render = base_bust
@@ -1837,7 +1902,7 @@ def build_single(cid, outdir, o, rep):
             drop('attires %s (a mod holds 4; --attires to choose)' % ', '.join(str(x) for x in ats[4:]))
         tmpl = os.path.join(pac11, 'ch', 'ch%d.pac' % base)
         if not os.path.exists(tmpl):
-            tmpl = os.path.join(pac11, 'ch', 'ch104.pac')
+            tmpl = template104(pac11)
         pw = os.path.join(work, 'ps2_char')
         import subprocess
         r = subprocess.run([sys.executable, os.path.join(HERE, 'ps2_char.py'), lone_pac.ps2_disc(pac, game, work),
@@ -2384,7 +2449,7 @@ def cmd_attires(a):
         raise BadInput('attires needs --src and --out')
     outdir = os.path.abspath(a['out'])
     os.makedirs(outdir, exist_ok=True)
-    tmpl = os.path.join(a['pac11'], 'ch', 'ch104.pac')
+    tmpl = template104(a['pac11'])
     if os.path.isfile(a['src']) and not discfs_image(a['src']):
         game, _ = single_game(a)
         if not game.startswith('ps2_'):
@@ -2530,12 +2595,15 @@ def main(argv):
         return 2
     except Exception as e:   # noqa: BLE001
         traceback.print_exc(file=sys.stderr)
-        res = {'ok': False, 'error': '%s: %s' % (type(e).__name__, e), 'opens': 'superstar'}
+        res = {'ok': False, 'error': explain(e, a), 'opens': 'superstar',
+               'detail': ''.join(traceback.format_exception(type(e), e, e.__traceback__))[-3000:]}
         if rep_path:
             os.makedirs(os.path.dirname(rep_path), exist_ok=True)
             json.dump(res, open(rep_path, 'w'), indent=1)
         print(json.dumps(res))
         return 3
+    if _template_note and isinstance(res, dict):
+        res.setdefault('warnings', []).extend(_template_note)
     if rep_path:
         os.makedirs(os.path.dirname(rep_path), exist_ok=True)
         json.dump(res, open(rep_path, 'w'), indent=1)
