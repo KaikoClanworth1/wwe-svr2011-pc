@@ -119,12 +119,13 @@ def attire(kids, tp, portrait):
     textures = ['color', 'normal', 'mk', 'noise', 'cubemap']
     SKIN = {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}
     EYE = {'texDiffuse': 'color', 'texCubeRefction': 'cubemap', 'texRefctionReg': 'color', 'texOcclusion': 'mk'}
+    nodes = tp.nodes_at(kids[0])   # (the template's nodes on the source's joints: svr08_char.Template.nodes_at)
     out = {0: jboy.write(S8.model(tp, tp.body, [(m8s[0], lambda s: (tp.p_eye, EYE) if 'Reflect' in s['shader'] else (tp.p_skin, SKIN))],
-                                  textures))}
+                                  textures, nodes))}
     if 0x2710 in m8s:
-        out[0x2710] = jboy.write(S8.model(tp, tp.hair, [(m8s[0x2710], lambda s: (tp.p_hair, SKIN))], textures[:5]))
+        out[0x2710] = jboy.write(S8.model(tp, tp.hair, [(m8s[0x2710], lambda s: (tp.p_hair, SKIN))], textures[:5], nodes))
     if 0x4e20 in m8s:
-        out[0x4e20] = jboy.write(S8.model(tp, tp.lash, [(m8s[0x4e20], lambda s: (tp.p_lash, {'texDiffuse': 'color'}))], ['color']))
+        out[0x4e20] = jboy.write(S8.model(tp, tp.lash, [(m8s[0x4e20], lambda s: (tp.p_lash, {'texDiffuse': 'color'}))], ['color'], nodes))
     ta = [('normal', normal_d), ('noise', tp.ttex['noise']), ('Mk', mk_d)]
     ta += [(n, d) for n, d in tp.ttex.items() if n.lower().startswith('bloodhair')]
     out[0xa] = S8.tex_write(ta, tp.t[0xa][:16])
@@ -140,7 +141,6 @@ def attire(kids, tp, portrait):
 
 def convert(src, out, template, cid, portrait=None, limit=4):
     """-> [(2007 entry, 2011 entry, notes)], [entries left out]"""
-    tp = S8.Template(template)
     h, g, t = svrfmt.epac_read(open(src, 'rb').read())
     emd = next(es for ty, es in g if ty == b'EMD ')
     ents = []
@@ -151,6 +151,8 @@ def convert(src, out, template, cid, portrait=None, limit=4):
     if not ents:
         raise RuntimeError('no wrestler (kind 2) model in %s' % os.path.basename(src))
     ents.sort(key=lambda e: e[1])
+    tp, tcid = S8.template_for(template, ents[0][2][0])   # (a diva: 2011's diva skeleton, ch143)
+    convert.skeleton = tcid
     entries, kept = [], []
     for k, (s, att, kids) in enumerate(ents[:limit]):
         o, notes = attire(kids, tp, portrait)
