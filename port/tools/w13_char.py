@@ -395,6 +395,18 @@ class Conv:
                 nd['t'] = tuple(float(x) for x in Rp.T @ (want[nd['name']] - Pp))
             M = np.eye(4)
             M[:3, :3] = rot(fr['r'])
+            child = LIMB_AIM.get(nd['name'])
+            if child in want and nd['name'] in want and p >= 0:
+                # (the limb bone's x along the source's limb: WWE '12 binds the legs straight down and the forearms
+                # 15 degrees lower than 2011's A-pose - on the template's frames the knees / elbows sat off the bone's
+                # axis and the game bent arms and legs the wrong way, report 22 Oct. '13 / 2K14 bind as 2011 does:
+                # nothing turns. 2011's own Mickie James has other arm rests than ch104's and plays.)
+                d = np.asarray(want[child]) - np.asarray(want[nd['name']])
+                if np.linalg.norm(d) > 1e-6:
+                    Rw = Wn[p][:3, :3] @ M[:3, :3]
+                    Rw = _align(Rw[:, 0], d / np.linalg.norm(d)) @ Rw
+                    M[:3, :3] = Wn[p][:3, :3].T @ Rw
+                    set_true_r(nd, _euler_zyx(M[:3, :3]))
             M[:3, 3] = nd['t']
             Wn.append(M if p < 0 else Wn[p] @ M)
         # 13 -> 11 index map (walking up the parents when a bone has no 2011 node)
@@ -672,6 +684,42 @@ def dds_encode(img, fourcc):
 
 GEAR_PIECES = range(0x5208, 0x5300)   # 2K16+ entrance-gear pieces: extra models in an attire's PACH
 GEAR_DROP = (0xf, 0x64, 0xc8, 0xc9, 0x7530, 0x7531, 0x7532)   # (2011's own gear models have none of these: 0xf = a third mask sheet)
+
+
+# limb bones aimed at the source's limb (Conv.nodes_for): bone -> the joint it points at
+LIMB_AIM = {'%s_%s' % (s, a): '%s_%s' % (s, b) for s in 'lr'
+            for a, b in (('ninoude', 'kote'), ('kote', 'te'), ('momo', 'sune'), ('sune', 'ashi'))}
+
+
+def _align(a, b):
+    """the smallest rotation turning unit a onto unit b"""
+    v = np.cross(a, b)
+    c = float(np.dot(a, b))
+    if c > 1 - 1e-9:
+        return np.eye(3)
+    if c < -1 + 1e-9:
+        q = np.array([1.0, 0, 0]) if abs(a[0]) < 0.9 else np.array([0, 1.0, 0])
+        v = np.cross(a, q)
+        v /= np.linalg.norm(v)
+        return 2 * np.outer(v, v) - np.eye(3)
+    V = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + V + V @ V / (1 + c)
+
+
+def _euler_zyx(R):
+    """R = Rz Ry Rx (rot()) -> (x, y, z)"""
+    sy = max(-1.0, min(1.0, -float(R[2, 0])))
+    y = math.asin(sy)
+    if abs(sy) < 0.99999:
+        return math.atan2(R[2, 1], R[2, 2]), y, math.atan2(R[1, 0], R[0, 0])
+    return 0.0, y, math.atan2(-R[0, 1], R[1, 1])
+
+
+def set_true_r(nd, r):
+    """a jboy.py node dict's TRUE rotation (+32..+43): jboy reads 'r' at +28 (its [1], [2] = true x, y) and u40 =
+    true z"""
+    nd['r'] = (nd['r'][0], float(r[0]), float(r[1]))
+    nd['u40'] = struct.unpack('>I', struct.pack('>f', float(r[2])))[0]
 
 
 def is_trans(s13):
