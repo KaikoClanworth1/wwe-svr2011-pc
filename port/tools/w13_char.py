@@ -395,6 +395,18 @@ class Conv:
                 nd['t'] = tuple(float(x) for x in Rp.T @ (want[nd['name']] - Pp))
             M = np.eye(4)
             M[:3, :3] = rot(fr['r'])
+            child = LIMB_AIM.get(nd['name'])
+            if child in want and nd['name'] in want and p >= 0:
+                # (the limb bone's x along the source's limb: WWE '12 binds the legs straight down and the forearms
+                # 15 degrees lower than 2011's A-pose - on the template's frames the knees / elbows sat off the bone's
+                # axis and the game bent arms and legs the wrong way, report 22 Oct. '13 / 2K14 bind as 2011 does:
+                # nothing turns. 2011's own Mickie James has other arm rests than ch104's and plays.)
+                d = np.asarray(want[child]) - np.asarray(want[nd['name']])
+                if np.linalg.norm(d) > 1e-6:
+                    Rw = Wn[p][:3, :3] @ M[:3, :3]
+                    Rw = _align(Rw[:, 0], d / np.linalg.norm(d)) @ Rw
+                    M[:3, :3] = Wn[p][:3, :3].T @ Rw
+                    set_true_r(nd, _euler_zyx(M[:3, :3]))
             M[:3, 3] = nd['t']
             Wn.append(M if p < 0 else Wn[p] @ M)
         # 13 -> 11 index map (walking up the parents when a bone has no 2011 node)
@@ -524,8 +536,42 @@ class Conv:
                 else:
                     sub_map[i] = idx11.get('atama', 0)
             tmpl = tm.meshes[-1]
+
+            def hkind(s, t=tmpl, sl=slots, hair=dst == 0x2710):
+                # (an opaque part in the hair model - 2K14 Hollywood Hogan's bandana, yCh_gear - is drawn like the
+                # body's: the hair card's cut-out would cut it away with the alpha only hair cards get)
+                if hair and not is_trans(s):
+                    return self.p_skin, SKIN
+                return t, sl
             out[dst] = jboy.write(self.model(m13, tm, hnodes, sub_map, origin, tex_body if dst == 0x2710 else ['color'],
-                                             lambda s, t=tmpl, sl=slots: (t, sl)))
+                                             hkind))
+        # extra models of the attire (2K14 Hollywood Hogan's entrance: T_shirt 0x1d and the feather boa 0x271a next
+        # to the hair 0x2710): their meshes join the body, skinned to its bones by name, as gear() does
+        # (each within the match's vertex memory - model_budget, 192 pages with the hair and lashes, no blood: the
+        # opaque ones first; one that doesn't fit is left out: Hogan's feather boa, 21 pages, after the T-shirt)
+        import model_budget
+        extra = sorted(extra_models(kids13), key=lambda i: any(is_trans(s) for s in read13(kids13[i])['meshes']))
+        self.extra, self.extra_left = [], []
+        if extra:
+            merged = jboy.read(out[0])
+            others = sum(model_budget.attire_pages({k: out[k]})[0] for k in (0x2710, 0x4e20) if k in out)
+            for i in extra:
+                m13 = read13(kids13[i])
+                sub = _sub_map(m13, body13, nodes, nmap)
+                pm = self.model(m13, self.body, nodes, sub, origin, tex_body,
+                                lambda s: (self.p_hair, SKIN) if is_trans(s) else kind(s))
+                trial = jboy.read(jboy.write(merged))
+                for ms in pm.meshes:
+                    ms.u74 = len(trial.meshes)
+                    trial.meshes.append(ms)
+                if model_budget.attire_pages({0: jboy.write(trial)})[0] + others > model_budget.LIMIT:
+                    self.extra_left.append((i, m13['name']))
+                    continue
+                merged = trial
+                self.extra.append((i, m13['name']))
+            out[0] = jboy.write(merged)
+            self.last = (merged,) + self.last[1:]
+        extra = [i for i, _ in self.extra]
         # textures
         t13 = dict(tex_bundle_read(kids13[0xa]))
         color13 = tex_bundle_read(kids13[0xc])[0][1]
@@ -538,9 +584,11 @@ class Conv:
         # hair / eyelash cards: WWE '13 cuts them out with the normal map's
         # alpha, 2011 with the colour map's
         cut = []
-        for src in (0x2710, 0x4e22):
+        for src in (0x2710, 0x4e22) + tuple(extra):
             if src in kids13 and kids13[src][:4] == b'JBOY':
                 for s13 in read13(kids13[src])['meshes']:
+                    if not is_trans(s13):   # (opaque parts keep the plain alpha)
+                        continue
                     for idx in s13['strips']:
                         cut += [(s13['uvs'][a_], s13['uvs'][b_], s13['uvs'][c_]) for a_, b_, c_ in strip_tris(idx)]
         out[0xc] = tex_bundle_write([('color', add_alpha(color13, t13['normal'], cut))], kids13[0xc][:16])
@@ -635,7 +683,60 @@ def dds_encode(img, fourcc):
 
 
 GEAR_PIECES = range(0x5208, 0x5300)   # 2K16+ entrance-gear pieces: extra models in an attire's PACH
-GEAR_DROP = (0x64, 0xc8, 0xc9, 0x7530, 0x7531, 0x7532)   # (2011's own gear models have none of these)
+GEAR_DROP = (0xf, 0x64, 0xc8, 0xc9, 0x7530, 0x7531, 0x7532)   # (2011's own gear models have none of these: 0xf = a third mask sheet)
+
+
+# limb bones aimed at the source's limb (Conv.nodes_for): bone -> the joint it points at
+LIMB_AIM = {'%s_%s' % (s, a): '%s_%s' % (s, b) for s in 'lr'
+            for a, b in (('ninoude', 'kote'), ('kote', 'te'), ('momo', 'sune'), ('sune', 'ashi'))}
+
+
+def _align(a, b):
+    """the smallest rotation turning unit a onto unit b"""
+    v = np.cross(a, b)
+    c = float(np.dot(a, b))
+    if c > 1 - 1e-9:
+        return np.eye(3)
+    if c < -1 + 1e-9:
+        q = np.array([1.0, 0, 0]) if abs(a[0]) < 0.9 else np.array([0, 1.0, 0])
+        v = np.cross(a, q)
+        v /= np.linalg.norm(v)
+        return 2 * np.outer(v, v) - np.eye(3)
+    V = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + V + V @ V / (1 + c)
+
+
+def _euler_zyx(R):
+    """R = Rz Ry Rx (rot()) -> (x, y, z)"""
+    sy = max(-1.0, min(1.0, -float(R[2, 0])))
+    y = math.asin(sy)
+    if abs(sy) < 0.99999:
+        return math.atan2(R[2, 1], R[2, 2]), y, math.atan2(R[1, 0], R[0, 0])
+    return 0.0, y, math.atan2(-R[0, 1], R[1, 1])
+
+
+def set_true_r(nd, r):
+    """a jboy.py node dict's TRUE rotation (+32..+43): jboy reads 'r' at +28 (its [1], [2] = true x, y) and u40 =
+    true z"""
+    nd['r'] = (nd['r'][0], float(r[0]), float(r[1]))
+    nd['u40'] = struct.unpack('>I', struct.pack('>f', float(r[2])))[0]
+
+
+def is_trans(s13):
+    """a see-through ('13 family yCh_trans / yCh_Aniso_trans ...) mesh: cut out with the alpha"""
+    return 'trans' in s13['shader'].lower()
+
+
+EXTRA_MODELS = range(0x10, 0x100)   # (JBOY children past the textures: 2K14 Hogan's 04 T_shirt = 0x1d)
+
+
+def extra_models(kids13):
+    """an attire's extra models the body / hair / lash conversion doesn't take: JBOY children 0x10-0xff, and 0x271a
+    when 0x2710 is the hair (2K16+ keep their hair at 0x271a alone)"""
+    out = [i for i in sorted(kids13) if i in EXTRA_MODELS and kids13[i][:4] == b'JBOY']
+    if 0x271a in kids13 and 0x2710 in kids13 and kids13[0x271a][:4] == b'JBOY':
+        out.append(0x271a)
+    return out
 
 
 def _sub_map(m13, body13, nodes, nmap):
@@ -691,6 +792,7 @@ def pack_kids(kids):
 
 def convert(src, out, tmpl, portrait=None):
     conv = Conv(tmpl, portrait)
+    convert.extras = []
     _, groups = ch_tool.epk8_read(open(src, 'rb').read())
     entries = []
     for typ, es in groups:
@@ -703,6 +805,19 @@ def convert(src, out, tmpl, portrait=None):
                 continue
             print('attire', name.decode(), '...')
             out11 = conv.attire(kids)
+            for i, nm in conv.extra:
+                print('  extra model %#x %s: in the body' % (i, nm))
+            for i, nm in conv.extra_left:
+                print('  extra model %#x %s: LEFT OUT (over the 192-page vertex memory)' % (i, nm))
+            convert.extras.extend('%s: %s left out (vertex memory)' % (name.decode('latin1').strip('\x00 '), nm)
+                                  for i, nm in conv.extra_left)
+            if name.rstrip(b'\0 ').endswith(b'4'):
+                # (the source's own entrance gear, kind 4: laid out as 2011's - Undertaker 00010104, Cena 00013904 -
+                # with no face animation, portraits, blood overlays or third mask. Those (0x0f / 0x64 / 0xc8 / 0xc9
+                # in the report) put the model over the match's vertex memory: the match start crashed.)
+                for c in GEAR_DROP:
+                    out11.pop(c, None)
+                print('entrance gear', name.decode(), '(the source gear, laid out as 2011 gear)')
             entries.append((typ, name, pack_kids(out11)))
             g = gear(conv, kids, out11) if name.rstrip(b'\0').endswith(b'2') else None
             if g:   # (its entrance gear: <id><attire>4)

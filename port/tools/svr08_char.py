@@ -142,6 +142,83 @@ class Template:
         self.p_lash = self.lash.meshes[0]
         self.ttex = dict(tex_read(self.t[0xa]))
 
+    def nodes_at(self, body_jboy):
+        """the template's node table with each node on the source body's joint of the same name (the template's
+        frames; a node the source lacks keeps its offset from its parent) - as w13_char.nodes_for. 2007-2009 divas
+        stand on 2011's diva skeleton but with straight legs (ch143's are 15 degrees apart): the knees and feet
+        would sit 1-2 units off the mesh."""
+        from w13_char import read13_nodes, world
+        src = read13_nodes(body_jboy)
+        Ws = world(src)
+        want = {}
+        for i, nd in enumerate(src):
+            want.setdefault(nd['name'], Ws[i][:3, 3])
+        tf = read13_nodes(self.t[0])
+        Wt = world(tf)
+        nodes = [dict(nd) for nd in self.body.nodes]
+        pos = []
+        for j, nd in enumerate(nodes):
+            pj = tf[j]['parent']
+            if pj >= 0 and nd['name'] in want:
+                nd['t'] = tuple(float(x) for x in Wt[pj][:3, :3].T @ (want[nd['name']] - pos[pj]))
+                pos.append(np.array(want[nd['name']], dtype=float))
+            elif pj >= 0:
+                pos.append(pos[pj] + Wt[pj][:3, :3] @ np.array(tf[j]['t']))
+            else:
+                pos.append(Wt[j][:3, 3].copy())
+        return nodes
+
+
+# 2011's own skeletons a 2007-2010 body can be bound to: the men's (ch104, the converters' template) and the divas'
+# (Mickie James ch143: arms 40 degrees down, upper arm 1.7, the hands at the hips - 2007 / 2008 / 2009 divas use this
+# very skeleton; Melina ch174: arms out). Every node of a model sits where its template puts it, so a diva's mesh on
+# ch104's bones hung each hand vertex off a joint a hand's width away: in the game the hands looked wrong and the
+# face moved oddly, in the Mod Maker 3D view the fingers stretched out like spider legs (report 22 Oct, Lita 2007).
+SKELETON_TEMPLATES = (104, 143, 174)
+_SKEL_JOINTS = ('l_ninoude', 'r_ninoude', 'l_kote', 'r_kote', 'l_te', 'r_te', 'l_yubi21', 'r_yubi21',
+                'l_momo', 'r_momo', 'l_sune', 'r_sune', 'l_ashi', 'r_ashi', 'kubi', 'atama')
+_templates = {}
+
+
+def skeleton_gap(jboy_a, jboy_b):
+    """the mean distance (2011 units, 10 cm) between two JBOY bodies' joints of the same names (_SKEL_JOINTS)"""
+    from w13_char import read13_nodes, world
+    pos = []
+    for d in (jboy_a, jboy_b):
+        nodes = read13_nodes(d)
+        W = world(nodes)
+        pos.append({nd['name']: W[i][:3, 3] for i, nd in enumerate(nodes)})
+    common = [n for n in _SKEL_JOINTS if n in pos[0] and n in pos[1]]
+    if not common:
+        return float('inf')
+    return float(np.mean([np.linalg.norm(pos[0][n] - pos[1][n]) for n in common]))
+
+
+def template_for(path, body_jboy):
+    """the Template whose skeleton the source body (its kind-2 JBOY) is bound to: `path` (ch104) or, when the
+    source's joints sit nearer another of SKELETON_TEMPLATES in the same folder (a diva's), that one. ->
+    (Template, its ch id or None for path)"""
+    folder = os.path.dirname(path)
+    best = None
+    for cid in (None,) + tuple(c for c in SKELETON_TEMPLATES if c != 104):
+        q = path if cid is None else os.path.join(folder, 'ch%d.pac' % cid)
+        if not os.path.exists(q):
+            continue
+        if q not in _templates:
+            try:
+                _templates[q] = Template(q)
+            except Exception:   # noqa: BLE001  (a modded or odd stock pac: not a candidate)
+                _templates[q] = None
+        tp = _templates[q]
+        if tp is None:
+            continue
+        gap = skeleton_gap(body_jboy, tp.t[0])
+        if best is None or gap < best[0] - 0.05:   # (ch104 unless another is clearly nearer)
+            best = (gap, tp, cid)
+    if best is None:
+        return Template(path), None
+    return best[1], best[2]
+
 
 # 2008 sway chains with no 2011 bone, pinned to a steadier one than their parent: the turban's
 # cloth tails (7004 kami_a06 back, a07 / a08 rear right / left - both parented to r_sakotsu in 2008)
@@ -193,13 +270,14 @@ def mesh(s8, tmpl, nmap, textures, slots):
     return s
 
 
-def model(tp, tmodel, parts, textures):
-    """parts: [(m8, kind(s8) -> (template mesh, slots))]"""
+def model(tp, tmodel, parts, textures, nodes=None):
+    """parts: [(m8, kind(s8) -> (template mesh, slots))]; nodes: the node table (Template.nodes_at), else the
+    template's"""
     m = jboy.Model()
     m.header, m.name, m.group = tmodel.header, tmodel.name, tmodel.group
     m.name_tail = getattr(tmodel, 'name_tail', b'')
     m.textures = textures
-    m.nodes = tp.body.nodes
+    m.nodes = nodes if nodes is not None else tp.body.nodes
     m.meshes = []
     for m8, kind in parts:
         nmap = node_map(m8, tp)
@@ -235,7 +313,7 @@ def attire(kids, tp, portrait, costume_ids, first_kids):
     both = list(base.items()) + list(base0.items())
     pick = lambda suffix: (next((d for n, d in both if n.lower().endswith(suffix)), None) or
                            next((d for n, d in both if suffix in n.lower() and 'blood' not in n.lower()), None))
-    color, normal = pick('color'), pick('normal')
+    color, normal = pick('color'), pick('normal') or pick('nomal')   # (2009 Maria's sheet is "12702nomal")
     ao = next((d for n, d in base.items() if n.lower().endswith('ao')), None) or pick('ao')
     cos = dict(tex_read(kids[0x27])) if 0x27 in kids else {}
     cpick = lambda suffix: next((d for n, d in cos.items() if n.lower().endswith(suffix)), None)
@@ -249,11 +327,12 @@ def attire(kids, tp, portrait, costume_ids, first_kids):
     for cid in pieces:
         parts.append((remap_uvs(read08(kids[cid]), BOX[2] - BOX[0], BOX[3] - BOX[1], BOX[0], BOX[1]), lambda s: (tp.p_skin, SKIN)))
     fit = lambda m8: m8
-    out = {0: jboy.write(model(tp, tp.body, parts, textures))}
+    nodes = tp.nodes_at(kids[0])
+    out = {0: jboy.write(model(tp, tp.body, parts, textures, nodes))}
     if 0x2710 in kids:
-        out[0x2710] = jboy.write(model(tp, tp.hair, [(fit(read08(kids[0x2710])), lambda s: (tp.p_hair, SKIN))], textures[:5]))
+        out[0x2710] = jboy.write(model(tp, tp.hair, [(fit(read08(kids[0x2710])), lambda s: (tp.p_hair, SKIN))], textures[:5], nodes))
     if 0x4e20 in kids:
-        out[0x4e20] = jboy.write(model(tp, tp.lash, [(fit(read08(kids[0x4e20])), lambda s: (tp.p_lash, {'texDiffuse': 'color'}))], ['color']))
+        out[0x4e20] = jboy.write(model(tp, tp.lash, [(fit(read08(kids[0x4e20])), lambda s: (tp.p_lash, {'texDiffuse': 'color'}))], ['color'], nodes))
     if atlas:
         def paint(body, piece):
             w, h = body.size
