@@ -1689,6 +1689,9 @@ REX_EXTERN(__imp__sub_82227690);
 REX_HOOK_RAW(sub_82227690) {
   __imp__sub_82227690(ctx, base);
   const uint32_t sphere = ctx.r3.u32;
+  if (sphere)  // (MATCH CAMERA's RAMP: free_cam.h)
+    svr2011::MatchCameraSphere(RdF(base + sphere + 16), RdF(base + sphere + 20), RdF(base + sphere + 24),
+                               RdF(base + sphere + 32));
   if (!sphere || Rd32(base + kLiveSettings + 64) != 78) return;
   constexpr uint32_t kChars = 0x82E3CC50;
   float xs[9], ys[9], zs[9];
