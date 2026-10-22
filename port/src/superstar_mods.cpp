@@ -1392,26 +1392,33 @@ void ApplyRecords(uint8_t* base) {
     }
     const std::string was(reinterpret_cast<char*>(sr + kFullName), 0,
                           strnlen(reinterpret_cast<char*>(sr + kFullName), kNameLen));
+    // The slot changes hands (another mod's record there: its id given to this
+    // one, slots.txt) - its profile, the moves and entrance a save kept for
+    // the old mod, goes too: this mod's, as for a new slot. (A placeholder's
+    // record, "0", comes with its blank profile: nothing to take back.)
+    if (!was.empty() && was != "0" && !IsBlank(m.slot, sp)) {
+      std::memcpy(sp, bp, kProfileSize);
+      svr2011::ThreadsSlots(sp, m.folder);
+      SetOwnMoves(sp, m);
+      SetEntranceMedia(sp, m, bp);
+      REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {} (the slot held \"{}\": its moves and entrance not "
+                  "kept for {})", m.base, m.slot, was, m.name);
+    }
     {
+      // As it was before the game reloaded its records. A save loaded into
+      // the slot brings its record AND profile: a removed mod's, when a new
+      // mod has its id now (2.1.5 report: the new mod played with the deleted
+      // one's moves and entrance - this record went back, the profile stayed).
+      // The profile went back above; the record goes back here.
       const Kept* k = nullptr;
       for (const auto& x : g_kept)
         if (x.slot == m.slot && !x.record.empty()) k = &x;
-      if (k) {  // (as it was before the game reloaded its records)
+      if (k) {
         std::memcpy(sr, k->record.data(), kRecordSize);
         OwnSelectTile(sr, br);
         SetHeight(sr, br, m);
         continue;
       }
-    }
-    // The slot changes hands (another mod's record there: its id given to this
-    // one, slots.txt) - its profile, the moves and entrance a save kept for
-    // the old mod, goes too: this mod's, as for a new slot.
-    if (!was.empty() && !IsBlank(m.slot, sp)) {
-      std::memcpy(sp, bp, kProfileSize);
-      svr2011::ThreadsSlots(sp, m.folder);
-      SetOwnMoves(sp, m);
-      SetEntranceMedia(sp, m, bp);
-      REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {} (the slot held \"{}\")", m.base, m.slot, was);
     }
     std::memcpy(sr, br, kRecordSize);
     OwnSelectTile(sr, br);
@@ -2355,7 +2362,32 @@ REX_HOOK_RAW(sub_82B89E50) {
   Remember(base);
   __imp__sub_82B89E50(ctx, base);
   const auto r3 = ctx.r3.u64;
+  // Test aid: SVR2011_TEST_SLOT_HELD=<mod id> - once the slot has a kept record
+  // (a later load: a save), it gets what a save from before a mod swap brings:
+  // another mod's record name and a stock superstar's profile (id 100's).
+  // Logs whether that profile is still there after ApplyRecords.
+  static const int held = std::getenv("SVR2011_TEST_SLOT_HELD") ? std::atoi(std::getenv("SVR2011_TEST_SLOT_HELD")) : -1;
+  static bool held_done = false;
+  uint8_t* held_sp = nullptr;
+  svrfmt::Bytes held_profile;
+  if (held >= 0 && !held_done) {
+    const uint32_t si = Rd16(base + kIdToIndex + uint32_t(held) * 2), oi = Rd16(base + kIdToIndex + 100 * 2);
+    bool kept = false;
+    for (const auto& k : g_kept) kept |= k.slot == uint32_t(held) && !k.record.empty();
+    if (kept && si < 512 && oi < 512) {
+      held_done = true;
+      PutName(base + kRecords + si * kRecordSize, kFullName, "OLD MOD");
+      held_sp = base + kProfiles + si * kProfileSize;
+      std::memcpy(held_sp, base + kProfiles + oi * kProfileSize, kProfileSize);
+      held_profile.assign(held_sp, held_sp + kProfileSize);
+      REXLOG_INFO("[svr2011] superstar mods: test - id {} given \"OLD MOD\"'s record and id 100's profile", held);
+    }
+  }
   ApplyRecords(base);
+  if (held_sp)
+    REXLOG_INFO("[svr2011] superstar mods: test - id {} after the load: profile {}, name \"{}\"", held,
+                std::memcmp(held_sp, held_profile.data(), kProfileSize) ? "its own" : "STILL THE OLD MOD'S",
+                reinterpret_cast<const char*>(base + kRecords + Rd16(base + kIdToIndex + uint32_t(held) * 2) * kRecordSize + kFullName));
   ctx.r3.u64 = r3;
 }
 bool g_pro_load_ran = false;  // (sub_82594C78 ran inside sub_82B89DC0)
