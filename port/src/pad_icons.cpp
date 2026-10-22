@@ -27,6 +27,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -325,10 +326,18 @@ void Prepare(uint32_t font) {
 // ---------------------------------------------------------------------------
 // Other pictures.
 
+// A button in a match prompt picture (pad_icons.txt kbbox): the keyboard version shows the key it is bound to
+// there.
+struct KeyBox {
+  uint32_t code;
+  int x, y, w, h;
+};
 struct Sprite {
   uint32_t width = 0, height = 0;
   bool dxt1 = false;
-  std::array<std::vector<uint8_t>, kKinds> data;  // (by kind; empty: none)
+  std::array<std::vector<uint8_t>, kKinds> data;  // (by kind; empty: none. kXbox: the 360 picture, for KeyBoxes)
+  std::vector<KeyBox> boxes;
+  uint32_t keys_version = ~0u;  // (the bindings the keyboard version was made with)
 };
 std::unordered_map<uint64_t, Sprite> g_sprites;  // by the 360 picture's FNV-1a 64
 std::set<std::pair<uint32_t, uint32_t>> g_sprite_sizes;
@@ -339,6 +348,7 @@ std::atomic<size_t> g_seen_count{0};
 // Copies of texture objects for the other versions: (object, kind) -> copy.
 struct Copy {
   uint32_t object = 0, fetch1 = 0, data = 0;
+  uint32_t keys_version = ~0u;  // (a keyboard version: the bindings it shows)
 };
 std::mutex g_copies_mutex;
 std::map<std::pair<uint32_t, Kind>, Copy> g_copies;
@@ -387,8 +397,15 @@ bool Load() {
       if (offset + size > blob.size()) continue;
       Sprite& sp = g_sprites[std::stoull(hash, nullptr, 16)];
       sp.width = w, sp.height = h, sp.dxt1 = fourcc == "DXT1";
-      sp.data[version == "ps" ? kPlayStation : kKeyboard].assign(blob.begin() + offset, blob.begin() + offset + size);
+      sp.data[version == "ps" ? kPlayStation : version == "xb" ? kXbox : kKeyboard].assign(blob.begin() + offset,
+                                                                                            blob.begin() + offset + size);
       g_sprite_sizes.insert({w, h});
+    } else if (kind == "kbbox") {
+      std::string hash, code;
+      KeyBox b{};
+      s >> hash >> code >> b.x >> b.y >> b.w >> b.h;
+      b.code = uint32_t(std::stoul(code, nullptr, 16));
+      g_sprites[std::stoull(hash, nullptr, 16)].boxes.push_back(b);
     }
   }
   return !g_atlases.empty();
@@ -557,6 +574,170 @@ namespace {
 bool Readable(uint32_t a) { return a >= 0x40000000u && a < 0xFFFF0000u && (a & 3) == 0; }
 
 // The texture object for a picture's other version (0: none / not known).
+// ---------------------------------------------------------------------------
+// Keyboard prompts: the match HUD's button pictures with the player's keys. The 360 picture (DXT5) is
+// decoded, each button's box (KeyBox) cleared and the keycap of the key it is bound to drawn there (from the
+// icon pages' keycaps), and encoded again.
+
+void DecodeDxt5(const uint8_t* src, uint32_t w, uint32_t h, std::vector<uint8_t>& rgba) {
+  rgba.assign(size_t(w) * h * 4, 0);
+  for (uint32_t by = 0; by < (h + 3) / 4; ++by)
+    for (uint32_t bx = 0; bx < (w + 3) / 4; ++bx, src += 16) {
+      uint8_t a[8] = {src[0], src[1]};
+      if (a[0] > a[1]) {
+        for (int i = 1; i < 7; ++i) a[1 + i] = uint8_t(((7 - i) * a[0] + i * a[1]) / 7);
+      } else {
+        for (int i = 1; i < 5; ++i) a[1 + i] = uint8_t(((5 - i) * a[0] + i * a[1]) / 5);
+        a[6] = 0, a[7] = 255;
+      }
+      uint64_t ai = 0;
+      for (int i = 0; i < 6; ++i) ai |= uint64_t(src[2 + i]) << (8 * i);
+      const uint16_t c0 = uint16_t(src[8] | src[9] << 8), c1 = uint16_t(src[10] | src[11] << 8);
+      uint8_t c[4][3];
+      auto unpack = [](uint16_t v, uint8_t* o) {
+        o[0] = uint8_t((v >> 11) * 255 / 31), o[1] = uint8_t(((v >> 5) & 63) * 255 / 63), o[2] = uint8_t((v & 31) * 255 / 31);
+      };
+      unpack(c0, c[0]), unpack(c1, c[1]);
+      for (int k = 0; k < 3; ++k) c[2][k] = uint8_t((2 * c[0][k] + c[1][k]) / 3), c[3][k] = uint8_t((c[0][k] + 2 * c[1][k]) / 3);
+      const uint32_t ci = uint32_t(src[12] | src[13] << 8 | src[14] << 16 | uint32_t(src[15]) << 24);
+      for (int i = 0; i < 16; ++i) {
+        const uint32_t x = bx * 4 + i % 4, y = by * 4 + i / 4;
+        if (x >= w || y >= h) continue;
+        uint8_t* o = &rgba[(size_t(y) * w + x) * 4];
+        const uint8_t* cc = c[(ci >> (2 * i)) & 3];
+        o[0] = cc[0], o[1] = cc[1], o[2] = cc[2], o[3] = a[(ai >> (3 * i)) & 7];
+      }
+    }
+}
+
+void EncodeDxt5(const std::vector<uint8_t>& rgba, uint32_t w, uint32_t h, std::vector<uint8_t>& out) {
+  out.clear();
+  for (uint32_t by = 0; by < (h + 3) / 4; ++by)
+    for (uint32_t bx = 0; bx < (w + 3) / 4; ++bx) {
+      uint8_t px[16][4] = {};
+      for (int i = 0; i < 16; ++i) {
+        const uint32_t x = std::min(bx * 4 + i % 4, w - 1), y = std::min(by * 4 + i / 4, h - 1);
+        std::memcpy(px[i], &rgba[(size_t(y) * w + x) * 4], 4);
+      }
+      uint8_t b[16] = {};
+      // alpha: 8 steps between the block's highest and lowest
+      uint8_t amax = 0, amin = 255;
+      for (auto& q : px) amax = std::max(amax, q[3]), amin = std::min(amin, q[3]);
+      b[0] = amax, b[1] = amin;
+      uint64_t ai = 0;
+      if (amax > amin) {
+        uint8_t a[8] = {amax, amin};
+        for (int i = 1; i < 7; ++i) a[1 + i] = uint8_t(((7 - i) * amax + i * amin) / 7);
+        for (int i = 0; i < 16; ++i) {
+          int best = 0;
+          for (int k = 1; k < 8; ++k)
+            if (std::abs(a[k] - px[i][3]) < std::abs(a[best] - px[i][3])) best = k;
+          ai |= uint64_t(best) << (3 * i);
+        }
+      }
+      for (int i = 0; i < 6; ++i) b[2 + i] = uint8_t(ai >> (8 * i));
+      // colour: the brightest and darkest of the pixels that show, 4 steps
+      int hi = -1, lo = -1, lhi = -1, llo = 1 << 30;
+      for (int i = 0; i < 16; ++i) {
+        if (px[i][3] < 16 && amax >= 16) continue;
+        const int l = px[i][0] * 3 + px[i][1] * 6 + px[i][2];
+        if (l > lhi) lhi = l, hi = i;
+        if (l < llo) llo = l, lo = i;
+      }
+      if (hi < 0) hi = lo = 0;
+      auto pack = [](const uint8_t* q) { return uint16_t((q[0] >> 3) << 11 | (q[1] >> 2) << 5 | (q[2] >> 3)); };
+      uint16_t c0 = pack(px[hi]), c1 = pack(px[lo]);
+      uint32_t ci = 0;
+      if (c0 < c1) std::swap(c0, c1);
+      if (c0 != c1) {
+        uint8_t c[4][3];
+        auto unpack = [](uint16_t v, uint8_t* o) {
+          o[0] = uint8_t((v >> 11) * 255 / 31), o[1] = uint8_t(((v >> 5) & 63) * 255 / 63), o[2] = uint8_t((v & 31) * 255 / 31);
+        };
+        unpack(c0, c[0]), unpack(c1, c[1]);
+        for (int k = 0; k < 3; ++k) c[2][k] = uint8_t((2 * c[0][k] + c[1][k]) / 3), c[3][k] = uint8_t((c[0][k] + 2 * c[1][k]) / 3);
+        for (int i = 0; i < 16; ++i) {
+          int best = 0, bd = 1 << 30;
+          for (int k = 0; k < 4; ++k) {
+            const int d = (c[k][0] - px[i][0]) * (c[k][0] - px[i][0]) + (c[k][1] - px[i][1]) * (c[k][1] - px[i][1]) +
+                          (c[k][2] - px[i][2]) * (c[k][2] - px[i][2]);
+            if (d < bd) bd = d, best = k;
+          }
+          ci |= uint32_t(best) << (2 * i);
+        }
+      }
+      b[8] = uint8_t(c0), b[9] = uint8_t(c0 >> 8), b[10] = uint8_t(c1), b[11] = uint8_t(c1 >> 8);
+      for (int i = 0; i < 4; ++i) b[12 + i] = uint8_t(ci >> (8 * i));
+      out.insert(out.end(), b, b + 16);
+    }
+}
+
+// The icon page with the biggest keycaps, its picture loaded.
+Atlas* KeycapAtlas() {
+  Atlas* best = nullptr;
+  for (const auto& a : g_atlases) {
+    const auto it = a->keys.find("A");
+    if (it != a->keys.end() && (!best || it->second.h > best->keys.at("A").h)) best = a.get();
+  }
+  if (best) PadIconsAtlas(best->width, best->height, best->hash);  // (loads its picture)
+  return best && !best->rgba.empty() ? best : nullptr;
+}
+
+// The keyboard version of a prompt picture for the current bindings (caller holds g_copies_mutex).
+void BuildKeyboardVersion(Sprite& sp) {
+  CheckBinds();
+  const uint32_t version = g_keys_version.load();
+  if (sp.keys_version == version && !sp.data[kKeyboard].empty()) return;
+  Atlas* atlas = KeycapAtlas();
+  if (!atlas || sp.data[kXbox].size() < size_t((sp.width + 3) / 4) * ((sp.height + 3) / 4) * 16) return;
+  std::map<uint32_t, std::string> keys;
+  {
+    std::lock_guard lock(g_keys_mutex);
+    keys = g_keys;
+  }
+  const int w = int(sp.width), h = int(sp.height);
+  std::vector<uint8_t> rgba;
+  DecodeDxt5(sp.data[kXbox].data(), sp.width, sp.height, rgba);
+  for (const KeyBox& box : sp.boxes) {
+    const auto k = keys.find(box.code);
+    const auto r = k != keys.end() ? atlas->keys.find(k->second) : atlas->keys.end();
+    if (r == atlas->keys.end()) continue;
+    const Rect& cap = r->second;
+    for (int y = std::max(box.y, 0); y < std::min(box.y + box.h, h); ++y)  // (the button out)
+      for (int x = std::max(box.x, 0); x < std::min(box.x + box.w, w); ++x) rgba[(size_t(y) * w + x) * 4 + 3] = 0;
+    const float scale = std::min(float(box.w) / cap.w, float(box.h) / cap.h);
+    const int dw = std::max(1, int(cap.w * scale)), dh = std::max(1, int(cap.h * scale));
+    const int ox = box.x + (box.w - dw) / 2, oy = box.y + (box.h - dh) / 2;
+    for (int y = 0; y < dh; ++y)
+      for (int x = 0; x < dw; ++x) {
+        const int tx = ox + x, ty = oy + y;
+        if (tx < 0 || ty < 0 || tx >= w || ty >= h) continue;
+        const int sx = cap.x + std::min(int((x + 0.5f) / scale), cap.w - 1);
+        const int sy = cap.y + std::min(int((y + 0.5f) / scale), cap.h - 1);
+        const uint8_t* src = &atlas->rgba[(size_t(sy) * atlas->width + sx) * 4];
+        uint8_t* dst = &rgba[(size_t(ty) * w + tx) * 4];
+        const int a = src[3];
+        for (int c = 0; c < 3; ++c) dst[c] = uint8_t((src[c] * a + dst[c] * dst[3] * (255 - a) / 255) / std::max(1, a + dst[3] * (255 - a) / 255));
+        dst[3] = uint8_t(a + dst[3] * (255 - a) / 255);
+      }
+  }
+  EncodeDxt5(rgba, sp.width, sp.height, sp.data[kKeyboard]);
+  sp.keys_version = version;
+  // (test aid: SVR2011_PAD_ICONS_DUMP=<folder> - each keyboard prompt as made, a TGA)
+  if (const char* dir = std::getenv("SVR2011_PAD_ICONS_DUMP")) {
+    static int n = 0;
+    std::ofstream f(fmt::format("{}/kb_prompt_{:02d}_{}x{}.tga", dir, n++, w, h), std::ios::binary);
+    const uint8_t head[18] = {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, uint8_t(w), uint8_t(w >> 8), uint8_t(h), uint8_t(h >> 8), 32, 0x28};
+    f.write(reinterpret_cast<const char*>(head), 18);
+    std::vector<uint8_t> bgra(rgba);
+    for (size_t i = 0; i < bgra.size(); i += 4) std::swap(bgra[i], bgra[i + 2]);
+    f.write(reinterpret_cast<const char*>(bgra.data()), std::streamsize(bgra.size()));
+  }
+  static int logged = 0;
+  if (logged++ < 40)
+    REXLOG_INFO("[svr2011] pad icons: keyboard prompt {}x{} - {} button(s) as keys", sp.width, sp.height, sp.boxes.size());
+}
+
 uint32_t VersionOf(uint32_t object, Kind kind) {
   if (!Readable(object) || !g_seen_count.load(std::memory_order_relaxed)) return 0;
   const uint8_t* o = g_base + object;
@@ -571,11 +752,15 @@ uint32_t VersionOf(uint32_t object, Kind kind) {
     std::lock_guard lock(g_seen_mutex);
     if (auto it = g_seen.find(physical); it != g_seen.end()) sp = it->second;
   }
-  if (!sp || sp->data[kind].empty()) return 0;
+  if (!sp) return 0;
   std::lock_guard lock(g_copies_mutex);
+  // (a match prompt for a keyboard player: made for the current key bindings)
+  if (kind == kKeyboard && !sp->boxes.empty()) BuildKeyboardVersion(const_cast<Sprite&>(*sp));
+  if (sp->data[kind].empty()) return 0;
   Copy& c = g_copies[{object, kind}];
   if (c.object && c.fetch1 != fetch1) c = Copy{};  // (the object now holds another picture)
-  if (!c.object) c = Copy{MakeCopy(object, *sp, sp->data[kind]), fetch1, 0};
+  if (c.object && kind == kKeyboard && !sp->boxes.empty() && c.keys_version != sp->keys_version) c = Copy{};
+  if (!c.object) c = Copy{MakeCopy(object, *sp, sp->data[kind]), fetch1, 0, sp->keys_version};
   return c.object;
 }
 
