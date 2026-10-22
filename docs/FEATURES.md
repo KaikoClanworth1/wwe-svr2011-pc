@@ -87,6 +87,13 @@ still being tested.
 - A launcher on the phone with the same tabs as the PC one: Play, Settings, Online, Saves, Paint Tool, DLC, Movies, Install, plus updates and the Graphics driver choice.
 - Installs the game from a disc image or a package on the phone.
 
+## New in 2.1.5
+
+- **Upscaling** (GRAPHICS > UPSCALING and the launcher): FSR 1 (any GPU), FSR 2 (experimental, Direct3D 12 / Vulkan) and DLSS 4 (experimental, NVIDIA RTX on Direct3D 12). Off by default.
+- **Create A Superstar without limits**: no points, any number of layered parts (up to 36 a block); OPTIONS > DISPLAY > CAW LIMITS for the original rules.
+- **Real bikes in entrances** (2K14 / HCTP models, headlight, the Undertaker's black bike), **SvR 2008 crowd fighting** (experimental), **the Streak as a mod** in Road to WrestleMania (experimental), **weapon mods** in OPTIONS > WEAPONS.
+- **Mod Maker**: Bink 2 titantrons convert (with RAD Video Tools), a reworked Import FBX with a Materials tab, a PS2 attire picker, plain-words errors; fixed WWE '12-2K15 entrance outfits, hidden parts, SvR 2007-2009 diva fingers and WWE '12 limbs.
+
 ## New in 2.1.4
 
 ### Launcher
