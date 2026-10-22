@@ -43,7 +43,8 @@ constexpr uint32_t kTextures = 16, kStorage = 16, kConstants = 2;
 constexpr uint32_t kSetTexture = 0, kSetStorage = kTextures, kSetConstant = kTextures + kStorage;
 constexpr uint32_t kDispatchesPerFrame = 24;  // (FSR 2: about 8 a frame, the clears on a reset)
 constexpr uint32_t kConstantBytes = 256;
-constexpr int32_t kClearPass = FFX_FSR2_PASS_COUNT;  // (our own: fsr2_clear.cs)
+constexpr int32_t kClearPass = FFX_FSR2_PASS_COUNT;       // (our own: fsr2_clear.cs)
+constexpr int32_t kMotionPass = FFX_FSR2_PASS_COUNT + 1;  // (fsr2_motion.cs: the camera's motion vectors)
 
 RenderFormat Format(FfxSurfaceFormat f) {
   switch (f) {
@@ -137,7 +138,9 @@ class Backend final : public Upscaler {
   uint32_t render_w = 0, render_h = 0, display_w = 0, display_h = 0;
   std::unique_ptr<plume::RenderSampler> point, linear;
   std::unique_ptr<plume::RenderPipelineLayout> layout;
-  std::array<Pipeline, FFX_FSR2_PASS_COUNT + 1> pipelines;
+  std::array<Pipeline, FFX_FSR2_PASS_COUNT + 2> pipelines;
+  uint32_t motion_used = 0;  // (the frame's descriptor sets taken by Motion before Dispatch's)
+  Resource motion_in, motion_out;  // (Motion's depth and motion: views kept while the textures are the same)
   std::vector<Resource> resources;  // FSR 2's (internal) then this dispatch's registered ones
   size_t internal_count = 0;
   std::vector<FfxGpuJobDescription> jobs;
@@ -252,7 +255,8 @@ class Backend final : public Upscaler {
   }
 
   bool Record(plume::RenderCommandList* list, uint32_t frame_slot) {
-    uint32_t used = 0;
+    uint32_t used = motion_used;
+    motion_used = 0;
     uploads[frame_slot].clear();
     // Initial data first (FSR 2's look-up tables, the default exposure ...).
     for (auto& r : resources) {
@@ -331,6 +335,52 @@ class Backend final : public Upscaler {
       list->dispatch(groups[0], groups[1], groups[2]);
     }
     jobs.clear();
+    return true;
+  }
+
+  // (a renderer's texture as a Resource: views made again when it changes)
+  void Wrap(Resource& r, Texture& t, bool storage) {
+    if (r.texture != t.texture || r.format != t.format) {
+      r = {};
+      r.texture = t.texture;
+      r.format = t.format;
+      r.storage = storage;
+      plume::RenderTextureViewDesc v = plume::RenderTextureViewDesc::Texture2D(t.format);
+      v.mipLevels = 1;
+      r.read = t.texture->createTextureView(v);
+      r.write.resize(storage ? 1 : 0);
+    }
+    r.desc.width = t.width, r.desc.height = t.height;
+    r.layout = t.layout;
+    r.external = &t;
+  }
+
+  bool Motion(plume::RenderCommandList* list, uint32_t frame_slot, Texture& depth, Texture& motion,
+              const float reproject[16], const float jitter[2], uint32_t rw, uint32_t rh) override {
+    if (failed || frame_slot >= slots.size() || !depth.texture || !motion.texture) return false;
+    if (!MakePipeline(kMotionPass, "fsr2_motion.cs")) return false;
+    uint32_t used = 0;
+    Slot* slot = NextSlot(frame_slot, used);
+    if (!slot) return false;
+    Wrap(motion_in, depth, false);
+    Wrap(motion_out, motion, true);
+    Transition(list, motion_in, RenderTextureLayout::SHADER_READ);
+    Transition(list, motion_out, RenderTextureLayout::GENERAL);
+    slot->set->setTexture(kSetTexture, motion_in.texture, RenderTextureLayout::SHADER_READ, motion_in.read.get());
+    slot->set->setTexture(kSetStorage, motion_out.texture, RenderTextureLayout::GENERAL, WriteView(motion_out, 0));
+    float cb[20];
+    std::memcpy(cb, reproject, 64);
+    cb[16] = jitter[0], cb[17] = jitter[1], cb[18] = float(rw), cb[19] = float(rh);
+    std::memcpy(slot->mapped[0], cb, sizeof(cb));
+    slot->set->setBuffer(kSetConstant, slot->constants[0].get(), kConstantBytes);
+    list->setComputePipelineLayout(layout.get());
+    list->setPipeline(pipelines[kMotionPass].pipeline.get());
+    list->setComputeDescriptorSet(slot->set.get(), 0);
+    list->dispatch((rw + 7) / 8, (rh + 7) / 8, 1);
+    // (FSR 2 reads it next)
+    Transition(list, motion_out, RenderTextureLayout::SHADER_READ);
+    motion_in.external = motion_out.external = nullptr;
+    motion_used = used;
     return true;
   }
 

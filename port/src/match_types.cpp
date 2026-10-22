@@ -1624,11 +1624,15 @@ REX_HOOK_RAW(sub_82227150) {
       }
     return v;
   }();
+  // (SVR2011_TEST_VIEW_PAN=<units a frame>: eye and target moved along x with the match's clock - a camera pan the
+  // same every run, for FSR 2's motion vectors)
+  static const float test_pan = std::getenv("SVR2011_TEST_VIEW_PAN") ? float(std::atof(std::getenv("SVR2011_TEST_VIEW_PAN"))) : 0.0f;
   if (test_view.size() == 6 && ctx.r3.u32 == 0x82E3CC00 && Rd32(base + 0x82E3CD0C) > 0) {
     const float dx = test_view[3] - test_view[0], dy = test_view[4] - test_view[1], dz = test_view[5] - test_view[2];
     const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const float pan = test_pan * float(Rd32(base + 0x82E3CD0C) % 600);
     for (int k = 0; k < 3 && len > 1e-3f; ++k) {
-      WrF(base + ctx.r4.u32 + 4 * uint32_t(k), test_view[size_t(k)]);
+      WrF(base + ctx.r4.u32 + 4 * uint32_t(k), test_view[size_t(k)] + (k == 0 ? pan : 0.0f));
       WrF(base + ctx.r5.u32 + 4 * uint32_t(k), (k == 0 ? dx : k == 1 ? dy : dz) / len);
     }
   }

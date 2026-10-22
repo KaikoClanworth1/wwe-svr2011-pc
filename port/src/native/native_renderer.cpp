@@ -655,6 +655,16 @@ struct Renderer {
   RenderTextureLayout fsr2_depth_layout = RenderTextureLayout::UNKNOWN, fsr2_motion_layout = RenderTextureLayout::UNKNOWN;
   uint32_t fsr2_depth_w = 0, fsr2_depth_h = 0;
   uint64_t fsr2_depth_frame = ~0ull, fsr2_last_frame = ~0ull;
+  // (the scene camera's view x projection at the scene's resolve: this frame's [0], the one before [1])
+  float fsr2_vp[2][16] = {};
+  uint64_t fsr2_vp_frame[2] = {~0ull, ~0ull};
+  // (test aid SVR2011_TEST_FSR2_DUMP: FSR 2's inputs read back this frame, written once it is done)
+  struct Fsr2Dump {
+    std::shared_ptr<plume::RenderBuffer> buffer;
+    std::string file;
+    uint32_t w = 0, h = 0, row = 0;  // (row: pixels, 4 bytes each)
+  };
+  std::vector<Fsr2Dump> fsr2_dumps;
   RenderTextureLayout fsr_image_layout = RenderTextureLayout::UNKNOWN;
 #endif
   uint32_t output_index = 0;
@@ -877,6 +887,17 @@ bool EnvFlag(const char* name) {
     free(v);
   }
   return on;
+}
+
+int EnvInt(const char* name, int fallback) {
+  char* v = nullptr;
+  size_t n = 0;
+  int value = fallback;
+  if (_dupenv_s(&v, &n, name) == 0 && v) {
+    value = std::atoi(v);
+    free(v);
+  }
+  return value;
 }
 
 // Debug: SVR2011_NATIVE_NOCACHE=1 - buffers and textures re-checked at every use.
@@ -3480,6 +3501,26 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     ndc[2] += 2.0f * g_jitter[0] / vp.width;
     ndc[3] -= 2.0f * g_jitter[1] / vp.height;
   }
+#if SVR2011_FSR2
+  // FSR 2's camera: the scene's view x projection as the game's shaders have it - vertex constants c54-c57 (its
+  // columns; c50-c53 the view's), taken from the frame's first 3D scene draw. (The scene view global, 0x82E3CC00,
+  // is the game logic's: a frame ahead of what the render thread draws.)
+  if (g_fsr2 && g_match_scene.load() && !middle && (vte & 1) && depth_test && r->fsr2_vp_frame[0] != r->frames &&
+      SceneTarget(uint32_t(tw), uint32_t(th))) {
+    const uint8_t* c = Device() + guest::RegisterOffset(0x4000);
+    float vp[16];
+    for (int col = 0; col < 4; ++col)
+      for (int row = 0; row < 4; ++row) vp[row * 4 + col] = BeFloat(c + 16 * (54 + col) + 4 * row);
+    // (a perspective camera: w = the view's depth - a unit forward, the view's last column (0, 0, 0, 1))
+    const float fwd = std::sqrt(vp[3] * vp[3] + vp[7] * vp[7] + vp[11] * vp[11]);
+    if (std::fabs(fwd - 1.0f) < 0.01f && BeFloat(c + 16 * 53 + 12) == 1.0f && vp[15] == BeFloat(c + 16 * 52 + 12)) {
+      std::memcpy(r->fsr2_vp[1], r->fsr2_vp[0], sizeof(vp));
+      r->fsr2_vp_frame[1] = r->fsr2_vp_frame[0];
+      std::memcpy(r->fsr2_vp[0], vp, sizeof(vp));
+      r->fsr2_vp_frame[0] = r->frames;
+    }
+  }
+#endif
   // Window scissor: D3D keeps it in the mirrored 0x2000 group (0x2011 top-left,
   // 0x2012 bottom-right; x in bits 0-14, y in bits 16-30), already clamped to
   // the scissor rect when the game enables one (device +0x2F00).
@@ -3777,6 +3818,30 @@ void SetMatchScene(bool in_match) { g_match_scene = in_match; }
 
 float CameraFovScale() { return g_fov_scale.load(std::memory_order_relaxed); }
 
+// a^-1 (4 x 4, Gauss-Jordan); false if singular.
+bool Invert4(const float a[16], float out[16]) {
+  double m[4][8];
+  for (int r = 0; r < 4; ++r)
+    for (int c = 0; c < 8; ++c) m[r][c] = c < 4 ? a[r * 4 + c] : (c - 4 == r ? 1.0 : 0.0);
+  for (int c = 0; c < 4; ++c) {
+    int piv = c;
+    for (int r = c + 1; r < 4; ++r)
+      if (std::fabs(m[r][c]) > std::fabs(m[piv][c])) piv = r;
+    if (std::fabs(m[piv][c]) < 1e-12) return false;
+    std::swap(m[piv], m[c]);
+    const double inv = 1.0 / m[c][c];
+    for (int k = 0; k < 8; ++k) m[c][k] *= inv;
+    for (int r = 0; r < 4; ++r)
+      if (r != c) {
+        const double f = m[r][c];
+        for (int k = 0; k < 8; ++k) m[r][k] -= f * m[c][k];
+      }
+  }
+  for (int r = 0; r < 4; ++r)
+    for (int c = 0; c < 4; ++c) out[r * 4 + c] = float(m[r][c + 4]);
+  return true;
+}
+
 void SetWindowSizeSource(std::function<std::pair<uint32_t, uint32_t>()> source) {
   g_window_size = std::move(source);
 }
@@ -3911,7 +3976,9 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
     // The motion vectors: none yet (a still camera's) - cleared once.
     if (r->fsr2_motion) Retire(r, std::move(r->fsr2_motion));
     r->fsr2_motion = r->device->createTexture(plume::RenderTextureDesc::Texture2D(
-        r->fsr2_depth_w, r->fsr2_depth_h, 1, RenderFormat::R16G16_FLOAT, plume::RenderTextureFlag::RENDER_TARGET));
+        r->fsr2_depth_w, r->fsr2_depth_h, 1, RenderFormat::R16G16_FLOAT,
+        plume::RenderTextureFlag::RENDER_TARGET | plume::RenderTextureFlag::STORAGE |
+            plume::RenderTextureFlag::UNORDERED_ACCESS));
     if (!r->fsr2_motion) return false;
     const plume::RenderTexture* mv = r->fsr2_motion.get();
     auto fb = r->device->createFramebuffer(plume::RenderFramebufferDesc(&mv, 1));
@@ -3946,9 +4013,73 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
   f.jitter_x = g_jitter[0];
   f.jitter_y = g_jitter[1];
   f.frame_ms = 1000.0f / 60.0f;
-  f.fov_y = 0.2967f;  // (a match camera's; step 4 reads the scene camera's)
+  f.fov_y = 0.2967f;  // (a match camera's; the scene camera's below when its projection was caught)
+  if (r->fsr2_vp_frame[0] == r->frames) {
+    const float* m = r->fsr2_vp[0];
+    const float sy = std::sqrt(m[1] * m[1] + m[5] * m[5] + m[9] * m[9]);
+    if (sy > 0.01f) f.fov_y = 2.0f * std::atan(1.0f / sy);
+  }
   f.sharpness = g_fsr_sharpness;
   f.reset = r->fsr2_last_frame == ~0ull || r->fsr2_last_frame + 1 != r->frames;
+  // The camera's motion vectors: this frame's clip space (unjittered) to the last frame's - none (identity) without
+  // both cameras.
+  {
+    float reproject[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    float inv[16];
+    // (test aid: SVR2011_TEST_FSR2_NO_MOTION - none, to compare)
+    static const bool no_motion = EnvFlag("SVR2011_TEST_FSR2_NO_MOTION");
+    if (!no_motion && !f.reset && r->fsr2_vp_frame[0] == r->frames && r->fsr2_vp_frame[1] + 1 == r->frames &&
+        Invert4(r->fsr2_vp[0], inv)) {
+      for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) {
+          float sum = 0;
+          for (int k = 0; k < 4; ++k) sum += inv[i * 4 + k] * r->fsr2_vp[1][k * 4 + j];
+          reproject[i * 4 + j] = sum;
+        }
+    }
+    const float jitter[2] = {2.0f * g_jitter[0] / float(rw), -2.0f * g_jitter[1] / float(rh)};
+    r->fsr2->Motion(list, r->back_index, f.depth, f.motion, reproject, jitter, rw, rh);
+    f.motion.layout = RenderTextureLayout::UNKNOWN;
+    // Test aid: SVR2011_TEST_FSR2_DUMP=<prefix> - FSR 2's colour and motion (raw 4-byte texels; the depth has a stencil plane) and the
+    // reprojection (<prefix>.txt) in the frames SVR2011_TEST_FRAME_SHOT(S/_AT) take: the motion vectors checked
+    // offline against the next frame.
+    static const std::string dump = [] {
+      char* v = nullptr;
+      size_t n = 0;
+      std::string s;
+      if (_dupenv_s(&v, &n, "SVR2011_TEST_FSR2_DUMP") == 0 && v) s = v, free(v);
+      return s;
+    }();
+    static int dumps_taken = 0;
+    if (!dump.empty() && !r->hidden_frame && dumps_taken < std::max(1, EnvInt("SVR2011_TEST_FRAME_SHOTS", 1)) &&
+        Be32(Virtual(0x82E3CD0C)) > uint32_t(std::max(1, EnvInt("SVR2011_TEST_FRAME_SHOT_AT", 600)))) {
+      const int i = dumps_taken++;
+      auto take = [&](plume::RenderTexture* t, RenderFormat format, uint32_t w, uint32_t h, const char* what) {
+        Renderer::Fsr2Dump d;
+        d.w = w, d.h = h, d.row = (w + 63) & ~63u;
+        d.file = dump + "_" + std::to_string(i) + "_" + what + ".raw";
+        d.buffer = r->device->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(uint64_t(d.row) * h * 4));
+        if (!d.buffer) return;
+        Barrier(r, t, RenderTextureLayout::COPY_SOURCE);
+        list->copyTextureRegion(
+            plume::RenderTextureCopyLocation::PlacedFootprint(d.buffer.get(), format, w, h, 1, d.row),
+            plume::RenderTextureCopyLocation::Subresource(t));
+        Barrier(r, t, RenderTextureLayout::SHADER_READ);
+        r->fsr2_dumps.push_back(std::move(d));
+      };
+      take(color.resource.get(), color_format, color.host_w, color.host_h, "color");
+      take(r->fsr2_motion.get(), RenderFormat::R16G16_FLOAT, r->fsr2_depth_w, r->fsr2_depth_h, "motion");
+      if (FILE* t = std::fopen((dump + ".txt").c_str(), i ? "a" : "w")) {
+        std::fprintf(t, "%d render %u %u color %u %u depth %u %u jitter %.6f %.6f swap %d reset %d reproject", i, rw, rh,
+                     color.host_w, color.host_h, r->fsr2_depth_w, r->fsr2_depth_h, g_jitter[0], g_jitter[1],
+                     color.swap_rb ? 1 : 0, f.reset ? 1 : 0);
+        for (float v : reproject) std::fprintf(t, " %.9g", v);
+        std::fprintf(t, "\n");
+        std::fclose(t);
+      }
+      r->list_state = {};
+    }
+  }
   if (!r->fsr2->Dispatch(list, r->back_index, f)) return false;
   // (back to what the renderer tracks: the colour, depth and motion read; the result read by the present pass)
   color.layout = RenderTextureLayout::SHADER_READ;
@@ -4144,7 +4275,8 @@ void OnPresent(uint32_t front_buffer) {
     Barrier(r, back, RenderTextureLayout::SHADER_READ);
   }
   // Test aid: SVR2011_TEST_FRAME_SHOT=<file.ppm> - the frame image as it is (the window's pixels, not a desktop
-  // capture), once, 10 s into a match (upscaling comparisons).
+  // capture), once, 10 s into a match (upscaling comparisons); SVR2011_TEST_FRAME_SHOTS=<n>: n frames in a row
+  // (<file>_<i>.ppm - motion bursts), SVR2011_TEST_FRAME_SHOT_AT=<match frames> instead of 600.
   static const std::string frame_shot = [] {
     char* v = nullptr;
     size_t n = 0;
@@ -4152,13 +4284,20 @@ void OnPresent(uint32_t front_buffer) {
     if (_dupenv_s(&v, &n, "SVR2011_TEST_FRAME_SHOT") == 0 && v) s = v, free(v);
     return s;
   }();
-  static bool frame_shot_done = false;
-  const bool test_shot = !frame_shot.empty() && !frame_shot_done && !r->hidden_frame && g_match_scene.load() &&
-                         Be32(Virtual(0x82E3CD0C)) > 600;
+  static const int frame_shots = std::max(1, EnvInt("SVR2011_TEST_FRAME_SHOTS", 1));
+  static const uint32_t frame_shot_at = uint32_t(std::max(1, EnvInt("SVR2011_TEST_FRAME_SHOT_AT", 600)));
+  static int frame_shots_taken = 0;
+  const bool test_shot = !frame_shot.empty() && frame_shots_taken < frame_shots && !r->hidden_frame &&
+                         g_match_scene.load() && Be32(Virtual(0x82E3CD0C)) > frame_shot_at;
   std::shared_ptr<plume::RenderBuffer> shot;
   const uint32_t shot_row = (g_out_w + 63) & ~63u;  // (256-byte rows)
+  std::string shot_file = frame_shot;
   if (test_shot) {
-    frame_shot_done = true;
+    if (frame_shots > 1) {
+      const size_t dot = shot_file.rfind('.');
+      shot_file.insert(dot == std::string::npos ? shot_file.size() : dot, "_" + std::to_string(frame_shots_taken));
+    }
+    ++frame_shots_taken;
     shot = r->device->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(uint64_t(shot_row) * g_out_h * 4));
     if (shot) {
       Barrier(r, back, RenderTextureLayout::COPY_SOURCE);
@@ -4214,7 +4353,7 @@ void OnPresent(uint32_t front_buffer) {
   }
   if (shot && test_shot && WaitForFrame(r, r->back_index, "test frame shot")) {
     if (const auto* px = static_cast<const uint8_t*>(shot->map())) {
-      if (FILE* f = std::fopen(frame_shot.c_str(), "wb")) {  // (binary PPM, RGB)
+      if (FILE* f = std::fopen(shot_file.c_str(), "wb")) {  // (binary PPM, RGB)
         std::fprintf(f, "P6\n%u %u\n255\n", g_out_w, g_out_h);
         std::vector<uint8_t> row(size_t(g_out_w) * 3);
         for (uint32_t y = 0; y < g_out_h; ++y) {
@@ -4223,11 +4362,25 @@ void OnPresent(uint32_t front_buffer) {
           std::fwrite(row.data(), 1, row.size(), f);
         }
         std::fclose(f);
-        REXLOG_INFO("native renderer: test frame shot {}x{} -> {} (jitter {} {})", g_out_w, g_out_h, frame_shot, g_jitter[0], g_jitter[1]);
+        REXLOG_INFO("native renderer: test frame shot {}x{} -> {} (jitter {} {})", g_out_w, g_out_h, shot_file,
+                    g_jitter[0], g_jitter[1]);
       }
       shot->unmap();
     }
   }
+#if SVR2011_FSR2
+  if (!r->fsr2_dumps.empty() && WaitForFrame(r, r->back_index, "FSR 2 dump")) {
+    for (auto& d : r->fsr2_dumps)
+      if (const auto* px = static_cast<const uint8_t*>(d.buffer->map())) {
+        if (FILE* f = std::fopen(d.file.c_str(), "wb")) {
+          for (uint32_t y = 0; y < d.h; ++y) std::fwrite(px + size_t(y) * d.row * 4, 4, d.w, f);
+          std::fclose(f);
+        }
+        d.buffer->unmap();
+      }
+    r->fsr2_dumps.clear();
+  }
+#endif
 #if SVR2011_DEBUG_SUITE
   if (shot && !test_shot && WaitForFrame(r, r->back_index, "dbg shot")) {
     if (const auto* px = static_cast<const uint8_t*>(shot->map())) {

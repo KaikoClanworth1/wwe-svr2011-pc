@@ -50,6 +50,7 @@ DEFINES = {
     "FFX_FSR2_OPTION_APPLY_SHARPENING": 0,
 }
 VK_SHIFT = {"t": 0, "u": 32, "b": 48, "s": 56}
+OWN = ["clear", "motion"]  # (the backend's own passes: src/native/fsr2_<name>.hlsl)
 
 DECL_RE = re.compile(r"\b(\w+)\s*:\s*register\(\s*([tub])(\d+)\s*\)")
 
@@ -107,22 +108,23 @@ def build(out):
             errors.append((name, "bindings", err))
             b = []
         table.append((name, b))
-    # The backend's clear job (src/native/fsr2_clear.hlsl), on the same layout.
-    clear = os.path.join(PORT, "src", "native", "fsr2_clear.hlsl")
-    base = "fsr2_clear.cs"
-    err = run(["-nologo", "-HV", "2021", "-E", "CS", "-T", "cs_6_2", "-Fo", os.path.join(out, "dxil", base + ".dxil"),
-               clear])
-    if err:
-        errors.append(("clear", "dxil", err))
+    # The backend's own passes on the same layout: its clear job, the camera's motion vectors (src/native/fsr2_*.hlsl).
     shifts = []
     for kind, at in VK_SHIFT.items():
         shifts += [f"-fvk-{kind}-shift", str(at), "0"]
-    err = run(["-nologo", "-HV", "2021", "-E", "CS", "-T", "cs_6_2", "-spirv", "-fspv-target-env=vulkan1.1",
-               "-fvk-use-dx-layout", *shifts, "-Fo", os.path.join(out, "spirv", base + ".spv"), clear])
-    if err:
-        errors.append(("clear", "spirv", err))
+    for own in OWN:
+        src = os.path.join(PORT, "src", "native", "fsr2_" + own + ".hlsl")
+        base = "fsr2_" + own + ".cs"
+        err = run(["-nologo", "-HV", "2021", "-E", "CS", "-T", "cs_6_2", "-Fo", os.path.join(out, "dxil", base + ".dxil"),
+                   src])
+        if err:
+            errors.append((own, "dxil", err))
+        err = run(["-nologo", "-HV", "2021", "-E", "CS", "-T", "cs_6_2", "-spirv", "-fspv-target-env=vulkan1.1",
+                   "-fvk-use-dx-layout", *shifts, "-Fo", os.path.join(out, "spirv", base + ".spv"), src])
+        if err:
+            errors.append((own, "spirv", err))
     # (Vulkan with compact tables reads .spvc: the same code - one set of its own either way)
-    for name in [p[0] for p in PASSES] + ["clear"]:
+    for name in [p[0] for p in PASSES] + OWN:
         spv = os.path.join(out, "spirv", "fsr2_" + name + ".cs.spv")
         if os.path.exists(spv):
             with open(spv, "rb") as f, open(spv[:-4] + ".spvc", "wb") as g:
