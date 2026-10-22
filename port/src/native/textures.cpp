@@ -24,6 +24,10 @@
 #include "native/texture_packs.h"
 #include "pad_icons.h"
 
+REXCVAR_DEFINE_BOOL(native_mat_fix, true, "GPU",
+                    "Native renderer: the stock ring mats without their light bands (rows of light patches in "
+                    "the game's mat art; false: the original). Applies from the next arena.");
+
 namespace svr2011::native::textures {
 
 namespace {
@@ -720,6 +724,68 @@ std::vector<uint8_t> DumpPixels(const std::vector<uint8_t>& blocks, TF format, u
   return rgba;
 }
 
+// The stock ring mats (native_mat_fix, on by default): the game's three ring mat diffuses (256 x 1024 DXT5:
+// bg00-19 / 22 / 23 / 25 / 26, bg24 + bg29, bg20 - their content hashes; the same on the PS3) have a light
+// patch every few texel rows, drawn as rows of faint rectangles on the mat. Replaced, as a texture pack would,
+// by the same picture with each texel's brightness brought towards its neighbourhood's (+-8 texels, by at most
+// 10%): the patches go, the canvas's grain and its marks (far darker) stay. Made here from the game's own data -
+// no files.
+constexpr uint64_t kStockMats[] = {0xe1ae7cdd82d3cfcbull, 0x25702b2a9c01e0e1ull, 0xcd7c25e82c51c985ull};
+bool StockMat(uint64_t hash) {
+  for (uint64_t m : kStockMats)
+    if (m == hash) return true;
+  return false;
+}
+std::shared_ptr<const texture_packs::Replacement> EvenMat(std::vector<uint8_t> rgba, uint32_t w, uint32_t h) {
+  const size_t n = size_t(w) * h;
+  std::vector<float> lum(n), tmp(n);
+  double mean = 0;
+  for (size_t i = 0; i < n; ++i) {
+    const uint8_t* p = &rgba[i * 4];
+    mean += lum[i] = p[0] * 0.3f + p[1] * 0.59f + p[2] * 0.11f;
+  }
+  mean /= double(n);
+  // (the neighbourhood: a box blur, wrapping as the mat's texture does)
+  constexpr int kNear = 8;
+  for (uint32_t y = 0; y < h; ++y)
+    for (uint32_t x = 0; x < w; ++x) {
+      float sum = 0;
+      for (int d = -kNear; d <= kNear; ++d) sum += lum[size_t(y) * w + (x + d + w) % w];
+      tmp[size_t(y) * w + x] = sum / (2 * kNear + 1);
+    }
+  for (uint32_t y = 0; y < h; ++y)
+    for (uint32_t x = 0; x < w; ++x) {
+      float sum = 0;
+      for (int d = -kNear; d <= kNear; ++d) sum += tmp[size_t((y + d + h) % h) * w + x];
+      const double k = std::clamp(mean / std::max(sum / (2 * kNear + 1), 1.0f), 0.9, 1.1);
+      uint8_t* p = &rgba[(size_t(y) * w + x) * 4];
+      for (int c = 0; c < 3; ++c) p[c] = uint8_t(std::clamp(p[c] * k + 0.5, 0.0, 255.0));
+    }
+  auto r = std::make_shared<texture_packs::Replacement>();
+  r->width = w, r->height = h;
+  r->format = texture_packs::Format::kRGBA8;
+  r->levels.push_back(std::move(rgba));
+  // (its mips: 2 x 2 boxes, to 1 x 1)
+  for (uint32_t lw = w, lh = h; lw > 1 || lh > 1;) {
+    const std::vector<uint8_t>& src = r->levels.back();
+    const uint32_t nw = std::max(lw / 2, 1u), nh = std::max(lh / 2, 1u);
+    std::vector<uint8_t> dst(size_t(nw) * nh * 4);
+    for (uint32_t y = 0; y < nh; ++y)
+      for (uint32_t x = 0; x < nw; ++x)
+        for (int c = 0; c < 4; ++c) {
+          const uint32_t x0 = std::min(x * 2, lw - 1), x1 = std::min(x * 2 + 1, lw - 1);
+          const uint32_t y0 = std::min(y * 2, lh - 1), y1 = std::min(y * 2 + 1, lh - 1);
+          dst[(size_t(y) * nw + x) * 4 + c] =
+              uint8_t((src[(size_t(y0) * lw + x0) * 4 + c] + src[(size_t(y0) * lw + x1) * 4 + c] +
+                       src[(size_t(y1) * lw + x0) * 4 + c] + src[(size_t(y1) * lw + x1) * 4 + c] + 2) / 4);
+        }
+    r->levels.push_back(std::move(dst));
+    lw = nw, lh = nh;
+  }
+  return r;
+}
+
+
 // One subresource's place in the staging buffer (rows 256-byte aligned,
 // subresources 512-byte aligned: valid copy sources for D3D12 and Vulkan).
 struct Footprint {
@@ -899,8 +965,9 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
   // hash, dumped once and replaced when a pack has it (Texture() swaps it in
   // once the file is read). (SVR2011_TEXTURE_HASH_LOG: each new texture's hash)
   static const bool hash_log = std::getenv("SVR2011_TEXTURE_HASH_LOG") != nullptr;
+  const bool mat_shape = width == 256 && height == 1024 && format == TF::k_DXT4_5 && REXCVAR_GET(native_mat_fix);
   if ((!reuse || e.changes <= kPackChanges) && dimension == 0 && array_size == 1 && !is_3d && !is_cube &&
-      !pad_candidate && base_page && (hash_log || texture_packs::Active())) {
+      !pad_candidate && base_page && (hash_log || texture_packs::Active() || mat_shape)) {
     const char* tag = PackFormat(format);
     if (tag || hash_log) {
       thread_local std::vector<uint8_t> blocks;
@@ -914,7 +981,14 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
         texture_packs::Dump(h, width, height, DumpPixels(blocks, format, width, height, fetch.swizzle), tag);
       if (tag && h && e.changes <= kPackChanges) {
         e.ready = nullptr;
-        e.pending = texture_packs::Find(h, &e.ready) == texture_packs::Lookup::kNone ? 0 : h;
+        e.pending = texture_packs::Active() && texture_packs::Find(h, &e.ready) != texture_packs::Lookup::kNone ? h : 0;
+        // (a stock ring mat, no pack of its own for it: the evened-out one)
+        if (mat_shape && StockMat(h) && !e.pending) {
+          e.ready = EvenMat(DumpPixels(blocks, format, width, height, fetch.swizzle), width, height);
+          e.pending = h;
+          static int logged = 0;
+          if (logged++ < 8) REXLOG_INFO("native renderer: stock ring mat {:016x} - evened out (native_mat_fix)", h);
+        }
       }
     }
   }
