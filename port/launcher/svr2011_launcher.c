@@ -1866,6 +1866,28 @@ static int frame_rate_index(int fps)
     return 1;
 }
 
+/* The Upscaling list (the game's GRAPHICS -> UPSCALING): off, FSR 1 ultra quality .. performance and - not with
+   Direct3D 11 (no compute) - FSR 2 (experimental) ultra quality .. performance; `sel` chosen (an FSR 2 one as the
+   same FSR 1 level when FSR 2 isn't offered). */
+static void upscale_fill(int sel)
+{
+    static const WCHAR *const names[] = { L"Upscaling: off", L"FSR 1 Ultra Quality", L"FSR 1 Quality", L"FSR 1 Balanced",
+                                          L"FSR 1 Performance", L"FSR 2 Ultra Quality (exp.)", L"FSR 2 Quality (exp.)",
+                                          L"FSR 2 Balanced (exp.)", L"FSR 2 Performance (exp.)" };
+    HWND h = ctl(ID_UPSCALE);
+    const int fsr2 = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0) != RENDERER_D3D11;
+    const int n = fsr2 ? 9 : 5;
+    int i;
+    SendMessageW(h, CB_RESETCONTENT, 0, 0);
+    for (i = 0; i < n; i++)
+        SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)names[i]);
+    if (sel < 0 || sel > 8)
+        sel = 0;
+    if (sel >= n)
+        sel -= 4;
+    SendMessageW(h, CB_SETCURSEL, (WPARAM)sel, 0);
+}
+
 static void settings_show(int fullscreen, int res, int vsync, int sdl, int sdl_audio, int mute, int fps, int msaa,
                           int renderer, int language)
 {
@@ -1947,7 +1969,7 @@ static void settings_load(void)
             else if (!strcmp(key, "perf_overlay")) perf = atoi(val);
             else if (!strcmp(key, "native_2x_msaa")) msaa = !strcmp(val, "true");
             else if (!strcmp(key, "native_aa")) aa = atoi(val);
-            else if (!strcmp(key, "native_upscale")) upscale = !_stricmp(val, "fsr1");
+            else if (!strcmp(key, "native_upscale")) upscale = !_stricmp(val, "fsr1") ? 1 : !_stricmp(val, "fsr2") ? 2 : 0;
             else if (!strcmp(key, "native_upscale_quality")) upscale_quality = atoi(val);
             else if (!strcmp(key, "native_prepare_pipelines")) prepare = !strcmp(val, "true");
             else if (!strcmp(key, "process_priority")) priority = atoi(val) >= 1;
@@ -1999,9 +2021,9 @@ static void settings_load(void)
     CheckDlgButton(s_wnd, ID_SKIP_INTROS, skip_intros ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_TRAINING, skip_training ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_TEXTURES), CB_SETCURSEL, (WPARAM)textures, 0);
-    /* (Off, then FSR 1 ultra quality .. performance: native_upscale_quality 0-3) */
-    SendMessageW(ctl(ID_UPSCALE), CB_SETCURSEL,
-                 (WPARAM)(upscale ? 1 + (upscale_quality >= 0 && upscale_quality <= 3 ? upscale_quality : 1) : 0), 0);
+    /* (Off, then FSR 1 / FSR 2 ultra quality .. performance: native_upscale_quality 0-3) */
+    upscale_fill(upscale ? 1 + 4 * (upscale - 1) + (upscale_quality >= 0 && upscale_quality <= 3 ? upscale_quality : 1)
+                         : 0);
     if (arena_light < 50 || arena_light > 200)
         arena_light = 100;
     SendMessageW(ctl(ID_ARENA_LIGHT), CB_SETCURSEL, (WPARAM)((arena_light - 50 + 5) / 10), 0);
@@ -2100,8 +2122,8 @@ static int settings_save(void)
     }
     {   /* (as the game writes them: graphics_page.cpp kUpscaling) */
         const int ui = (int)SendMessageW(ctl(ID_UPSCALE), CB_GETCURSEL, 0, 0);
-        strcpy_s(vals[35], 64, ui >= 1 && ui <= 4 ? "\"fsr1\"" : "\"off\"");
-        sprintf_s(vals[36], 64, "%d", ui >= 1 && ui <= 4 ? ui - 1 : 1);
+        strcpy_s(vals[35], 64, ui >= 1 && ui <= 4 ? "\"fsr1\"" : ui >= 5 && ui <= 8 ? "\"fsr2\"" : "\"off\"");
+        sprintf_s(vals[36], 64, "%d", ui >= 1 && ui <= 8 ? (ui - 1) % 4 : 1);
     }
     sprintf_s(vals[19], 160, "\"%s\"", s_online_token);
     sprintf_s(vals[20], 160, "\"%s\"", s_online_xuid);
@@ -3241,11 +3263,7 @@ static void build_ui(void)
     /* native_upscale (the game's GRAPHICS -> UPSCALING): AMD FSR 1, in place of the render resolution */
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 400, 122, 146, 200,
             ID_UPSCALE);
-    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Upscaling: off");
-    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"FSR 1 Ultra Quality");
-    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"FSR 1 Quality");
-    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"FSR 1 Balanced");
-    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"FSR 1 Performance");
+    upscale_fill(0);  /* (filled again as the settings are read) */
     add(TAB_SETTINGS, L"Button", L"VSync (no tearing)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 154, 160, 24, ID_VSYNC);
     /* arena_brightness (the game's GRAPHICS -> ARENA BRIGHTNESS): the arenas' lights, 50-200% */
     add(TAB_SETTINGS, L"Static", L"Arena light", SS_LEFT, X0 + 190, 158, 76, 20, 0);
@@ -7885,7 +7903,10 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         }
         case ID_ARENA_LIGHT:
         case ID_RESOLUTION: case ID_RENDER_RES: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE: case ID_FRAMERATE: case ID_MSAA: case ID_TEXTURES: case ID_SHOWFPS:
+        case ID_UPSCALE:
             if (HIWORD(wp) == CBN_SELCHANGE) {
+                if (LOWORD(wp) == ID_RENDERER)  /* (FSR 2 offered or not) */
+                    upscale_fill((int)SendMessageW(ctl(ID_UPSCALE), CB_GETCURSEL, 0, 0));
                 s_settings_dirty = 1;
                 set_text(ID_SETTINGS_STATUS, L"");
             }

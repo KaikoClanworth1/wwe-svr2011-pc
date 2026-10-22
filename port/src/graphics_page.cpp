@@ -404,7 +404,9 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
   int aa_ = 1;  // anti-aliasing level: 1 off, 2-4 supersampling per side
-  int upscale_ = 0;  // UPSCALING: 0 off, 1-4 FSR 1 (native_upscale_quality 0-3: ultra quality .. performance)
+  // UPSCALING: 0 off, 1-4 FSR 1, 5-8 FSR 2 (experimental: Direct3D 12 / Vulkan) - native_upscale_quality 0-3
+  // (ultra quality .. performance)
+  int upscale_ = 0;
   bool ping_ = true;
   bool router_port_ = true;
   int perf_ = 1, corner_ = 0;  // (PERFORMANCE: 0 off, 1 the frame rate, 2 everything; its corner)
@@ -442,9 +444,12 @@ void GraphicsPage::Load() {
     const int32_t level = rex::cvar::Query<int32_t>("native_aa");
     aa_ = level > 0 ? std::clamp<int32_t>(level, 1, 4) : (rex::cvar::Query<bool>("native_2x_msaa") ? 2 : 1);
   }
-  upscale_ = rex::cvar::GetFlagByName("native_upscale") == "fsr1"
-                 ? std::clamp<int32_t>(rex::cvar::Query<int32_t>("native_upscale_quality"), 0, 3) + 1
-                 : 0;
+  {
+    const std::string kind = rex::cvar::GetFlagByName("native_upscale");
+    const int quality = std::clamp<int32_t>(rex::cvar::Query<int32_t>("native_upscale_quality"), 0, 3);
+    upscale_ = kind == "fsr1" ? quality + 1 : kind == "fsr2" ? quality + 5 : 0;
+    native::UpscalerAvailable("dlss");  // (DLSS isn't offered yet: the log says why)
+  }
   {
     const int32_t v = rex::cvar::Query<int32_t>("native_max_scale");
     const double res = rex::cvar::Query<double>("native_render_scale");
@@ -579,15 +584,20 @@ void GraphicsPage::Change(int row, int dir) {
       SaveSetting("native_aa", std::to_string(aa_));
       SaveSetting("native_2x_msaa", aa_ >= 2 ? "true" : "false");
       break;
-    case kUpscaling:
-      upscale_ = (upscale_ + dir + 5) % 5;  // OFF, FSR 1 ULTRA QUALITY .. PERFORMANCE
-      rex::cvar::SetFlagByName("native_upscale", upscale_ ? "fsr1" : "off");
-      SaveSetting("native_upscale", upscale_ ? "fsr1" : "off");
+    case kUpscaling: {
+      // OFF, FSR 1 ULTRA QUALITY .. PERFORMANCE, FSR 2 (where it can run) ULTRA QUALITY .. PERFORMANCE
+      const int count = native::UpscalerAvailable("fsr2") ? 9 : 5;
+      upscale_ = (std::min(upscale_, count - 1) + dir + count) % count;
+      const char* kind = upscale_ == 0 ? "off" : upscale_ <= 4 ? "fsr1" : "fsr2";
+      rex::cvar::SetFlagByName("native_upscale", kind);
+      SaveSetting("native_upscale", kind);
       if (upscale_) {
-        rex::cvar::SetFlagByName("native_upscale_quality", std::to_string(upscale_ - 1));
-        SaveSetting("native_upscale_quality", std::to_string(upscale_ - 1));
+        const std::string quality = std::to_string((upscale_ - 1) % 4);
+        rex::cvar::SetFlagByName("native_upscale_quality", quality);
+        SaveSetting("native_upscale_quality", quality);
       }
       break;
+    }
     case kLanguage:
       language_ = (language_ + dir + kNumLanguages) % kNumLanguages;
       SaveSetting("user_language", std::to_string(kLanguages[language_].id));
@@ -1123,9 +1133,16 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       }
       case kAntiAliasing: return aa_ == 1 ? "OFF" : aa_ == 2 ? "2X" : aa_ == 3 ? "3X" : "4X";
       case kUpscaling: {
-        static const char* const kNames[] = {"OFF", "FSR 1 ULTRA QUALITY", "FSR 1 QUALITY", "FSR 1 BALANCED",
-                                             "FSR 1 PERFORMANCE"};
-        return kNames[std::clamp(upscale_, 0, 4)];
+        static const char* const kNames[] = {"OFF",
+                                             "FSR 1 ULTRA QUALITY",
+                                             "FSR 1 QUALITY",
+                                             "FSR 1 BALANCED",
+                                             "FSR 1 PERFORMANCE",
+                                             "FSR 2 ULTRA QUALITY (EXPERIMENTAL)",
+                                             "FSR 2 QUALITY (EXPERIMENTAL)",
+                                             "FSR 2 BALANCED (EXPERIMENTAL)",
+                                             "FSR 2 PERFORMANCE (EXPERIMENTAL)"};
+        return kNames[std::clamp(upscale_, 0, 8)];
       }
       case kCrowd: return crowd_ ? "ON" : "OFF";
       case kShadows: return shadows_ ? "ON" : "OFF";
@@ -1217,8 +1234,11 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         return "Renders at 2, 3 or 4 times the resolution per side and averages it down (4, 9 or 16 samples a "
                "pixel): smoother edges, slower. Limited by RENDER SCALE.";
       case kUpscaling:
-        return "AMD FSR 1: the game drawn smaller (77%, 67%, 59% or 50% of the screen's height) and scaled up "
-               "sharp - faster on weak PCs and phones. Replaces RENDER SCALE while on.";
+        return upscale_ >= 5
+                   ? "AMD FSR 2 (experimental): matches drawn smaller and rebuilt over several frames - sharper "
+                     "than FSR 1, smooth edges; fast moves can leave faint trails. Menus use FSR 1."
+                   : "AMD FSR 1: the game drawn smaller (77%, 67%, 59% or 50% of the screen's height) and scaled up "
+                     "sharp - faster on weak PCs and phones. Replaces RENDER SCALE while on.";
       case kArenaBrightness:
         return "The arena's lights - on the wrestlers, the ring and the hall. 100%: the game's own. From the next "
                "arena that loads.";

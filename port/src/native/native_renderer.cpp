@@ -29,6 +29,7 @@
 #include <functional>
 #include <mutex>
 #include <map>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -4064,6 +4065,33 @@ bool Enabled() { return true; }
 
 // No switching to the emulated renderer any more.
 bool CanSwitch() { return false; }
+
+bool UpscalerAvailable(const std::string& kind, std::string* why) {
+  std::string reason;
+  if (kind == "fsr2") {
+#if SVR2011_FSR2
+    const backend::Api api = backend::ActiveApi();
+    if (api == backend::Api::kD3D11)
+      reason = "FSR 2 needs compute shaders: Direct3D 12 or Vulkan (the game draws with Direct3D 11)";
+    else if (api == backend::Api::kNone)
+      reason = "FSR 2: the renderer hasn't started";
+#else
+    reason = "FSR 2 isn't in this build (Windows only)";
+#endif
+  } else if (kind == "dlss") {
+    reason = "DLSS isn't in this build yet";
+  } else {
+    reason = "unknown upscaler " + kind;
+  }
+  static std::mutex mutex;
+  static std::set<std::string> logged;
+  if (!reason.empty()) {
+    std::lock_guard lock(mutex);
+    if (logged.insert(reason).second) REXLOG_INFO("native renderer: upscaling choice hidden - {}", reason);
+  }
+  if (why) *why = reason;
+  return reason.empty();
+}
 
 void SetNativeActive(bool) {}
 
