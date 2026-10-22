@@ -936,6 +936,16 @@ bool BuildMotionFile(const fs::path& src, const fs::path& dst, const std::string
   }
   if (changed_entries) *changed_entries = changed.size();
   if (dlc && changed.empty()) return true;  // (none of the packs' banks in this DLC pac)
+  // (mpsp.pac MOTP/GAME, 16.4 MB stock, is read whole into the file loader's cache - 20 MB, heap 16 - at the first
+  // match: grown past it by packs' motions the match load hung there in 2.1.4.1, 21 Oct report; model_mem.cpp
+  // gives it fallback memory now. The size in the log says so.)
+  for (const auto& [type_name, blob] : changed)
+    if (blob.size() >= (16u << 20))
+      REXLOG_INFO("[svr2011] move packs: {} {} is {:.1f} MB{}", pac, type_name, blob.size() / 1048576.0,
+                  type_name == "MOTP/GAME" && blob.size() >= (19u << 20)
+                      ? " - more than the game's 20 MB file cache can take beside the match's other files (it loads "
+                        "from the fallback memory)"
+                      : "");
   if (!WritePac(src, dst, changed)) return false;
   REXLOG_INFO("[svr2011] move packs: {}: {} motions added", pac, total);
   return true;
