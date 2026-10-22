@@ -23,6 +23,19 @@ final class GameSettings {
         load();
     }
 
+    // A top-level "key = word" with the word not quoted (2.1.5's game wrote native_upscale = off that way) is
+    // not TOML: the game then read none of the file - every setting at its default, the player's VIBRATION off
+    // back on at each start. Such a word gets its quotes (the file is written again before Play).
+    static String Repaired(String line) {
+        String s = line.trim();
+        int eq = s.indexOf('=');
+        if (s.isEmpty() || s.startsWith("#") || s.startsWith("[") || eq <= 0) return line;
+        String key = s.substring(0, eq).trim(), v = s.substring(eq + 1).trim();
+        if (!key.matches("[A-Za-z0-9_]+") || !v.matches("[A-Za-z_][A-Za-z0-9_.\\-]*")) return line;
+        if (v.equals("true") || v.equals("false") || v.equals("inf") || v.equals("nan")) return line;
+        return key + " = \"" + v + "\"";
+    }
+
     void load() {
         lines_.clear();
         if (!file_.isFile()) {
@@ -36,7 +49,7 @@ final class GameSettings {
             while ((n = in.read(buffer)) > 0) bytes.write(buffer, 0, n);  // (readAllBytes: API 33+)
             String text = new String(bytes.toByteArray(), StandardCharsets.UTF_8);
             if (text.startsWith("﻿")) text = text.substring(1);
-            for (String line : text.split("\r?\n", -1)) lines_.add(line);
+            for (String line : text.split("\r?\n", -1)) lines_.add(Repaired(line));
             while (!lines_.isEmpty() && lines_.get(lines_.size() - 1).isEmpty()) lines_.remove(lines_.size() - 1);
         } catch (IOException e) {
             lines_.add("# WWE SmackDown vs. Raw 2011 - settings (the launcher rewrites this file)");
