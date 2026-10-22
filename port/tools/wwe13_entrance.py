@@ -764,6 +764,37 @@ def convert_evp(evp13, number, stock, props11, name, rep):
     return e, src_num, nm
 
 
+# Characters without a track (the extras 1-6 and the referee, object 8) stand where their slots put them: 2011's
+# own entrances give the referee (21, -12, -10.5) in the ring segment - y -12 is the mat. 2K16 / 2K17 leave those
+# slots at 0 (their game places them), so the referee stood in the ring at floor height, sunk to his waist
+# (user report 22 Oct, 2K17 Finn Balor): such slots take 2011's layout for that object (stock entrance 560).
+EXTRAS_DONOR = 560
+
+
+def place_extras(e, tracked, stock, rep):
+    don = stock.get(EXTRAS_DONOR) if stock else None
+    if not don:
+        return
+    dobjs = don[0]['objs']
+    placed = []
+    for i, o in enumerate(e['objs']):
+        if i == 0 or i in tracked or kind(o) != 'char' or i >= len(dobjs) or kind(dobjs[i]) != 'char':
+            continue
+        slots, changed = list(o['slots']), False
+        for j, s in enumerate(slots):
+            if j >= len(dobjs[i]['slots']) or any(struct.unpack_from('>6f', s, 12)):
+                continue
+            ds = dobjs[i]['slots'][j]
+            slots[j] = s[:12] + ds[12:36] + s[36:]
+            changed = changed or any(struct.unpack_from('>6f', ds, 12))
+        if changed:
+            o['slots'] = slots
+            placed.append(i)
+    if placed:
+        rep['notes'].append('objects %s (extras / referee, no track, no place): 2011\'s places (entrance %d)'
+                            % (', '.join(map(str, placed)), EXTRAS_DONOR))
+
+
 def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None, ik=True):
     leaves = leaves_of(evz13)
     RT = WR.Retarget(bind, ik=ik)
@@ -865,6 +896,7 @@ def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None
         for x in dents:
             ents.append(dict(y=x['y'], x=x['x'], id=25000 + i, frames=x['frames'], rt=S.RT_2011, data=x['data'],
                              share=False, tail_off=None))
+    place_extras(e, {z['id'] - 25000 for z in ents}, stock, rep)
     ents.sort(key=lambda z: ymks.key_of(z['id'], z['x'], z['y']))
     bank = ymks.Bank(b'YMKs' + struct.pack('<I', 0x100) + bytes(8) + S.T11, ents)
     bank.lead = b''
