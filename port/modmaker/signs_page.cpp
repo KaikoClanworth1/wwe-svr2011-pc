@@ -52,6 +52,7 @@ bool BuildPack(std::vector<ZipEntry>& files) {
   const std::string man = "type=signs\nid=" + PackId() + "\nname=" + g_pack.name + "\nauthor=" + g_pack.author +
                           "\nversion=" + g_pack.version + "\n" + MadeWith();
   files.push_back({"manifest.txt", Bytes(man.begin(), man.end())});
+  AddModProject(files, ModProjectText(PageId::kSigns));
   for (size_t i = 0; i < g_pack.signs.size(); ++i) {
     char n[16];
     std::snprintf(n, sizeof n, "%02zu_", i + 1);

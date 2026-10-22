@@ -108,6 +108,7 @@ bool Build(std::vector<ZipEntry>& files) {
                     "\nmodel=attire.pac\nauthor=" + g_at.author + "\nversion=" + g_at.version + "\n" + MadeWith();
   if (g_at.entrance > 0) man += "entrance=" + std::to_string(g_at.entrance) + "\n";
   files.push_back({"manifest.txt", Bytes(man.begin(), man.end())});
+  AddModProject(files, ModProjectText(PageId::kAttire));
   files.push_back({"attire.pac", std::move(pac)});
   return true;
 }

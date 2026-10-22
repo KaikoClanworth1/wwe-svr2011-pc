@@ -2088,6 +2088,12 @@ std::map<PageId, std::wstring> g_project_files;
 std::string CurrentState(PageId page) {
   PageHooks* h = Hooks(page);
   std::string s = h && h->state ? h->state() : std::string();
+  if (h && h->write) {  // (and every key the project saves: a change to any of them is unsaved - materials too)
+    ProjectOut out;
+    out.keys_only = true;
+    h->write(out);
+    s += "\n--\n" + out.text;
+  }
   if (page == PageId::kArena || page == PageId::kBackstage) s += "|" + std::to_string(editor::EditCount());
   return s;
 }
@@ -2188,7 +2194,7 @@ void ProjectNew(PageId type) {
 // ---- ProjectOut / ProjectIn
 
 std::string ProjectOut::File(const std::string& key, const std::wstring& path, const std::string& as) {
-  if (path.empty()) return {};
+  if (path.empty() || keys_only) return {};
   Bytes d;
   if (!ReadFile(Utf8(path), d)) {
     Log("Could not read " + Utf8(path) + " (left out of the project).");
@@ -2202,7 +2208,7 @@ std::string ProjectOut::File(const std::string& key, const std::wstring& path, c
 }
 
 void ProjectOut::Png(const std::string& key, const Image& img, const std::string& as) {
-  if (img.rgba.empty()) return;
+  if (img.rgba.empty() || keys_only) return;
   // (PNG through WIC needs a file: the project keeps pictures as RGBA DDS instead - lossless, quick)
   files.push_back({as + ".dds", DdsEncode(img, DxtFormat::kArgb, false)});
   text += key + "=" + as + ".dds\n";
@@ -2383,6 +2389,61 @@ bool ProjectOpenFolder(const std::wstring& dir) {
   return ProjectOpenIn(in, true, (fs::path(dir) / L"manifest.txt").wstring());
 }
 
+namespace {
+// An absolute path inside a value (X:\..., X:/..., \\server\...) cut to its file name; the rest kept.
+std::string StripPaths(const std::string& v) {
+  std::string out;
+  for (size_t i = 0; i < v.size();) {
+    const bool drive = i + 2 < v.size() && std::isalpha(uint8_t(v[i])) && v[i + 1] == ':' && (v[i + 2] == '\\' || v[i + 2] == '/') &&
+                       (i == 0 || !std::isalnum(uint8_t(v[i - 1])));
+    const bool unc = i + 1 < v.size() && v[i] == '\\' && v[i + 1] == '\\';
+    if (!drive && !unc) {
+      out += v[i++];
+      continue;
+    }
+    size_t e = i;  // (a path ends at the value's own separators)
+    while (e < v.size() && v[e] != '\t' && v[e] != '\x1d' && v[e] != '\x1f' && v[e] != '|' && v[e] != ',' && v[e] != '\n') ++e;
+    const std::string p = v.substr(i, e - i);
+    const size_t slash = p.find_last_of("\\/");
+    out += slash == std::string::npos ? p : p.substr(slash + 1);
+    i = e;
+  }
+  return out;
+}
+}  // namespace
+
+std::string ModProjectText(PageId page) {
+  PageHooks* h = Hooks(page);
+  if (!h || !h->write) return {};
+  ProjectOut out;
+  out.keys_only = true;
+  h->write(out);
+  std::string t = "# The Mod Maker's project settings for this mod (materials, FBX steps ...): opening the mod brings "
+                  "them back. Paths are file names only.\n";
+  for (size_t at = 0; at < out.text.size();) {
+    size_t e = out.text.find('\n', at);
+    if (e == std::string::npos) e = out.text.size();
+    const std::string line = out.text.substr(at, e - at);
+    at = e + 1;
+    const size_t eq = line.find('=');
+    if (eq == std::string::npos) continue;
+    const std::string key = line.substr(0, eq);
+    if (key.size() > 5 && key.compare(key.size() - 5, 5, ".from") == 0) continue;  // (the author's own folders)
+    t += key + "=" + StripPaths(line.substr(eq + 1)) + "\n";
+  }
+  return t;
+}
+
+void AddModProject(std::vector<ZipEntry>& files, const std::string& text) {
+  if (text.empty()) return;
+  for (auto& f : files)
+    if (f.name == ".mm_project.txt") {
+      f.data.assign(text.begin(), text.end());
+      return;
+    }
+  files.push_back({".mm_project.txt", Bytes(text.begin(), text.end())});
+}
+
 bool ProjectOpenIn(ProjectIn& in, bool mod, const std::wstring& file) {
   const ZipEntry* txt = in.Find(mod ? "manifest.txt" : "project.txt");
   if (!txt) {
@@ -2390,6 +2451,20 @@ bool ProjectOpenIn(ProjectIn& in, bool mod, const std::wstring& file) {
     return false;
   }
   in.text.assign(txt->data.begin(), txt->data.end());
+  if (mod)  // (the mod's own project settings: the keys its manifest doesn't have - an older mod has none)
+    if (const ZipEntry* pt = in.Find(".mm_project.txt")) {
+      const std::string p(pt->data.begin(), pt->data.end());
+      if (!in.text.empty() && in.text.back() != '\n') in.text += '\n';
+      for (size_t at = 0; at < p.size();) {
+        size_t e = p.find('\n', at);
+        if (e == std::string::npos) e = p.size();
+        const std::string line = p.substr(at, e - at);
+        at = e + 1;
+        const size_t eq = line.find('=');
+        if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
+        if (Value(in.text, line.substr(0, eq).c_str()).empty()) in.text += line + "\n";
+      }
+    }
   const std::string type = Value(in.text, "type");
   const PageDesc* page = nullptr;
   for (const auto& d : kPages)
@@ -2787,7 +2862,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   // --editor-view <0-2> a camera preset, --select <name> an object; --page <n>; the
   // superstar / signs / media pages' --star*, --sign, --media-* and --test-*-save
   int start_editor = -1, start_view = -1, start_new = -1, start_page = -1, start_backstage = -1, test_lib = -1;
-  std::wstring start_mod, start_select, test_save, project, test_project, moves_pack, page_name;
+  std::wstring start_mod, start_select, test_save, project, test_project, test_roundtrip, moves_pack, page_name;
   bool behind = false;  // --behind: tests - the window is never shown at all (frames still run)
   std::wstring perf_tour;  // --perf-tour <report>: every page in turn, its first-frame and slowest times
   std::vector<std::wstring> run_tool_args;
@@ -2841,6 +2916,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       }
     }
     else if (!wcscmp(argv[i], L"--test-project") && more) test_project = argv[++i];
+    else if (!wcscmp(argv[i], L"--test-roundtrip") && more) test_roundtrip = argv[++i];
     else if (!wcscmp(argv[i], L"--moves-pack") && more) moves_pack = argv[++i];
     else if (!wcscmp(argv[i], L"--test-moves-save") && more) moves_save = argv[++i];
     else if (!wcscmp(argv[i], L"--caw-announcer") && more) caw_page::TestAnnouncer(Utf8(argv[++i]));  // <CLIP> (- clears), with --caw <index>
@@ -3345,6 +3421,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   // test aid: --test-project <file.svrproj>: the shown page saved as a project, everything
   // reset, the project opened again; its state text goes to <file>.txt, the log to <file>.log
   bool test_project_pending = !test_project.empty();
+  // test aid: --test-roundtrip <in.txt>: a project's keys (type= first) read into their page, then saved as a project
+  // and opened again, and through a mod's .mm_project.txt (a bare manifest + the file) opened again; each state
+  // against the first, the lines that differ listed in <in>.out.txt
+  bool test_roundtrip_pending = !test_roundtrip.empty();
 
   bool done = false;
   while (!done) {
@@ -3400,6 +3480,61 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       }
     }
     ImGui::Render();
+    if (test_roundtrip_pending && !Busy() && ImGui::GetFrameCount() > 3) {
+      test_roundtrip_pending = false;
+      std::string report;
+      auto diff = [&](const std::string& what, const std::string& a, const std::string& b) {
+        auto lines = [](const std::string& s) {
+          std::vector<std::string> v;
+          for (size_t at = 0; at < s.size();) {
+            size_t e = s.find('\n', at);
+            if (e == std::string::npos) e = s.size();
+            v.push_back(s.substr(at, e - at));
+            at = e + 1;
+          }
+          return v;
+        };
+        const auto la = lines(a), lb = lines(b);
+        int n = 0;
+        for (const auto& l : la)
+          if (std::find(lb.begin(), lb.end(), l) == lb.end()) report += what + " lost:  " + l + "\n", ++n;
+        for (const auto& l : lb)
+          if (std::find(la.begin(), la.end(), l) == la.end()) report += what + " new:   " + l + "\n", ++n;
+        report += what + (n ? ": " + std::to_string(n) + " line(s) differ\n" : ": same\n");
+      };
+      Bytes t;
+      ProjectIn in;
+      if (ReadFile(Utf8(test_roundtrip), t)) in.files.push_back({"project.txt", t});
+      const bool read = !in.files.empty() && ProjectOpenIn(in, false, test_roundtrip);
+      const PageId page = g_project_page;
+      const std::string first = CurrentState(page);
+      // as a project
+      const std::wstring proj = test_roundtrip + L".svrproj";
+      g_project_file = proj;
+      g_project_files[page] = proj;
+      const bool saved = read && ProjectSave(false);
+      ProjectReset();
+      const bool opened = saved && ProjectOpen(proj);
+      diff("project", first, CurrentState(page));
+      // as a mod: the page's .mm_project.txt with a bare manifest (its own keys: type and name)
+      ProjectReset();
+      ProjectOpen(proj);
+      const std::string text = ModProjectText(page);
+      PageHooks* h = Hooks(page);
+      const std::string man = std::string("type=") + (h && h->type ? h->type : "") + "\nname=" + Value(first, "name") + "\n";
+      ProjectIn mod;
+      mod.files.push_back({"manifest.txt", Bytes(man.begin(), man.end())});
+      AddModProject(mod.files, text);
+      ProjectReset();
+      const bool mod_opened = ProjectOpenIn(mod, true, test_roundtrip + L".svrmod");
+      diff("mod", first, CurrentState(page));
+      report = std::string("read=") + (read ? "1" : "0") + " saved=" + (saved ? "1" : "0") + " opened=" + (opened ? "1" : "0") +
+               " mod_opened=" + (mod_opened ? "1" : "0") + "\n--- .mm_project.txt\n" + text + "--- differences\n" + report +
+               "--- first state\n" + first + "\n";
+      WriteFile(Utf8(test_roundtrip + L".out.txt"), Bytes(report.begin(), report.end()));
+      WriteLogTo(test_roundtrip + L".log");
+      PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    }
     if (test_project_pending && !Busy() && ImGui::GetFrameCount() > 3) {
       test_project_pending = false;
       FollowPage();

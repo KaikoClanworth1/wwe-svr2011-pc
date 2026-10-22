@@ -195,6 +195,7 @@ bool SetPortrait(Bytes& pac, const Image& bust) {
 
 // Everything the build needs, copied off the UI thread.
 struct Job {
+  std::string project;  // (ModProjectText: the page's project keys, into the mod)
   std::map<int, int> moveset;
   std::string id, manifest;
   std::wstring model, song, movie, voice, cae, attires[4];
@@ -1106,6 +1107,7 @@ bool PrepareJob(Job& j) {
     g_star.ratings_set = true;
   }
   j.id = StarId();
+  j.project = ModProjectText(PageId::kStar);
   j.manifest = "type=superstar\nid=" + j.id + "\nname=" + g_star.name + "\nshort=" +
                (g_star.short_name[0] ? g_star.short_name : g_star.name) + "\nbase=" + std::to_string(st.template_id) +
                "\nstyle=" + st.name + "\nauthor=" + g_star.author + "\nversion=" + g_star.version + "\n" + MadeWith();
@@ -1259,6 +1261,7 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
   }
   if (j.picture_full.w) files.push_back({"render_full.dds", DdsEncode(j.picture_full, DxtFormat::kDxt5, false)});
   files.insert(files.begin(), ZipEntry{"manifest.txt", Bytes(man.begin(), man.end())});
+  AddModProject(files, j.project);
   return true;
 }
 
@@ -3603,7 +3606,7 @@ void WriteProject(ProjectOut& out) {
   if (const std::string g = GainText(); !g.empty()) out.Key("theme_gain", g);
   out.File("movie", g_star.movie, "star/movie");
   out.File("cae", g_star.cae, "star/cae");
-  if (!g_star.threads.empty()) {
+  if (!g_star.threads.empty() && !out.keys_only) {
     out.Key("threads", "star/threads.txt");
     out.files.push_back({"star/threads.txt", Bytes(g_star.threads.begin(), g_star.threads.end())});
   }
@@ -3633,7 +3636,7 @@ void WriteProject(ProjectOut& out) {
     out.Key("pack", "moves");
     out.Key("pack.from", Utf8(g_star.pack));
     std::error_code ec;
-    for (const auto& e : fs::recursive_directory_iterator(g_star.pack, ec)) {
+    for (const auto& e : fs::recursive_directory_iterator(out.keys_only ? fs::path() : fs::path(g_star.pack), ec)) {
       if (!e.is_regular_file(ec)) continue;
       Bytes f;
       if (ReadFile(PathStr(e.path()), f)) out.files.push_back({"moves/" + fs::relative(e.path(), g_star.pack, ec).generic_string(), std::move(f)});

@@ -105,6 +105,7 @@ bool BuildPack(std::vector<ZipEntry>& files) {
     for (size_t i = 0; i < g_pack.pictures.size(); ++i)
       if (g_pack.pictures[i].name[0]) man += "title." + FileOf(i) + "=" + g_pack.pictures[i].name + "\n";
   files.push_back({"manifest.txt", Bytes(man.begin(), man.end())});
+  AddModProject(files, ModProjectText(PageId::kBackgrounds));
   for (size_t i = 0; i < g_pack.pictures.size(); ++i)
     files.push_back({FileOf(i), DdsEncode(g_pack.pictures[i].texture, DxtFormat::kDxt5, false)});
   return true;

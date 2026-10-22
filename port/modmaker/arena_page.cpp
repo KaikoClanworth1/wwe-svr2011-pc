@@ -187,9 +187,11 @@ struct BuildJob {
   Image banner, load;
   std::map<std::string, Image> vs;
   std::wstring gimmick_pac;
+  std::string project;  // (ModProjectText: the page's project keys, into the mod)
 };
 
 bool PrepareBuild(BuildJob& job) {
+  job.project = ModProjectText(g_proj.backstage >= 0 ? PageId::kBackstage : PageId::kArena);
   if (g_proj.backstage >= 0) {  // a backstage area: bg78 with the room rebuilt
     if (!g_proj.edited) { Status("Open the area in the 3D editor first."); return false; }
     job.arena = std::make_shared<Arena>(*g_proj.edited);
@@ -260,6 +262,7 @@ bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
   Bytes pac = job.arena->Save(&err);
   if (!err.empty()) { Status("error: " + err); return false; }
   files.push_back({"manifest.txt", Bytes(job.manifest.begin(), job.manifest.end())});
+  AddModProject(files, job.project);
   files.push_back({"arena.pac", std::move(pac)});
   if (job.backstage) {
     if (!job.gimmick_pac.empty()) {
@@ -896,15 +899,17 @@ void WriteProject(ProjectOut& out) {
     if (g_proj.camera > 0) std::snprintf(b, sizeof b, "%.1f", g_proj.camera), out.Key("camera", b);
     if (g_proj.camera_height > 0) std::snprintf(b, sizeof b, "%.1f", g_proj.camera_height), out.Key("camera_height", b);
   }
-  if (!g_proj.banner.Empty()) out.files.push_back({"banner.dds", DdsEncode(g_proj.banner.image, DxtFormat::kDxt5, false)});
-  if (!g_proj.load.Empty()) out.files.push_back({"load.dds", DdsEncode(g_proj.load.image, DxtFormat::kDxt5, false)});
-  for (const auto& [name, img] : g_proj.vs) out.files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
+  if (!out.keys_only) {  // (the pictures: files, not keys)
+    if (!g_proj.banner.Empty()) out.files.push_back({"banner.dds", DdsEncode(g_proj.banner.image, DxtFormat::kDxt5, false)});
+    if (!g_proj.load.Empty()) out.files.push_back({"load.dds", DdsEncode(g_proj.load.image, DxtFormat::kDxt5, false)});
+    for (const auto& [name, img] : g_proj.vs) out.files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
+  }
   for (size_t i = 0; i < g_proj.signs.size(); ++i) {  // (Simple arena's crowd signs)
     out.Key("sign_name" + std::to_string(i), g_proj.signs[i].first);
     out.Png("sign" + std::to_string(i), g_proj.signs[i].second.image, "signs/" + std::to_string(i));
   }
   if (g_simple && g_proj.backstage < 0) out.Key("simple", 1), out.Key("simple_step", g_simple_step);
-  if (g_proj.edited) {
+  if (g_proj.edited && !out.keys_only) {
     // the arena as edited (the kit / lighting apply at mod build, not here): a copy
     // taken now, compressed in the background
     auto copy = std::make_shared<Arena>(*g_proj.edited);

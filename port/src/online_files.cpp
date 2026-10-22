@@ -261,8 +261,10 @@ std::string ManifestValue(const fs::path& manifest, const char* key) {
   return "";
 }
 
-// Pictures, sounds and movies: cosmetic (left out of a mod's CRC).
+// Pictures, sounds and movies: cosmetic (left out of a mod's CRC). Dot files too: the Mod Maker's project settings
+// (.mm_project.txt) and local markers (.applied) aren't the mod.
 bool Cosmetic(const fs::path& p) {
+  if (const std::string n = p.filename().string(); !n.empty() && n[0] == '.') return true;
   std::string e = p.extension().string();
   std::transform(e.begin(), e.end(), e.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
   for (const char* x : {".png", ".jpg", ".jpeg", ".bmp", ".dds", ".tga", ".ogg", ".wav", ".mp3", ".xma", ".bik",
