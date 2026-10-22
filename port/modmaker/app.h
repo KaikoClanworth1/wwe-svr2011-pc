@@ -288,6 +288,7 @@ void StartGame(const std::wstring& extra_env = L"");
 // back. Files inside the project zip are named by the page ("star/ch.pac").
 struct ProjectOut {
   std::string text;                 // key=value lines
+  bool keys_only = false;           // (a mod's .mm_project.txt: the keys, no files - ModProjectText)
   std::vector<ZipEntry> files;
   // slow work (an arena's compression) done in the background before the zip is written
   std::vector<std::function<void(std::vector<ZipEntry>&)>> deferred;
@@ -313,6 +314,14 @@ struct ProjectIn {
 // The project's type is its page. Pages the rail shows.
 enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kAttire, kInstalled, kDiscs, kPortEntrance, kPortMoves, kPortTaunts,
                     kStarPort, kArenaPort, kMovesPort, kBelts, kThreads, kCount };  // (the last four: "From another game" / belt tabs)
+// What only a project holds (materials, the FBX steps, Reduce detail, gear picks, an arena's camera...) for a mod:
+// the page's project keys without its files, every absolute path cut to its file name (nothing of the author's
+// folders goes out with a shared mod). UI thread (it reads the page). "" for a page with no project keys.
+std::string ModProjectText(PageId page);
+// ... into the mod's files as ".mm_project.txt" (a dot file: the game, the bundled rules and uploads leave it out);
+// opening the mod (read_mod) takes back the keys its manifest lacks.
+void AddModProject(std::vector<ZipEntry>& files, const std::string& text);
+
 extern PageId g_page;
 void GoTo(PageId p);
 const char* PageName(PageId p);

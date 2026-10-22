@@ -145,7 +145,7 @@ bool PackFiles(const std::wstring& folder, std::vector<ZipEntry>& files, const s
 
 // What the build needs, copied off the UI thread.
 struct Job {
-  std::string id, manifest;
+  std::string id, manifest, project;  // (project: ModProjectText, into the mod)
   std::wstring folder;
 };
 Job PrepareJob() {
@@ -155,11 +155,13 @@ Job PrepareJob() {
   j.manifest = "type=moves\nid=" + j.id + "\nname=" + g_pack.name + "\nauthor=" + g_pack.author + "\nversion=" +
                g_pack.version + "\n" + MadeWith();
   j.folder = g_pack.folder;
+  j.project = ModProjectText(PageId::kMoves);
   return j;
 }
 
 bool Build(const Job& j, std::vector<ZipEntry>& files) {
   files.push_back({"manifest.txt", Bytes(j.manifest.begin(), j.manifest.end())});
+  AddModProject(files, j.project);
   return PackFiles(j.folder, files, "");
 }
 

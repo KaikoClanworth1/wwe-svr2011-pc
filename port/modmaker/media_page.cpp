@@ -123,6 +123,7 @@ struct Job {
   std::map<int, std::vector<Image>> arenas;
   std::wstring menu_music;
   std::vector<std::pair<std::string, std::wstring>> sounds;
+  std::string project;  // (ModProjectText: the page's project keys, into the mod)
 };
 
 void PrepareJob(Job& j) {
@@ -133,6 +134,7 @@ void PrepareJob(Job& j) {
     for (const auto& f : a.frames) j.arenas[num].push_back(f.image);
   j.menu_music = g_media.menu_music;
   j.sounds = g_media.sounds;
+  j.project = ModProjectText(PageId::kMedia);
 }
 
 bool Empty() {
@@ -208,7 +210,8 @@ bool BuildFiles(const Job& j, std::vector<ZipEntry>& files) {
   for (size_t k = 0; k < j.sounds.size(); ++k)
     if (!add_file("sound." + j.sounds[k].first, j.sounds[k].second, "sound_" + std::to_string(k))) return false;
   files.insert(files.begin(), ZipEntry{"manifest.txt", Bytes(man.begin(), man.end())});
-  return files.size() > 1;
+  AddModProject(files, j.project);
+  return files.size() > 2 || (files.size() > 1 && j.project.empty());
 }
 
 void SaveMod() {
