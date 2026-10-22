@@ -1866,25 +1866,46 @@ static int frame_rate_index(int fps)
     return 1;
 }
 
-/* The Upscaling list (the game's GRAPHICS -> UPSCALING): off, FSR 1 ultra quality .. performance and - not with
-   Direct3D 11 (no compute) - FSR 2 (experimental) ultra quality .. performance; `sel` chosen (an FSR 2 one as the
-   same FSR 1 level when FSR 2 isn't offered). */
+/* An NVIDIA display adapter (DLSS: the game checks for an RTX GPU itself and falls back to FSR 2). */
+static int nvidia_adapter(void)
+{
+    DISPLAY_DEVICEW d;
+    DWORD i;
+    for (i = 0;; i++) {
+        memset(&d, 0, sizeof d);
+        d.cb = sizeof d;
+        if (!EnumDisplayDevicesW(NULL, i, &d, 0))
+            return 0;
+        if (wcsstr(d.DeviceID, L"VEN_10DE"))
+            return 1;
+    }
+}
+
+/* The Upscaling list (the game's GRAPHICS -> UPSCALING): off, FSR 1 ultra quality .. performance, FSR 2
+   (experimental) - not with Direct3D 11 (no compute) - and DLSS (experimental) - Direct3D 12 (AUTO) only, with
+   nvngx_dlss.dll in the game folder and an NVIDIA GPU; `sel` chosen (one not offered: the same FSR 1 level). */
 static void upscale_fill(int sel)
 {
     static const WCHAR *const names[] = { L"Upscaling: off", L"FSR 1 Ultra Quality", L"FSR 1 Quality", L"FSR 1 Balanced",
                                           L"FSR 1 Performance", L"FSR 2 Ultra Quality (exp.)", L"FSR 2 Quality (exp.)",
-                                          L"FSR 2 Balanced (exp.)", L"FSR 2 Performance (exp.)" };
+                                          L"FSR 2 Balanced (exp.)", L"FSR 2 Performance (exp.)",
+                                          L"DLSS Ultra Quality (exp.)", L"DLSS Quality (exp.)", L"DLSS Balanced (exp.)",
+                                          L"DLSS Performance (exp.)" };
     HWND h = ctl(ID_UPSCALE);
-    const int fsr2 = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0) != RENDERER_D3D11;
-    const int n = fsr2 ? 9 : 5;
+    const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
+    const int fsr2 = renderer != RENDERER_D3D11;
+    WCHAR dll[MAX_PATH];
+    const int dlss = renderer == RENDERER_NATIVE && s_game_dir[0] && join(dll, s_game_dir, L"nvngx_dlss.dll") &&
+                     file_exists(dll) && nvidia_adapter();
+    const int n = dlss ? 13 : fsr2 ? 9 : 5;
     int i;
     SendMessageW(h, CB_RESETCONTENT, 0, 0);
     for (i = 0; i < n; i++)
         SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)names[i]);
-    if (sel < 0 || sel > 8)
+    if (sel < 0 || sel > 12)
         sel = 0;
     if (sel >= n)
-        sel -= 4;
+        sel = (sel - 1) % 4 + 1;
     SendMessageW(h, CB_SETCURSEL, (WPARAM)sel, 0);
 }
 
@@ -1969,7 +1990,8 @@ static void settings_load(void)
             else if (!strcmp(key, "perf_overlay")) perf = atoi(val);
             else if (!strcmp(key, "native_2x_msaa")) msaa = !strcmp(val, "true");
             else if (!strcmp(key, "native_aa")) aa = atoi(val);
-            else if (!strcmp(key, "native_upscale")) upscale = !_stricmp(val, "fsr1") ? 1 : !_stricmp(val, "fsr2") ? 2 : 0;
+            else if (!strcmp(key, "native_upscale"))
+                upscale = !_stricmp(val, "fsr1") ? 1 : !_stricmp(val, "fsr2") ? 2 : !_stricmp(val, "dlss") ? 3 : 0;
             else if (!strcmp(key, "native_upscale_quality")) upscale_quality = atoi(val);
             else if (!strcmp(key, "native_prepare_pipelines")) prepare = !strcmp(val, "true");
             else if (!strcmp(key, "process_priority")) priority = atoi(val) >= 1;
@@ -2021,7 +2043,7 @@ static void settings_load(void)
     CheckDlgButton(s_wnd, ID_SKIP_INTROS, skip_intros ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_TRAINING, skip_training ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_TEXTURES), CB_SETCURSEL, (WPARAM)textures, 0);
-    /* (Off, then FSR 1 / FSR 2 ultra quality .. performance: native_upscale_quality 0-3) */
+    /* (Off, then FSR 1 / FSR 2 / DLSS ultra quality .. performance: native_upscale_quality 0-3) */
     upscale_fill(upscale ? 1 + 4 * (upscale - 1) + (upscale_quality >= 0 && upscale_quality <= 3 ? upscale_quality : 1)
                          : 0);
     if (arena_light < 50 || arena_light > 200)
@@ -2122,8 +2144,9 @@ static int settings_save(void)
     }
     {   /* (as the game writes them: graphics_page.cpp kUpscaling) */
         const int ui = (int)SendMessageW(ctl(ID_UPSCALE), CB_GETCURSEL, 0, 0);
-        strcpy_s(vals[35], 64, ui >= 1 && ui <= 4 ? "\"fsr1\"" : ui >= 5 && ui <= 8 ? "\"fsr2\"" : "\"off\"");
-        sprintf_s(vals[36], 64, "%d", ui >= 1 && ui <= 8 ? (ui - 1) % 4 : 1);
+        strcpy_s(vals[35], 64, ui >= 1 && ui <= 4 ? "\"fsr1\"" : ui >= 5 && ui <= 8 ? "\"fsr2\""
+                               : ui >= 9 && ui <= 12 ? "\"dlss\"" : "\"off\"");
+        sprintf_s(vals[36], 64, "%d", ui >= 1 && ui <= 12 ? (ui - 1) % 4 : 1);
     }
     sprintf_s(vals[19], 160, "\"%s\"", s_online_token);
     sprintf_s(vals[20], 160, "\"%s\"", s_online_xuid);

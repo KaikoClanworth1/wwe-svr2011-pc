@@ -3,6 +3,7 @@
 // composition mask). Written as FSR 2 wants them: last frame's position - this one's, render pixels, unjittered.
 Texture2D<float> r_depth : register(t0);
 RWTexture2D<float2> rw_motion : register(u0);
+RWTexture2D<float> rw_depth : register(u1);  // (the depth as R32_FLOAT too: DLSS reads it - not a depth format)
 cbuffer cbMotion : register(b0) {
   row_major float4x4 reproject;  // (row vectors) this frame's clip space, unjittered -> the last frame's
   float4 jitter_size;            // xy: this frame's jitter in clip space, zw: the render size
@@ -18,4 +19,5 @@ void CS(uint2 id : SV_DispatchThreadID) {
   float2 motion = 0;
   if (prev.w > 1e-6) motion = (prev.xy / prev.w - ndc) * float2(0.5, -0.5) * jitter_size.zw;
   rw_motion[id] = motion;
+  rw_depth[id] = depth;
 }

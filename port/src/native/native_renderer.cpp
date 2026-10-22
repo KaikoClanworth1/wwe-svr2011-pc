@@ -71,6 +71,9 @@
 #include "native/recording_list.h"
 #if SVR2011_FSR2
 #include "native/fsr2.h"
+#if SVR2011_DLSS
+#include "native/dlss.h"
+#endif
 #endif
 #include "native/guest_d3d.h"
 #include "native/textures.h"
@@ -653,6 +656,12 @@ struct Renderer {
   std::unique_ptr<svr2011::fsr2::Upscaler> fsr2;
   bool fsr2_failed = false;
   std::shared_ptr<plume::RenderTexture> fsr2_depth, fsr2_motion;
+  std::shared_ptr<plume::RenderTexture> fsr2_depth32;  // (the depth as R32_FLOAT, from the motion pass: DLSS's)
+#if SVR2011_DLSS
+  // DLSS (native_upscale dlss, experimental): FSR 2's inputs into NVIDIA's upscaler instead of FSR 2's.
+  std::unique_ptr<svr2011::dlss::Upscaler> dlss;
+  bool dlss_failed = false;
+#endif
   RenderTextureLayout fsr2_depth_layout = RenderTextureLayout::UNKNOWN, fsr2_motion_layout = RenderTextureLayout::UNKNOWN;
   uint32_t fsr2_depth_w = 0, fsr2_depth_h = 0;
   uint64_t fsr2_depth_frame = ~0ull, fsr2_last_frame = ~0ull;
@@ -823,6 +832,8 @@ float g_jitter[2] = {0.0f, 0.0f};
 // native_upscale fsr2 (experimental): FSR 2 wanted - Present uses it in frames whose scene depth was caught at the
 // scene's resolve (fsr2_depth_frame), FSR 1 otherwise; the jitter on while it is.
 bool g_fsr2 = false;
+// native_upscale dlss (experimental): FSR 2's path with DLSS's upscaler (g_fsr2 on with it).
+bool g_dlss = false;
 // The intermediate's place in the 2D texture table: after the three placeholders, before the texture cache's.
 constexpr uint32_t kFsrSrv = 3;
 
@@ -984,6 +995,16 @@ std::filesystem::path PipelineCacheFile() {
   return dir / "cache" /
          (backend::ActiveApi() == backend::Api::kVulkan ? "native_vulkan_pipelines.bin" : "native_d3d12_pipelines.bin");
 }
+#if SVR2011_DLSS
+svr2011::dlss::Host DlssHost(Renderer* r) {
+  svr2011::dlss::Host h;
+  h.device = r->device.get();
+  h.vulkan = backend::ActiveApi() == backend::Api::kVulkan;
+  h.dll_dir = rex::filesystem::GetExecutableFolder().wstring();
+  h.data_path = (PipelineCacheFile().parent_path()).wstring();
+  return h;
+}
+#endif
 bool g_no_blend = false;  // SVR2011_NATIVE_NO_BLEND=1
 // SVR2011_NATIVE_DUMP_FRAME=<frame>: describe the first 40 draws of that
 // native frame in native_draws.txt (next to the log).
@@ -1504,6 +1525,11 @@ bool Initialize() {
   // (the texture cache's places: after the three placeholders and FSR 1's intermediate - kFsrSrv)
   textures::Initialize(g_memory, kFsrSrv + 1, kSrvHeapSize - (kFsrSrv + 1), 1, kSamplerHeapSize - 1);
   g_r = r;
+#if SVR2011_DLSS
+  // (DLSS where it can run: NGX started on this device once - the GRAPHICS page asks UpscalerAvailable)
+  if (backend::ActiveApi() == backend::Api::kD3D12 || backend::ActiveApi() == backend::Api::kVulkan)
+    svr2011::dlss::Probe(DlssHost(r), nullptr);
+#endif
   if (REXCVAR_GET(native_record_thread)) {
     r->recorder = std::make_unique<RecordingList>();
     REXLOG_INFO("native renderer: GPU commands recorded on a second thread");
@@ -1678,12 +1704,14 @@ void ApplyOutputSettings(Renderer* r) {
   static float res = float(REXCVAR_GET(native_render_scale));
   static int32_t scene_height = REXCVAR_GET(native_scene_height);
   static bool fsr = REXCVAR_GET(native_upscale) != "off";
-  static bool fsr2 = REXCVAR_GET(native_upscale) == "fsr2";
+  static bool fsr2 = REXCVAR_GET(native_upscale) == "fsr2" || REXCVAR_GET(native_upscale) == "dlss";
+  static bool dlss = REXCVAR_GET(native_upscale) == "dlss";
   static int32_t fsr_quality = REXCVAR_GET(native_upscale_quality);
   static uint64_t aa_checked = 0;
   if (r->frames >= aa_checked + 30) {  // a cvar query isn't free: twice a second
     fsr = REXCVAR_GET(native_upscale) != "off";
-    fsr2 = REXCVAR_GET(native_upscale) == "fsr2";
+    fsr2 = REXCVAR_GET(native_upscale) == "fsr2" || REXCVAR_GET(native_upscale) == "dlss";
+    dlss = REXCVAR_GET(native_upscale) == "dlss";
     fsr_quality = REXCVAR_GET(native_upscale_quality);
     g_fsr_sharpness = float(std::clamp(REXCVAR_GET(native_upscale_sharpness), 0.0, 1.0));
     aa = aa_level();
@@ -1733,6 +1761,9 @@ void ApplyOutputSettings(Renderer* r) {
   // (FSR 2: Direct3D 12 / Vulkan - compute; not with the commands recorded on a second thread)
 #if SVR2011_FSR2
   g_fsr2 = fsr2 && g_fsr && !SlotTables() && !r->recorder && !r->fsr2_failed;
+#if SVR2011_DLSS
+  g_dlss = g_fsr2 && dlss && !r->dlss_failed;
+#endif
 #endif
   const bool res_changed = std::fabs(res - g_res) > 0.001f;
   if (scale == g_scale && effects == g_scale_effects && out_w == g_out_w && out_h == g_out_h &&
@@ -4079,7 +4110,17 @@ bool UpscalerAvailable(const std::string& kind, std::string* why) {
     reason = "FSR 2 isn't in this build (Windows only)";
 #endif
   } else if (kind == "dlss") {
-    reason = "DLSS isn't in this build yet";
+#if SVR2011_DLSS
+    const backend::Api api = backend::ActiveApi();
+    if (api == backend::Api::kD3D11)
+      reason = "DLSS needs Direct3D 12 (the game draws with Direct3D 11)";
+    else if (api == backend::Api::kNone || !g_r)
+      reason = "DLSS: the renderer hasn't started";
+    else if (!svr2011::dlss::Probe(DlssHost(g_r), &reason) && reason.empty())
+      reason = "DLSS can't run here";
+#else
+    reason = "DLSS isn't in this build (built without the DLSS SDK)";
+#endif
   } else {
     reason = "unknown upscaler " + kind;
   }
@@ -4234,6 +4275,7 @@ const plume::RenderPipeline* PresentPipeline(Renderer* r, const char* ps_name = 
 
 plume::RenderTexture* FrameImage(Renderer* r) { return r->outputs[r->output_index].get(); }
 
+
 #if SVR2011_FSR2
 // FSR 2 (experimental): the front buffer (the resolve copy at physical `base`; `region` the part shown) gathered with
 // this frame's scene depth (caught at the scene's resolve) into FSR 1's intermediate, the window's size; false if it
@@ -4268,6 +4310,12 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
         plume::RenderTextureFlag::RENDER_TARGET | plume::RenderTextureFlag::STORAGE |
             plume::RenderTextureFlag::UNORDERED_ACCESS));
     if (!r->fsr2_motion) return false;
+    if (r->fsr2_depth32) Retire(r, std::move(r->fsr2_depth32));
+    r->fsr2_depth32 = r->device->createTexture(plume::RenderTextureDesc::Texture2D(
+        r->fsr2_depth_w, r->fsr2_depth_h, 1, RenderFormat::R32_FLOAT,
+        plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS));
+    if (!r->fsr2_depth32) return false;
+    r->fsr2_depth32->setName("FSR 2 / DLSS depth");
     const plume::RenderTexture* mv = r->fsr2_motion.get();
     auto fb = r->device->createFramebuffer(plume::RenderFramebufferDesc(&mv, 1));
     Barrier(r, r->fsr2_motion.get(), RenderTextureLayout::COLOR_WRITE);
@@ -4333,7 +4381,9 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
         }
     }
     const float jitter[2] = {2.0f * g_jitter[0] / float(rw), -2.0f * g_jitter[1] / float(rh)};
-    r->fsr2->Motion(list, r->back_index, f.depth, f.motion, reproject, jitter, rw, rh);
+    Texture depth32{r->fsr2_depth32.get(), RenderFormat::R32_FLOAT, r->fsr2_depth_w, r->fsr2_depth_h,
+                    RenderTextureLayout::UNKNOWN};
+    r->fsr2->Motion(list, r->back_index, f.depth, f.motion, depth32, reproject, jitter, rw, rh);
     f.motion.layout = RenderTextureLayout::UNKNOWN;
     // Test aid: SVR2011_TEST_FSR2_DUMP=<prefix> - FSR 2's colour and motion (raw 4-byte texels; the depth has a stencil plane) and the
     // reprojection (<prefix>.txt) in the frames SVR2011_TEST_FRAME_SHOT(S/_AT) take: the motion vectors checked
@@ -4380,7 +4430,40 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
       r->list_state = {};
     }
   }
-  if (!r->fsr2->Dispatch(list, r->back_index, f)) return false;
+  bool upscaled = false;
+#if SVR2011_DLSS
+  if (g_dlss) {
+    static int32_t quality = 1;
+    if ((r->frames & 31) == 0 || !r->dlss) quality = REXCVAR_GET(native_upscale_quality);
+    if (!r->dlss || r->dlss->MaxRenderWidth() != r->fsr2_depth_w || r->dlss->MaxRenderHeight() != r->fsr2_depth_h ||
+        r->dlss->DisplayWidth() != g_out_w || r->dlss->DisplayHeight() != g_out_h || r->dlss->Quality() != quality) {
+      if (r->dlss && !WaitIdle(r, "DLSS sizes")) return false;
+      r->dlss = svr2011::dlss::Create(DlssHost(r), r->fsr2_depth_w, r->fsr2_depth_h, g_out_w, g_out_h, quality);
+      if (!r->dlss) {
+        r->dlss_failed = true;  // (FSR 2 from now on)
+        g_dlss = false;
+      }
+    }
+    if (r->dlss) {
+      svr2011::fsr2::Frame d = f;
+      d.depth = Texture{r->fsr2_depth32.get(), RenderFormat::R32_FLOAT, r->fsr2_depth_w, r->fsr2_depth_h,
+                        RenderTextureLayout::UNKNOWN};
+      upscaled = r->dlss->Dispatch(list, d);
+      if (!upscaled && !r->dlss_failed) {
+        static int fails = 0;
+        if (++fails > 30) r->dlss_failed = true, g_dlss = false;  // (a lasting failure: FSR 2)
+      }
+      // (DLSS sets its own state: the renderer binds everything again)
+      r->list_state = {};
+      static bool logged = false;
+      if (upscaled && !logged) {
+        logged = true;
+        REXLOG_INFO("native renderer: DLSS {}x{} -> {}x{}", rw, rh, g_out_w, g_out_h);
+      }
+    }
+  }
+#endif
+  if (!upscaled && !r->fsr2->Dispatch(list, r->back_index, f)) return false;
   // (back to what the renderer tracks: the colour, depth and motion read; the result read by the present pass)
   color.layout = RenderTextureLayout::SHADER_READ;
   r->fsr2_depth_layout = RenderTextureLayout::SHADER_READ;
@@ -4393,6 +4476,7 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
     Barrier(r, r->fsr2_reactive.get(), RenderTextureLayout::SHADER_READ);
     Barrier(r, r->fsr2_composition.get(), RenderTextureLayout::SHADER_READ);
   }
+  Barrier(r, r->fsr2_depth32.get(), RenderTextureLayout::SHADER_READ);
   r->list_state = {};
   r->fsr2_last_frame = r->frames;
   *swap = color.swap_rb;

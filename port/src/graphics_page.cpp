@@ -404,8 +404,8 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
   int aa_ = 1;  // anti-aliasing level: 1 off, 2-4 supersampling per side
-  // UPSCALING: 0 off, 1-4 FSR 1, 5-8 FSR 2 (experimental: Direct3D 12 / Vulkan) - native_upscale_quality 0-3
-  // (ultra quality .. performance)
+  // UPSCALING: 0 off, 1-4 FSR 1, 5-8 FSR 2 (experimental: Direct3D 12 / Vulkan), 9-12 DLSS (experimental: NVIDIA
+  // RTX, Direct3D 12) - native_upscale_quality 0-3 (ultra quality .. performance)
   int upscale_ = 0;
   bool ping_ = true;
   bool router_port_ = true;
@@ -447,8 +447,7 @@ void GraphicsPage::Load() {
   {
     const std::string kind = rex::cvar::GetFlagByName("native_upscale");
     const int quality = std::clamp<int32_t>(rex::cvar::Query<int32_t>("native_upscale_quality"), 0, 3);
-    upscale_ = kind == "fsr1" ? quality + 1 : kind == "fsr2" ? quality + 5 : 0;
-    native::UpscalerAvailable("dlss");  // (DLSS isn't offered yet: the log says why)
+    upscale_ = kind == "fsr1" ? quality + 1 : kind == "fsr2" ? quality + 5 : kind == "dlss" ? quality + 9 : 0;
   }
   {
     const int32_t v = rex::cvar::Query<int32_t>("native_max_scale");
@@ -585,10 +584,19 @@ void GraphicsPage::Change(int row, int dir) {
       SaveSetting("native_2x_msaa", aa_ >= 2 ? "true" : "false");
       break;
     case kUpscaling: {
-      // OFF, FSR 1 ULTRA QUALITY .. PERFORMANCE, FSR 2 (where it can run) ULTRA QUALITY .. PERFORMANCE
-      const int count = native::UpscalerAvailable("fsr2") ? 9 : 5;
-      upscale_ = (std::min(upscale_, count - 1) + dir + count) % count;
-      const char* kind = upscale_ == 0 ? "off" : upscale_ <= 4 ? "fsr1" : "fsr2";
+      // OFF, FSR 1 ULTRA QUALITY .. PERFORMANCE, then FSR 2 and DLSS where they can run (the log says why not)
+      std::vector<int> choices;
+      for (int i = 0; i <= 4; ++i) choices.push_back(i);
+      if (native::UpscalerAvailable("fsr2"))
+        for (int i = 5; i <= 8; ++i) choices.push_back(i);
+      if (native::UpscalerAvailable("dlss"))
+        for (int i = 9; i <= 12; ++i) choices.push_back(i);
+      int at = 0;
+      for (size_t i = 0; i < choices.size(); ++i)
+        if (choices[i] <= upscale_) at = int(i);
+      const int count = int(choices.size());
+      upscale_ = choices[size_t((at + dir + count) % count)];
+      const char* kind = upscale_ == 0 ? "off" : upscale_ <= 4 ? "fsr1" : upscale_ <= 8 ? "fsr2" : "dlss";
       rex::cvar::SetFlagByName("native_upscale", kind);
       SaveSetting("native_upscale", kind);
       if (upscale_) {
@@ -1141,8 +1149,12 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                                              "FSR 2 ULTRA QUALITY (EXPERIMENTAL)",
                                              "FSR 2 QUALITY (EXPERIMENTAL)",
                                              "FSR 2 BALANCED (EXPERIMENTAL)",
-                                             "FSR 2 PERFORMANCE (EXPERIMENTAL)"};
-        return kNames[std::clamp(upscale_, 0, 8)];
+                                             "FSR 2 PERFORMANCE (EXPERIMENTAL)",
+                                             "DLSS ULTRA QUALITY (EXPERIMENTAL)",
+                                             "DLSS QUALITY (EXPERIMENTAL)",
+                                             "DLSS BALANCED (EXPERIMENTAL)",
+                                             "DLSS PERFORMANCE (EXPERIMENTAL)"};
+        return kNames[std::clamp(upscale_, 0, 12)];
       }
       case kCrowd: return crowd_ ? "ON" : "OFF";
       case kShadows: return shadows_ ? "ON" : "OFF";
@@ -1234,7 +1246,10 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         return "Renders at 2, 3 or 4 times the resolution per side and averages it down (4, 9 or 16 samples a "
                "pixel): smoother edges, slower. Limited by RENDER SCALE.";
       case kUpscaling:
-        return upscale_ >= 5
+        return upscale_ >= 9
+                   ? "NVIDIA DLSS 4 (experimental, RTX GPUs): matches drawn smaller and rebuilt by NVIDIA's AI model "
+                     "over several frames; fast moves can leave faint trails. Menus use FSR 1."
+               : upscale_ >= 5
                    ? "AMD FSR 2 (experimental): matches drawn smaller and rebuilt over several frames - sharper "
                      "than FSR 1, smooth edges; fast moves can leave faint trails. Menus use FSR 1."
                    : "AMD FSR 1: the game drawn smaller (77%, 67%, 59% or 50% of the screen's height) and scaled up "

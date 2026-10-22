@@ -58,8 +58,10 @@ class Upscaler {
   // The camera's motion vectors into `motion` (a storage texture, R16G16_FLOAT) from `depth`: `reproject` (row
   // vectors) takes this frame's clip space, unjittered, to the last frame's; `jitter` this frame's in clip space
   // (FSR 2's Frame::jitter_x * 2 / width, -jitter_y * 2 / height). Recorded before Dispatch, same slot.
+  // `depth_out` (a storage texture, R32_FLOAT, the depth's size): the depth copied into it (DLSS's input).
   virtual bool Motion(plume::RenderCommandList* list, uint32_t slot, Texture& depth, Texture& motion,
-                      const float reproject[16], const float jitter[2], uint32_t render_w, uint32_t render_h) = 0;
+                      Texture& depth_out, const float reproject[16], const float jitter[2], uint32_t render_w,
+                      uint32_t render_h) = 0;
   virtual uint32_t MaxRenderWidth() const = 0;
   virtual uint32_t MaxRenderHeight() const = 0;
   virtual uint32_t DisplayWidth() const = 0;
