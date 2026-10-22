@@ -595,6 +595,11 @@ class Conv:
         for k in (0xd, 0xe, 0xf):
             if k in kids13:
                 out[k] = kids13[k]
+        lacks = [k for k in (0x28, 0x32, 0x50, 0x64) if k not in self.t]
+        if lacks:   # (a "KeyError: 40" before: the game's own ch104.pac has them all - this one was replaced)
+            raise RuntimeError('the template %s has no part %s (face animation / collision / offsets): it isn\'t the '
+                             'game\'s own file - put the original back (the launcher\'s Install tab, Verify game files)'
+                             % (self.tmpl_pac, ', '.join('0x%X' % k for k in lacks)))
         for k in (0x28, 0x32, 0x50, 0x64):
             out[k] = self.t[k]
         if getattr(self, 'hair_text', None):   # (hair chains: their parameters; body collision: the template's)
