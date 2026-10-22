@@ -29,6 +29,7 @@ set(SVR2011_SOURCES
     src/achievements_page.cpp
     src/jukebox.cpp
     src/graphics_page.cpp
+    src/display_modes.cpp
     src/touch_controls.cpp
     src/discord_presence.cpp
     src/online.cpp
