@@ -247,6 +247,33 @@ endif()
 if(SVR2011_FSR2)
     target_compile_definitions(svr2011 PRIVATE SVR2011_FSR2=1)
 endif()
+# DLSS (experimental, NVIDIA RTX GPUs, Direct3D 12): the NVIDIA DLSS SDK from OUTSIDE the repository (NVIDIA RTX SDK
+# licence: never committed) - SVR2011_DLSS_SDK, else the DLSS_SDK environment variable, else
+# ../../_sdk/dlss-310.9.16 beside the repository. Without it the game builds without DLSS. nvngx_dlss.dll is
+# copied beside the exe for tests; the release zip gets it from tools/package.ps1.
+if(SVR2011_FSR2)
+    set(_svr2011_dlss_default "$ENV{DLSS_SDK}")
+    if(NOT _svr2011_dlss_default)
+        get_filename_component(_svr2011_dlss_default "${CMAKE_CURRENT_SOURCE_DIR}/../../_sdk/dlss-310.9.16" ABSOLUTE)
+    endif()
+    set(SVR2011_DLSS_SDK "${_svr2011_dlss_default}" CACHE PATH "NVIDIA DLSS SDK folder (include/, lib/) - optional")
+    set(_svr2011_ngx_lib "${SVR2011_DLSS_SDK}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib")
+    set(_svr2011_ngx_dll "${SVR2011_DLSS_SDK}/lib/Windows_x86_64/rel/nvngx_dlss.dll")
+    if(EXISTS "${SVR2011_DLSS_SDK}/include/nvsdk_ngx.h" AND EXISTS "${_svr2011_ngx_lib}")
+        message(STATUS "DLSS: SDK at ${SVR2011_DLSS_SDK}")
+        target_sources(svr2011 PRIVATE src/native/dlss.cpp)
+        target_include_directories(svr2011 PRIVATE "${SVR2011_DLSS_SDK}/include")
+        target_link_libraries(svr2011 PRIVATE "${_svr2011_ngx_lib}")
+        target_compile_definitions(svr2011 PRIVATE SVR2011_DLSS=1)
+        if(EXISTS "${_svr2011_ngx_dll}")
+            add_custom_command(TARGET svr2011 POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_svr2011_ngx_dll}" $<TARGET_FILE_DIR:svr2011>
+                VERBATIM)
+        endif()
+    else()
+        message(STATUS "DLSS: no SDK at ${SVR2011_DLSS_SDK} - built without DLSS")
+    endif()
+endif()
 if(SVR2011_DEBUG_SUITE)
     target_compile_definitions(svr2011 PRIVATE SVR2011_DEBUG_SUITE=1)
     if(NOT ANDROID)

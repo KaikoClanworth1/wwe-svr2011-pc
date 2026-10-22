@@ -140,7 +140,7 @@ class Backend final : public Upscaler {
   std::unique_ptr<plume::RenderPipelineLayout> layout;
   std::array<Pipeline, FFX_FSR2_PASS_COUNT + 2> pipelines;
   uint32_t motion_used = 0;  // (the frame's descriptor sets taken by Motion before Dispatch's)
-  Resource motion_in, motion_out;  // (Motion's depth and motion: views kept while the textures are the same)
+  Resource motion_in, motion_out, motion_depth;  // (Motion's depth and motion: views kept while the textures are the same)
   std::vector<Resource> resources;  // FSR 2's (internal) then this dispatch's registered ones
   size_t internal_count = 0;
   std::vector<FfxGpuJobDescription> jobs;
@@ -356,18 +356,23 @@ class Backend final : public Upscaler {
   }
 
   bool Motion(plume::RenderCommandList* list, uint32_t frame_slot, Texture& depth, Texture& motion,
-              const float reproject[16], const float jitter[2], uint32_t rw, uint32_t rh) override {
-    if (failed || frame_slot >= slots.size() || !depth.texture || !motion.texture) return false;
+              Texture& depth_out, const float reproject[16], const float jitter[2], uint32_t rw,
+              uint32_t rh) override {
+    if (failed || frame_slot >= slots.size() || !depth.texture || !motion.texture || !depth_out.texture) return false;
     if (!MakePipeline(kMotionPass, "fsr2_motion.cs")) return false;
     uint32_t used = 0;
     Slot* slot = NextSlot(frame_slot, used);
     if (!slot) return false;
     Wrap(motion_in, depth, false);
     Wrap(motion_out, motion, true);
+    Wrap(motion_depth, depth_out, true);
     Transition(list, motion_in, RenderTextureLayout::SHADER_READ);
     Transition(list, motion_out, RenderTextureLayout::GENERAL);
+    Transition(list, motion_depth, RenderTextureLayout::GENERAL);
     slot->set->setTexture(kSetTexture, motion_in.texture, RenderTextureLayout::SHADER_READ, motion_in.read.get());
     slot->set->setTexture(kSetStorage, motion_out.texture, RenderTextureLayout::GENERAL, WriteView(motion_out, 0));
+    slot->set->setTexture(kSetStorage + 1, motion_depth.texture, RenderTextureLayout::GENERAL,
+                          WriteView(motion_depth, 0));
     float cb[20];
     std::memcpy(cb, reproject, 64);
     cb[16] = jitter[0], cb[17] = jitter[1], cb[18] = float(rw), cb[19] = float(rh);
@@ -379,7 +384,8 @@ class Backend final : public Upscaler {
     list->dispatch((rw + 7) / 8, (rh + 7) / 8, 1);
     // (FSR 2 reads it next)
     Transition(list, motion_out, RenderTextureLayout::SHADER_READ);
-    motion_in.external = motion_out.external = nullptr;
+    Transition(list, motion_depth, RenderTextureLayout::SHADER_READ);
+    motion_in.external = motion_out.external = motion_depth.external = nullptr;
     motion_used = used;
     return true;
   }

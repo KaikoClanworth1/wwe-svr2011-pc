@@ -36,3 +36,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+
+NVIDIA DLSS (nvngx_dlss.dll)
+----------------------------
+The native renderer's experimental DLSS upscaling (NVIDIA RTX GPUs) uses
+NVIDIA DLSS, from the NVIDIA DLSS SDK 310.9.16 (NVIDIA NGX). nvngx_dlss.dll
+is NVIDIA's own signed program file, distributed under the NVIDIA RTX SDKs
+license - see "NVIDIA DLSS licence.txt" beside this file. NVIDIA, RTX and
+DLSS are trademarks of NVIDIA Corporation. Copyright (c) NVIDIA Corporation.
+All rights reserved.

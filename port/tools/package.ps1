@@ -116,6 +116,29 @@ Get-ChildItem $build -Filter "*.dll" | Where-Object { $files -notcontains $_.Nam
     Copy-Item -Destination $stage
 Copy-Item (Join-Path $port "dist\Read Me.txt") $stage
 Copy-Item (Join-Path $port "dist\Third-party notices.txt") $stage   # (AMD FSR 1 / FSR 2: MIT)
+# NVIDIA DLSS (experimental): a build with the DLSS SDK (CMake SVR2011_DLSS_SDK) has nvngx_dlss.dll beside the exe -
+# copied above with the other DLLs. It ships only in this zip, never in the repository, with NVIDIA's licence
+# (the RTX SDKs licence from the same SDK folder) beside it.
+$dlssDll = Join-Path $stage "nvngx_dlss.dll"
+if (Test-Path $dlssDll) {
+    $sig = Get-AuthenticodeSignature $dlssDll
+    if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch "O=NVIDIA Corporation") {
+        throw "nvngx_dlss.dll in $build isn't signed by NVIDIA ($($sig.Status))"
+    }
+    $sdk = ""
+    $cache = Join-Path $build "CMakeCache.txt"
+    if (Test-Path $cache) {
+        $line = Select-String -Path $cache -Pattern "^SVR2011_DLSS_SDK:PATH=(.*)$" | Select-Object -First 1
+        if ($line) { $sdk = $line.Matches[0].Groups[1].Value }
+    }
+    if (-not $sdk -and $env:DLSS_SDK) { $sdk = $env:DLSS_SDK }
+    $licence = if ($sdk) { Join-Path $sdk "LICENSE.txt" } else { "" }
+    if (-not $licence -or -not (Test-Path $licence)) { throw "nvngx_dlss.dll is in the build but NVIDIA's LICENSE.txt isn't (SDK: '$sdk')" }
+    Copy-Item $licence (Join-Path $stage "NVIDIA DLSS licence.txt")
+    Write-Host "DLSS: nvngx_dlss.dll $((Get-Item $dlssDll).VersionInfo.FileVersion) + NVIDIA DLSS licence.txt"
+} else {
+    Write-Warning "no nvngx_dlss.dll in $build - the release has no DLSS (built without the DLSS SDK)"
+}
 # The native renderer's shaders (converted from the game's by
 # tools/convert_shaders.py; without them it draws nothing).
 $shaders = Join-Path $port "runs\shaders_native\dxil"
