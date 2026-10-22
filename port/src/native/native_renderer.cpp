@@ -662,9 +662,42 @@ struct Renderer {
   struct Fsr2Dump {
     std::shared_ptr<plume::RenderBuffer> buffer;
     std::string file;
-    uint32_t w = 0, h = 0, row = 0;  // (row: pixels, 4 bytes each)
+    uint32_t w = 0, h = 0, row = 0, bytes = 4;  // (row: pixels, `bytes` each)
   };
   std::vector<Fsr2Dump> fsr2_dumps;
+  // FSR 2's masks: the scene draws that move without motion vectors or blend over others (the wrestlers, the
+  // blended crowd / particles, the HUD) noted as drawn and drawn again at the scene's resolve, depth tested, into
+  // the reactive (R8: trust the history less) and transparency / composition (R8) targets - fsr2_mask.ps.
+  struct Fsr2MaskDraw {
+    const plume::RenderPipeline* pso = nullptr;
+    RenderBufferReference constants[4];
+    plume::RenderVertexBufferView views[16] = {};
+    plume::RenderInputSlot slots[16] = {};
+    uint32_t view_count = 0;
+    plume::RenderIndexBufferView ibv = {};
+    bool indexed = false;
+    uint32_t count = 0, start = 0;
+    int32_t base = 0;
+    plume::RenderViewport viewport;
+    plume::RenderRect scissor;
+    uint32_t stencil_ref = 0;
+    bool hud = false;  // (no depth test: kept only after the frame's last 3D draw - not a background)
+  };
+  std::vector<Fsr2MaskDraw> fsr2_mask_draws;
+  size_t fsr2_mask_after_3d = 0;  // (the noted draws before the frame's last 3D scene draw)
+  uint64_t fsr2_mask_draws_frame = ~0ull, fsr2_mask_frame = ~0ull;  // (noted in / drawn in)
+  std::shared_ptr<plume::RenderTexture> fsr2_reactive, fsr2_composition;
+  RenderTextureLayout fsr2_reactive_layout = RenderTextureLayout::UNKNOWN,
+                      fsr2_composition_layout = RenderTextureLayout::UNKNOWN;
+  uint32_t fsr2_mask_w = 0, fsr2_mask_h = 0;
+  struct Fsr2MaskFramebuffer {
+    std::shared_ptr<plume::RenderTexture> depth;  // (kept: the key)
+    std::unique_ptr<plume::RenderFramebuffer> framebuffer;
+  };
+  std::vector<Fsr2MaskFramebuffer> fsr2_mask_framebuffers;
+  std::unordered_map<uint64_t, std::unique_ptr<plume::RenderPipeline>> fsr2_mask_pipelines;
+  std::vector<uint8_t> fsr2_mask_code;
+  std::unique_ptr<plume::RenderShader> fsr2_mask_ps;
   RenderTextureLayout fsr_image_layout = RenderTextureLayout::UNKNOWN;
 #endif
   uint32_t output_index = 0;
@@ -3262,6 +3295,165 @@ bool FlatPixels(const std::vector<Element>& decl, const PendingUP* up, bool inde
 }
 
 // `up`: a DrawVerticesUP (stream 0 is the game's vertex data, not a buffer).
+#if SVR2011_FSR2
+// FSR 2's mask values (reactive) for the HUD, blended draws, skinned ones and the crowd; composition 1 for all.
+// (Test aid: SVR2011_TEST_FSR2_MASK=<hud>,<blended>,<skinned>,<crowd>; 0,0,0,0 = no masks.)
+float g_fsr2_mask_values[4] = {1.0f, 0.5f, 0.35f, 0.5f};
+bool g_fsr2_masks_off = false;
+
+// This draw's frame noted (the list started again in a new frame); false without the mask shader.
+bool Fsr2MaskWanted(Renderer* r) {
+  static const bool read = [] {
+    if (const char* v = std::getenv("SVR2011_TEST_FSR2_MASK")) {
+      std::sscanf(v, "%f,%f,%f,%f", &g_fsr2_mask_values[0], &g_fsr2_mask_values[1], &g_fsr2_mask_values[2],
+                  &g_fsr2_mask_values[3]);
+      g_fsr2_masks_off = g_fsr2_mask_values[0] <= 0 && g_fsr2_mask_values[1] <= 0 && g_fsr2_mask_values[2] <= 0 &&
+                         g_fsr2_mask_values[3] <= 0;
+    }
+    return true;
+  }();
+  (void)read;
+  if (g_fsr2_masks_off) return false;
+  if (r->fsr2_mask_code.empty()) {
+    r->fsr2_mask_code = ReadShader("fsr2_mask.ps");
+    if (r->fsr2_mask_code.empty()) {
+      REXLOG_WARN("native renderer: fsr2_mask.ps missing - FSR 2 without masks");
+      g_fsr2_masks_off = true;
+      return false;
+    }
+  }
+  if (r->fsr2_mask_draws_frame != r->frames) {
+    r->fsr2_mask_draws.clear();
+    r->fsr2_mask_after_3d = 0;
+    r->fsr2_mask_draws_frame = r->frames;
+  }
+  return true;
+}
+
+// The mask pipeline of a draw: its vertex shader and input layout, fsr2_mask.ps into the two R8 targets (the
+// largest value kept), depth tested as the draw (less-equal: drawn again over its own depth) without writing.
+const plume::RenderPipeline* Fsr2MaskPipeline(Renderer* r, Shader* vs, int vs_variant,
+                                              const std::vector<plume::RenderInputElement>& layout,
+                                              const plume::RenderInputSlot* slots, uint32_t layout_hash,
+                                              plume::RenderPrimitiveTopology topology, bool depth_test) {
+  const uint32_t cull = Reg(PA_SU_SC_MODE_CNTL) & 7;
+  const uint64_t parts[3] = {vs->hash,
+                             uint64_t(vs_variant) | uint64_t(topology) << 8 | uint64_t(cull) << 16 |
+                                 uint64_t(depth_test) << 24,
+                             layout_hash};
+  const uint64_t h = XXH3_64bits(parts, sizeof(parts));
+  auto& slot = r->fsr2_mask_pipelines[h];
+  if (slot) return slot.get();
+  if (!r->fsr2_mask_ps)
+    r->fsr2_mask_ps = r->device->createShader(r->fsr2_mask_code.data(), r->fsr2_mask_code.size(), "main",
+                                              backend::ShaderFormat());
+  plume::RenderGraphicsPipelineDesc d;
+  d.pipelineLayout = r->layout.get();
+  d.vertexShader = Compiled(r, vs, vs_variant);
+  d.pixelShader = r->fsr2_mask_ps.get();
+  for (int t = 0; t < 2; ++t) {
+    plume::RenderBlendDesc& b = d.renderTargetBlend[t];
+    b.blendEnabled = true;
+    b.srcBlend = b.dstBlend = b.srcBlendAlpha = b.dstBlendAlpha = plume::RenderBlend::ONE;
+    b.blendOp = b.blendOpAlpha = plume::RenderBlendOperation::MAX;
+    b.renderTargetWriteMask = uint8_t(plume::RenderColorWriteEnable::ALL);
+    d.renderTargetFormat[t] = RenderFormat::R8_UNORM;
+  }
+  d.renderTargetCount = 2;
+  d.cullMode = (cull & 1)   ? plume::RenderCullMode::FRONT
+               : (cull & 2) ? plume::RenderCullMode::BACK
+                            : plume::RenderCullMode::NONE;
+  d.frontFace = (cull & 4) ? plume::RenderFrontFace::CLOCKWISE : plume::RenderFrontFace::COUNTER_CLOCKWISE;
+  d.depthClipEnabled = true;
+  d.depthEnabled = depth_test;
+  d.depthWriteEnabled = false;
+  d.depthFunction = plume::RenderComparisonFunction::LESS_EQUAL;
+  d.stencilEnabled = false;
+  d.dynamicStencilReferenceEnabled = true;
+  d.dynamicBlendFactorEnabled = true;
+  d.inputElements = layout.data();
+  d.inputElementsCount = uint32_t(layout.size());
+  d.inputSlots = slots;
+  d.inputSlotsCount = 16;
+  d.primitiveTopology = topology;
+  d.depthTargetFormat = backend::DepthFormat();
+  if (d.vertexShader && d.pixelShader) slot = r->device->createGraphicsPipeline(d);
+  if (slot && !backend::PipelineCreated(slot.get())) slot.reset();
+  if (!slot) {
+    static int logged = 0;
+    if (logged++ < 3) REXLOG_WARN("native renderer: FSR 2 mask pipeline for vs {:016X} failed", vs->hash);
+  }
+  return slot.get();
+}
+
+// The frame's noted mask draws drawn again over the scene's depth (the scene being resolved: `depth`, `w` x `h`)
+// into the reactive and composition targets.
+void DrawFsr2Masks(Renderer* r, DepthTarget* depth, uint32_t w, uint32_t h) {
+  if (r->fsr2_mask_draws_frame != r->frames || r->fsr2_mask_draws.empty() || !depth || !depth->resource) return;
+  auto* list = r->list;
+  if (!r->fsr2_reactive || r->fsr2_mask_w != w || r->fsr2_mask_h != h) {
+    for (auto* t : {&r->fsr2_reactive, &r->fsr2_composition})
+      if (*t) Retire(r, std::move(*t));
+    r->fsr2_mask_framebuffers.clear();  // (they name the old textures)
+    for (auto* t : {&r->fsr2_reactive, &r->fsr2_composition}) {
+      *t = r->device->createTexture(plume::RenderTextureDesc::Texture2D(
+          w, h, 1, RenderFormat::R8_UNORM, plume::RenderTextureFlag::RENDER_TARGET));
+      if (!*t) return;
+    }
+    r->fsr2_reactive->setName("FSR 2 reactive");
+    r->fsr2_composition->setName("FSR 2 composition");
+    r->fsr2_reactive_layout = r->fsr2_composition_layout = RenderTextureLayout::UNKNOWN;
+    r->fsr2_mask_w = w, r->fsr2_mask_h = h;
+  }
+  plume::RenderFramebuffer* fb = nullptr;
+  for (auto& f : r->fsr2_mask_framebuffers)
+    if (f.depth == depth->resource) fb = f.framebuffer.get();
+  if (!fb) {
+    const plume::RenderTexture* colors[2] = {r->fsr2_reactive.get(), r->fsr2_composition.get()};
+    auto made = r->device->createFramebuffer(plume::RenderFramebufferDesc(colors, 2, depth->resource.get()));
+    if (!made) return;
+    fb = made.get();
+    if (r->fsr2_mask_framebuffers.size() > 4) r->fsr2_mask_framebuffers.erase(r->fsr2_mask_framebuffers.begin());
+    r->fsr2_mask_framebuffers.push_back({depth->resource, std::move(made)});
+  }
+  Transition(r, r->fsr2_reactive.get(), r->fsr2_reactive_layout, RenderTextureLayout::COLOR_WRITE);
+  Transition(r, r->fsr2_composition.get(), r->fsr2_composition_layout, RenderTextureLayout::COLOR_WRITE);
+  Transition(r, depth->resource.get(), depth->layout, RenderTextureLayout::DEPTH_WRITE);
+  list->setFramebuffer(fb);
+  list->clearColor(0, plume::RenderColor(0, 0, 0, 0));
+  list->clearColor(1, plume::RenderColor(0, 0, 0, 0));
+  list->setGraphicsPipelineLayout(r->layout.get());
+  r->list_state = {};
+  BindTables(r, list);
+  r->list_state.bound = true;
+  for (size_t i = 0; i < r->fsr2_mask_draws.size(); ++i) {
+    const auto& m = r->fsr2_mask_draws[i];
+    if (m.hud && i < r->fsr2_mask_after_3d) continue;  // (a full-screen background, a flare in the scene)
+    list->setPipeline(m.pso);
+    BindConstants(r, m.constants);
+    list->setVertexBuffers(0, m.views, m.view_count, m.slots);
+    list->setViewports(m.viewport);
+    list->setScissors(m.scissor);
+    list->setStencilReference(m.stencil_ref);
+    if (m.indexed) {
+      list->setIndexBuffer(&m.ibv);
+      list->drawIndexedInstanced(m.count, 1, 0, m.base, 0);
+    } else {
+      list->drawInstanced(m.count, 1, m.start, 0);
+    }
+  }
+  Transition(r, r->fsr2_reactive.get(), r->fsr2_reactive_layout, RenderTextureLayout::SHADER_READ);
+  Transition(r, r->fsr2_composition.get(), r->fsr2_composition_layout, RenderTextureLayout::SHADER_READ);
+  r->list_state = {};  // (the next draw binds its own framebuffer, pipeline, buffers)
+  r->fsr2_mask_frame = r->frames;
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    REXLOG_INFO("native renderer: FSR 2 masks: {} draws", r->fsr2_mask_draws.size());
+  }
+}
+#endif
+
 void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, uint32_t count,
           bool indexed, const PendingUP* up = nullptr) {
   ScopeTimer timer(r->perf_draw_ms);
@@ -3689,6 +3881,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     BindTables(r, list);
     ls.bound = true;
   }
+  RenderBufferReference draw_constants[4];
   {
     RenderBufferReference constants[4] = {GpuConstants(r, 0, kVertexConstantsBytes),
                                            GpuConstants(r, 256, kPixelConstantsBytes),
@@ -3702,6 +3895,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
       constants[3] = gpu;
     }
     BindConstants(r, constants);
+    std::copy(constants, constants + 4, draw_constants);
   }
   if (backend::CompactTables() || SlotTables()) BindCompactSets(r, list);
   if (ls.pso != pso) {
@@ -3781,6 +3975,72 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     list->drawInstanced(draw_count, 1, start, 0);
   }
   ++r->frame_stats.drawn;
+#if SVR2011_FSR2
+  // FSR 2's masks: this draw noted for them (drawn again at the scene's resolve) when it is the HUD (no depth
+  // test - the ring's no-depth quad, blend 01860186, aside), blended over the scene, or skinned (the wrestlers,
+  // the referee: they move without motion vectors).
+  if (g_fsr2 && g_match_scene.load() && !middle && targets.depth && SceneTarget(uint32_t(tw), uint32_t(th))) {
+    const uint32_t blend = Reg(RB_BLENDCONTROL0);
+    // (blended: drawn over the scene without writing depth - the game's models blend too, alpha 1, writing it)
+    const bool blended =
+        ((blend & 0x1F) != 1 || ((blend >> 8) & 0x1F) != 0) && !((Reg(RB_DEPTHCONTROL) >> 2) & 1);
+    // (skinned: weights and indices - the wrestlers, the referee, the 3D front-row fans; ropes and rigid props
+    // have indices only)
+    bool weights = false, indices = false;
+    for (const Element& el : decl) weights |= el.usage == 1, indices |= el.usage == 2;
+    const bool skinned = weights && indices;
+    float mask[4] = {0, 0, 0, 0};  // (reactive, composition)
+    if (!depth_test && blend != 0x01860186u) {
+      mask[0] = g_fsr2_mask_values[0], mask[1] = 1.0f;
+    } else if (depth_test && blended) {
+      mask[0] = g_fsr2_mask_values[1], mask[1] = 1.0f;
+    } else if (depth_test && skinned) {
+      mask[0] = g_fsr2_mask_values[2], mask[1] = 1.0f;
+    }
+    // (the crowd: alpha-tested, blended, indices without weights - animated cut-outs with no motion vectors)
+    else if (depth_test && alpha_test && indices && ((blend & 0x1F) != 1 || ((blend >> 8) & 0x1F) != 0)) {
+      mask[0] = g_fsr2_mask_values[3], mask[1] = 1.0f;
+    }
+    // (test aid SVR2011_TEST_FSR2_IDS: every scene draw, its number in the masks - logged at match frame 900)
+    static const bool ids = EnvFlag("SVR2011_TEST_FSR2_IDS");
+    if (ids) {
+      const uint32_t n = r->frame_stats.drawn;
+      mask[0] = float(n % 255 + 1) / 255.0f, mask[1] = float(n / 255) / 255.0f;
+      if (Be32(Virtual(0x82E3CD0C)) == 900) {
+        std::string u;
+        for (const Element& el : decl) u += fmt::format(" {}.{}", el.usage, el.index);
+        REXLOG_INFO("[fsr2ids] {} blend {:08X} depth {:08X} cc {:08X} vs {:016X} ps {:016X} n {} decl{}", n, blend,
+                    Reg(RB_DEPTHCONTROL), Reg(RB_COLORCONTROL), vs->hash, ps->hash, draw_count, u);
+      }
+    }
+    if ((mask[0] > 0.0f || mask[1] > 0.0f) && Fsr2MaskWanted(r)) {
+      const plume::RenderPipeline* mask_pso =
+          Fsr2MaskPipeline(r, vs, packed_normals ? 1 : 0, layout, slots, layout_hash, topology, depth_test);
+      auto [cpu, gpu] = Allocate(r, 256);
+      if (mask_pso && cpu) {
+        std::memcpy(cpu, mask, sizeof(mask));
+        Renderer::Fsr2MaskDraw m;
+        m.pso = mask_pso;
+        std::copy(draw_constants, draw_constants + 4, m.constants);
+        m.constants[3] = gpu;
+        m.view_count = max_slot + 1;
+        std::copy(views, views + m.view_count, m.views);
+        std::copy(slots, slots + m.view_count, m.slots);
+        m.ibv = ibv;
+        m.indexed = draw_indexed;
+        m.count = draw_count;
+        m.start = start;
+        m.base = draw_base;
+        m.viewport = vp;
+        m.scissor = scissor;
+        m.stencil_ref = stencil_ref;
+        m.hud = !depth_test;
+        r->fsr2_mask_draws.push_back(m);
+      }
+    }
+    if (depth_test && Fsr2MaskWanted(r)) r->fsr2_mask_after_3d = r->fsr2_mask_draws.size();
+  }
+#endif
 }
 
 }  // namespace
@@ -4008,6 +4268,13 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
   f.motion = Texture{r->fsr2_motion.get(), RenderFormat::R16G16_FLOAT, r->fsr2_depth_w, r->fsr2_depth_h,
                      RenderTextureLayout::UNKNOWN};
   f.output = Texture{r->fsr_image.get(), RenderFormat::R8G8B8A8_UNORM, g_out_w, g_out_h, RenderTextureLayout::UNKNOWN};
+  if (r->fsr2_mask_frame == r->frames && r->fsr2_reactive && r->fsr2_mask_w == r->fsr2_depth_w &&
+      r->fsr2_mask_h == r->fsr2_depth_h) {
+    f.reactive = Texture{r->fsr2_reactive.get(), RenderFormat::R8_UNORM, r->fsr2_mask_w, r->fsr2_mask_h,
+                         RenderTextureLayout::UNKNOWN};
+    f.composition = Texture{r->fsr2_composition.get(), RenderFormat::R8_UNORM, r->fsr2_mask_w, r->fsr2_mask_h,
+                            RenderTextureLayout::UNKNOWN};
+  }
   f.render_w = rw;
   f.render_h = rh;
   f.jitter_x = g_jitter[0];
@@ -4054,11 +4321,12 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
     if (!dump.empty() && !r->hidden_frame && dumps_taken < std::max(1, EnvInt("SVR2011_TEST_FRAME_SHOTS", 1)) &&
         Be32(Virtual(0x82E3CD0C)) > uint32_t(std::max(1, EnvInt("SVR2011_TEST_FRAME_SHOT_AT", 600)))) {
       const int i = dumps_taken++;
-      auto take = [&](plume::RenderTexture* t, RenderFormat format, uint32_t w, uint32_t h, const char* what) {
+      auto take = [&](plume::RenderTexture* t, RenderFormat format, uint32_t w, uint32_t h, const char* what,
+                      uint32_t bytes = 4) {
         Renderer::Fsr2Dump d;
-        d.w = w, d.h = h, d.row = (w + 63) & ~63u;
+        d.w = w, d.h = h, d.bytes = bytes, d.row = ((w * bytes + 255) & ~255u) / bytes;
         d.file = dump + "_" + std::to_string(i) + "_" + what + ".raw";
-        d.buffer = r->device->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(uint64_t(d.row) * h * 4));
+        d.buffer = r->device->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(uint64_t(d.row) * h * bytes));
         if (!d.buffer) return;
         Barrier(r, t, RenderTextureLayout::COPY_SOURCE);
         list->copyTextureRegion(
@@ -4069,6 +4337,10 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
       };
       take(color.resource.get(), color_format, color.host_w, color.host_h, "color");
       take(r->fsr2_motion.get(), RenderFormat::R16G16_FLOAT, r->fsr2_depth_w, r->fsr2_depth_h, "motion");
+      if (f.reactive.texture) {
+        take(r->fsr2_reactive.get(), RenderFormat::R8_UNORM, r->fsr2_mask_w, r->fsr2_mask_h, "reactive", 1);
+        take(r->fsr2_composition.get(), RenderFormat::R8_UNORM, r->fsr2_mask_w, r->fsr2_mask_h, "composition", 1);
+      }
       if (FILE* t = std::fopen((dump + ".txt").c_str(), i ? "a" : "w")) {
         std::fprintf(t, "%d render %u %u color %u %u depth %u %u jitter %.6f %.6f swap %d reset %d reproject", i, rw, rh,
                      color.host_w, color.host_h, r->fsr2_depth_w, r->fsr2_depth_h, g_jitter[0], g_jitter[1],
@@ -4088,6 +4360,11 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
   Barrier(r, color.resource.get(), RenderTextureLayout::SHADER_READ);
   Barrier(r, r->fsr2_depth.get(), RenderTextureLayout::SHADER_READ);
   Barrier(r, r->fsr_image.get(), RenderTextureLayout::SHADER_READ);
+  if (f.reactive.texture) {
+    r->fsr2_reactive_layout = r->fsr2_composition_layout = RenderTextureLayout::SHADER_READ;
+    Barrier(r, r->fsr2_reactive.get(), RenderTextureLayout::SHADER_READ);
+    Barrier(r, r->fsr2_composition.get(), RenderTextureLayout::SHADER_READ);
+  }
   r->list_state = {};
   r->fsr2_last_frame = r->frames;
   *swap = color.swap_rb;
@@ -4373,7 +4650,7 @@ void OnPresent(uint32_t front_buffer) {
     for (auto& d : r->fsr2_dumps)
       if (const auto* px = static_cast<const uint8_t*>(d.buffer->map())) {
         if (FILE* f = std::fopen(d.file.c_str(), "wb")) {
-          for (uint32_t y = 0; y < d.h; ++y) std::fwrite(px + size_t(y) * d.row * 4, 4, d.w, f);
+          for (uint32_t y = 0; y < d.h; ++y) std::fwrite(px + size_t(y) * d.row * d.bytes, d.bytes, d.w, f);
           std::fclose(f);
         }
         d.buffer->unmap();
@@ -4771,6 +5048,7 @@ void OnResolve(const PPCContext& ctx) {
       r->fsr2_depth_w = src_host_w, r->fsr2_depth_h = src_host_h;
       if (r->fsr2_depth) r->fsr2_depth->setName("FSR 2 depth");
     }
+    DrawFsr2Masks(r, t.depth, src_host_w, src_host_h);
     if (r->fsr2_depth) {
       const RenderTextureLayout before = t.depth->layout;
       Transition(r, t.depth->resource.get(), t.depth->layout, RenderTextureLayout::COPY_SOURCE);
