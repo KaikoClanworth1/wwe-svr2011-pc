@@ -117,6 +117,7 @@ enum Row {
   kUpscaling,                                                    // GRAPHICS (after ANTI-ALIASING)
   kCawLimits,                                                    // DISPLAY (last: caw_limits.cpp)
   kMatchCamera,                                                  // DISPLAY (free_cam.h)
+  kMatFix,                                                       // GRAPHICS (after ARENA BRIGHTNESS)
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
@@ -131,7 +132,7 @@ const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kF
 const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kOverlayCorner, kMatchCamera, kPing, kRouterPort, kRenderer, kTouch,
                                               kReplays, kCpuPriority, kFastStart, kCawLimits},
 #endif
-                                             {kRenderScale, kAntiAliasing, kUpscaling, kTextureQuality, kArenaBrightness, kWide, kCutsceneFps},
+                                             {kRenderScale, kAntiAliasing, kUpscaling, kTextureQuality, kArenaBrightness, kMatFix, kWide, kCutsceneFps},
                                              {kCrowd, kShadows, kEffects, kDof, kMotionBlur, kSoft, kPrepare}};
 // SHADOWS: only with the renderer's native_shadows setting.
 bool HasShadows() {
@@ -403,6 +404,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool prepare_ = true;  // the known pipelines built ahead in the menus
   bool crowd_ = true, crowd_at_start_ = true;  // arena_crowd (read when the game starts)
   bool shadows_ = true;  // native_shadows
+  bool mat_fix_ = true;  // native_mat_fix
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
   int aa_ = 1;  // anti-aliasing level: 1 off, 2-4 supersampling per side
@@ -505,6 +507,7 @@ void GraphicsPage::Load() {
     crowd_at_start_ = at_start;
   }
   shadows_ = !HasShadows() || rex::cvar::Query<bool>("native_shadows");
+  mat_fix_ = rex::cvar::Query<bool>("native_mat_fix");
   {
     const uint32_t id = rex::cvar::Query<uint32_t>("user_language");
     language_ = 0;
@@ -545,6 +548,11 @@ void GraphicsPage::Change(int row, int dir) {
       shadows_ = !shadows_;
       rex::cvar::SetFlagByName("native_shadows", shadows_ ? "true" : "false");
       SaveSetting("native_shadows", shadows_ ? "true" : "false");
+      break;
+    case kMatFix:
+      mat_fix_ = !mat_fix_;
+      rex::cvar::SetFlagByName("native_mat_fix", mat_fix_ ? "true" : "false");
+      SaveSetting("native_mat_fix", mat_fix_ ? "true" : "false");
       break;
     case kArenaBrightness:
       brightness_ += 10 * (dir ? dir : 1);  // (50-200%, round as the other rows)
@@ -1141,6 +1149,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kRenderer: return api_ == 1 ? "VULKAN" : api_ == 2 ? "DIRECT3D 11" : "AUTO";
       case kRenderScale: return kScales[scale_].label;
       case kTextureQuality: return kTextureQualityLabels[textures_];
+      case kMatFix: return mat_fix_ ? "SMOOTH" : "ORIGINAL";
       case kArenaBrightness: {
         static char b[16];
         std::snprintf(b, sizeof b, "%d%%", brightness_);
@@ -1197,6 +1206,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kRenderScale: return "RENDER RESOLUTION";
       case kTextureQuality: return "TEXTURES";
       case kArenaBrightness: return "ARENA BRIGHTNESS";
+      case kMatFix: return "RING MAT";
       case kAntiAliasing: return "ANTI-ALIASING";
       case kUpscaling: return "UPSCALING";
       case kEffects: return "EFFECT DETAIL";
@@ -1263,6 +1273,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                      "than FSR 1, smooth edges; fast moves can leave faint trails. Menus use FSR 1."
                    : "AMD FSR 1: the game drawn smaller (77%, 67%, 59% or 50% of the screen's height) and scaled up "
                      "sharp - faster on weak PCs and phones. Replaces RENDER SCALE while on.";
+      case kMatFix:
+        return "SMOOTH: the game's ring mats without the rows of light patches in their art. ORIGINAL: as on the "
+               "Xbox 360. From the next arena that loads.";
       case kArenaBrightness:
         return "The arena's lights - on the wrestlers, the ring and the hall. 100%: the game's own. From the next "
                "arena that loads.";

@@ -482,7 +482,7 @@ void Svr2011App::OnPostLoadXexImage() {
     static const char* const kGroups[][2] = {
         {"display", "fullscreen fullscreen_exclusive window_width window_height vsync show_fps perf_overlay perf_overlay_corner perf_log_seconds"},
         {"renderer", "native_renderer gpu_backend native_max_scale native_render_scale native_scene_height native_aa native_2x_msaa native_scale_effects "
-                     "native_texture_quality native_texture_packs native_dump_textures native_widescreen native_prepare_pipelines "
+                     "native_texture_quality native_mat_fix native_texture_packs native_dump_textures native_widescreen native_prepare_pipelines "
                      "frame_rate full_speed unlock_30fps "
                      "process_priority"},
         {"effects", "depth_of_field motion_blur soft_filter"},
