@@ -16,6 +16,9 @@ void InstallCawLimits(rex::memory::Memory* memory);
 // emulator's physical system heap), or 0. Called by the allocators' hooks
 // (ring_rules.cpp) on a failed heap-42 allocation.
 uint32_t CawHeapFallback(uint32_t size);
+// The same fallback memory for another full game heap (the file loader's cache, model_mem.cpp): `size` bytes,
+// 4 KB aligned, or 0. Freed by the same hook (CawHeapFree).
+uint32_t FallbackBlock(uint32_t size);
 // A block CawHeapFallback gave is freed (operator delete's hook,
 // frame_rate.cpp): true when it was one of them (freed here).
 bool CawHeapFree(uint32_t ptr);

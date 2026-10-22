@@ -10,6 +10,7 @@
 // Every failed allocation is logged once per caller with its size, so a
 // model that doesn't fit shows what it asked for.
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -22,6 +23,7 @@
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
 
+#include "caw_limits.h"
 #include "generated/default/svr2011_init.h"
 
 namespace {
@@ -133,3 +135,146 @@ REX_HOOK_RAW(sub_8215A380) {
                                                                           : std::string("no room anywhere either"));
   }
 }
+
+// -- The file loader's cache ---------------------------------------------------
+//
+// The game's file loader thread (g821593A8, sub_826A1D38) reads each file into a buffer from its cache
+// (*0x82ED5FE8: sub_826A1C70(size, heap) -> sub_826A1C08 -> sub_826BA928(cache, size, 2048); other loader steps
+// call sub_826BA928 too). When the cache's heap (cache+76: heap 16, 20 MB) has no room, sub_826BA928 frees the
+// oldest idle file (state 11, sub_826BA590) and tries again - forever: with nothing idle left it spins at 100%
+// and the game waits on the load screen (2.1.4.1 report 21 Oct: "hangs after the entrances, every match"; hang
+// note lr 826BA5BC / 826B9FE0, stack 826BA9A8 826A1C50 826A1CE0 826A1F1C). After 3 s with nothing idle the
+// file and what holds the cache are logged (each entry: name +50, size +44 x 256, state +100, buffer +96; the
+// list from cache+4, nodes {next, prev, entry}) and the buffer comes from the fallback memory instead
+// (caw_limits.h FallbackBlock: the emulator's physical system heap; the cache frees its buffers with
+// sub_8269B2D0, whose hook hands such a block back), so the match loads instead of hanging.
+// Test aids: SVR2011_TEST_CACHE_LOG=1 - every request of 1 MB or more; SVR2011_TEST_CACHE_FULL=<bytes> - the
+// cache finds no room for a request of at least that size (the hang, on purpose).
+namespace {
+constexpr uint32_t kLoaderCache = 0x82ED5FE8;
+
+uint32_t Rd32(const uint8_t* base, uint32_t a) {
+  const uint8_t* p = base + a;
+  return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+}
+
+std::string GuestName(const uint8_t* base, uint32_t a) {
+  std::string s;
+  for (uint32_t i = 0; a && i < 72; ++i) {
+    const char c = char(base[a + i]);
+    if (!c) break;
+    s += (c >= 32 && c < 127) ? c : '?';
+  }
+  return s;
+}
+
+struct CacheAlloc {
+  bool active = false, stuck = false, given = false;
+  uint32_t size = 0, tries = 0;
+  std::chrono::steady_clock::time_point t0;
+};
+thread_local CacheAlloc t_alloc;
+thread_local uint32_t t_request = 0;  // (the loader's request in sub_826A1C70: its file name at +50)
+
+std::string RequestName(const uint8_t* base) {
+  const std::string s = GuestName(base, t_request ? t_request + 50 : 0);
+  return s.empty() ? std::string("(a loader step without a file name)") : "'" + s + "'";
+}
+
+void LogLoaderCache(const uint8_t* base, uint32_t cache, const CacheAlloc& r, double waited) {
+  const uint32_t heap = Rd32(base, cache + 76);
+  const uint32_t table = Rd32(base, 0x82EC5F48);
+  uint32_t lo = 0, hi = 0;
+  if (table && heap < 54) lo = Rd32(base, table + heap * 36), hi = Rd32(base, table + heap * 36 + 4);
+  REXLOG_WARN("[svr2011] file cache: the loader has waited {:.0f} s ({} tries) for {} bytes for {} - cache heap {} "
+              "{:08X}-{:08X} ({:.1f} MB) has no room and nothing idle to free",
+              waited, r.tries, r.size, RequestName(base), heap, lo, hi, (hi - lo) / 1048576.0);
+  uint64_t held = 0;
+  uint32_t n = 0, shown = 0, node = Rd32(base, cache + 4);
+  for (; node && n < 400; ++n) {
+    const uint32_t e = Rd32(base, node + 8);
+    if (!e) break;
+    const uint32_t size = Rd32(base, e + 44) << 8, state = Rd32(base, e + 100), buf = Rd32(base, e + 96);
+    if (buf) held += size;
+    if ((state || buf) && shown++ < 40)  // (the pool's unused entries left out)
+      REXLOG_WARN("[svr2011] file cache:   '{}' {} bytes, state {}{}", GuestName(base, e + 50), size, state,
+                  buf ? fmt::format(", buffer {:08X}", buf) : std::string());
+    const uint32_t next = Rd32(base, node);
+    if (next == node) break;
+    node = next;
+  }
+  REXLOG_WARN("[svr2011] file cache: {} entries ({} in use), {:.1f} MB in their buffers", n, shown, held / 1048576.0);
+  LogHeaps();
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_826A1C70);
+REX_HOOK_RAW(sub_826A1C70) {
+  const bool loader = uint32_t(ctx.lr) == 0x826A1F1C;  // (sub_826A1D38's file read: r31 = the request)
+  if (loader) t_request = ctx.r31.u32;
+  __imp__sub_826A1C70(ctx, base);
+  if (loader) t_request = 0;
+}
+
+// (sub_826A1D38's second buffer for a file, sub_826BAB40(cache, request): its unpacked copy)
+REX_EXTERN(__imp__sub_826BAB40);
+REX_HOOK_RAW(sub_826BAB40) {
+  const bool loader = uint32_t(ctx.lr) == 0x826A2268;
+  if (loader) t_request = ctx.r4.u32;
+  __imp__sub_826BAB40(ctx, base);
+  if (loader) t_request = 0;
+}
+
+REX_EXTERN(__imp__sub_826BA928);
+REX_HOOK_RAW(sub_826BA928) {
+  const bool loader = ctx.r3.u32 == Rd32(base, kLoaderCache);
+  if (loader) t_alloc = CacheAlloc{true, false, false, ctx.r4.u32, 0, std::chrono::steady_clock::now()};
+  const uint32_t size = ctx.r4.u32;
+  const std::string name = loader ? RequestName(base) : std::string();
+  __imp__sub_826BA928(ctx, base);
+  if (!loader) return;
+  static const bool log_all = std::getenv("SVR2011_TEST_CACHE_LOG") != nullptr;
+  const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_alloc.t0).count();
+  if (t_alloc.stuck || s >= 1.0 || (log_all && size >= (1u << 20)))
+    REXLOG_INFO("[svr2011] file cache: {} {} bytes -> {:08X} after {:.1f} s ({} tries)", name, size, ctx.r3.u32, s,
+                t_alloc.tries);
+  t_alloc.active = false;
+}
+
+// (inside sub_826BA928's retry loop: one call per failed try; r3 after it = the idle files it could still free)
+REX_EXTERN(__imp__sub_826B9FB8);
+REX_HOOK_RAW(sub_826B9FB8) {
+  const uint32_t cache = ctx.r3.u32;
+  __imp__sub_826B9FB8(ctx, base);
+  CacheAlloc& r = t_alloc;
+  if (!r.active) return;
+  ++r.tries;
+  if (r.stuck || ctx.r3.u32 != 0) return;
+  const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - r.t0).count();
+  if (s < 3.0) return;
+  r.stuck = true;
+  LogLoaderCache(base, cache, r, s);
+}
+
+namespace svr2011 {
+// (sub_8269BBA0's hook, superstar_mods.cpp: the cache's allocation from inside sub_826BA928's retry loop)
+bool LoaderCacheForcedFull(uint32_t size) {
+  static const uint32_t full = [] {
+    const char* e = std::getenv("SVR2011_TEST_CACHE_FULL");
+    return e ? uint32_t(std::strtoul(e, nullptr, 0)) : 0u;
+  }();
+  return full && size >= full;
+}
+
+uint32_t LoaderCacheFallback(uint32_t size) {
+  CacheAlloc& r = t_alloc;
+  if (!r.active || !r.stuck) return 0;
+  const uint32_t p = FallbackBlock(size);
+  if (!r.given) {
+    r.given = true;
+    REXLOG_WARN("[svr2011] file cache: {} bytes {}", size,
+                p ? fmt::format("from the fallback memory instead, at {:08X}", p) : std::string("- no fallback memory either"));
+  }
+  return p;
+}
+}  // namespace svr2011

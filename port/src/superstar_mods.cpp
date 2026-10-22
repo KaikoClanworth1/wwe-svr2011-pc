@@ -3213,11 +3213,25 @@ REX_HOOK_RAW(sub_823941F8) {
   told.push_back(k);
   REXLOG_INFO("[svr2011] move log: motion {} x {} y {} {}", id, x, y, ctx.r3.u32 ? "found" : "NOT FOUND");
 }
+namespace svr2011 {
+bool LoaderCacheForcedFull(uint32_t size);   // (model_mem.cpp)
+uint32_t LoaderCacheFallback(uint32_t size);  // (model_mem.cpp)
+}  // namespace svr2011
 // (with SVR2011_TEST_MOVE_LOG: allocations that fail, and what sub_8258EB90
 // - a data file read into memory - asked for)
 REX_EXTERN(__imp__sub_8269BBA0);
 REX_HOOK_RAW(sub_8269BBA0) {
   const uint32_t size = ctx.r3.u32, lr = uint32_t(ctx.lr);
+  // The file loader's cache (sub_826BA928's retry loop, model_mem.cpp): a file that never fits takes the fallback
+  // memory instead of retrying forever (the 21 Oct hang after the entrances).
+  if (lr == 0x826BA9A8) {
+    if (svr2011::LoaderCacheForcedFull(size))
+      ctx.r3.u64 = 0;
+    else
+      __imp__sub_8269BBA0(ctx, base);
+    if (!ctx.r3.u32) ctx.r3.u64 = svr2011::LoaderCacheFallback(size);
+    return;
+  }
   __imp__sub_8269BBA0(ctx, base);
   if (!MoveLogIds().empty() && !ctx.r3.u32) REXLOG_WARN("[svr2011] move log: alloc {} bytes failed (lr {:08X})", size, lr);
 }

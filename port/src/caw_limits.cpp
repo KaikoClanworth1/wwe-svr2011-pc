@@ -149,6 +149,20 @@ uint32_t CawHeapFallback(uint32_t size) {
   return ptr;
 }
 
+// (the file loader's cache, model_mem.cpp: a file that never fits in its heap - the same fallback memory, its
+// blocks freed by the same hook)
+uint32_t FallbackBlock(uint32_t size) {
+  if (!g_memory || !size) return 0;
+  std::lock_guard lock(g_fallback_mutex);
+  if (g_fallback_bytes + size > kFallbackMax) return 0;
+  const uint32_t ptr = g_memory->SystemHeapAlloc(size, 0x1000, rex::memory::kSystemHeapPhysical);
+  if (!ptr) return 0;
+  g_fallback[ptr] = size;
+  g_fallback_bytes += size;
+  g_fallback_blocks = uint32_t(g_fallback.size());
+  return ptr;
+}
+
 bool CawHeapFree(uint32_t ptr) {
   if (!ptr || !g_fallback_blocks.load(std::memory_order_relaxed)) return false;
   std::lock_guard lock(g_fallback_mutex);
