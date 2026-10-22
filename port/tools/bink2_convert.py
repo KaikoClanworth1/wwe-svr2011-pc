@@ -34,8 +34,9 @@ Commands (JSON on stdout; "progress <pct> <text>" lines on stderr):
     py bink2_convert.py <in.bk2> <out.mp4> [--tool <path>]
         -> {ok, kind, revision, warnings[]}  or  {ok: false, error, warnings[], download?}
 The tool: --tool, else SVR2011_BINK2_TOOL, else Librempeg's ffmpeg / RAD Video
-Tools in their usual folders, the uninstall list and PATH. The temporary AVIs
-go beside <out.mp4> (the Mod Maker's Mods\\.convert) and are always removed.
+Tools in their usual folders, the uninstall list, the Start menu and PATH. The
+temporary AVIs go beside <out.mp4> (the Mod Maker's Mods\\.convert; SVR2011_BINK2_TEMP;
+never a Downloads folder) and are always removed.
 Exit codes: 0 done, 2 bad input (not a Bink 2 file, missing), 3 no tool or
 the conversion failed (the import goes on without the titantron).
 """
@@ -56,9 +57,10 @@ NO_FFMPEG = ("RAD Video Tools decoded the movie, but ffmpeg (the port's setup in
 EARLY = "abcde"
 # (no desktop of its own for RAD's windows: never the player's screen - they convert it themselves)
 RAD_MANUAL = ("RAD Video Tools couldn't run in the background here. Convert this movie in RAD Video Tools "
-              "yourself (Convert a file -> MP4), then pick the .mp4 in the Mod Maker. "
+              "yourself (select it, Convert a file, to an .avi), then pick that file in the Mod Maker. "
               "The import goes on without the titantron.")
 RAD_CHUNK_BYTES = 1800 * 1000 * 1000  # (a raw 24-bit AVI part: RAD writes AVIs under 2 GB)
+DEBUG = bool(os.environ.get("SVR2011_BINK2_DEBUG"))  # (the RAD windows seen on its desktop, on stderr)
 
 
 def _hidden():
@@ -154,6 +156,56 @@ def _rad_installed():
     return out
 
 
+def _lnk_target(raw):
+    """A shell link's local target (its LinkInfo: LocalBasePath + CommonPathSuffix, MS-SHLLINK 2.3), or ""."""
+    try:
+        if raw[:4] != b"\x4c\x00\x00\x00":
+            return ""
+        flags, = struct.unpack_from("<I", raw, 0x14)
+        at = 0x4C
+        if flags & 1:  # (HasLinkTargetIDList)
+            at += 2 + struct.unpack_from("<H", raw, at)[0]
+        if not flags & 2:  # (HasLinkInfo)
+            return ""
+        info_flags, = struct.unpack_from("<I", raw, at + 8)
+        base_at, = struct.unpack_from("<I", raw, at + 16)
+        suffix_at, = struct.unpack_from("<I", raw, at + 24)
+        if not info_flags & 1:  # (VolumeIDAndLocalBasePath)
+            return ""
+
+        def cstr(o):
+            return raw[o:raw.index(b"\x00", o)].decode("mbcs" if os.name == "nt" else "latin-1", "replace")
+        return cstr(at + base_at) + cstr(at + suffix_at)
+    except (struct.error, ValueError, IndexError):
+        return ""
+
+
+def _rad_shortcuts():
+    """radvideo64.exe from RAD Video Tools' Start menu shortcuts (a .lnk's target, read from its bytes: the
+    local path is kept both as ANSI and as UTF-16)."""
+    import re
+    out = []
+    for base in (os.environ.get("APPDATA"), os.environ.get("ProgramData")):
+        if not base:
+            continue
+        menu = os.path.join(base, "Microsoft", "Windows", "Start Menu", "Programs")
+        for d, _, files in os.walk(menu):
+            for f in files:
+                if not (f.lower().endswith(".lnk") and "rad" in (d + f).lower()):
+                    continue
+                try:
+                    with open(os.path.join(d, f), "rb") as fh:
+                        raw = fh.read(65536)
+                except OSError:
+                    continue
+                texts = [raw.decode("latin-1"), raw.decode("utf-16-le", "replace"), raw[1:].decode("utf-16-le", "replace")]
+                texts.append(_lnk_target(raw))
+                for t in texts:
+                    for m in re.finditer(r"[A-Za-z]:\\[^\x00-\x1f\"*?<>|]*?\\radvideo(?:64)?\.exe", t, re.I):
+                        out.append(os.path.join(os.path.dirname(m.group(0)), "radvideo64.exe"))
+    return out
+
+
 def _candidates(tool=None):
     c = []
     if tool:
@@ -167,6 +219,7 @@ def _candidates(tool=None):
                         os.path.join("RAD Game Tools", "RAD Video Tools")):
                 c.append(os.path.join(base, sub, "radvideo64.exe"))
     c += _rad_installed()
+    c += _rad_shortcuts()
     for exe in ("librempeg.exe", "ffmpeg.exe", "radvideo64.exe"):
         found = shutil.which(exe)
         if found:
@@ -287,6 +340,8 @@ def _desktop_run(cmd, timeout):
                 error = "RAD Video Tools took longer than %d s" % timeout
                 break
             for h, title, kids in windows():
+                if DEBUG:
+                    print("%.1f s window %r %r" % (time.time() - t0, title, kids[:12]), file=sys.stderr, flush=True)
                 if "done" in title.lower():
                     u32.PostMessageW(h, 0x0010, 0, 0)  # WM_CLOSE: the converter's finished window
                 elif "OK" in [k.replace("&", "") for k in kids] and " Conversion Info: " not in kids:
@@ -305,28 +360,54 @@ def _desktop_run(cmd, timeout):
     return ok, error, False
 
 
+def _in_downloads(path):
+    p = os.path.normcase(os.path.abspath(path))
+    if os.path.normcase(os.path.join(os.path.expanduser("~"), "Downloads")) in p:
+        return True
+    return any(part.lower() == "downloads" for part in p.split(os.sep))
+
+
+def work_dir(dst):
+    """Where RAD's temporary AVIs go: SVR2011_BINK2_TEMP, else beside <out.mp4> (the Mod Maker's and
+    entrance_port's Mods\\.convert) - never a Downloads folder (then the system temp folder). Parts a killed
+    run left behind (older than a day) are removed."""
+    d = os.environ.get("SVR2011_BINK2_TEMP") or os.path.dirname(os.path.abspath(dst)) or "."
+    if _in_downloads(d):
+        import tempfile
+        d = os.path.join(tempfile.gettempdir(), "svr2011_bink2")
+    os.makedirs(d, exist_ok=True)
+    try:
+        for f in os.listdir(d):
+            p = os.path.join(d, f)
+            if f.startswith(".bk2_") and time.time() - os.path.getmtime(p) > 86400:
+                os.remove(p)
+    except OSError:
+        pass
+    return d
+
+
 def convert_rad(rad, src, dst, info, warnings):
     """src -> raw AVI parts (RAD, a desktop of its own) -> dst (ffmpeg H.264). The parts are removed whatever
     happens."""
     ff = ffmpeg_exe()
     if not ff:
         return 3, {"ok": False, "error": NO_FFMPEG, "warnings": warnings, "revision": info["revision"]}
-    out_dir = os.path.dirname(os.path.abspath(dst)) or "."
-    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(dst)) or ".", exist_ok=True)
+    work = work_dir(dst)
     frames = max(1, info["frames"])
     per = max(1, RAD_CHUNK_BYTES // max(1, info["width"] * info["height"] * 3))
     ranges = [(s, min(frames, s + per - 1)) for s in range(1, frames + 1, per)]  # (1-based, inclusive)
-    stem = os.path.join(out_dir, ".bk2_%d_%d" % (os.getpid(), int(time.time())))
+    stem = os.path.join(work, ".bk2_%d_%d" % (os.getpid(), int(time.time())))
     parts, listing, part_mp4 = [], stem + ".txt", dst + ".part.mp4"
     try:
         for n, (s, e) in enumerate(ranges):
             avi = os.path.normpath("%s_%02d.avi" % (stem, n))  # (backslashes: RAD reads "/..." as a switch)
             parts.append(avi)
             progress(5 + 70 * n // len(ranges), "decoding with RAD Video Tools (%d of %d)" % (n + 1, len(ranges)))
-            cmd = [rad, "BinkConv", os.path.normpath(os.path.abspath(src)), avi, "/O"]
+            cmd = [rad, "BinkConv", os.path.normpath(os.path.abspath(src)), avi]  # (no /O: the part is always new)
             if len(ranges) > 1:
                 cmd += ["/S%d" % s, "/E%d" % e]
-            ok, err, no_desktop = _desktop_run(cmd, 120 + (e - s + 1) // 4)
+            ok, err, no_desktop = _desktop_run(cmd, 120 + (e - s + 1) // 2)
             if no_desktop:
                 return 3, {"ok": False, "error": RAD_MANUAL, "manual": True, "download": RAD_PAGE, "detail": err,
                            "warnings": warnings, "revision": info["revision"]}
@@ -341,7 +422,7 @@ def convert_rad(rad, src, dst, info, warnings):
         if os.path.exists(part_mp4):
             os.remove(part_mp4)
         r = subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", listing,
-                            "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-f", "mp4", part_mp4],
+                            "-an", "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "-crf", "18", "-f", "mp4", part_mp4],
                            capture_output=True, text=True, timeout=3600, **_hidden())
         if not (os.path.isfile(part_mp4) and os.path.getsize(part_mp4) > 0):
             return 3, {"ok": False, "error": "ffmpeg couldn't make the .mp4: %s. The import goes on without the "
