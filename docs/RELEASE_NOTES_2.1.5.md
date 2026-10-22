@@ -43,6 +43,7 @@
   - Hollywood Hogan's bandana was invisible and his entrance shirt missing - fixed (other models with parts inside the hair, too).
   - SvR 2007-2009 **divas** had stretched "spider" fingers - fixed.
   - WWE '12 arms and legs bent the wrong way - fixed.
+  - Here Comes the Pain / Shut Your Mouth superstars looked up (head tipped back) - fixed.
   - WWE '13 / 2K14 weapon models no longer crash; they're left out.
   - Imported FBX models no longer stand hunched in the 3D view.
 - **Online**: P2P matches work again after our server move.
