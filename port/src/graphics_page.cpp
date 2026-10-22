@@ -640,7 +640,8 @@ void GraphicsPage::Change(int row, int dir) {
       upscale_ = choices[size_t((at + dir + count) % count)];
       const char* kind = upscale_ == 0 ? "off" : upscale_ <= 4 ? "fsr1" : upscale_ <= 8 ? "fsr2" : "dlss";
       rex::cvar::SetFlagByName("native_upscale", kind);
-      SaveSetting("native_upscale", kind);
+      // (a string: quoted - a bare word made the whole file unreadable, every setting back at its default)
+      SaveSetting("native_upscale", std::string("\"") + kind + "\"");
       if (upscale_) {
         const std::string quality = std::to_string((upscale_ - 1) % 4);
         rex::cvar::SetFlagByName("native_upscale_quality", quality);

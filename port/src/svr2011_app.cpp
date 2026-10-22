@@ -5,6 +5,7 @@
 #include "svr2011_app.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -210,6 +211,46 @@ std::string JoinBrokenTomlStrings(const std::string& text) {
   return out;
 }
 
+// A settings file's top-level `key = word` lines with the word not quoted
+// (true / false / inf / nan and numbers aside) quoted: 2.1.5's GRAPHICS ->
+// UPSCALING wrote native_upscale = off, not TOML - the file didn't parse and
+// every setting was back at its default at each start (VIBRATION off came
+// back on). As the Android launcher's GameSettings.Repaired.
+std::string QuoteBareTomlWords(const std::string& text, std::string* keys) {
+  const auto word = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+  std::string out;
+  bool section = false;
+  for (size_t pos = 0; pos <= text.size();) {
+    size_t nl = text.find('\n', pos);
+    if (nl == std::string::npos) nl = text.size();
+    std::string line = text.substr(pos, nl - pos);
+    const bool last = nl == text.size();
+    pos = nl + 1;
+    const bool cr = !line.empty() && line.back() == '\r';
+    if (cr) line.pop_back();
+    const size_t a = line.find_first_not_of(" \t");
+    const size_t eq = line.find('=');
+    if (a != std::string::npos && line[a] == '[') section = true;
+    if (!section && a != std::string::npos && line[a] != '#' && eq != std::string::npos && eq > a) {
+      std::string key = line.substr(a, eq - a), value = line.substr(eq + 1);
+      key.erase(key.find_last_not_of(" \t") + 1);
+      value.erase(0, value.find_first_not_of(" \t"));
+      value.erase(value.find_last_not_of(" \t") + 1);
+      const bool key_ok = !key.empty() && std::all_of(key.begin(), key.end(), word);
+      const bool bare = !value.empty() && (std::isalpha(static_cast<unsigned char>(value[0])) || value[0] == '_') &&
+                        std::all_of(value.begin(), value.end(),
+                                    [&](char c) { return word(c) || c == '.' || c == '-'; });
+      if (key_ok && bare && value != "true" && value != "false" && value != "inf" && value != "nan") {
+        line = key + " = \"" + value + "\"";
+        if (keys) *keys += (keys->empty() ? "" : ", ") + key;
+      }
+    }
+    out += line;
+    if (!last) out += cr ? "\r\n" : "\n";
+  }
+  return out;
+}
+
 // The runtime's user data (paths.user_data_root) and the saves folder.
 std::filesystem::path g_user_data;
 std::filesystem::path g_saves;
@@ -291,6 +332,12 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
     // gpu_plugin: a black screen at start (a 2.1.2 report).
     if (std::string fixed = JoinBrokenTomlStrings(text); fixed != text) {
       REXLOG_WARN("settings: {} had a value broken over lines - joined again", paths.config_path.string());
+      text = std::move(fixed);
+      std::ofstream(paths.config_path, std::ios::binary | std::ios::trunc) << text;
+    }
+    if (std::string keys, fixed = QuoteBareTomlWords(text, &keys); fixed != text) {
+      REXLOG_WARN("settings: {} had words without quotes ({}) - quoted, so the file reads again",
+                  paths.config_path.string(), keys);
       text = std::move(fixed);
       std::ofstream(paths.config_path, std::ios::binary | std::ios::trunc) << text;
     }
