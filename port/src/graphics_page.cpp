@@ -9,6 +9,7 @@
 // at once too), and LANGUAGE.
 
 #include "frame_rate.h"
+#include "free_cam.h"
 #include "graphics_page.h"
 #include "arena_lights.h"
 #include "port_map.h"
@@ -115,6 +116,7 @@ enum Row {
   kOverlayCorner,                                                // DISPLAY (after PERFORMANCE)
   kUpscaling,                                                    // GRAPHICS (after ANTI-ALIASING)
   kCawLimits,                                                    // DISPLAY (last: caw_limits.cpp)
+  kMatchCamera,                                                  // DISPLAY (free_cam.h)
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
@@ -124,9 +126,9 @@ const char* kTabNames[kTabs] = {"DISPLAY", "GRAPHICS", "ADV. GRAPHICS"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
 // (no RENDERER row: the phone draws natively on Vulkan, its only graphics API)
-const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kOverlayCorner, kPing, kRouterPort, kTouch, kReplays, kFastStart, kCawLimits},
+const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kFpsCounter, kOverlayCorner, kMatchCamera, kPing, kRouterPort, kTouch, kReplays, kFastStart, kCawLimits},
 #else
-const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kOverlayCorner, kPing, kRouterPort, kRenderer, kTouch,
+const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kOverlayCorner, kMatchCamera, kPing, kRouterPort, kRenderer, kTouch,
                                               kReplays, kCpuPriority, kFastStart, kCawLimits},
 #endif
                                              {kRenderScale, kAntiAliasing, kUpscaling, kTextureQuality, kArenaBrightness, kWide, kCutsceneFps},
@@ -674,6 +676,9 @@ void GraphicsPage::Change(int row, int dir) {
       SaveSetting("perf_overlay", std::to_string(perf_));
       SaveSetting("show_fps", perf_ ? "true" : "false");  // (older launchers read it)
       break;
+    case kMatchCamera:
+      SetMatchCamera(MatchCamera() + dir, true);
+      break;
     case kOverlayCorner:
       corner_ = (corner_ + dir + 4) % 4;
       SetPerfOverlayCorner(corner_);
@@ -1110,6 +1115,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         return fps;
       }
       case kFpsCounter: return perf_ == 2 ? "FULL" : perf_ == 1 ? "FPS" : "OFF";
+      case kMatchCamera: return MatchCameraName(MatchCamera());
       case kOverlayCorner: {
         static const char* const kCorners[] = {"TOP LEFT", "TOP RIGHT", "BOTTOM LEFT", "BOTTOM RIGHT"};
         return kCorners[corner_ & 3];
@@ -1171,6 +1177,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kFrameRate: return "FRAME RATE";
       case kFpsCounter: return "PERFORMANCE";
       case kOverlayCorner: return "PERFORMANCE CORNER";
+      case kMatchCamera: return "MATCH CAMERA";
       case kPing: return "ONLINE PING";
       case kRouterPort: return "ROUTER PORT (UPNP)";
       case kFullSpeed: return "FULL SPEED";
@@ -1209,6 +1216,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kFrameRate: return "Frames a second in matches, at most (menus: 60). The game always runs at its normal speed.";
       case kFpsCounter: return "FPS: the frame rate. FULL: also the game's video memory (its textures and render targets). F2 switches it.";
       case kOverlayCorner: return "Which corner of the screen the performance numbers sit in.";
+      case kMatchCamera:
+        return "The camera in ring matches: NORMAL, FAR, CLOSE, HIGH or LOW. In a match BACK + R3 (F4) changes it.";
       case kRouterPort: return "Online: your router opens the game's port while you play (UPnP), so far-off players connect directly. OFF: never touched.";
       case kPing: return "Online matches: the delay to the other players at the top right (bars: green under 150 ms, yellow under 250, red above).";
       case kFullSpeed:
