@@ -19,7 +19,7 @@ cbuffer PresentConstants : register(b3) {
 cbuffer PresentConstants : register(b3, space4) {
   uint g_Texture;  // SRV heap index (the intermediate)
   uint g_Sampler;  // (unused)
-  float2 g_UvScale;  // x: the sharpening (exp2(-stops); 1 the most)
+  float2 g_UvScale;  // x: the sharpening (exp2(-stops); 1 the most), y: 1 = red / blue swapped
   float2 g_OutputSize;
 };
 #endif
@@ -41,5 +41,6 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0 {
   const float3 lobeRGB = max(-hitMin, hitMax);
   const float lobe = max(-0.1875, min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * g_UvScale.x;
   const float3 rgb = (lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0);
-  return float4(saturate(rgb), 1.0);
+  // (y: the input's red and blue swapped - FSR 2's result from a swapped resolve copy)
+  return float4(saturate(g_UvScale.y > 0.5 ? rgb.bgr : rgb), 1.0);
 }

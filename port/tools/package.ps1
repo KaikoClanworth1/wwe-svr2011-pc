@@ -115,6 +115,7 @@ $vcrt = @("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140_at
 Get-ChildItem $build -Filter "*.dll" | Where-Object { $files -notcontains $_.Name -and $vcrt -notcontains $_.Name.ToLower() } |
     Copy-Item -Destination $stage
 Copy-Item (Join-Path $port "dist\Read Me.txt") $stage
+Copy-Item (Join-Path $port "dist\Third-party notices.txt") $stage   # (AMD FSR 1 / FSR 2: MIT)
 # The native renderer's shaders (converted from the game's by
 # tools/convert_shaders.py; without them it draws nothing).
 $shaders = Join-Path $port "runs\shaders_native\dxil"

@@ -42,6 +42,10 @@ std::string FailureReason();
 // game runs (the GRAPHICS page). CanSwitch: started as the main renderer
 // and still working.
 bool CanSwitch();
+
+// Whether an upscaler can run here (the GRAPHICS page's UPSCALING choices): "fsr2" - FSR 2, Direct3D 12 / Vulkan
+// on Windows; "dlss" - NVIDIA DLSS (not in this build yet). `why`: the reason when not (logged once each).
+bool UpscalerAvailable(const std::string& kind, std::string* why = nullptr);
 void SetNativeActive(bool active);
 bool NativeActive();
 

@@ -78,6 +78,12 @@ std::unique_ptr<plume::RenderInterface> CreateInterface(std::string* device_name
       dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
     }
   }
+  // (debug: SVR2011_NATIVE_D3D_DEBUG - the debug layer, its messages logged by DrainDebugMessages; needs Windows'
+  // Graphics Tools)
+  if (EnvFlag("SVR2011_NATIVE_D3D_DEBUG")) {
+    ComPtr<ID3D12Debug> debug;
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) debug->EnableDebugLayer();
+  }
   if (auto* emulator = static_cast<ID3D12Device*>(rex::external_frame::Device())) {
     ComPtr<IDXGIFactory6> factory;
     ComPtr<IDXGIAdapter1> adapter;
