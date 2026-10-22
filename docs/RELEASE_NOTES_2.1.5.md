@@ -14,6 +14,7 @@
   - Upscaling is **OFF** by default.
 - **Create A Superstar without limits**: no more "remaining points", and you can layer as many parts as you like (a T-shirt, a shirt and a hoodie at once). Up to 36 layers a block. OPTIONS > DISPLAY > CAW LIMITS switches back to the original rules.
   - ⚠️ A very heavy Created Superstar (30+ layers) from Community Creations can crash the CAW editor on **older versions** - please update.
+- **Match camera**: choose NORMAL, FAR, CLOSE, HIGH or LOW (GRAPHICS > DISPLAY > MATCH CAMERA, or the launcher), or switch any time in a match with **BACK + R3** (keyboard **F4**, Android: the **CAM** button). Online, everyone picks their own view.
 - **Real bikes in entrances**: the 2K14 / HCTP bike models, ridden properly, with a working headlight - and the Undertaker's black bike.
 - **SvR 2008 crowd fighting** 🧪 for superstars ported from SvR 2008: fight into the crowd in Extreme Rules matches.
 - **Road to WrestleMania**: play the Undertaker's Streak as a mod superstar or Created Superstar 🧪.
