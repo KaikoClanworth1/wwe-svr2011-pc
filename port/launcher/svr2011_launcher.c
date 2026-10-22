@@ -125,7 +125,7 @@ enum {
     ID_SKIP_INTROS, ID_SKIP_TRAINING, ID_PLAY_NOMODS, ID_PL_EXPORT, ID_PL_IMPORT, ID_PL_NOTICE,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
-    ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL, ID_TEXTURES, ID_ARENA_LIGHT, ID_UPSCALE,
+    ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL, ID_TEXTURES, ID_ARENA_LIGHT, ID_UPSCALE, ID_MATCH_CAMERA,
     ID_FULLSCREEN_EX, ID_RENDER_RES, ID_RES_HINT,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
@@ -1962,6 +1962,7 @@ static void settings_load(void)
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, perf = -1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, aa = 0, emulated = 0, api = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
     int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0, arena_light = 100;
+    int match_camera = 0;
     int exclusive = 0, max_scale = 4, scene_height = 0, upscale = 0, upscale_quality = 1;
     double render_scale = 1.0;
     char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
@@ -1999,6 +2000,7 @@ static void settings_load(void)
             else if (!strcmp(key, "skip_intros")) skip_intros = !strcmp(val, "true");
             else if (!strcmp(key, "skip_training")) skip_training = !strcmp(val, "true");
             else if (!strcmp(key, "arena_brightness")) arena_light = atoi(val);
+            else if (!strcmp(key, "match_camera")) match_camera = atoi(val);
             else if (!strcmp(key, "native_texture_quality"))
                 textures = !_stricmp(val, "low") ? 2 : !_stricmp(val, "medium") ? 1 : 0;
             else if (!strcmp(key, "native_renderer")) emulated = !_stricmp(val, "off");
@@ -2049,6 +2051,7 @@ static void settings_load(void)
     if (arena_light < 50 || arena_light > 200)
         arena_light = 100;
     SendMessageW(ctl(ID_ARENA_LIGHT), CB_SETCURSEL, (WPARAM)((arena_light - 50 + 5) / 10), 0);
+    SendMessageW(ctl(ID_MATCH_CAMERA), CB_SETCURSEL, (WPARAM)(match_camera >= 0 && match_camera <= 4 ? match_camera : 0), 0);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, (WPARAM)frame_rate_index(frame_rate), 0);
     s_settings_dirty = 0;
     set_text(ID_SETTINGS_STATUS, L"");
@@ -2057,7 +2060,7 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 37 };
+    enum { NK = 38 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
@@ -2066,7 +2069,7 @@ static int settings_save(void)
                                     "process_priority", "unlock_everything", "native_texture_quality",
                                     "skip_intros", "skip_training", "fullscreen_exclusive", "native_max_scale",
                                     "native_render_scale", "native_scene_height", "arena_brightness", "perf_overlay",
-                                    "native_upscale", "native_upscale_quality" };
+                                    "native_upscale", "native_upscale_quality", "match_camera" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -2147,6 +2150,10 @@ static int settings_save(void)
         strcpy_s(vals[35], 64, ui >= 1 && ui <= 4 ? "\"fsr1\"" : ui >= 5 && ui <= 8 ? "\"fsr2\""
                                : ui >= 9 && ui <= 12 ? "\"dlss\"" : "\"off\"");
         sprintf_s(vals[36], 64, "%d", ui >= 1 && ui <= 12 ? (ui - 1) % 4 : 1);
+    }
+    {   /* (the game's GRAPHICS -> MATCH CAMERA: free_cam.h, 0 NORMAL .. 4 LOW) */
+        const int ci = (int)SendMessageW(ctl(ID_MATCH_CAMERA), CB_GETCURSEL, 0, 0);
+        sprintf_s(vals[37], 64, "%d", ci >= 0 && ci <= 4 ? ci : 0);
     }
     sprintf_s(vals[19], 160, "\"%s\"", s_online_token);
     sprintf_s(vals[20], 160, "\"%s\"", s_online_xuid);
@@ -2236,6 +2243,7 @@ static void settings_defaults(void)
     SendMessageW(ctl(ID_TEXTURES), CB_SETCURSEL, 0, 0);
     SendMessageW(ctl(ID_UPSCALE), CB_SETCURSEL, 0, 0);
     SendMessageW(ctl(ID_ARENA_LIGHT), CB_SETCURSEL, 5, 0);
+    SendMessageW(ctl(ID_MATCH_CAMERA), CB_SETCURSEL, 0, 0);
     SendMessageW(ctl(ID_FRAMERATE), CB_SETCURSEL, 1, 0);
     s_settings_dirty = 1;
     set_text(ID_SETTINGS_STATUS, L"Defaults restored. Press Save or Play to keep them.");
@@ -3346,8 +3354,16 @@ static void build_ui(void)
     add(TAB_SETTINGS, L"Static", L"Menus and text (commentary stays English). "
                                  L"Also in game: GRAPHICS.",
         SS_LEFT, X0 + 362, 464, 186, 34, 0);
-    add(TAB_SETTINGS, L"Button", L"Everything unlocked from the start (off: unlock as you play; DLC stays)",
-        BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 500, 530, 22, ID_UNLOCK_ALL);
+    add(TAB_SETTINGS, L"Button", L"Everything unlocked from the start (DLC stays)",
+        BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 500, 340, 22, ID_UNLOCK_ALL);
+    /* match_camera (the game's GRAPHICS -> MATCH CAMERA; BACK + R3 / F4 in a match) */
+    h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 380, 498, 166, 200,
+            ID_MATCH_CAMERA);
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Camera: Normal");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Camera: Far");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Camera: Close");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Camera: High");
+    SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"Camera: Low");
     add(TAB_SETTINGS, L"Button", L"Restore defaults", BS_PUSHBUTTON | WS_TABSTOP, X0, 534, 140, 30, ID_DEFAULTS);
     add(TAB_SETTINGS, L"Button", L"Save", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 534, 108, 30, ID_SAVE);
     add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 568, 560, 32, ID_SETTINGS_STATUS);
@@ -7926,7 +7942,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         }
         case ID_ARENA_LIGHT:
         case ID_RESOLUTION: case ID_RENDER_RES: case ID_INPUT: case ID_AUDIO: case ID_RENDERER: case ID_LANGUAGE: case ID_FRAMERATE: case ID_MSAA: case ID_TEXTURES: case ID_SHOWFPS:
-        case ID_UPSCALE:
+        case ID_UPSCALE: case ID_MATCH_CAMERA:
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 if (LOWORD(wp) == ID_RENDERER)  /* (FSR 2 offered or not) */
                     upscale_fill((int)SendMessageW(ctl(ID_UPSCALE), CB_GETCURSEL, 0, 0));

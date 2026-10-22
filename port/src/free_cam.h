@@ -33,6 +33,21 @@ void InstallFreeCam(rex::ui::Window* window);
 // direction): the scene's gets the free camera's.
 void FreeCamSceneView(uint8_t* base, uint32_t view, uint32_t eye, uint32_t dir);
 
+// MATCH CAMERA (match_camera: 0 NORMAL, 1 FAR, 2 CLOSE, 3 HIGH, 4 LOW): the match's follow camera moved before
+// the game builds its view - sub_82227150(view, eye, direction) from the follow camera's update (sub_822285F0
+// in camera mode 1: free_cam.cpp) (match_types.cpp's hook calls
+// MatchCameraBefore with the eye and direction it is about to use and MatchCameraAfter once the view is built).
+// Ring matches only (not the backstage, arena 78); the free camera (F6) and the big-move cuts (CAMERA CUTS) as
+// they were. View only: nothing the match plays depends on it (online lockstep: each player picks his own).
+constexpr int kMatchCameras = 5;
+int MatchCamera();
+void SetMatchCamera(int preset, bool save);
+const char* MatchCameraName(int preset);
+void MatchCameraBefore(uint8_t* base, uint32_t lr, uint32_t view, uint32_t eye, uint32_t dir);
+void MatchCameraAfter(uint8_t* base);
+// The next preset (BACK + R3 on a pad: FreeCamPad; F4; the touch MATCH layout's CAM button).
+void CycleMatchCamera();
+
 // Once a frame after the world update (frame_rate.cpp): the first match's hint.
 void FreeCamFrame(uint8_t* base);
 

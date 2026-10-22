@@ -81,6 +81,7 @@ constexpr Action kActions[] = {
     // One-touch moves (the game's two-button inputs).
     {X_INPUT_GAMEPAD_RIGHT_SHOULDER | X_INPUT_GAMEPAD_Y, "RB+Y"},
     {X_INPUT_GAMEPAD_LEFT_SHOULDER | X_INPUT_GAMEPAD_Y, "LB+Y"},
+    {X_INPUT_GAMEPAD_BACK | X_INPUT_GAMEPAD_RIGHT_THUMB, "CAM"},  // (the next MATCH CAMERA: free_cam.h)
 };
 
 // The controls sheet (the MATCH layout's "?"): the game's match controls
@@ -251,6 +252,9 @@ std::vector<Control> DefaultLayout(int layout) {
   Control l3 = Button("l3", X_INPUT_GAMEPAD_LEFT_THUMB, L, 0.44f, 0.46f, 0.08f, true, "TARGET");
   l3.visible = false;  // (manual targeting only)
   v.push_back(l3);
+  // BACK + R3: the next MATCH CAMERA (free_cam.h), beside EDIT
+  v.push_back(Button("cam", X_INPUT_GAMEPAD_BACK | X_INPUT_GAMEPAD_RIGHT_THUMB, R, -0.18f, 0.06f, 0.09f, true,
+                     "CAMERA"));
   // What the buttons do in a match.
   for (Control& c : v) {
     if (!c.caption.empty() || c.kind != Kind::kButton) continue;

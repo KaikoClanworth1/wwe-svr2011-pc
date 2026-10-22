@@ -1673,7 +1673,9 @@ REX_HOOK_RAW(sub_82227150) {
     }
   }
   const uint32_t view = ctx.r3.u32, eye = ctx.r4.u32, dir = ctx.r5.u32;
+  svr2011::MatchCameraBefore(base, uint32_t(ctx.lr), view, eye, dir);  // (MATCH CAMERA: free_cam.h)
   __imp__sub_82227150(ctx, base);
+  svr2011::MatchCameraAfter(base);
   svr2011::FreeCamSceneView(base, view, eye, dir);  // (the free camera's, F6: free_cam.h)
 }
 
