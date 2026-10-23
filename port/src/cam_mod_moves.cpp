@@ -23,6 +23,7 @@
 #include <rex/system/xmemory.h>
 
 #include "cam_mod_moves.h"
+#include "crowd_fight.h"
 #include "match_diag.h"
 #include "move_packs.h"
 #include "online_mods.h"
@@ -224,6 +225,7 @@ REX_HOOK_RAW(sub_8218E600) {
   __imp__sub_8218E600(ctx, base);
   ctx.r3.u64 = MatchMove(base, slot, ctx.r3.u32);
   svr2011::NoteMove(fighter, slot, ctx.r3.u32);  // (a frozen match's report: match_diag.h)
+  svr2011::CrowdMoveAsked(fighter, slot);         // (a taunt by the barricade: crowd_fight.h)
 }
 REX_EXTERN(__imp__sub_8218E580);
 REX_HOOK_RAW(sub_8218E580) {
@@ -231,4 +233,5 @@ REX_HOOK_RAW(sub_8218E580) {
   __imp__sub_8218E580(ctx, base);
   ctx.r3.u64 = MatchMove(base, slot, ctx.r3.u32);
   svr2011::NoteMove(fighter, slot, ctx.r3.u32);
+  svr2011::CrowdMoveAsked(fighter, slot);
 }
