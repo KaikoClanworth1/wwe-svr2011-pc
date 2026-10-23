@@ -124,6 +124,16 @@ SVR2009 = {
     13: ('Judgment Day', 13), 14: ('Night of Champions', 14), 15: ('The Great American Bash', 15),
     16: ('One Night Stand', None), 17: ('Cyber Sunday', None), 18: ('Vengeance', None),
 }
+# SvR 2008 / 2009: arena number -> its picture on the arena select screen (ScrLayHD.pac SCRL/LSSE arena_<key>,
+# 256 x 256, the arena itself; Legends of WrestleMania's LSSE is 2009's, none of its own arenas)
+SELECT_PICTURE = {
+    'svr2008': {0: 'smack', 1: 'raw', 2: 'ecw', 3: 'heat', 4: 'summer', 5: 'unfor', 6: 'nomercy', 7: 'survive',
+                8: 'armage', 9: 'rumble', 10: 'noway', 11: 'WM23', 12: 'backlash', 13: 'judge', 14: 'ven', 15: 'GAB',
+                16: 'newyear', 17: 'ONS', 18: 'DtoD', 19: 'cybers'},
+    'svr2009': {0: 'smack', 1: 'raw', 2: 'ecw', 3: 'troop', 4: 'summer', 5: 'unfor', 6: 'nomercy', 7: 'survive',
+                8: 'armage', 9: 'rumble', 10: 'noway', 11: 'WM24', 12: 'backlash', 13: 'judge', 15: 'GAB', 16: 'ONS',
+                17: 'cybers', 18: 'ven'},
+}
 # Legends of WrestleMania (SvR 2009's arena format): arena number -> (show, 2011 arena of that show) - names from its
 # string.pac SDB 0100 (674 + n - 200: WrestleMania I - XV), bg216 = MatchHD M D8 I's logoRR08, bg219 its Rumble-match
 # copy (the same textures); bg223 / 224 / 225 / 250 are its Create Moves / prop check / approval stages (not listed).
@@ -683,7 +693,23 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
             if im.width >= 256 and im.width * im.height > best:
                 art, best = im, im.width * im.height
     from PIL import Image
-    banner = art
+    # the arena's own picture from its game's arena select (SELECT_PICTURE): the banner, cropped wide
+    photo = None
+    key = SELECT_PICTURE.get(game, {}).get(n)
+    if key and disc.exists('pac/menu/ScrLayHD.pac'):
+        try:
+            got = dict(group_textures(disc.read('pac/menu/ScrLayHD.pac'), 'LSSE')).get('arena_' + key)
+            photo = image(got) if got else None
+            if photo is not None:  # (inside its white frame: 8 of 256 each side)
+                m = max(1, photo.width * 8 // 256)
+                photo = photo.crop((m, m, photo.width - m, photo.height - m))
+        except Exception as e:  # noqa: BLE001 - the VS picture's banner instead
+            warnings.append('arena select picture arena_%s not read: %s' % (key, e))
+    banner = photo if photo is not None else art
+    if photo is not None:
+        notes.append('banner: the arena select picture arena_%s' % key)
+    elif art is not None:
+        notes.append('banner: cut from the VS picture (no arena select picture for this arena)')
     if banner is None:
         banner = host_banner(pac11, base)
         if banner is not None:
@@ -694,9 +720,11 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         banner = Image.new('RGBA', (256, 128), (30, 30, 30, 255))
     with open(os.path.join(mod, 'banner.dds'), 'wb') as f:
         f.write(dds_dxt5(fit(banner, 256, 128)))
-    if art is not None:
+    if art is not None or photo is not None:
         with open(os.path.join(mod, 'load.dds'), 'wb') as f:
-            f.write(dds_dxt5(fit(art, 1024, 512)))
+            f.write(dds_dxt5(fit(art if art is not None else photo, 1024, 512)))
+        notes.append('loading picture: %s' % ('the VS picture' if art is not None else 'the arena select picture'))
+    if art is not None:
         if base in VS_BACKGROUND:
             with open(os.path.join(mod, 'vs', VS_BACKGROUND[base] + '.dds'), 'wb') as f:
                 f.write(dds_dxt5(fit(art, 1024, 512)))
