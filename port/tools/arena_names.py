@@ -21,7 +21,7 @@ import discfs  # noqa: F401 (callers pass a discfs disc)
 import svrfmt
 
 XCOMPRESS = b'\x0f\xf5\x12\xed'
-CACHE_VERSION = 1
+CACHE_VERSION = 2  # (2: thumbsgNN_full.png, the backdrop at its own size, beside each thumb)
 
 
 def _unz(b):
@@ -162,7 +162,9 @@ def _backdrop(entry):
 
 def thumbnails(disc, numbers, out_dir, svrmod=None, size=(320, 160), progress=None):
     """{number: png path} - each stage's backdrop: the match intro's (MatchHD.pac MLYE/MB<NN>), else the
-    loading screen's (LoadHD.pac LOAD/90<NN>, WWE '12 also 70<NN>) - the same pictures"""
+    loading screen's (LoadHD.pac LOAD/90<NN>, WWE '12 also 70<NN>) - the same pictures. Beside each thumb
+    (bgNN.png, size) the backdrop at full resolution, 2:1 as the thumb: bgNN_full.png (full_picture(); a mod's
+    loading picture)"""
     import io
     from PIL import Image
     es = {}
@@ -190,13 +192,21 @@ def thumbnails(disc, numbers, out_dir, svrmod=None, size=(320, 160), progress=No
         if not dds:
             continue
         try:
-            im = Image.open(io.BytesIO(dds)).convert('RGB').resize(size, Image.LANCZOS)
+            full = Image.open(io.BytesIO(dds)).convert('RGB')
+            im = full.resize(size, Image.LANCZOS)
         except Exception:  # noqa: BLE001 - a picture the decoder can't read: no thumbnail
             continue
         path = os.path.join(out_dir, 'bg%02d.png' % num)
         im.save(path)
+        w = max(full.width, 2 * full.height)  # (2:1 as the thumb - WWE '13's are 512 x 512 squeezed: 1024 x 512)
+        (full if full.size == (w, w // 2) else full.resize((w, w // 2), Image.LANCZOS)).save(full_picture(path))
         out[num] = path
     return out
+
+
+def full_picture(thumb):
+    """The full-size backdrop saved beside a thumb (bgNN.png -> bgNN_full.png)"""
+    return os.path.splitext(thumb)[0] + '_full.png'
 
 
 def cache_dir(root, game, src):
