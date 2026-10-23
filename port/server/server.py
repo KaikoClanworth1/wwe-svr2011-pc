@@ -472,6 +472,13 @@ class Stats:
                 CREATE TABLE IF NOT EXISTS netreports (
                     day TEXT, version TEXT, path TEXT, nat TEXT, step INTEGER, rtt INTEGER, count INTEGER,
                     PRIMARY KEY (day, version, path, nat, step, rtt));
+                -- (the dashboard's ping viewer and match history: per account, kept NET_KEEP_DAYS)
+                CREATE TABLE IF NOT EXISTS net_events (
+                    account INTEGER, at REAL, path TEXT, nat TEXT, rtt INTEGER, network TEXT, version TEXT);
+                CREATE INDEX IF NOT EXISTS net_events_account ON net_events (account, at);
+                CREATE TABLE IF NOT EXISTS match_rows (
+                    account INTEGER, at REAL, view INTEGER, result TEXT, rated INTEGER);
+                CREATE INDEX IF NOT EXISTS match_rows_account ON match_rows (account, at);
             """)
             # (online play through the relay, added later: games open at once, games
             # that came on, packets passed on)
@@ -962,11 +969,16 @@ class Service:
         step = step if abs(step) <= 16 else 99  # (a small steady step: port prediction can follow it)
         gs.log("netreport: %s played a match, path %s, match network %s (server %s)" % (
             account["name"], path, network if network in ("auto", "relay", "p2p") else "?", SETTINGS["match_network"]))
+        raw_rtt = min(rtt, 100000)
         rtt = next(b for b in self.NET_RTT if rtt <= b)
         with self.store.lock:
             self.store.db.execute(
                 "INSERT INTO netreports VALUES (?, ?, ?, ?, ?, ?, 1) ON CONFLICT (day, version, path, nat, step, rtt) "
                 "DO UPDATE SET count = count + 1", (time.strftime("%Y-%m-%d"), version, path, nat, step, rtt))
+            # (the dashboard's ping viewer / a player's matches: this account's report)
+            self.store.db.execute("INSERT INTO net_events VALUES (?, ?, ?, ?, ?, ?, ?)", (
+                account["id"], now(), path, nat, raw_rtt, network if network in ("auto", "relay", "p2p") else "",
+                version))
             self.store.db.commit()
         return web.json_response({"ok": True})
 
@@ -1003,6 +1015,7 @@ class Service:
                 return web.json_response({"ok": False, "error": "Only your own stats."}, status=403)
             done = await loop.run_in_executor(None, lb.write, xuid, account["id"], body.get("views") or [])
             gs.log("stats: %s wrote %d view(s)" % (account["name"], done))
+            await loop.run_in_executor(None, self.record_match, account["id"], body.get("views") or [])
             return web.json_response({"ok": True, "views": done})
         names = await loop.run_in_executor(None, self.lb_names)
         if what == "read":
@@ -1570,7 +1583,143 @@ class Service:
         gs.log("admin: upload %d %s" % (rid, action))
         return web.json_response({"ok": True})
 
+    # The dashboard's ping viewer and match history. A ranked match is one stats
+    # write of the player's own game (deltas per view: WIN / LOSS / DRAW / DQ /
+    # DISCONNECT, the RATED change); its ping is that match's netreport (each game
+    # sends one a match). Player Matches write no stats: not in the history yet.
+    RESULT_COLUMNS = ("WIN", "LOSS", "DRAW", "DQ", "DISCONNECT")
+    NET_KEEP_DAYS = 90
+
+    def record_match(self, account_id, views):
+        lb_views = self.leaderboards.views
+        best = None  # (view, result, rated): the match type's own view before the totals
+        for v in views if isinstance(views, list) else []:
+            try:
+                vid = int(v.get("view", 0))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            spec = lb_views.get(vid)
+            if not spec:
+                continue
+            result, rated = None, 0
+            for prop in v.get("props", []) if isinstance(v.get("props"), list) else []:
+                try:
+                    col = spec["columns"].get(int(prop[0]))
+                    value = prop[2]
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if not col or not isinstance(value, (int, float)):
+                    continue
+                if col[0] == 65534:
+                    rated = int(value)
+                elif col[2] in self.RESULT_COLUMNS and value > 0 and not result:
+                    result = col[2].lower()
+            if not result:
+                continue
+            total = any(w in spec.get("name", "") for w in ("TOTAL", "PRESTIGE", "GAMESPY", "WEEKLY"))
+            if best is None or (best[3] and not total):
+                best = (vid, result, rated, total)
+        if not best:
+            return
+        with self.store.lock:
+            self.store.db.execute("INSERT INTO match_rows VALUES (?, ?, ?, ?, ?)",
+                                  (account_id, now(), best[0], best[1], best[2]))
+            cutoff = now() - self.NET_KEEP_DAYS * 86400
+            self.store.db.execute("DELETE FROM match_rows WHERE at < ?", (cutoff,))
+            self.store.db.execute("DELETE FROM net_events WHERE at < ?", (cutoff,))
+            self.store.db.commit()
+
+    def view_label(self, vid):
+        name = self.leaderboards.views.get(vid, {}).get("name", "view %d" % vid)
+        name = re.sub(r"^LB_\d+_", "", name).replace("_RANKING", "").replace("_", " ")
+        return name.title()
+
+    def relay_links(self):
+        """Account name -> how its game is on the relay now (https / UDP / UDP at the edge)."""
+        out = {}
+        r = self.relay
+        for g in list(r.games.values()):
+            out[g.account["name"]] = "https"
+        for g in list(getattr(r, "udp_games", {}).values()):
+            out[g.account["name"]] = "UDP"
+        for gid in list(getattr(r, "edge_games", set())):
+            name = getattr(r, "ticket_names", {}).get(gid)
+            if name:
+                out[name] = "UDP (edge)"
+        return out
+
     @admin_only
+    async def admin_pings(self, request):
+        """Players online now (presence) with their last match's network report and their relay link."""
+        t = now()
+        cutoff = t - SETTINGS["presence_window"]
+        ids = [a for a, at in list(self.stats.recent.items()) if at >= cutoff]
+        links = self.relay_links()
+
+        def rows():
+            out = []
+            with self.store.lock:
+                for aid in ids:
+                    a = self.store.db.execute("SELECT name FROM accounts WHERE id = ?", (aid,)).fetchone()
+                    if not a:
+                        continue
+                    e = self.store.db.execute(
+                        "SELECT at, path, nat, rtt, network, version FROM net_events WHERE account = ? "
+                        "ORDER BY at DESC LIMIT 1", (aid,)).fetchone()
+                    out.append({"name": a[0], "seen": self.stats.recent.get(aid, 0), "link": links.get(a[0], ""),
+                                "last": dict(zip(("at", "path", "nat", "rtt", "network", "version"), e)) if e else None})
+            return sorted(out, key=lambda r: r["name"].lower())
+
+        return web.json_response({"now": t, "players": await asyncio.get_running_loop().run_in_executor(None, rows)})
+
+    @admin_only
+    async def admin_player(self, request):
+        """?name=<online name>: wins, losses, win rate and the recent matches (with their ping)."""
+        name = request.query.get("name", "").strip()[:40]
+
+        def look():
+            with self.store.lock:
+                a = self.store.db.execute("SELECT id, name, created, last_seen FROM accounts WHERE lower(name) = lower(?)",
+                                          (name,)).fetchone()
+                if not a:
+                    return None
+                aid = a[0]
+                totals = dict(self.store.db.execute(
+                    "SELECT result, COUNT(*) FROM match_rows WHERE account = ? GROUP BY result", (aid,)).fetchall())
+                matches = self.store.db.execute(
+                    "SELECT at, view, result, rated FROM match_rows WHERE account = ? ORDER BY at DESC LIMIT 50",
+                    (aid,)).fetchall()
+                events = self.store.db.execute(
+                    "SELECT at, path, nat, rtt, network, version FROM net_events WHERE account = ? "
+                    "ORDER BY at DESC LIMIT 200", (aid,)).fetchall()
+                lb = self.store.db.execute("SELECT rating, columns FROM lb_rows WHERE view = 1 AND account = ?",
+                                           (aid,)).fetchone()
+            out_matches = []
+            for at, vid, result, rated in matches:
+                near = min(events, key=lambda e: abs(e[0] - at), default=None)
+                net = dict(zip(("at", "path", "nat", "rtt", "network", "version"), near)) \
+                    if near and abs(near[0] - at) <= 300 else None
+                out_matches.append({"at": at, "type": self.view_label(vid), "result": result, "rated": rated,
+                                    "net": net})
+            rtts = [e[3] for e in events if e[3]]
+            wins, losses = totals.get("win", 0), totals.get("loss", 0)
+            decided = wins + losses
+            return {"name": a[1], "created": a[2], "last_seen": a[3], "totals": totals,
+                    "win_rate": round(100.0 * wins / decided, 1) if decided else None,
+                    "rating": lb[0] if lb else None,
+                    "ping": {"matches": len(rtts), "avg": round(sum(rtts) / len(rtts)) if rtts else None,
+                             "max": max(rtts) if rtts else None},
+                    "paths": {p: sum(1 for e in events if e[1] == p) for p in {e[1] for e in events}},
+                    "matches": out_matches, "recent_net": [
+                        dict(zip(("at", "path", "nat", "rtt", "network", "version"), e)) for e in events[:20]]}
+
+        if not name:
+            return web.json_response({"ok": False, "error": "Give a name."}, status=400)
+        res = await asyncio.get_running_loop().run_in_executor(None, look)
+        if res is None:
+            return web.json_response({"ok": False, "error": "No player called %s." % name}, status=404)
+        return web.json_response(dict(ok=True, **res))
+
     @admin_only
     async def admin_live(self, request):
         """The sessions hosts reported in the last LIVE_LIFE s, and the relay's games now."""
@@ -1785,6 +1934,8 @@ class Service:
             app.router.add_post(p + "/api/admin/mod/{id}/{action}", self.admin_mod_action)
             app.router.add_get(p + "/api/admin/users", self.admin_users)
             app.router.add_get(p + "/api/admin/live", self.admin_live)
+            app.router.add_get(p + "/api/admin/pings", self.admin_pings)
+            app.router.add_get(p + "/api/admin/player", self.admin_player)
             app.router.add_get(p + "/api/admin/log", self.admin_log)
             app.router.add_route("*", p + "/api/admin/settings", self.admin_settings)
             app.router.add_post(p + "/api/admin/restart", self.admin_restart)
