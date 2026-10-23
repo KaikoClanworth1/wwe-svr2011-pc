@@ -15,6 +15,7 @@
 #include <atomic>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -83,6 +84,46 @@ bool CrowdArena() {
 namespace svr2011 {
 void Handoff(PPCContext& ctx, uint8_t* base, int person, uint32_t asked, uint32_t frames);
 
+// A weapon lying at (x, z) - on the floor, or the ring's mat: sub_821D2070(any free slot, position, rotation, model;
+// stack: motion 15010 lying, place, flag 1) - as a backstage room's (hctp_room.cpp). The object, or 0 (no free slot,
+// or the model isn't loaded).
+uint32_t SpawnWeapon(PPCContext& ctx, uint8_t* base, int model, float x, float z, bool ring) {
+  const auto saved = ctx;
+  ctx.r1.u64 = saved.r1.u32 - 0x200;
+  Wr32(base + ctx.r1.u32 + 84, 15010);
+  Wr32(base + ctx.r1.u32 + 92, ring ? 0 : 1);  // (place: 0 the ring, 1 the floor)
+  Wr32(base + ctx.r1.u32 + 100, 1);
+  ctx.r3.u64 = 0xFFFFFFFFu;
+  ctx.f1.f64 = x, ctx.f2.f64 = ring ? -12.0 : 0.0, ctx.f3.f64 = z;
+  ctx.f4.f64 = 0, ctx.f5.f64 = 0, ctx.f6.f64 = 0;
+  ctx.r7.u64 = uint32_t(model);
+  sub_821D2070(ctx, base);
+  const uint32_t made = ctx.r3.u32;
+  ctx = saved;
+  return made;
+}
+
+// Test aid: SVR2011_TEST_GIVE_WEAPON=<model>[,<match frame>[,<person>]] - once a match (frame 30), that weapon lies at
+// the person's feet (0; 1 the CPU opponent, who goes for a weapon that near): a weapon's hits and breaks without walking
+// to one. The model must be loaded.
+void TestGiveWeapon(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_match) {
+  static const char* give = std::getenv("SVR2011_TEST_GIVE_WEAPON");
+  static bool given = false;
+  if (!give) return;
+  if (new_match) given = false;
+  int model = 0, at = 30, person = 0;
+  std::sscanf(give, "%d,%d,%d", &model, &at, &person);
+  const uint32_t c = Rd32(base + kChars + uint32_t(std::clamp(person, 0, 5)) * 4);
+  if (given || !c || frames < uint32_t(at) || model <= 0) return;
+  given = true;
+  const float x = RdF(base + c + 288), y = RdF(base + c + 292), z = RdF(base + c + 296);
+  const float d = std::max(std::sqrt(x * x + z * z), 1.f);
+  const float wx = x - x / d * 4.f, wz = z - z / d * 4.f;  // (a step toward the ring's middle)
+  const uint32_t made = SpawnWeapon(ctx, base, model, wx, wz, y < -6.f);
+  REXLOG_INFO("[svr2011] test: weapon {} at person {}'s feet ({:.0f},{:.0f}), frame {} - {}", model, person, wx, wz,
+              frames, made ? "made" : "not made");
+}
+
 bool CrowdMatch() { return g_crowd.load(); }
 
 void CrowdMoveAsked(uint32_t fighter, uint32_t slot) {
@@ -97,11 +138,13 @@ void CrowdHandoffUpdate(PPCContext& ctx, uint8_t* base) {
   uint32_t asked_set[8];
   for (int i = 0; i < 8; ++i) asked_set[i] = g_asked[i].exchange(0);
   const uint32_t frames = Rd32(base + kMatchFrames);
-  if (frames < g_last_frames) {  // (a new match)
+  const bool new_match = frames < g_last_frames;
+  if (new_match) {
     g_given = g_turn = 0;
     for (auto& f : g_fighter_at) f = 0;
   }
   g_last_frames = frames;
+  TestGiveWeapon(ctx, base, frames, new_match);
   if (!g_crowd.load()) return;
   for (int person = 0; person < 6 && g_given < kMax; ++person) {
     const uint32_t c = Rd32(base + kChars + uint32_t(person) * 4);
@@ -119,20 +162,7 @@ void Handoff(PPCContext& ctx, uint8_t* base, int person, uint32_t asked, uint32_
   const float d = std::max(std::sqrt(x * x + z * z), 1.f);
   const float wx = x - x / d * 6.f, wz = z - z / d * 6.f;
   const int model = svr2011::ExtremeWeaponsPlacedModel(1, kHanded[g_turn % std::size(kHanded)]);
-  // A weapon lying there: sub_821D2070(any free slot, position, rotation, model; stack: motion 15010 lying, place 1
-  // floor, flag 1) - as a backstage room's (hctp_room.cpp).
-  const auto saved = ctx;
-  ctx.r1.u64 = saved.r1.u32 - 0x200;
-  Wr32(base + ctx.r1.u32 + 84, 15010);
-  Wr32(base + ctx.r1.u32 + 92, y < -6.f ? 0 : 1);  // (place: 0 the ring, 1 the floor)
-  Wr32(base + ctx.r1.u32 + 100, 1);
-  ctx.r3.u64 = 0xFFFFFFFFu;
-  ctx.f1.f64 = wx, ctx.f2.f64 = y < -6.f ? -12.0 : 0.0, ctx.f3.f64 = wz;  // (the floor; in the ring its mat)
-  ctx.f4.f64 = 0, ctx.f5.f64 = 0, ctx.f6.f64 = 0;
-  ctx.r7.u64 = uint32_t(model);
-  sub_821D2070(ctx, base);
-  const uint32_t made = ctx.r3.u32;
-  ctx = saved;
+  const uint32_t made = SpawnWeapon(ctx, base, model, wx, wz, y < -6.f);
   ++g_turn;
   g_fighter_at[person] = frames + 1;
   if (made) ++g_given;
