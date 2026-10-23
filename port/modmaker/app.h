@@ -442,7 +442,7 @@ extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
-                      void TestHeight(float scale); void TestCallGain(float db); void TestMoveset(const std::string& spec); void ThreadsDraw(); void ThreadsTest(const std::string& spec); void TestCae(const std::string& id); void TestImportMoveset(const std::string& spec); void TestEntrance(int n); void TestInstall(); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
+                      void TestHeight(float scale); void TestCallGain(float db); void TestMoveset(const std::string& spec); void ThreadsDraw(); void ThreadsTest(const std::string& spec); void TestCae(const std::string& id); void TestImportMoveset(const std::string& spec); void TestEntrance(int n); void TestInstall(); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestLoad(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
                       void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step); void TestSimpleFrom(int step); void TestSimpleChain(const std::string& spec);
                       // entrance gear from another superstar (tools/svr11_build.py --gear-from / --onto): the game superstars
                       // with gear, a popup to pick one, and the transplant onto <target pac>'s attire (done(new pac) on success)
@@ -555,6 +555,9 @@ void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon);
 // figure and fills the height, centred (the stock renders: top to bottom, ~85% wide); a picture without
 // transparency is fitted whole, top aligned.
 Image FitFigure(const Image& src, int size);
+// A NOW LOADING picture (load.dds: exactly 1024 x 512): a wide picture fills it; a square or tall one sits whole on
+// the right half (centred when wider) over a blurred, darkened copy of itself covering the screen.
+Image FitLoading(const Image& src);
 // The figure's tone half way to the stock renders' median (brightness 0.39, contrast 0.21, saturation 0.41).
 Image GameLook(const Image& src);
 

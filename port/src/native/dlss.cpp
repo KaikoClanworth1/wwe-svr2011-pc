@@ -3,6 +3,8 @@
 // Direct3D 12: NGX records into the frame's command list with the D3D12 resources behind plume's textures; plume's
 // cached command list state (descriptor heaps, layouts, pipeline, framebuffer) is forgotten after it, as NGX sets
 // its own. The colour is copied into a typed texture first (the resolve copies are typeless).
+// Vulkan: the same on the SDK's device the renderer adopted (plume VulkanExistingDevice), NGX's extensions enabled
+// when the SDK made it (RequestVulkanExtensions); images as image views with their formats and ranges.
 
 #include "native/dlss.h"
 
@@ -20,10 +22,14 @@
 #include <windows.h>
 #include <d3d12.h>
 #include <plume_d3d12.h>
+#include <plume_vulkan.h>  // (volk first: NGX's Vulkan header takes its declarations)
 
 #include <nvsdk_ngx.h>
 #include <nvsdk_ngx_helpers.h>
 #include <nvsdk_ngx_helpers_d3d.h>
+#include <nvsdk_ngx_vk.h>
+#include <nvsdk_ngx_helpers_vk.h>
+
 
 namespace svr2011::dlss {
 namespace {
@@ -38,6 +44,7 @@ std::mutex g_mutex;
 bool g_probed = false, g_ok = false;
 std::string g_why;
 ID3D12Device* g_d3d = nullptr;
+VkDevice g_vk = VK_NULL_HANDLE;
 NVSDK_NGX_Parameter* g_caps = nullptr;
 
 std::string Hex(NVSDK_NGX_Result r) { return fmt::format("{:#x}", uint32_t(r)); }
@@ -179,21 +186,154 @@ class D3D12Dlss final : public Upscaler {
   }
 };
 
+// NGX's view of a plume Vulkan texture (its own image view, format and subresources).
+NVSDK_NGX_Resource_VK VkResource(plume::RenderTexture* t, uint32_t w, uint32_t h, bool read_write) {
+  auto* v = static_cast<plume::VulkanTexture*>(t);
+  return NVSDK_NGX_Create_ImageView_Resource_VK(v->imageView, v->vk, v->imageSubresourceRange, v->imageFormat, w, h,
+                                                read_write);
+}
+
+class VulkanDlss final : public Upscaler {
+ public:
+  Host host;
+  uint32_t render_w = 0, render_h = 0, display_w = 0, display_h = 0;
+  int quality = 1;
+  NVSDK_NGX_Parameter* params = nullptr;
+  NVSDK_NGX_Handle* handle = nullptr;
+  bool failed = false;
+  std::unique_ptr<plume::RenderTexture> color;  // (a typed copy, as on Direct3D 12)
+  uint32_t color_w = 0, color_h = 0;
+  RenderFormat color_format = RenderFormat::UNKNOWN;
+
+  ~VulkanDlss() override {
+    if (handle) NVSDK_NGX_VULKAN_ReleaseFeature(handle);
+    if (params) NVSDK_NGX_VULKAN_DestroyParameters(params);
+  }
+
+  uint32_t MaxRenderWidth() const override { return render_w; }
+  uint32_t MaxRenderHeight() const override { return render_h; }
+  uint32_t DisplayWidth() const override { return display_w; }
+  uint32_t DisplayHeight() const override { return display_h; }
+  int Quality() const override { return quality; }
+
+  // (NGX bound its own pipeline and descriptor sets: plume binds its own again)
+  static void ForgetState(plume::RenderCommandList* list) {
+    auto* l = static_cast<plume::VulkanCommandList*>(list);
+    l->activeComputePipelineLayout = nullptr;
+    l->activeGraphicsPipelineLayout = nullptr;
+    l->targetFramebuffer = nullptr;
+  }
+
+  bool Dispatch(plume::RenderCommandList* list, fsr2::Frame& f) override {
+    if (failed || !f.color.texture || !f.depth.texture || !f.motion.texture || !f.output.texture) return false;
+    VkCommandBuffer cb = static_cast<plume::VulkanCommandList*>(list)->vk;
+    if (!handle) {
+      NVSDK_NGX_DLSS_Create_Params c{};
+      c.Feature.InWidth = render_w;
+      c.Feature.InHeight = render_h;
+      c.Feature.InTargetWidth = display_w;
+      c.Feature.InTargetHeight = display_h;
+      c.Feature.InPerfQualityValue = QualityValue(quality);
+      c.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+      for (const char* p : {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality,
+                            NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality,
+                            NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced,
+                            NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance})
+        NVSDK_NGX_Parameter_SetUI(params, p, NVSDK_NGX_DLSS_Hint_Render_Preset_K);
+      const NVSDK_NGX_Result r = NGX_VULKAN_CREATE_DLSS_EXT1(g_vk, cb, 1, 1, &handle, params, &c);
+      ForgetState(list);
+      if (NVSDK_NGX_FAILED(r) || !handle) {
+        REXLOG_WARN("native renderer: DLSS feature not made on Vulkan ({}) - FSR 1 instead", Hex(r));
+        failed = true;
+        return false;
+      }
+      REXLOG_INFO("native renderer: DLSS ready on Vulkan, {}x{} -> {}x{} (quality {}, preset K)", render_w, render_h,
+                  display_w, display_h, quality);
+    }
+    if (!color || color_w != f.color.width || color_h != f.color.height || color_format != f.color.format) {
+      color = host.device->createTexture(
+          plume::RenderTextureDesc::Texture2D(f.color.width, f.color.height, 1, f.color.format));
+      if (!color) return false;
+      color->setName("DLSS colour");
+      color_w = f.color.width, color_h = f.color.height, color_format = f.color.format;
+    }
+    D3D12Dlss::Barrier(list, f.color.texture, RenderTextureLayout::COPY_SOURCE);
+    D3D12Dlss::Barrier(list, color.get(), RenderTextureLayout::COPY_DEST);
+    list->copyTexture(color.get(), f.color.texture);
+    D3D12Dlss::Barrier(list, color.get(), RenderTextureLayout::SHADER_READ);
+    D3D12Dlss::Barrier(list, f.color.texture, RenderTextureLayout::SHADER_READ);
+    D3D12Dlss::Barrier(list, f.depth.texture, RenderTextureLayout::SHADER_READ);
+    D3D12Dlss::Barrier(list, f.motion.texture, RenderTextureLayout::SHADER_READ);
+    if (f.reactive.texture) D3D12Dlss::Barrier(list, f.reactive.texture, RenderTextureLayout::SHADER_READ);
+    D3D12Dlss::Barrier(list, f.output.texture, RenderTextureLayout::GENERAL);
+    NVSDK_NGX_Resource_VK in_color = VkResource(color.get(), f.color.width, f.color.height, false);
+    NVSDK_NGX_Resource_VK out = VkResource(f.output.texture, f.output.width, f.output.height, true);
+    NVSDK_NGX_Resource_VK depth = VkResource(f.depth.texture, f.depth.width, f.depth.height, false);
+    NVSDK_NGX_Resource_VK motion = VkResource(f.motion.texture, f.motion.width, f.motion.height, false);
+    NVSDK_NGX_Resource_VK bias{};
+    if (f.reactive.texture) bias = VkResource(f.reactive.texture, f.reactive.width, f.reactive.height, false);
+    NVSDK_NGX_VK_DLSS_Eval_Params e{};
+    e.Feature.pInColor = &in_color;
+    e.Feature.pInOutput = &out;
+    e.pInDepth = &depth;
+    e.pInMotionVectors = &motion;
+    e.InJitterOffsetX = f.jitter_x;  // (the signs found on Direct3D 12: FSR 2's)
+    e.InJitterOffsetY = f.jitter_y;
+    e.InRenderSubrectDimensions = {f.render_w, f.render_h};
+    e.InReset = f.reset ? 1 : 0;
+    e.InMVScaleX = 1.0f;
+    e.InMVScaleY = 1.0f;
+    e.pInBiasCurrentColorMask = f.reactive.texture ? &bias : nullptr;
+    e.InPreExposure = 1.0f;
+    e.InExposureScale = 1.0f;
+    e.InFrameTimeDeltaInMsec = f.frame_ms;
+    const NVSDK_NGX_Result r = NGX_VULKAN_EVALUATE_DLSS_EXT(cb, handle, params, &e);
+    ForgetState(list);
+    D3D12Dlss::Barrier(list, f.output.texture, RenderTextureLayout::SHADER_READ);
+    if (NVSDK_NGX_FAILED(r)) {
+      static int logged = 0;
+      if (logged++ < 5) REXLOG_WARN("native renderer: DLSS evaluation failed on Vulkan ({})", Hex(r));
+      return false;
+    }
+    return true;
+  }
+};
+
 }  // namespace
+
+void RequestVulkanExtensions() {
+  unsigned int instance_count = 0, device_count = 0;
+  const char** instance_exts = nullptr;
+  const char** device_exts = nullptr;
+  const NVSDK_NGX_Result r =
+      NVSDK_NGX_VULKAN_RequiredExtensions(&instance_count, &instance_exts, &device_count, &device_exts);
+  if (NVSDK_NGX_FAILED(r)) {
+    REXLOG_WARN("native renderer: NGX's Vulkan extensions unknown ({}) - no DLSS on Vulkan", Hex(r));
+    return;
+  }
+  // (the SDK's Vulkan provider - made in the GPU plugin DLL - reads them from the process environment:
+  // rex/ui/vulkan/instance.h)
+  std::string instance_list, device_list;
+  for (unsigned int i = 0; i < instance_count; ++i) instance_list += (i ? " " : "") + std::string(instance_exts[i]);
+  for (unsigned int i = 0; i < device_count; ++i) device_list += (i ? " " : "") + std::string(device_exts[i]);
+  SetEnvironmentVariableA("REX_VULKAN_OPTIONAL_INSTANCE_EXTENSIONS", instance_list.c_str());
+  SetEnvironmentVariableA("REX_VULKAN_OPTIONAL_DEVICE_EXTENSIONS", device_list.c_str());
+  // (NGX needs buffer device address; only where the GPU has NGX's own extension - NVIDIA)
+  SetEnvironmentVariableA("REX_VULKAN_BUFFER_DEVICE_ADDRESS_GATE", "VK_NVX_binary_import");
+  REXLOG_INFO("native renderer: DLSS on Vulkan - NGX's extensions asked for where the driver has them: {} | {}",
+              instance_list, device_list);
+}
 
 bool Probe(const Host& host, std::string* why) {
   std::lock_guard lock(g_mutex);
   if (!g_probed) {
     g_probed = true;
     std::error_code ec;
-    if (host.vulkan) {
-      g_why = "DLSS on Vulkan isn't in this build yet (Direct3D 12 only)";
-    } else if (!host.device) {
+    if (!host.device) {
       g_why = "no device";
     } else if (!std::filesystem::exists(std::filesystem::path(host.dll_dir) / L"nvngx_dlss.dll", ec)) {
       g_why = "nvngx_dlss.dll is not beside the game";
     } else {
-      g_d3d = static_cast<plume::D3D12Device*>(host.device)->d3d;
       NVSDK_NGX_FeatureCommonInfo info{};
       const wchar_t* paths[1] = {host.dll_dir.c_str()};
       info.PathListInfo.Path = paths;
@@ -201,11 +341,26 @@ bool Probe(const Host& host, std::string* why) {
       info.LoggingInfo.LoggingCallback = NgxLog;
       info.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_OFF;
       std::filesystem::create_directories(host.data_path, ec);
-      NVSDK_NGX_Result r = NVSDK_NGX_D3D12_Init_with_ProjectID(kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "2.1",
-                                                               host.data_path.c_str(), g_d3d, &info);
+      NVSDK_NGX_Result r;
+      if (host.vulkan) {
+        auto* d = static_cast<plume::VulkanDevice*>(host.device);
+        g_vk = d->vk;
+        r = NVSDK_NGX_VULKAN_Init_with_ProjectID(kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "2.1",
+                                                 host.data_path.c_str(), d->renderInterface->instance,
+                                                 d->physicalDevice, d->vk, vkGetInstanceProcAddr, vkGetDeviceProcAddr,
+                                                 &info, NVSDK_NGX_Version_API);
+      } else {
+        g_d3d = static_cast<plume::D3D12Device*>(host.device)->d3d;
+        r = NVSDK_NGX_D3D12_Init_with_ProjectID(kProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "2.1",
+                                                host.data_path.c_str(), g_d3d, &info);
+      }
       if (NVSDK_NGX_FAILED(r)) {
-        g_why = "NVIDIA NGX didn't start (" + Hex(r) + ": not an NVIDIA GPU, or its driver is too old)";
-      } else if (NVSDK_NGX_FAILED(r = NVSDK_NGX_D3D12_GetCapabilityParameters(&g_caps)) || !g_caps) {
+        g_why = "NVIDIA NGX didn't start (" + Hex(r) +
+                (host.vulkan ? ": not an NVIDIA GPU, its driver is too old, or NGX's Vulkan extensions weren't enabled)"
+                             : ": not an NVIDIA GPU, or its driver is too old)");
+      } else if (NVSDK_NGX_FAILED(r = host.vulkan ? NVSDK_NGX_VULKAN_GetCapabilityParameters(&g_caps)
+                                                   : NVSDK_NGX_D3D12_GetCapabilityParameters(&g_caps)) ||
+                 !g_caps) {
         g_why = "NGX capabilities unreadable (" + Hex(r) + ")";
       } else {
         int available = 0, needs_driver = 0;
@@ -222,13 +377,18 @@ bool Probe(const Host& host, std::string* why) {
           g_ok = true;
       }
       if (!g_ok) {
-        if (g_caps) NVSDK_NGX_D3D12_DestroyParameters(g_caps);
+        if (host.vulkan) {
+          if (g_caps) NVSDK_NGX_VULKAN_DestroyParameters(g_caps);
+          if (g_vk) NVSDK_NGX_VULKAN_Shutdown1(g_vk);
+        } else {
+          if (g_caps) NVSDK_NGX_D3D12_DestroyParameters(g_caps);
+          NVSDK_NGX_D3D12_Shutdown1(g_d3d);
+        }
         g_caps = nullptr;
-        NVSDK_NGX_D3D12_Shutdown1(g_d3d);
       }
     }
     if (g_ok)
-      REXLOG_INFO("native renderer: DLSS available (NVIDIA NGX, Direct3D 12)");
+      REXLOG_INFO("native renderer: DLSS available (NVIDIA NGX, {})", host.vulkan ? "Vulkan" : "Direct3D 12");
     else
       REXLOG_INFO("native renderer: DLSS not available - {}", g_why);
   }
@@ -238,7 +398,15 @@ bool Probe(const Host& host, std::string* why) {
 
 std::unique_ptr<Upscaler> Create(const Host& host, uint32_t max_render_w, uint32_t max_render_h, uint32_t display_w,
                                  uint32_t display_h, int quality) {
-  if (!Probe(host, nullptr) || host.vulkan) return nullptr;
+  if (!Probe(host, nullptr)) return nullptr;
+  if (host.vulkan) {
+    auto d = std::make_unique<VulkanDlss>();
+    d->host = host;
+    d->render_w = max_render_w, d->render_h = max_render_h, d->display_w = display_w, d->display_h = display_h;
+    d->quality = std::clamp(quality, 0, 3);
+    if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_AllocateParameters(&d->params)) || !d->params) return nullptr;
+    return d;
+  }
   auto d = std::make_unique<D3D12Dlss>();
   d->host = host;
   d->render_w = max_render_w, d->render_h = max_render_h, d->display_w = display_w, d->display_h = display_h;

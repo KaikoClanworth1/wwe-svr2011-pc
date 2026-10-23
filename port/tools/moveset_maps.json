@@ -1,4 +1,129 @@
 {
+ "low": {
+  "about": "low PRO u16 slot (byte offset, hex) -> [2011 byte offset, vote share]; by move occupancy (its own ids and layout: every 2011 move's usual 2011 slots over all 2011 superstars, voted for by the moves all 89 LoW superstars keep in each slot, translated by name; shares under 0.18 left out)",
+  "map": {
+   "008": [
+    "012",
+    0.39
+   ],
+   "00a": [
+    "014",
+    0.4
+   ],
+   "024": [
+    "10e",
+    0.27
+   ],
+   "02a": [
+    "096",
+    0.23
+   ],
+   "042": [
+    "0a0",
+    0.23
+   ],
+   "04c": [
+    "07a",
+    0.19
+   ],
+   "04e": [
+    "07e",
+    0.18
+   ],
+   "05e": [
+    "080",
+    0.39
+   ],
+   "060": [
+    "0dc",
+    0.41
+   ],
+   "064": [
+    "0e8",
+    0.74
+   ],
+   "06c": [
+    "0d8",
+    0.8
+   ],
+   "06e": [
+    "178",
+    0.35
+   ],
+   "074": [
+    "136",
+    0.19
+   ],
+   "076": [
+    "182",
+    0.26
+   ],
+   "07a": [
+    "152",
+    0.38
+   ],
+   "07c": [
+    "150",
+    0.44
+   ],
+   "07e": [
+    "154",
+    0.43
+   ],
+   "080": [
+    "156",
+    0.4
+   ],
+   "082": [
+    "176",
+    0.31
+   ],
+   "088": [
+    "172",
+    0.4
+   ],
+   "08a": [
+    "17a",
+    0.5
+   ],
+   "08c": [
+    "126",
+    0.74
+   ],
+   "08e": [
+    "09e",
+    0.21
+   ],
+   "096": [
+    "09c",
+    0.65
+   ],
+   "09e": [
+    "0a4",
+    0.2
+   ],
+   "0a0": [
+    "07c",
+    0.26
+   ],
+   "0a4": [
+    "0cc",
+    0.64
+   ],
+   "0ae": [
+    "12c",
+    0.2
+   ],
+   "0b2": [
+    "174",
+    0.69
+   ],
+   "0b6": [
+    "022",
+    0.18
+   ]
+  }
+ },
  "ps2_hctp": {
   "about": "ps2_hctp profile u16 slot (byte offset, hex) -> [2011 byte offset, 0]; laid out by section from the roster (tools/ps2_moves.py SECTIONS)",
   "map": {

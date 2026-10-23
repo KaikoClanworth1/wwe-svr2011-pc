@@ -32,6 +32,8 @@ std::vector<uint32_t> SuperstarModIds();
 bool IsSuperstarMod(uint32_t id);
 // A mod's folder in Mods/Superstars ("" for no mod).
 std::string SuperstarModFolder(uint32_t id);
+// A mod's loading picture file (manifest loading=, else its load.dds; "" for none).
+std::string SuperstarModLoading(uint32_t id);
 // Once a frame: a mod's profile that is its slot's placeholder again (a
 // save's copy) gets the mod's back.
 void CheckModProfiles(uint8_t* base);

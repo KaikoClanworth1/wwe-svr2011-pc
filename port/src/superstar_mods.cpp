@@ -141,6 +141,9 @@ struct Mod {
   bool styled = false;
   int ratings[7] = {-1, -1, -1, -1, -1, -1, -1};
   fs::path voice;  // its own recorded name for the ring announcer (manifest voice=)
+  // its loading picture (manifest loading=<file>, else the folder's load.dds; 1024 x 512 DXT5): the NOW LOADING
+  // screen of a match it is in (arena_mods.cpp SetSuperstarLoading)
+  fs::path loading;
   float call_gain = 0.0f;  // call_gain=<dB>: its level against the game's own calls (0 = as loud as they are)
   // a superstar the game's sound banks still have (manifest announcer=<NAME>,
   // e.g. JEFFHARDY): the ring announcer says it with the game's own
@@ -796,6 +799,7 @@ void LoadMods() {
         if (l.rfind("call_gain=", 0) == 0) m.call_gain = std::clamp(float(std::atof(l.c_str() + 10)), -20.0f, 12.0f);
         if (l.rfind("movie=", 0) == 0) movie = l.substr(6);
         if (l.rfind("voice=", 0) == 0 && l.size() > 6) m.voice = f / l.substr(6);
+        if (l.rfind("loading=", 0) == 0 && l.size() > 8) m.loading = f / l.substr(8);
         if (l.rfind("style=", 0) == 0) m.styled = true;
         if (l.rfind("ratings=", 0) == 0) {
           const char* q = l.c_str() + 8;
@@ -3042,6 +3046,13 @@ bool IsSuperstarMod(uint32_t id) { return ModOf(id) != nullptr; }
 std::string SuperstarModFolder(uint32_t id) {
   const Mod* m = ModOf(id);
   return m ? m->folder : std::string();
+}
+std::string SuperstarModLoading(uint32_t id) {
+  const Mod* m = ModOf(id);
+  if (!m) return {};
+  std::error_code ec;
+  const fs::path p = m->loading.empty() ? g_game / "Mods" / "Superstars" / m->folder / "load.dds" : m->loading;
+  return fs::is_regular_file(p, ec) ? p.string() : std::string();
 }
 uint32_t SuperstarModBase(uint32_t id) {
   const Mod* m = ModOf(id);

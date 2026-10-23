@@ -42,7 +42,7 @@ def waze_old(src):
 
 
 def source_waze(gid, src, svrmod):
-    if gid in ('svr2007', 'svr2008', 'svr2009'):
+    if gid in ('svr2007', 'svr2008', 'svr2009', 'low'):   # (Legends of WrestleMania: 2009's table, its own ids)
         return waze_old(src)
     if gid == 'wwe12':
         return MP.Game12(src).waze

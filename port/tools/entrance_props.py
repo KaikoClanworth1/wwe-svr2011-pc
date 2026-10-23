@@ -9,13 +9,15 @@ Ids: one fixed id per source model (two packs adding the same bike add the same 
   swapped -> 2541. Its track stays the 2540 one (wwe13_entrance.VEHICLE_NODES).
 - HCTP 2035 (the Undertaker's bike, 3003 / 3203 / 3411 / 3511) -> 2542 (hctp_bike.py: the PS2 model with
   its own nodes).
+- Legends of WrestleMania 2552 / 2565 (the "Gondola" ring carts): LoW's own entries, as they are, under their own
+  ids (both free in 2011's evtobj).
 """
 import struct
 
 import svrfmt
 
 PROP_PAC = 'evt\\evtobj.pac'
-PORTED = {('wwe2k14', 2540): 2541, ('hctp', 2035): 2542}
+PORTED = {('wwe2k14', 2540): 2541, ('hctp', 2035): 2542, ('low', 2552): 2552, ('low', 2565): 2565}
 
 
 def _unpack(b):
