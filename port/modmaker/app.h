@@ -486,6 +486,8 @@ namespace port_page { void Draw();
                       void SuperstarFlow(); std::wstring EmbeddedResult(); void ClearEmbeddedResult();
                       // with an arena EmbeddedResult(): the disc's picture of it (a PNG from the scan), "" none
                       std::wstring EmbeddedPicture();
+                      // with an arena EmbeddedResult(): the game's own name of it (from the scan, e.g. "Raw"), "" none
+                      std::string EmbeddedName();
                       // one character file instead of a disc, embedded: a "Pick a character file" button, then the
                       // lone file's steps (game, character, convert); the .svrmod comes back in EmbeddedResult()
                       void SuperstarFileFlow();

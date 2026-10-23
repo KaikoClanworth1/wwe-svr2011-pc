@@ -1070,8 +1070,10 @@ void SetArenaFromPac(const Bytes& pac, int host, const std::string& name, const 
   LeaveBackstage();
   g_proj = Project();
   if (Image img; !picture.empty() && LoadPicture(picture, img)) {  // (the disc's arena picture: banner + loading screen)
-    g_proj.banner.Set(Resize(img, 256, 128));
     g_proj.load.Set(Resize(img, 1024, 512));
+    Image half = img;  // (halved step by step down to the banner: one bilinear step from 1024 wide would alias)
+    while (half.w >= 512 && half.h >= 256) half = Resize(half, half.w / 2, half.h / 2);
+    g_proj.banner.Set(Resize(half, 256, 128));
     Log("Banner and loading picture from " + Utf8(picture));
   }
   editor::Ring() = RingSpec();

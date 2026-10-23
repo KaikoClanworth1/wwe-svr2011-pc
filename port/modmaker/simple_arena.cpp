@@ -297,8 +297,10 @@ void StartFromDisc() {
     if (go) {
       const disc_list::Game* g = g_lone_file.empty() ? disc_list::GameByKey(g_disc_key) : nullptr;
       const std::string stem = Utf8(fs::path(got).stem().wstring());
+      const std::string scanned = port_page::EmbeddedName();  // (the game's own name of the arena, from the scan)
       const std::string name = !g_name_typed.empty() ? g_name_typed
                                : !g_lone_file.empty() ? stem
+                               : !scanned.empty()     ? scanned
                                                       : std::string(g ? g->name : "Arena") + " " + stem.substr(stem.rfind('_') + 1);
       const std::wstring picture = port_page::EmbeddedPicture();  // (the disc's picture: banner + loading screen)
       port_page::ClearEmbeddedResult();
