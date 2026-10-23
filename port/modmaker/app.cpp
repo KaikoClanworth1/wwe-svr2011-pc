@@ -2891,6 +2891,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--editor") && more) start_editor = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--editor-view") && more) start_view = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--open") && more) start_mod = argv[++i];
+    else if (!wcscmp(argv[i], L"--vs-test") && more) arena_page::SetVsTest(Utf8(argv[++i]));
     else if (!wcscmp(argv[i], L"--project") && more) project = argv[++i];
     else if (!wcscmp(argv[i], L"--behind")) behind = true, g_behind = true;
     else if (!wcscmp(argv[i], L"--test-report") && more) session::TestReport(Utf8(argv[++i]));  // <what happened>: Report a problem, no window, then quit

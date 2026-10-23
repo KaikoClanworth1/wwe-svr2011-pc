@@ -373,12 +373,25 @@ def svr2010_convert(disc, key, out, base=None, name=None, pac11=None, year='2010
             notes.append("the VS screen keeps %s's theme (it has no single 1024 x 512 background)" % BASE_NAMES[base])
     else:
         notes.append('no loading or VS picture (no VS theme for this arena on the disc)')
+    # its own VS screen: the disc's whole theme for this arena (vs_port.py; the game shows it in this arena's matches
+    # - games before vs/theme.pac keep the picture above)
+    vs_theme = None
+    if year == '2010' and not lone and pac11 and match:
+        try:
+            import vs_port
+            vs_port.cmd_theme('svr2010', disc.path, pac11, n, os.path.join(mod, 'vs', 'theme.pac'))
+            vs_theme = 'SvR 2010 %s' % show
+            notes[:] = [x for x in notes if not x.startswith('the VS screen keeps')]
+            notes.append("its own VS screen: SvR 2010's %s theme (vs/theme.pac)" % show)
+        except Exception as e:  # (the picture only - logged)
+            warnings.append('no own VS screen: %s' % e)
     if not os.listdir(os.path.join(mod, 'vs')):
         os.rmdir(os.path.join(mod, 'vs'))
 
     with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
         f.write('type=arena\nid=%s\nname=%s\nauthor=SvR %s arena %s, ported by port tools\nversion=1.0\nbase=%s\n'
-                % (mod_id, name, year, 'bg%02d' % n, BASE_NAMES[base]) + needs_line(arena, host_size))
+                % (mod_id, name, year, 'bg%02d' % n, BASE_NAMES[base]) + needs_line(arena, host_size)
+                + ('vs_theme=%s\n' % vs_theme if vs_theme else ''))
     progress(80, 'packing')
     import wwe13_pack
     svrmod = os.path.join(out, mod_id + '.svrmod')

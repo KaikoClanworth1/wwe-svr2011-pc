@@ -418,6 +418,7 @@ const ImVec4 kBad{1, 0.35f, 0.35f, 1};
 // ---------------------------------------------------------------- pages
 
 namespace arena_page { extern PageHooks hooks; void Tick(); void OpenEditor(int tile); void OpenModFile(const std::wstring& f);
+                       void SetVsTest(const std::string& spec);  // (--vs-test: the VS screen tab's steps, arena_page.cpp)
                        void TestInGame(); void SetTestSave(const std::wstring& f, int lib); void StartNew(int tile);
                        void StartBackstage(int area);
                        // a converted arena.pac as the arena project (host tile, name), into the 3D editor

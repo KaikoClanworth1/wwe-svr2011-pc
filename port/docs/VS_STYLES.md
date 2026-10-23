@@ -54,3 +54,23 @@ The scratchpad kit `vs/vs_shot2.ps1`:
 2. shots 2 s and 3.5 s later.
 
 It needs a private test game with real pac copies, never hard links into Game Files.
+
+## An arena mod's own VS screen
+
+An arena mod can carry its own theme, `vs/theme.pac`: an EPAC with group MENU and the entries VSTL / VSTI / VSTF (layout, pictures, font). The manifest records where it came from with `vs_theme=` (and `vs_font=`).
+
+- **The game:**
+  - At start, each mod's theme joins the overlay pac above as group `VA00`, `VA01`, ... (vs_styles.cpp, from `ArenaThemePacs()`).
+  - While that arena is chosen, the VS screen's existence check (`sub_826A17D0`) gets its path rewritten: `/MENU/M<nn>x` -> `/VA<k>/VSTx` (the same length). The game loads by that name right then, so no boot-time alias is needed.
+  - The arena's theme wins over VS SCREEN STYLE. Arena mods without one keep the picture swaps (`vs/<name>.dds`) on their base arena's theme.
+- **The converter:**
+  - `vs_port.py themes` lists every theme of a disc, or of 2011 itself (`--game svr2011 --src <2011 game>`), with a preview PNG.
+  - `theme` extracts one theme (an older game's layout rebuilt in 2011's shape, text lines at 2011's places).
+  - `parts` / `replace` list the pictures and put a PNG into one of them (its size and DXT format, mips, the game's compression).
+  - `font` takes the font of another theme.
+  - `arena_port.py` (SvR 2010 discs) gives a converted arena its own 2010 theme.
+- **The Mod Maker:**
+  - Arena > VS screen: "Pick a theme..." (the 2011 game and the SvR 2008 - 2010 discs from My game discs, previews), "Font from another theme...", "Back to the slot's theme", and Replace on any picture.
+  - Making the mod bakes the replaced pictures into `vs/theme.pac`.
+  - An opened mod keeps its id, and its `arena.pac` as it was unless the arena was edited.
+  - Test aid: `--vs-test "theme=<game>,<src>,<n>[,<label>];font=...;replace=<picture>,<png>;version=<v>;save=<file>"` (with `--open <mod>`).

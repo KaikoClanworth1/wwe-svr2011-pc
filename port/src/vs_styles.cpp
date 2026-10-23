@@ -35,6 +35,7 @@
 #include <rex/system/xmemory.h>
 
 #include "../modmaker/svrfmt/pac.h"
+#include "arena_mods.h"
 #include "superstar_mods.h"
 
 REXCVAR_DEFINE_STRING(vs_style, "", "UI",
@@ -95,7 +96,8 @@ void InstallVsStyles(rex::memory::Memory* memory) {
     if (e.is_directory() && !fs::exists(e.path() / "disabled", ec) && fs::exists(e.path() / "vs.pac", ec) &&
         ManifestValue(e.path() / "manifest.txt", "type") == "VsStyle")
       folders.push_back(e.path());
-  if (folders.empty()) return;
+  const auto arenas = ArenaThemePacs();  // (arena mods' own themes: groups VA00 ...)
+  if (folders.empty() && arenas.empty()) return;
   std::sort(folders.begin(), folders.end());
   // The overlay: rebuilt when a style's vs.pac changed (its size and time, in vsstyles.pac.src)
   const fs::path out = Game() / "Mods" / "SuperstarOverlay" / "vsstyles.pac";
@@ -103,6 +105,9 @@ void InstallVsStyles(rex::memory::Memory* memory) {
   for (const auto& f : folders)
     stamp += f.filename().string() + "|" + std::to_string((unsigned long long)fs::file_size(f / "vs.pac", ec)) +
              "|" + std::to_string((long long)fs::last_write_time(f / "vs.pac", ec).time_since_epoch().count()) + "\n";
+  for (const auto& [id, file] : arenas)
+    stamp += "arena " + id + "|" + std::to_string((unsigned long long)fs::file_size(file, ec)) + "|" +
+             std::to_string((long long)fs::last_write_time(file, ec).time_since_epoch().count()) + "\n";
   std::string old;
   if (FILE* t = std::fopen((out.string() + ".src").c_str(), "rb")) {
     char b[4096];
@@ -141,7 +146,32 @@ void InstallVsStyles(rex::memory::Memory* memory) {
     g_list.push_back({s.folder, s.name});
     g_styles.push_back(std::move(s));
   }
-  if (g_styles.empty()) return;
+  int arena_groups = 0;
+  for (const auto& [id, file] : arenas) {
+    svrfmt::Bytes d;
+    svrfmt::Epac e;
+    if (!svrfmt::ReadFile(file, d) || !svrfmt::EpacRead(d, e)) {
+      REXLOG_WARN("[svr2011] VS styles: arena mod {} - its vs/theme.pac unreadable, left out", id);
+      continue;
+    }
+    char group[8];
+    std::snprintf(group, sizeof group, "VA%02d", arena_groups);
+    svrfmt::EpacGroup g;
+    g.type = group;
+    for (auto& eg : e.groups)
+      for (auto& en : eg.entries)
+        if (en.name == "VSTL" || en.name == "VSTI" || en.name == "VSTF") g.entries.push_back(std::move(en));
+    if (g.entries.size() != 3) {
+      REXLOG_WARN("[svr2011] VS styles: arena mod {} - its vs/theme.pac isn't a VS theme, left out", id);
+      continue;
+    }
+    if (merged.header.empty()) merged.header = e.header;
+    if (rebuild) merged.groups.push_back(std::move(g));
+    SetArenaThemeGroup(id, group);
+    REXLOG_INFO("[svr2011] VS styles: arena mod {} has its own VS screen ({})", id, group);
+    ++arena_groups;
+  }
+  if (g_styles.empty() && !arena_groups) return;
   if (rebuild) {
     svrfmt::Bytes o = svrfmt::EpacWrite(merged);
     uint32_t toc = 0;  // (header +4: the directory's size)
@@ -151,6 +181,7 @@ void InstallVsStyles(rex::memory::Memory* memory) {
     if (!svrfmt::WriteFile(out.string(), o)) {
       REXLOG_WARN("[svr2011] VS styles: can't write {}", out.string());
       g_styles.clear(), g_list.clear();
+      for (const auto& a : arenas) SetArenaThemeGroup(a.first, "");  // (no group to point at)
       return;
     }
     if (FILE* t = std::fopen((out.string() + ".src").c_str(), "wb")) {

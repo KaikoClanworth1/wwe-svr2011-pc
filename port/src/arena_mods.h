@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace rex::memory {
@@ -22,6 +23,11 @@ void InstallArenaMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileS
 
 // The arena select page label (an ImGui overlay).
 void InstallArenaModsOverlay(rex::ui::ImGuiDrawer* drawer);
+
+// The arena mods with their own VS theme (vs/theme.pac): {id, file} - vs_styles.cpp merges them into its overlay
+// pac and gives each its group ("VA00" ...), used on the VS screen while that arena is chosen.
+std::vector<std::pair<std::string, std::string>> ArenaThemePacs();
+void SetArenaThemeGroup(const std::string& id, const std::string& group);
 
 // Serve <game folder>/<relative_file> whenever the game opens arena BGnn
 // (empty: back to the original). Takes effect at the next open (arenas are
