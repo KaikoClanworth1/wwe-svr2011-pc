@@ -2703,11 +2703,12 @@ void ApplyWeapons(uint8_t* base) {
 
 // The crowd area's weapons (crowd_fight.h): with the crowd area open, the rule's placed list gets these too -
 // on the floor behind the barricade (SvR 2008's crowd area: barricade z -85, outer wall z -112), fixed places (every
-// game of an online match places the same: lockstep). Models the Extreme Rules load list has.
+// game of an online match places the same: lockstep). Models every Extreme Rules match makes: chairs, and the trash can
+// and guitar of its nine (OPTIONS -> WEAPONS picks: the chosen ones in their place, as WEAPONS EVERYWHERE's).
 constexpr Placed kPlacedCrowd[] = {
     {4, 1, -30.f, 0.f, -97.f, 20.f},   // a chair
     {63, 1, 0.f, 0.f, -98.f, 0.f},     // a trash can
-    {88, 1, 28.f, 0.f, -96.f, 80.f},   // a kendo stick
+    {89, 1, 28.f, 0.f, -96.f, 80.f},   // a guitar
     {4, 1, 60.f, 0.f, -100.f, 140.f},  // a chair by the stands
 };
 struct {
@@ -2724,16 +2725,17 @@ void RestoreCrowdWeapons(uint8_t* base) {
 
 void AddCrowdWeapons(uint8_t* base) {
   RestoreCrowdWeapons(base);
-  if (!g_memory || !svr2011::CrowdAreaFor(base)) return;
+  // (not with WEAPONS EVERYWHERE's list in: on top of it a quit crashed in the placing, sub_821C1F20)
+  if (!g_memory || g_swapped.entry || !svr2011::CrowdAreaFor(base)) return;
   const uint32_t rule = base[0x82E3DE00];
   const uint32_t entry = WeaponEntry(base, rule);
   if (!entry) return;
   const uint32_t n = Rd32(base + entry), records = Rd32(base + entry + 4);
   constexpr uint32_t k = uint32_t(std::size(kPlacedCrowd)), kMax = 64;
-  if (!records || n > kMax) return;
+  if ((n && !records) || n > kMax) return;  // (Extreme Rules' own list is empty: ours alone)
   if (!g_crowd_records) g_crowd_records = g_memory->SystemHeapAlloc((kMax + k) * 28);
   if (!g_crowd_records) return;
-  std::memcpy(base + g_crowd_records, base + records, size_t(n) * 28);
+  if (n) std::memcpy(base + g_crowd_records, base + records, size_t(n) * 28);
   for (uint32_t i = 0; i < k; ++i) {
     uint8_t* r = base + g_crowd_records + (n + i) * 28;
     const Placed& w = kPlacedCrowd[i];
@@ -2741,7 +2743,7 @@ void AddCrowdWeapons(uint8_t* base) {
     WrF(r + 12, 0.f), WrF(r + 16, w.yaw), WrF(r + 20, 0.f);
     r[24] = uint8_t(15010 >> 8), r[25] = uint8_t(15010 & 0xFF);  // (motion: lying)
     r[26] = w.place;
-    r[27] = w.model;
+    r[27] = uint8_t(svr2011::ExtremeWeaponsPlacedModel(int(n + i), w.model));
   }
   g_crowd_swapped = {entry, n, records};
   Wr32(base + entry, n + k);
@@ -2753,11 +2755,12 @@ void AddCrowdWeapons(uint8_t* base) {
 REX_EXTERN(__imp__sub_8227B938);
 REX_HOOK_RAW(sub_8227B938) {
   ApplyWeapons(base);
-  AddCrowdWeapons(base);  // (after: on top of WEAPONS EVERYWHERE's list too)
+  AddCrowdWeapons(base);
   if (g_swapped.entry) REXLOG_INFO("match types: WEAPONS EVERYWHERE - the weapons are made");
   svr2011::ExtremeWeaponsMaking(base, true, ctx);  // (the Extreme Rules weapons as chosen: weapons_page.h)
   __imp__sub_8227B938(ctx, base);
   svr2011::ExtremeWeaponsMaking(base, false, ctx);
+  RestoreCrowdWeapons(base);
   RestoreWeapons(base);
 }
 
@@ -2765,8 +2768,10 @@ REX_HOOK_RAW(sub_8227B938) {
 REX_EXTERN(__imp__sub_8227D130);
 REX_HOOK_RAW(sub_8227D130) {
   ApplyWeapons(base);
+  AddCrowdWeapons(base);
   __imp__sub_8227D130(ctx, base);
   svr2011::ExtremeWeaponsPlaced(base, g_memory);  // (the stock under the ring: the chosen weapons - weapons_page.h)
+  RestoreCrowdWeapons(base);
   RestoreWeapons(base);
 }
 
