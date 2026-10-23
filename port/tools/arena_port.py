@@ -69,11 +69,8 @@ KNOWN_CRASHES = {
     ('wwe2k14', 'bg00'): 'crashes at load - 2 of 2 runs, open',
     ('wwe2k14', 'bg12'): 'crashes at load (object motion loader, lr 826AEF18) - 3 of 3 runs, open',
     ('wwe2k14', 'bg17'): 'crashes at load (lr 82188A00) - 3 of 3 runs, open',
-    # (15 Oct: more 3D detail than any 2011 arena - 78,935-91,476 vertices vs the stock 65,450: crashed at load,
-    # lr 8215A008; svrmod wwe13 now refuses them, svrfmt/arena.h kMaxArenaVerts)
-    ('wwe2k16', 'bg06'): 'more 3D detail than SvR 2011 can load (crashes at load)',
-    ('wwe2k16', 'bg12'): 'more 3D detail than SvR 2011 can load (crashes at load)',
-    ('wwe2k16', 'bg15'): 'more 3D detail than SvR 2011 can load (crashes at load)',
+    # (WWE 2K16 bg06 / bg12 / bg15, 78,935-91,476 vertices against the stock 65,450, crashed at load until 2.1.6:
+    # the stage's heap, now given fallback memory - they convert with needs=2.1.6, svrfmt/arena.h)
 }
 
 
@@ -152,7 +149,40 @@ MOTION_BANK = 0x7922
 # shell (rin_tb10) that 2011 draws over the pad - the "white turnbuckles". 2011 RAW's covers are the
 # same black logo pads with no shell, on the same ring.
 HOST_COVERS = (0x3C4, 0x3C5, 0x3C6, 0x3C7)
-MAX_ARENA = 9_400_000  # bytes: the smaller 2011 hosts (a bigger file can run out of the arena heap)
+MAX_ARENA = 9_400_000  # bytes: the smaller 2011 hosts (until 2.1.6 a bigger file than its slot's crashed)
+# Since 2.1.6 an arena may be bigger than its slot's shipped file (the game reads its stage at its own size:
+# src/arena_mods.cpp) - up to ARENA_FILE_MAX (tested 18.1 MB) - and hold more 3D detail than 2011's own (STOCK_VERTS;
+# src/ring_rules.cpp): such an arena says needs=model_budget.NEEDS_VERSION, older games crash loading it.
+ARENA_FILE_MAX = 17 << 20
+STOCK_VERTS = 65450
+
+
+def stage_vertices(data):
+    """every JBOY model's vertices in an arena pac's STG entries"""
+    import jboy
+    n = 0
+    for typ, ents in svrfmt.epac_read(data)[1]:
+        if typ != b'STG ':
+            continue
+        for _, blob in ents:
+            if blob[:4] != b'PACH':
+                continue
+            for _, cb in svrfmt.pach_read(blob):
+                raw = svrfmt.bpe_decode(cb) if cb[:4] == b'BPE ' else cb
+                if raw[:4] == b'JBOY':
+                    try:
+                        n += sum(len(s.verts) for s in jboy.read(raw).meshes)
+                    except Exception:  # noqa: BLE001
+                        pass
+    return n
+
+
+def needs_line(data, host_size):
+    """the manifest's needs= line for an arena bigger than its slot's file or with more 3D detail ('' when neither)"""
+    import model_budget
+    if len(data) > host_size or stage_vertices(data) > STOCK_VERTS:
+        return 'needs=%s\n' % model_budget.NEEDS_VERSION
+    return ''
 
 
 class BadInput(Exception):
@@ -278,8 +308,10 @@ def svr2010_convert(disc, key, out, base=None, name=None, pac11=None, year='2010
     arena = disc.read(path)
     if arena[:4] != b'EPAC':
         raise RuntimeError('%s: not an EPAC arena' % path)
-    if len(arena) > MAX_ARENA:
-        warnings.append('the arena file is %d bytes; 2011 hosts hold about 9.0-9.6 MB' % len(arena))
+    host_size = os.path.getsize(find_host(pac11, base)) if pac11 else MAX_ARENA
+    if len(arena) > host_size:
+        notes.append('the arena file is %d bytes, bigger than its slot\'s (%d): it needs version 2.1.6 or newer'
+                     % (len(arena), host_size))
     mod = os.path.join(out, mod_id)
     os.makedirs(os.path.join(mod, 'vs'), exist_ok=True)
     # (its motion bank lacks 2011's motion 500, the ring announcer's intro: 2011 RAW's in its place)
@@ -346,7 +378,7 @@ def svr2010_convert(disc, key, out, base=None, name=None, pac11=None, year='2010
 
     with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
         f.write('type=arena\nid=%s\nname=%s\nauthor=SvR %s arena %s, ported by port tools\nversion=1.0\nbase=%s\n'
-                % (mod_id, name, year, 'bg%02d' % n, BASE_NAMES[base]))
+                % (mod_id, name, year, 'bg%02d' % n, BASE_NAMES[base]) + needs_line(arena, host_size))
     progress(80, 'packing')
     import wwe13_pack
     svrmod = os.path.join(out, mod_id + '.svrmod')
@@ -591,7 +623,9 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         g = [(gb[0][0], [(gb[0][1][0][0], svrfmt.pach_write(sorted(e.items())))])] + list(gb[1:])
         return svrfmt.epac_write(hb, g, tb)
 
-    budget = len(host)
+    # (bigger than the host - needs= in the manifest - only when the stage is the pac's last entry: the game reads
+    # every entry at the place the host had it, so only the file's end may move)
+    budget = max(len(host), ARENA_FILE_MAX) if len(gb) == 1 else len(host)
     progress(16, 'fitting the textures into the %s file' % BASE_NAMES[base])
     data = build(ents[0x190])
     raw = svrfmt.bpe_decode(ents[0x190])
@@ -657,7 +691,7 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         os.rmdir(os.path.join(mod, 'vs'))
     with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
         f.write('type=arena\nid=%s\nname=%s\nauthor=%s arena bg%02d, ported by port tools\nversion=1.0\nbase=%s\n'
-                % (mod_id, name, label, n, BASE_NAMES[base]))
+                % (mod_id, name, label, n, BASE_NAMES[base]) + needs_line(data, len(host)))
     progress(92, 'packing the mod')
     import wwe13_pack
     svrmod = os.path.join(out, mod_id + '.svrmod')

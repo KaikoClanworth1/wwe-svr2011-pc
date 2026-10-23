@@ -448,6 +448,15 @@ int Wwe13(int argc, char** argv) {
     std::printf("\n");
   }
   std::printf("wrote %s: %.2f MB (host %.2f MB)\n", argv[4], out.size() / 1048576.0, h.size() / 1048576.0);
+  {  // (what the Arena page's save writes in the manifest for it: svrfmt/arena.h ArenaNeedsNew)
+    Arena a, host;
+    if (a.LoadData(out) && host.LoadData(h)) {
+      a.original_file = host.original_file;
+      const ArenaGeometry g = GeometryOf(a);
+      std::printf("geometry %zu vertices %zu indices; needs: %s\n", g.verts, g.indices,
+                  ArenaNeedsNew(a, out.size()) ? "yes (a newer game: needs=)" : "no");
+    }
+  }
   return 0;
 }
 

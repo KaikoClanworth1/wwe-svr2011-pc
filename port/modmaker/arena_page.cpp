@@ -254,6 +254,7 @@ bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
   if (const int grown = GrowVisibility(*job.arena))  // (moved / turned objects: svrfmt/arena.h)
     Log("  " + std::to_string(grown) + " visibility boxes grown to hold moved objects.");
   Progress("Fitting the arena into the game's room ...");
+  job.arena->file_max = kArenaFileMax;  // (bigger than shipped: needs= below - only when the stage is the pac's last entry)
   const auto halved = job.arena->FitFile(job.keep);
   if (!halved.empty())
     Log("  " + std::to_string(halved.size()) + " textures halved to fit the game's room for this arena.");
@@ -261,6 +262,11 @@ bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
   std::string err;
   Bytes pac = job.arena->Save(&err);
   if (!err.empty()) { Status("error: " + err); return false; }
+  if (ArenaNeedsNew(*job.arena, pac.size())) {  // (bigger than shipped / more 3D detail: svrfmt/arena.h)
+    job.manifest += std::string("needs=") + kNeedsVersion + "\n";
+    Log(std::string("  The arena is bigger than its slot's or holds more 3D detail than the game's own: it needs version ") +
+        kNeedsVersion + " or newer (older ones crash loading it).");
+  }
   files.push_back({"manifest.txt", Bytes(job.manifest.begin(), job.manifest.end())});
   AddModProject(files, job.project);
   files.push_back({"arena.pac", std::move(pac)});

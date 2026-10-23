@@ -33,9 +33,14 @@ KEEP_ALL = (-1e9, 1e9, -1e9, 1e9)
 # physical window (allocator 128, 0x15140000-0x16230000); a full shipped-size bundle with six rooms' props
 # ran it out at load (sub_82914DD0 null in sub_826E73F8)
 TEX_BUDGET = 3500 * 1024
+# Since 2.1.6 the game reads a stage entry at its own size (src/arena_mods.cpp) and gives the stage's memory fallback
+# memory (src/model_mem.cpp, ring_rules.cpp): a world whose stage is bg78's last entry (it is: STG/0078) may be bigger
+# than the shipped file - up to ARENA_FILE_MAX (svrfmt/arena.h kArenaFileMax, tools/arena_port.py) - and keep its
+# textures whole (tex_budget=None, the default); the world's manifest then says needs= (build_world.py).
+ARENA_FILE_MAX = 17 << 20
 
 
-def build(p78, out_path, rooms, margin=64 * 1024, report=False, tex_budget=TEX_BUDGET):
+def build(p78, out_path, rooms, margin=64 * 1024, report=False, tex_budget=None):
     """rooms: [(fake56 path, (dx, dz), footprint or None)] -> {log, areas: (x0, x1, z0, z1) per room,
     starts: each room's first triangle in HMD 1004 (before stage_wrap's dummies), triangles: their count}"""
     log = []
@@ -130,6 +135,12 @@ def build(p78, out_path, rooms, margin=64 * 1024, report=False, tex_budget=TEX_B
             tot += {400: len(b400), s8.PARK_HMD: len(hmd), s8.PARK_INDEX: len(idx), 50001: len(flags)}.get(i, len(u))
         return tot + sum(len(r) for r in model_raw.values())
 
+    # (bigger than shipped only when the stage is the pac's last entry - the game reads every entry at the place the
+    # shipped file had it, so only the file's end may move - and no tex_budget was asked for)
+    grow = tex_budget is None and gi == len(g78) - 1 and ei == len(g78[gi][1]) - 1
+    unpacked_max = max(orig_unpacked, ARENA_FILE_MAX) if grow else orig_unpacked
+    file_max = max(orig_file, ARENA_FILE_MAX) if grow else orig_file
+
     def halve_one():
         def tier(n):
             w, hh, _, _ = s8.dds_info(add[n])
@@ -144,7 +155,10 @@ def build(p78, out_path, rooms, margin=64 * 1024, report=False, tex_budget=TEX_B
 
     while True:
         b400 = bundle()
-        if len(b400) <= min(orig_400 - margin, tex_budget) and unpacked_total(b400) <= orig_unpacked - margin:
+        if grow and unpacked_total(b400) <= unpacked_max - margin:
+            break
+        if not grow and len(b400) <= min(orig_400 - margin, tex_budget or TEX_BUDGET) and \
+                unpacked_total(b400) <= orig_unpacked - margin:
             break
         if not halve_one():
             raise SystemExit('cannot fit the textures')
@@ -161,7 +175,7 @@ def build(p78, out_path, rooms, margin=64 * 1024, report=False, tex_budget=TEX_B
         groups = [(typ, list(ents)) for typ, ents in g78]
         groups[gi][1][ei] = (groups[gi][1][ei][0], f.pach_write(entries))
         data = f.epac_write(h78, groups, t78)
-        if len(data) <= orig_file - margin:
+        if len(data) <= file_max - margin:
             break
         if not halve_one():
             raise SystemExit('cannot fit the file')
@@ -175,7 +189,7 @@ def build(p78, out_path, rooms, margin=64 * 1024, report=False, tex_budget=TEX_B
                f'file {len(data)} / {orig_file}')
     if report:
         print('\n'.join(log))
-    return dict(log=log, areas=areas, starts=starts, triangles=len(rec))
+    return dict(log=log, areas=areas, starts=starts, triangles=len(rec), file=len(data), orig_file=orig_file)
 
 
 if __name__ == '__main__':
