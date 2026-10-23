@@ -35,8 +35,9 @@ const simple::Step kSteps[kSaCount] = {
     {"Finish", "Check everything, then save your arena or put it in the game."},
 };
 
-// The games with arenas the converters take (arena_port.py `games`: SvR 2007 - 2010 ready, WWE '12 - 2K17 native).
-const char* const kArenaGames[] = {"svr2007", "svr2008", "svr2009", "svr2010", "wwe12", "wwe13", "wwe2k14", "wwe2k15", "wwe2k16", "wwe2k17"};
+// The games with arenas the converters take (arena_port.py `games`: SvR 2007 - 2010 and Legends of WrestleMania ready,
+// WWE '12 - 2K17 native).
+const char* const kArenaGames[] = {"svr2007", "svr2008", "svr2009", "svr2010", "low", "wwe12", "wwe13", "wwe2k14", "wwe2k15", "wwe2k16", "wwe2k17"};
 bool NativeGame(const std::string& key) { return key.rfind("wwe", 0) == 0; }
 
 int g_start_mode = -1;      // 0 an arena in the game, 1 from my other games, 2 an empty hall
@@ -257,7 +258,7 @@ void StartFromDisc() {
   }
   if (!n && choosing) ImGui::TextColored(kWarn, "None of your games with arenas is in My game discs yet.");
   if (missing && choosing) {
-    ImGui::TextDisabled("%d more game%s with arenas can be added (SvR 2007 - 2010, WWE '12 - 2K17).", missing, missing == 1 ? "" : "s");
+    ImGui::TextDisabled("%d more game%s with arenas can be added (SvR 2007 - 2010, Legends of WrestleMania, WWE '12 - 2K17).", missing, missing == 1 ? "" : "s");
     ImGui::SameLine();
     if (ImGui::SmallButton("My game discs...")) GoTo(PageId::kDiscs);
   }

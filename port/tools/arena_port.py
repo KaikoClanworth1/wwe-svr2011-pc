@@ -46,6 +46,7 @@ GAMES = [
     {'id': 'svr2007', 'name': "WWE SmackDown vs. Raw 2007", 'platform': 'x360', 'disc_hint': '545107E0', 'status': 'ready'},
     {'id': 'svr2008', 'name': "WWE SmackDown vs. Raw 2008", 'platform': 'x360', 'disc_hint': '5451080B', 'status': 'ready'},
     {'id': 'svr2009', 'name': "WWE SmackDown vs. Raw 2009", 'platform': 'x360', 'disc_hint': '54510826', 'status': 'ready'},
+    {'id': 'low', 'name': "WWE Legends of WrestleMania", 'platform': 'x360', 'disc_hint': '54510838', 'status': 'ready'},
     {'id': 'svr2010', 'name': "WWE SmackDown vs. Raw 2010", 'platform': 'x360', 'disc_hint': '54510844', 'status': 'ready'},
     {'id': 'wwe12', 'name': "WWE '12", 'platform': 'x360', 'disc_hint': '54510890', 'status': 'native'},
     {'id': 'wwe13', 'name': "WWE '13", 'platform': 'x360', 'disc_hint': '545108B4', 'status': 'native'},
@@ -126,6 +127,14 @@ SVR2009 = {
     13: ('Judgment Day', 13), 14: ('Night of Champions', 14), 15: ('The Great American Bash', 15),
     16: ('One Night Stand', None), 17: ('Cyber Sunday', None), 18: ('Vengeance', None),
 }
+# Legends of WrestleMania (SvR 2009's arena format): arena number -> (show, 2011 arena of that show) - names from its
+# string.pac SDB 0100 (674 + n - 200: WrestleMania I - XV), bg216 = MatchHD M D8 I's logoRR08, bg219 its Rumble-match
+# copy (the same textures); bg223 / 224 / 225 / 250 are its Create Moves / prop check / approval stages (not listed).
+# None of them is in 2011: LOW_BASE is the slot each plays as.
+LOW = {**{200 + k: ('WrestleMania %s' % r, None) for k, r in enumerate(
+    'I 2 III IV V VI VII VIII IX X XI XII 13 XIV XV'.split(), 1)},
+    **{216: ('Royal Rumble 2008', None), 219: ('Royal Rumble 2008 (Rumble match)', None)}}
+LOW_BASE = {**{n: 11 for n in range(201, 216)}, 216: 9, 219: 9}
 # SvR 2007: stage number -> (show, 2011 arena of that show). Its arenas are
 # entries STG<k>/00NN of pac/bg/bg<k>.pac (k = NN // 10); 0020+ are copies.
 SVR2007 = {
@@ -497,8 +506,9 @@ def svr2008_list(disc, table=None):
 
 
 def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008'):
-    table = {'svr2009': SVR2009, 'svr2007': SVR2007}.get(game, SVR2008)
+    table = {'svr2009': SVR2009, 'svr2007': SVR2007, 'low': LOW}.get(game, SVR2008)
     year = game[3:]
+    label = 'Legends of WrestleMania' if game == 'low' else 'SvR %s' % year
     warnings, notes, dropped = [], [], []
     try:
         n = int(key[2:]) if key.lower().startswith('bg') else int(key)
@@ -506,15 +516,16 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         raise BadInput('item %r: expected bgNN' % key)
     lone = getattr(disc, 'lone', False)
     if n not in table and not lone:
-        raise BadInput('item %r: not an arena of SvR %s (story copies are left out)' % (key, year))
+        raise BadInput('item %r: not an arena of %s (story copies are left out)' % (key, label))
     if not pac11:
         raise BadInput('SvR 2007 - 2009 arenas need --pac11 <SvR 2011 game folder> (crowd and table pictures)')
     show, in11 = table.get(n, ('Arena bg%02d' % n, None))
     if base is None:
-        base = in11 if in11 is not None else (n if n in BASE_NAMES else 3)
+        base = in11 if in11 is not None else LOW_BASE.get(n) if game == 'low' else (n if n in BASE_NAMES else 3)
+        base = 3 if base is None else base
     if base not in BASE_NAMES:
         raise BadInput('base %r: 0-19' % base)
-    name = name or '%s (SvR %s)' % (show, year)
+    name = name or ('%s (LoW)' % show if game == 'low' else '%s (SvR %s)' % (show, year))
     mod_id = game + '_' + ''.join(c if c.isalnum() else '_' for c in show.lower()).strip('_')
     progress(3, 'reading bg%02d' % n)
     # the file's layout and size budget: the base slot's arena; the borrowed entries (crowd,
@@ -556,7 +567,7 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         # 0.6x - and blew the black turnbuckle pads out to cream in 2011. With SvR 2008's or 2009's
         # set 10 some arenas crashed ~10 s into a match in the code that reads it (sub_822A6BD8,
         # lr 822A6EE8: 2008 bg04 / bg06 / bg07, 2009 bg09 / bg17, run to run): RAW's)
-        added = fill_lights(bank, light_bank(unp(eb[0x7530])), replace=(10,) if game in ('svr2008', 'svr2009') else ())
+        added = fill_lights(bank, light_bank(unp(eb[0x7530])), replace=(10,) if game in ('svr2008', 'svr2009', 'low') else ())
         if added:
             ents[0x7530] = ymks.write_bank(bank)
             notes.append('light sets the game needs, from 2011 RAW: ' + ', '.join(map(str, added)))
@@ -617,7 +628,7 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     art = None
     if disc.exists('pac/menu/MatchHD.pac'):
         best = 0
-        for nm, dds in group_textures(disc.read('pac/menu/MatchHD.pac'), 'M%02dI' % n):
+        for nm, dds in group_textures(disc.read('pac/menu/MatchHD.pac'), ('M%02XI' if game == 'low' else 'M%02dI') % n):
             try:
                 im = image(dds)
             except Exception:
@@ -645,15 +656,15 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     if not os.listdir(os.path.join(mod, 'vs')):
         os.rmdir(os.path.join(mod, 'vs'))
     with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
-        f.write('type=arena\nid=%s\nname=%s\nauthor=SvR %s arena bg%02d, ported by port tools\nversion=1.0\nbase=%s\n'
-                % (mod_id, name, year, n, BASE_NAMES[base]))
+        f.write('type=arena\nid=%s\nname=%s\nauthor=%s arena bg%02d, ported by port tools\nversion=1.0\nbase=%s\n'
+                % (mod_id, name, label, n, BASE_NAMES[base]))
     progress(92, 'packing the mod')
     import wwe13_pack
     svrmod = os.path.join(out, mod_id + '.svrmod')
     old = sys.stdout
     sys.stdout = sys.stderr
     try:
-        wwe13_pack.pack(mod, svrmod, 'Port tools (SvR %s)' % year)
+        wwe13_pack.pack(mod, svrmod, 'Port tools (%s)' % label)
     finally:
         sys.stdout = old
     if in11 is None:
@@ -898,7 +909,8 @@ def named_list(disc, game, src, items, cache_root=None, scan=False):
     return items, cache.get('scanned', False)
 
 
-FAMILY = {'svr2007': 'svr2007', 'svr2008': 'svr2008', 'svr2009': 'svr2008', 'svr2010': 'svr2010', 'svr2011': 'svr2010'}
+FAMILY = {'svr2007': 'svr2007', 'svr2008': 'svr2008', 'svr2009': 'svr2008', 'low': 'svr2008', 'svr2010': 'svr2010',
+          'svr2011': 'svr2010'}
 LONE_MAGICS = (b'EPAC', b'EPK8', b'HSPC', b'DPAC', b'DPK8', XCOMPRESS)
 
 
@@ -1036,7 +1048,7 @@ def main(argv):
                                'folder, the ISO or one arena pac)')
             if a.cmd in ('list', 'scan'):
                 lists = {'svr2010': svr2010_list, 'svr2008': svr2008_list,
-                         'svr2009': lambda d: svr2008_list(d, SVR2009),
+                         'svr2009': lambda d: svr2008_list(d, SVR2009), 'low': lambda d: svr2008_list(d, LOW),
                          'svr2007': lambda d: svr2008_list(d, SVR2007)}
                 items = lists.get(game_id, bg_list)(disc)
                 if game_id in NATIVE_GAMES:
@@ -1050,7 +1062,7 @@ def main(argv):
                 print(json.dumps(rep))
                 return 3
             os.makedirs(a.out, exist_ok=True)
-            if game_id in ('svr2007', 'svr2008', 'svr2009'):
+            if game_id in ('svr2007', 'svr2008', 'svr2009', 'low'):
                 rep = svr2008_convert(disc, item, a.out, a.pac11, a.base, a.name, game_id)
             else:
                 rep = svr2010_convert(disc, item, a.out, a.base, a.name, a.pac11, '2011' if game_id == 'svr2011' else '2010')
