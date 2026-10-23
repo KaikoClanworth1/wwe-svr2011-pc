@@ -24,6 +24,7 @@
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
 
+#include "arena_mods.h"
 #include "caw_limits.h"
 #include "mem_trace.h"
 #include "generated/default/svr2011_init.h"
@@ -250,6 +251,18 @@ REX_EXTERN(__imp__sub_826A1C70);
 REX_HOOK_RAW(sub_826A1C70) {
   const bool loader = uint32_t(ctx.lr) == 0x826A1F1C;  // (sub_826A1D38's file read: r31 = the request)
   if (loader) t_request = ctx.r31.u32;
+  // A redirected arena's stage entry is read at the served file's size, not the mounted directory's (the shipped
+  // file's): request +44 = size / 0x100, which this buffer and the read take (arena_mods.h ServedStageUnits).
+  if (loader) {
+    const std::string name = GuestName(base, t_request + 50);
+    if (const uint32_t units = svr2011::ServedStageUnits(name.c_str()); units && units != Rd32(base, t_request + 44)) {
+      REXLOG_INFO("[svr2011] arena mods: {} read at {} bytes (the directory says {})", name, uint64_t(units) << 8,
+                  uint64_t(Rd32(base, t_request + 44)) << 8);
+      uint8_t* p = base + t_request + 44;
+      p[0] = uint8_t(units >> 24), p[1] = uint8_t(units >> 16), p[2] = uint8_t(units >> 8), p[3] = uint8_t(units);
+      ctx.r3.u64 = uint64_t(units) << 8;  // (the buffer's size: the caller read it from +44 already)
+    }
+  }
   __imp__sub_826A1C70(ctx, base);
   if (loader) t_request = 0;
 }
