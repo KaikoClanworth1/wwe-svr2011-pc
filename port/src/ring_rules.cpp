@@ -162,6 +162,16 @@ REX_HOOK_RAW(sub_8269A8D8) {
         ctx.r3.u64 = p;
         return;
       }
+    // (the stage's heap full - an arena with more 3D detail than the game's own: caw_limits.h kStageHeap)
+    if (heap == svr2011::kStageHeap && svr2011::BigModelMemory())
+      if (const uint32_t p = svr2011::FallbackBlock(size, true)) {
+        ctx.r3.u64 = p;
+        static int told = 0;
+        if (told++ < 5 || told % 200 == 0)
+          REXLOG_INFO("[svr2011] model memory: the stage's heap ({}) full - {} bytes from the fallback memory ({} so)",
+                      heap, size, told);
+        return;
+      }
   }
   if (!g_heap_log) return;
   static bool listed = false;

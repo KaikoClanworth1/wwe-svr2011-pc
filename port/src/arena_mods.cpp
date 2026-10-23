@@ -89,6 +89,40 @@ int g_number_for[100];        // arena number -> the number a match there plays 
 // as its base arena (FollowCursor), whose file is the custom one
 int g_plays_as[100];
 std::string g_default[100];   // arena number -> its file when no custom arena is on its tile (media mods: screens)
+// The served file's STG entries whose size differs from the shipped file's (RedirectArena): the game reads an entry
+// with the size its pac directory had when the pacs were mounted - the shipped file's (or plist360.arc's) - so a
+// bigger stage was read cut short (its end left out: a crash 6 s into the match) and a smaller one read past its end.
+// The file loader's read (model_mem.cpp) takes the served size instead (ServedStageUnits).
+struct StgEntry {
+  char name[5];
+  uint32_t sector, units;  // (units: size / 0x100, as the pac table and the loader's request keep it)
+};
+std::mutex g_stg_mutex;
+std::vector<StgEntry> g_served_stg[100];
+
+// The STG group's entries of an EPAC's first 0x4000 bytes (with each entry's offset in `head`).
+std::vector<std::pair<StgEntry, size_t>> StgEntries(const char* head, size_t n) {
+  std::vector<std::pair<StgEntry, size_t>> out;
+  if (n < 0x4000 || std::memcmp(head, "EPAC", 4)) return out;
+  for (size_t p = 0x800; p + 12 <= n;) {
+    if (!head[p] && !head[p + 1] && !head[p + 2] && !head[p + 3]) break;
+    uint32_t words;
+    std::memcpy(&words, head + p + 4, 4);  // (little-endian)
+    const bool stg = !std::memcmp(head + p, "STG ", 4);
+    const size_t count = (words & 0xFFFF) / 3;
+    p += 12;
+    for (size_t e = 0; e < count && p + 12 <= n; ++e, p += 12) {
+      if (!stg) continue;
+      StgEntry s{};
+      std::memcpy(s.name, head + p, 4);
+      std::memcpy(&s.sector, head + p + 4, 4);
+      std::memcpy(&s.units, head + p + 8, 4);
+      out.push_back({s, p});
+    }
+    if (stg) break;
+  }
+  return out;
+}
 
 std::string Upper(std::string s) {
   for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
@@ -1612,6 +1646,15 @@ void SetArenaDefault(int arena, const std::string& relative_file) {
   RedirectArena(arena, relative_file);
 }
 
+uint32_t ServedStageUnits(const char* entry) {
+  if (std::strncmp(entry, "/STG/", 5) != 0 || std::strlen(entry) != 9) return 0;
+  std::lock_guard lock(g_stg_mutex);
+  for (const auto& list : g_served_stg)
+    for (const auto& e : list)
+      if (!std::memcmp(e.name, entry + 5, 4)) return e.units;
+  return 0;
+}
+
 void RedirectArena(int arena, const std::string& file) {
   if (!g_fs || arena < 0 || arena >= 100) return;
   const std::string& relative_file = file.empty() ? g_default[arena] : file;
@@ -1669,6 +1712,39 @@ void RedirectArena(int arena, const std::string& file) {
         }
       }
     }
+  }
+  {  // the stage entries' sizes against the shipped file's (g_served_stg)
+    std::vector<StgEntry> differ;
+    if (!relative_file.empty()) {
+      std::vector<char> stock(0x4000);
+      size_t got = 0;
+      if (FILE* f = std::fopen((g_game / "pac" / "bg" / name).string().c_str(), "rb")) {
+        got = std::fread(stock.data(), 1, stock.size(), f);
+        std::fclose(f);
+      }
+      const auto shipped = StgEntries(stock.data(), got);
+      for (auto [e, at] : StgEntries(head, sizeof head)) {
+        if (long(at) == stage_at) std::memcpy(e.name, want, 4);  // (renamed into the slot below)
+        for (const auto& [s, s_at] : shipped) {
+          if (std::memcmp(s.name, e.name, 4) || s.units == e.units) continue;
+          if (s.sector != e.sector)
+            REXLOG_WARN("[svr2011] arena mods: {} STG/{} is at sector {}, the shipped file's at {}: the game reads it "
+                        "there - keep the stage entries in the shipped order (a bigger entry last)",
+                        relative_file, e.name, e.sector, s.sector);
+          else
+            differ.push_back(e);
+        }
+      }
+      for (const auto& e : differ)
+        REXLOG_INFO("[svr2011] arena mods: {} STG/{} is {} bytes (the shipped BG{:02}'s {}): read at its own size",
+                    relative_file, e.name, uint64_t(e.units) << 8, arena, [&] {
+                      for (const auto& [s, s_at] : shipped)
+                        if (!std::memcmp(s.name, e.name, 4)) return uint64_t(s.units) << 8;
+                      return uint64_t(0);
+                    }());
+    }
+    std::lock_guard stg_lock(g_stg_mutex);
+    g_served_stg[arena] = std::move(differ);
   }
   // The game's own practice ring as it is (the Practice Arena mod: bg29 on
   // SummerSlam's tile): not renamed into the slot. The game draws arena 29
