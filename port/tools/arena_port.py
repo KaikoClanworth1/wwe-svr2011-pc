@@ -135,7 +135,10 @@ SVR2007 = {
     14: ('Vengeance', None), 15: ('The Great American Bash', 15), 16: ("New Year's Revolution", None),
     17: ('One Night Stand', None), 18: ('Cyber Sunday', None), 19: ("Saturday Night's Main Event", None),
 }
-HOST_ENTRIES = (0x192, 0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0xEE48, 0xEA6C)
+# (0x7922: the arena's motion bank - crowd, ring crew; 2011's adds motion 500, the ring announcer's intro, which
+# SvR 2007-2010 lack: without it he stands in the bind pose in the intro)
+HOST_ENTRIES = (0x192, 0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0x7922, 0xEE48, 0xEA6C)
+MOTION_BANK = 0x7922
 # SvR 2007-2009 turnbuckle covers (ar_cover10-13): a black logo pad (rin_tb00) inside a white taped
 # shell (rin_tb10) that 2011 draws over the pad - the "white turnbuckles". 2011 RAW's covers are the
 # same black logo pads with no shell, on the same ring.
@@ -270,6 +273,20 @@ def svr2010_convert(disc, key, out, base=None, name=None, pac11=None, year='2010
         warnings.append('the arena file is %d bytes; 2011 hosts hold about 9.0-9.6 MB' % len(arena))
     mod = os.path.join(out, mod_id)
     os.makedirs(os.path.join(mod, 'vs'), exist_ok=True)
+    # (its motion bank lacks 2011's motion 500, the ring announcer's intro: 2011 RAW's in its place)
+    if pac11:
+        try:
+            _, graw, _ = svrfmt.epac_read(open(find_host(pac11, 1), 'rb').read())
+            bank = dict(svrfmt.pach_read(graw[0][1][0][1])).get(MOTION_BANK)
+            ha, ga, ta = svrfmt.epac_read(arena)
+            ents = dict(svrfmt.pach_read(ga[0][1][0][1]))
+            if bank is not None and MOTION_BANK in ents:
+                ents[MOTION_BANK] = bank
+                g = [(ga[0][0], [(ga[0][1][0][0], svrfmt.pach_write(sorted(ents.items())))])] + list(ga[1:])
+                arena = svrfmt.epac_write(ha, g, ta)
+                notes.append("motion bank (crowd, ring crew, the announcer's intro) from 2011 RAW")
+        except Exception as e:  # (the arena as it is - logged)
+            warnings.append('motion bank not replaced: %s' % e)
     with open(os.path.join(mod, 'arena.pac'), 'wb') as f:
         f.write(arena)
 
