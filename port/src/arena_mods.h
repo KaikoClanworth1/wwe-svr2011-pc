@@ -53,6 +53,10 @@ bool UseArenaMod(const std::string& folder, int tile);
 // game's): the online arena screen's title on a custom arena's tile.
 uint32_t ArenaSelectString(uint32_t caller);
 
+// A superstar mod's loading picture (1024 x 512 DXT5 file; "" none) for the match being set up: the NOW LOADING
+// screen shows it in place of the game's (and of a custom arena's own) while that match loads (test_match.cpp:
+// person 0's, else the next person's in slot order).
+void SetSuperstarLoading(const std::string& file);
 // The arena number a match in that arena plays as (RedirectArena: the stock
 // practice ring on another tile plays as 29); the arena itself otherwise.
 int ArenaNumberFor(int arena);

@@ -316,9 +316,14 @@ EPAC: `pac/ch/ch100-254.pac` + `chEtc.pac`, `pac/evt/Nyujyo0-3.pac`, themes `sou
   2.1.6+). Renders: `DLC_HD.pac` groups SSFA / SSFB / SSFC at the top level (2009 nests them in MENU), entries
   named by the decimal id. Loading pictures: `menu/LoadHD.pac` LOAD `S<id>` (not used yet).
 - **Entrances:** `entrance_port.py` game `low` (2009's scripts plus LoW's generic extras); the ring-cart
-  "Gondola" entrances (4170-4186, 4230-4233, 4350-4359) are **not supported yet**.
-- **Not ported yet:** ratings and abilities (its DAT +4..+15 rate on another scheme: 0x01 = unused) and the
-  **moveset** (the base's; the `moveset` / `moveset-pack` verbs say so) - the same open item as 2009's slot map.
+  "Gondola" entrances (4170-4186, 4230-4233, 4350-4359) ride LoW's own cart (pac/evt/_EvtObj.pac SOBJ 2552 /
+  2565, added by the pack under the same ids; propfallback 2011's jeep 2526) on its own world track - tested 4170
+  (24 Oct 2026). Their scripts start at segment 1: no Create-An-Entrance parts.
+- **Ratings:** its DAT +4..+15 rate on its own scheme (five real fields: +6 +7 +8 +12 +13, the rest 0x01):
+  ratings_port 'low', fitted on 35 shared superstars - rough (leave-one-out 7.4-10.2 vs 9-12.5 for the roster
+  mean). **Abilities:** none in its records (2009's list at +232 is zeros here): guessed from the ratings.
+- **Not ported yet:** the **moveset** (the base's; the `moveset` / `moveset-pack` verbs say so): its CHAR/PRO
+  is its own layout with its own move ids (not 2009's - SvR 2009 movesets are done, moveset_maps.json svr2009).
 - **Tested** (24 Oct 2026): The Rock, Andre the Giant, Ultimate Warrior converted; Ultimate Warrior in a match with
   his model, theme, titantron and name plate.
 

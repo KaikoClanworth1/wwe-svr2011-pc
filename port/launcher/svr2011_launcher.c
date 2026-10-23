@@ -1976,7 +1976,7 @@ static int nvidia_adapter(void)
 }
 
 /* The Upscaling list (the game's GRAPHICS -> UPSCALING): off, FSR 1 ultra quality .. performance, FSR 2
-   (experimental) - not with Direct3D 11 (no compute) - and DLSS (experimental) - Direct3D 12 (AUTO) only, with
+   (experimental) - not with Direct3D 11 (no compute) - and DLSS (experimental) - Direct3D 12 (AUTO) or Vulkan, with
    nvngx_dlss.dll in the game folder and an NVIDIA GPU; `sel` chosen (one not offered: the same FSR 1 level). */
 static void upscale_fill(int sel)
 {
@@ -1989,7 +1989,7 @@ static void upscale_fill(int sel)
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     const int fsr2 = renderer != RENDERER_D3D11;
     WCHAR dll[MAX_PATH];
-    const int dlss = renderer == RENDERER_NATIVE && s_game_dir[0] && join(dll, s_game_dir, L"nvngx_dlss.dll") &&
+    const int dlss = renderer != RENDERER_D3D11 && s_game_dir[0] && join(dll, s_game_dir, L"nvngx_dlss.dll") &&
                      file_exists(dll) && nvidia_adapter();
     const int n = dlss ? 13 : fsr2 ? 9 : 5;
     int i;

@@ -205,7 +205,7 @@ Files:
 | `render_full.dds` | optional: the full-body render (SSFB), 512 x 512 DXT5 |
 | `render_small.dds` | the 256 x 256 bust (SSFC), DXT5 |
 | `sign1.dds`..`sign4.dds` | optional: the fans' crowd signs, 128 x 64 DXT1 with mips |
-| the `song=` file, the `movie=` file, the `voice=` file | as named |
+| the `song=` file, the `movie=` file, the `voice=` file, the `loading=` file (`load.dds`) | as named |
 | `attireN.pac` (any name, via `attire<N>=`) | optional: more attires, each another model pac's first attire |
 | `moves/pack.txt` + `moves/...` | optional: a move pack carried inside the mod ([3.5](#35-typemoves)) |
 | the `moves=` file | optional: the mod's own move-set over the base's |
@@ -229,6 +229,7 @@ Manifest keys (in the order the converters write them,
 | `cae=<file>` | optional | a created entrance block (284 bytes; any other size is left out) |
 | `announcer=<NAME>` | optional | letters and digits, upper-cased, up to 24: a name the ring announcer's sound banks have clips of (e.g. `JEFFHARDY`). Wins over `voice=` |
 | `voice=<file>` | optional | a recording of the name for the announcer |
+| `loading=<file>` | optional | the match loading picture (1024 x 512 DXT5 .dds; default: the folder's `load.dds`): the NOW LOADING screen of a match the superstar is in - person 0's, else the next person's in slot order; it wins over a custom arena's own |
 | `call=<0-83>` | optional | the Created Superstar nickname the announcer and commentary use |
 | `hometown=<CITY>[,<STATE>]` | optional | letters and digits, upper-cased, up to 40 each. The ring announcer's clips `RA_*_HTC_<CITY>_0` / `RA_*_HTS_<STATE>_0`; the lists are in `tools/announcer_calls.json`. E.g. `hometown=DEATHVALLEY,PARTSUNKNOWN` |
 | `height=<scale>` | optional | the size against the base's, 0.80-1.25 (clamped; missing or 0 = the base's). The game scales the skeleton (record +28, 4.12 fixed point: 4096 = 1.0, kept within 3300-4900). From 4139 on, the game counts the wrestler as "big". About 0.90-1.15 plays best |

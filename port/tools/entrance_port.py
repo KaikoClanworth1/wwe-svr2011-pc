@@ -959,9 +959,6 @@ def svr09_convert(src, entrance, number, name, parts, rep, game_pac=None, low=Fa
     evp, evt = old_entrances(src, SRC09)
     if entrance not in evp or entrance not in evt:
         raise InputError('%s has no entrance %d' % ('Legends of WrestleMania' if low else 'SvR 2009', entrance))
-    if low and (4170 <= entrance <= 4186 or 4230 <= entrance <= 4233 or 4350 <= entrance <= 4359):
-        raise InputError('Legends of WrestleMania %d is a "Gondola" (ring cart) entrance: not supported yet '
-                         '(the cart props 2552 / 2565 are not in 2011)' % entrance)
     progress(20, 'converting the script')
     stock = stock_2011_evps(game_pac)
     if not stock:
@@ -1001,12 +998,14 @@ def svr09_convert(src, entrance, number, name, parts, rep, game_pac=None, low=Fa
 # ---- WWE Legends of WrestleMania (Xbox 360, 2009): SvR 2009's entrances (pac/evt/Nyujyo0-3.pac EPAC, 4001-4359,
 #      singles 4000 + id - 100; 4170-4186 / 4230-4233 / 4350-4359 = "Gondola" ring-cart entrances) -> svr09_convert
 #      plus: LoW's own generic extras -> 13902, object 6's positions always from 2011's template, the inert
-#      trailing ring-cart prop dropped. Titantrons are movies/titantron/<superstar id>.bik (--titantron <id>).
+#      trailing ring-cart prop dropped (a Gondola entrance's cart kept: LoW's own model, low_convert).
+#      Titantrons are movies/titantron/<superstar id>.bik (--titantron <id>).
 
 LOW_GENERIC = {10902, 24802, 24902}
 LOW_MAYBE_GENERIC = {11902, 15902}        # (generic, except a tag partner at object 4)
 LOW_CARTS = {2552, 2565}
-LOW_MISSING_PROPS = (2552, 2565, 2554, 2555, 2557, 2562, 2563, 2564, 2568, 2569)
+LOW_CART_FALLBACK = 2526   # (2011's jeep, when the pack can't add the cart)
+LOW_MISSING_PROPS = (2554, 2555, 2557, 2562, 2563, 2564, 2568, 2569)
 
 
 def low_prepare(e, lines):
@@ -1027,7 +1026,8 @@ def low_prepare(e, lines):
                 slots[k] = bytes(sl)
             o['slots'] = slots
     gone = None
-    if objs and (objs[-1]['t0'], objs[-1]['t1']) == E08.TYPE_PROP and objs[-1]['model'] in LOW_CARTS:
+    if (objs and (objs[-1]['t0'], objs[-1]['t1']) == E08.TYPE_PROP and objs[-1]['model'] in LOW_CARTS
+            and not any(E08.slot_fields(s)['on'] for s in objs[-1]['slots'])):   # (a Gondola entrance rides it)
         gone = len(objs) - 1
         lines.append('object %d: the unused ring-cart prop %d dropped' % (gone, objs[-1]['model']))
         objs.pop()
@@ -1037,6 +1037,25 @@ def low_prepare(e, lines):
 
 def low_convert(src, entrance, number, name, parts, rep, game_pac=None):
     evp11, evt11 = svr09_convert(src, entrance, number, name, parts, rep, game_pac, low=True)
+    # the "Gondola" ring carts (4170-4186, 4230-4233, 4350-4359): LoW's own cart model (pac/evt/_EvtObj.pac SOBJ
+    # 2552 / 2565: PACH {0: JBOY, 10: textures}, as 2011's props) as a new evtobj entry; the cart rides its own
+    # world track, as 2011's vehicles do, the rider his
+    uses = {o['model'] for o in E08.parse_evp(evp11, '2011')['objs'] if (o['t0'], o['t1']) == E08.TYPE_PROP}
+    for model in sorted(uses & LOW_CARTS):
+        pid = EPR.PORTED[('low', model)]
+        try:
+            f = next(n for n in src.listdir('pac/evt') if n.lower() == '_evtobj.pac')
+            _, groups, _ = svrfmt.epac_read(src.read('pac/evt/' + f))
+            data = next(EPR._unpack(b) for ty, es in groups for n, b in es
+                        if ty == b'SOBJ' and n.decode('latin-1').strip(' \0') == str(model))
+            data = svrfmt.pach_write([(k, EPR._unpack(v)) for k, v in svrfmt.pach_read(data)])   # (plain parts)
+        except (OSError, StopIteration, ValueError) as x:
+            rep['warnings'].append('ring cart %d: LoW\'s model not read (%s): it will not show' % (model, x))
+            continue
+        PROPS.append((pid, LOW_CART_FALLBACK, data))
+        evp11 = EPR.set_prop(evp11, model, pid)
+        rep['notes'].append('ring cart %d: LoW\'s own model as evtobj %d, added by the pack (2011\'s %d if it can\'t '
+                            'be: propfallback)' % (model, pid, LOW_CART_FALLBACK))
     rep['notes'].append('titantron: LoW names them by superstar id (movies/titantron/<id>.bik): use --titantron <id>')
     return evp11, evt11
 

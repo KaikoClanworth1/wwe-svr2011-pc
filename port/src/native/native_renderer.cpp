@@ -693,6 +693,12 @@ struct Renderer {
     plume::RenderRect scissor;
     uint32_t stencil_ref = 0;
     bool hud = false;  // (no depth test: kept only after the frame's last 3D draw - not a background)
+    // (a skinned draw: its own motion too - fsr2_skin: its key across frames, its bones a vertex, its NDC scale /
+    // offset as drawn; 0: none)
+    uint64_t skin_key = 0;
+    uint32_t skin_bones = 0;
+    float skin_ndc[4] = {};
+    const plume::RenderPipeline* skin_pso = nullptr;
   };
   std::vector<Fsr2MaskDraw> fsr2_mask_draws;
   size_t fsr2_mask_after_3d = 0;  // (the noted draws before the frame's last 3D scene draw)
@@ -709,6 +715,18 @@ struct Renderer {
   std::unordered_map<uint64_t, std::unique_ptr<plume::RenderPipeline>> fsr2_mask_pipelines;
   std::vector<uint8_t> fsr2_mask_code;
   std::unique_ptr<plume::RenderShader> fsr2_mask_ps;
+  // FSR 2 / DLSS: the skinned draws' own motion (fsr2_skin.vs / .ps): each one's view x projection and bones
+  // (c54-c57, c74-c137) this frame and the last, by draw key.
+  struct SkinRows {
+    float rows[(4 + 64) * 4];
+  };
+  std::unordered_map<uint64_t, SkinRows> fsr2_skin_now, fsr2_skin_prev;
+  uint64_t fsr2_skin_frame = ~0ull;
+  std::vector<uint8_t> fsr2_skin_vs_code, fsr2_skin_ps_code;
+  std::unique_ptr<plume::RenderShader> fsr2_skin_vs, fsr2_skin_ps;
+  std::unordered_map<uint64_t, std::unique_ptr<plume::RenderPipeline>> fsr2_skin_pipelines;
+  std::vector<Fsr2MaskFramebuffer> fsr2_skin_framebuffers;
+  bool fsr2_skin_off = false;
   RenderTextureLayout fsr_image_layout = RenderTextureLayout::UNKNOWN;
 #endif
   uint32_t output_index = 0;
@@ -3562,6 +3580,143 @@ void DrawFsr2Masks(Renderer* r, DepthTarget* depth, uint32_t w, uint32_t h) {
     REXLOG_INFO("native renderer: FSR 2 masks: {} draws", r->fsr2_mask_draws.size());
   }
 }
+
+// The skinned draws' motion pipeline: fsr2_skin.vs with the draw's input layout, fsr2_skin.ps into the motion
+// vectors (RGBA16F), depth tested as the draw (less-equal, no writes); null without the shaders (test aid
+// SVR2011_TEST_FSR2_NO_SKIN: none).
+const plume::RenderPipeline* Fsr2SkinPipeline(Renderer* r, const std::vector<plume::RenderInputElement>& layout,
+                                              const plume::RenderInputSlot* slots, uint32_t layout_hash,
+                                              plume::RenderPrimitiveTopology topology) {
+  static const bool off = EnvFlag("SVR2011_TEST_FSR2_NO_SKIN");
+  if (off || r->fsr2_skin_off) return nullptr;
+  if (!r->fsr2_skin_vs) {
+    r->fsr2_skin_vs_code = ReadShader("fsr2_skin.vs");
+    r->fsr2_skin_ps_code = ReadShader("fsr2_skin.ps");
+    if (r->fsr2_skin_vs_code.empty() || r->fsr2_skin_ps_code.empty()) {
+      REXLOG_WARN("native renderer: fsr2_skin.vs / .ps missing - the wrestlers keep the camera's motion");
+      r->fsr2_skin_off = true;
+      return nullptr;
+    }
+    r->fsr2_skin_vs = r->device->createShader(r->fsr2_skin_vs_code.data(), r->fsr2_skin_vs_code.size(), "main",
+                                              backend::ShaderFormat());
+    r->fsr2_skin_ps = r->device->createShader(r->fsr2_skin_ps_code.data(), r->fsr2_skin_ps_code.size(), "main",
+                                              backend::ShaderFormat());
+    if (!r->fsr2_skin_vs || !r->fsr2_skin_ps) {
+      r->fsr2_skin_off = true;
+      return nullptr;
+    }
+  }
+  const uint32_t cull = Reg(PA_SU_SC_MODE_CNTL) & 7;
+  const uint64_t parts[2] = {uint64_t(topology) << 8 | uint64_t(cull) << 16, layout_hash};
+  const uint64_t h = XXH3_64bits(parts, sizeof(parts));
+  auto& slot = r->fsr2_skin_pipelines[h];
+  if (slot) return slot.get();
+  plume::RenderGraphicsPipelineDesc d;
+  d.pipelineLayout = r->layout.get();
+  d.vertexShader = r->fsr2_skin_vs.get();
+  d.pixelShader = r->fsr2_skin_ps.get();
+  d.renderTargetBlend[0].blendEnabled = false;
+  d.renderTargetBlend[0].renderTargetWriteMask = uint8_t(plume::RenderColorWriteEnable::ALL);
+  d.renderTargetFormat[0] = RenderFormat::R16G16B16A16_FLOAT;
+  d.renderTargetCount = 1;
+  d.cullMode = (cull & 1)   ? plume::RenderCullMode::FRONT
+               : (cull & 2) ? plume::RenderCullMode::BACK
+                            : plume::RenderCullMode::NONE;
+  d.frontFace = (cull & 4) ? plume::RenderFrontFace::CLOCKWISE : plume::RenderFrontFace::COUNTER_CLOCKWISE;
+  d.depthClipEnabled = true;
+  d.depthEnabled = true;
+  d.depthWriteEnabled = false;
+  d.depthFunction = plume::RenderComparisonFunction::LESS_EQUAL;
+  d.stencilEnabled = false;
+  d.dynamicStencilReferenceEnabled = true;
+  d.dynamicBlendFactorEnabled = true;
+  d.inputElements = layout.data();
+  d.inputElementsCount = uint32_t(layout.size());
+  d.inputSlots = slots;
+  d.inputSlotsCount = 16;
+  d.primitiveTopology = topology;
+  d.depthTargetFormat = backend::DepthFormat();
+  slot = r->device->createGraphicsPipeline(d);
+  if (slot && !backend::PipelineCreated(slot.get())) slot.reset();
+  if (!slot) {
+    static int logged = 0;
+    if (logged++ < 3) REXLOG_WARN("native renderer: FSR 2 skinned motion pipeline failed");
+  }
+  return slot.get();
+}
+
+// The skinned draws noted this frame drawn again into the motion vectors with their own motion (where their last
+// frame's bones are known), over the scene's depth (`depth`, `w` x `h`: the motion vectors' size); the camera's
+// motion pass keeps those texels (alpha 1).
+void DrawFsr2SkinMotion(Renderer* r, DepthTarget* depth, uint32_t w, uint32_t h) {
+  if (r->fsr2_mask_draws_frame != r->frames || !depth || !depth->resource || !r->fsr2_motion ||
+      r->fsr2_depth_w != w || r->fsr2_depth_h != h)
+    return;
+  uint32_t drawn = 0;
+  plume::RenderFramebuffer* fb = nullptr;
+  auto* list = r->list;
+  for (const auto& m : r->fsr2_mask_draws) {
+    if (!m.skin_key || !m.skin_pso) continue;
+    const auto now = r->fsr2_skin_now.find(m.skin_key);
+    const auto prev = r->fsr2_skin_prev.find(m.skin_key);
+    if (now == r->fsr2_skin_now.end() || prev == r->fsr2_skin_prev.end()) continue;
+    if (!fb) {
+      for (auto& f : r->fsr2_skin_framebuffers)
+        if (f.depth == depth->resource) fb = f.framebuffer.get();
+      if (!fb) {
+        const plume::RenderTexture* color = r->fsr2_motion.get();
+        auto made = r->device->createFramebuffer(plume::RenderFramebufferDesc(&color, 1, depth->resource.get()));
+        if (!made) return;
+        fb = made.get();
+        if (r->fsr2_skin_framebuffers.size() > 4) r->fsr2_skin_framebuffers.erase(r->fsr2_skin_framebuffers.begin());
+        r->fsr2_skin_framebuffers.push_back({depth->resource, std::move(made)});
+      }
+      Transition(r, r->fsr2_motion.get(), r->fsr2_motion_layout, RenderTextureLayout::COLOR_WRITE);
+      Transition(r, depth->resource.get(), depth->layout, RenderTextureLayout::DEPTH_WRITE);
+      list->setFramebuffer(fb);
+      list->setGraphicsPipelineLayout(r->layout.get());
+      r->list_state = {};
+      BindTables(r, list);
+      r->list_state.bound = true;
+    }
+    // own constants: VP now / then, bones now / then, the bone count and NDC offset, the NDC scale, the size
+    constexpr size_t kSize = (4 + 4 + 64 + 64 + 3) * 16;
+    auto [cpu, gpu] = Allocate(r, kSize);
+    if (!cpu) break;
+    float* c = reinterpret_cast<float*>(cpu);
+    std::memcpy(c, now->second.rows, 16 * 4);                 // c54-c57 now
+    std::memcpy(c + 16, prev->second.rows, 16 * 4);           // then
+    std::memcpy(c + 32, now->second.rows + 16, 64 * 16);      // bones now
+    std::memcpy(c + 32 + 256, prev->second.rows + 16, 64 * 16);  // then
+    float* params = c + 32 + 512;
+    params[0] = float(m.skin_bones), params[1] = 0, params[2] = m.skin_ndc[2], params[3] = m.skin_ndc[3];
+    params[4] = m.skin_ndc[0], params[5] = m.skin_ndc[1], params[6] = 0, params[7] = 0;
+    params[8] = float(w), params[9] = float(h), params[10] = 0, params[11] = 0;
+    RenderBufferReference constants[4] = {m.constants[0], m.constants[1], m.constants[2], gpu};
+    list->setPipeline(m.skin_pso);
+    BindConstants(r, constants);
+    list->setVertexBuffers(0, m.views, m.view_count, m.slots);
+    list->setViewports(m.viewport);
+    list->setScissors(m.scissor);
+    list->setStencilReference(m.stencil_ref);
+    if (m.indexed) {
+      list->setIndexBuffer(&m.ibv);
+      list->drawIndexedInstanced(m.count, 1, 0, m.base, 0);
+    } else {
+      list->drawInstanced(m.count, 1, m.start, 0);
+    }
+    ++drawn;
+  }
+  if (fb) {
+    Transition(r, r->fsr2_motion.get(), r->fsr2_motion_layout, RenderTextureLayout::SHADER_READ);
+    r->list_state = {};
+  }
+  static bool logged = false;
+  if (!logged && drawn) {
+    logged = true;
+    REXLOG_INFO("native renderer: FSR 2 / DLSS: {} skinned draws with their own motion", drawn);
+  }
+}
 #endif
 
 void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, uint32_t count,
@@ -4147,6 +4302,33 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
         m.scissor = scissor;
         m.stencil_ref = stencil_ref;
         m.hud = !depth_test;
+        // (a skinned draw: its view x projection and bones kept by its key - the vertex data's, its range, its
+        // shader - for the next frame's motion, and its own motion pipeline)
+        if (depth_test && skinned) {
+          if (r->fsr2_skin_frame != r->frames) {
+            std::swap(r->fsr2_skin_prev, r->fsr2_skin_now);
+            r->fsr2_skin_now.clear();
+            if (r->fsr2_skin_frame + 1 != r->frames) r->fsr2_skin_prev.clear();  // (frames skipped: none to match)
+            r->fsr2_skin_frame = r->frames;
+          }
+          uint64_t key_parts[6] = {0, 0, uint64_t(start), uint64_t(draw_count), uint64_t(uint32_t(draw_base)),
+                                   vs->hash};
+          for (const Element& el : decl)
+            if (el.usage == 0 && el.index == 0 && el.stream < 15)
+              key_parts[0] = g_streams[el.stream].buffer, key_parts[1] = g_streams[el.stream].offset;
+          const uint64_t key = XXH3_64bits(key_parts, sizeof(key_parts));
+          auto& rows = r->fsr2_skin_now[key];
+          const uint8_t* c = Device() + guest::RegisterOffset(0x4000);
+          for (int i = 0; i < 4; ++i)
+            for (int k = 0; k < 4; ++k) rows.rows[i * 4 + k] = BeFloat(c + 16 * (54 + i) + 4 * k);
+          for (int i = 0; i < 64; ++i)
+            for (int k = 0; k < 4; ++k) rows.rows[16 + i * 4 + k] = BeFloat(c + 16 * (74 + i) + 4 * k);
+          const uint32_t bools = Be32(Device() + guest::RegisterOffset(0x4900));
+          m.skin_bones = (bools & (1u << 3)) ? 4 : (bools & (1u << 2)) ? 3 : (bools & (1u << 1)) ? 2 : 1;
+          std::copy(ndc, ndc + 4, m.skin_ndc);
+          m.skin_pso = Fsr2SkinPipeline(r, layout, slots, layout_hash, topology);
+          m.skin_key = m.skin_pso ? key : 0;
+        }
         r->fsr2_mask_draws.push_back(m);
       }
     }
@@ -4386,7 +4568,7 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
     // The motion vectors: none yet (a still camera's) - cleared once.
     if (r->fsr2_motion) Retire(r, std::move(r->fsr2_motion));
     r->fsr2_motion = r->device->createTexture(plume::RenderTextureDesc::Texture2D(
-        r->fsr2_depth_w, r->fsr2_depth_h, 1, RenderFormat::R16G16_FLOAT,
+        r->fsr2_depth_w, r->fsr2_depth_h, 1, RenderFormat::R16G16B16A16_FLOAT,
         plume::RenderTextureFlag::RENDER_TARGET | plume::RenderTextureFlag::STORAGE |
             plume::RenderTextureFlag::UNORDERED_ACCESS));
     if (!r->fsr2_motion) return false;
@@ -4421,7 +4603,7 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
   f.color = Texture{color.resource.get(), color_format, color.host_w, color.host_h, RenderTextureLayout::UNKNOWN};
   f.depth = Texture{r->fsr2_depth.get(), backend::DepthFormat(), r->fsr2_depth_w, r->fsr2_depth_h,
                     RenderTextureLayout::UNKNOWN};
-  f.motion = Texture{r->fsr2_motion.get(), RenderFormat::R16G16_FLOAT, r->fsr2_depth_w, r->fsr2_depth_h,
+  f.motion = Texture{r->fsr2_motion.get(), RenderFormat::R16G16B16A16_FLOAT, r->fsr2_depth_w, r->fsr2_depth_h,
                      RenderTextureLayout::UNKNOWN};
   f.output = Texture{r->fsr_image.get(), RenderFormat::R8G8B8A8_UNORM, g_out_w, g_out_h, RenderTextureLayout::UNKNOWN};
   if (r->fsr2_mask_frame == r->frames && r->fsr2_reactive && r->fsr2_mask_w == r->fsr2_depth_w &&
@@ -4465,7 +4647,7 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
                     RenderTextureLayout::UNKNOWN};
     r->fsr2->Motion(list, r->back_index, f.depth, f.motion, depth32, reproject, jitter, rw, rh);
     f.motion.layout = RenderTextureLayout::UNKNOWN;
-    // Test aid: SVR2011_TEST_FSR2_DUMP=<prefix> - FSR 2's colour and motion (raw 4-byte texels; the depth has a stencil plane) and the
+    // Test aid: SVR2011_TEST_FSR2_DUMP=<prefix> - FSR 2's colour and motion (raw texels: the motion RGBA16F, the rest 4 bytes) and the
     // reprojection (<prefix>.txt) in the frames SVR2011_TEST_FRAME_SHOT(S/_AT) take: the motion vectors checked
     // offline against the next frame.
     static const std::string dump = [] {
@@ -4494,7 +4676,7 @@ bool PresentFsr2(Renderer* r, uint32_t base, const float region[2], bool* swap) 
         r->fsr2_dumps.push_back(std::move(d));
       };
       take(color.resource.get(), color_format, color.host_w, color.host_h, "color");
-      take(r->fsr2_motion.get(), RenderFormat::R16G16_FLOAT, r->fsr2_depth_w, r->fsr2_depth_h, "motion");
+      take(r->fsr2_motion.get(), RenderFormat::R16G16B16A16_FLOAT, r->fsr2_depth_w, r->fsr2_depth_h, "motion", 8);
       if (f.reactive.texture) {
         take(r->fsr2_reactive.get(), RenderFormat::R8_UNORM, r->fsr2_mask_w, r->fsr2_mask_h, "reactive", 1);
         take(r->fsr2_composition.get(), RenderFormat::R8_UNORM, r->fsr2_mask_w, r->fsr2_mask_h, "composition", 1);
@@ -5263,6 +5445,7 @@ void OnResolve(const PPCContext& ctx) {
       if (r->fsr2_depth) r->fsr2_depth->setName("FSR 2 depth");
     }
     DrawFsr2Masks(r, t.depth, src_host_w, src_host_h);
+    DrawFsr2SkinMotion(r, t.depth, src_host_w, src_host_h);
     if (r->fsr2_depth) {
       const RenderTextureLayout before = t.depth->layout;
       Transition(r, t.depth->resource.get(), t.depth->layout, RenderTextureLayout::COPY_SOURCE);

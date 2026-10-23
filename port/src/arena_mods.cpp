@@ -840,8 +840,23 @@ void ReadLoadingPictures() {
   REXLOG_INFO("[svr2011] arena mods: {} loading screen pictures", g_load_pics.size());
 }
 
+// A superstar mod with a loading picture (its load.dds, or a manifest loading= line): SetSuperstarLoading.
+bool AnySuperstarLoading() {
+  std::error_code ec;
+  for (const auto& d : fs::directory_iterator(g_game / "Mods" / "Superstars", ec)) {
+    if (!d.is_directory(ec)) continue;
+    if (fs::exists(d.path() / "load.dds", ec)) return true;
+    svrfmt::Bytes man;
+    if (svrfmt::ReadFile((d.path() / "manifest.txt").string(), man) &&
+        std::string(man.begin(), man.end()).find("\nloading=") != std::string::npos)
+      return true;
+  }
+  return false;
+}
+
 void LoadLoadingPictures() {
-  const bool wanted = std::any_of(g_customs.begin(), g_customs.end(), [](const CustomArena& c) { return !c.load.empty(); });
+  const bool wanted = std::any_of(g_customs.begin(), g_customs.end(), [](const CustomArena& c) { return !c.load.empty(); }) ||
+                      AnySuperstarLoading();
   if (!wanted) {
     REXLOG_INFO("[svr2011] arena mods: no custom loading screens - the game's own aren't read");
     std::lock_guard lock(g_load_pics_mutex);
@@ -879,11 +894,18 @@ svrfmt::Bytes LoadPart(const svrfmt::Bytes& load, int part) {
   return o;
 }
 
+svrfmt::Bytes g_star_load;   // a superstar mod's loading picture for the match being set up (kept swapped, as c->load)
+std::string g_star_load_file;
+const CustomArena* g_swaps_arena = nullptr;   // (SetDecodeSwaps' last arena and host: rebuilt with g_star_load)
+int g_swaps_host = -1;
+
 void SetDecodeSwaps(const CustomArena* c, int host) {
+  g_swaps_arena = c, g_swaps_host = host;
   auto t = std::make_shared<DecodeSwaps>();
-  if (c) {
-    t->theme = host;
-    t->arena = c->id;
+  const svrfmt::Bytes& load_pic = !g_star_load.empty() ? g_star_load : c ? c->load : g_star_load;   // (the superstar's wins)
+  if (c || !load_pic.empty()) {
+    t->theme = c ? host : -1;
+    t->arena = c ? c->id : std::string();
     // (a game picture by its key / hash; the replacement shared - not 240
     // copies of the game's pictures and 240 of the custom one's)
     auto add = [&](const std::string& name, const LoadPic& orig, std::shared_ptr<const svrfmt::Bytes> mine, bool loading) {
@@ -892,17 +914,17 @@ void SetDecodeSwaps(const CustomArena* c, int host) {
       if (std::find(t->sizes.begin(), t->sizes.end(), orig.size) == t->sizes.end()) t->sizes.push_back(orig.size);
       t->swaps.push_back({name, orig.size, orig.hash, std::move(mine), loading});
     };
-    if (!c->load.empty() && !LoadingPicturesReady(std::chrono::seconds(10))) {
+    if (!load_pic.empty() && !LoadingPicturesReady(std::chrono::seconds(10))) {
       REXLOG_WARN("[svr2011] arena mods: the game's loading pictures still not read after 10 s - {} keeps the game's",
-                  c->id);
-    } else if (!c->load.empty()) {
-      const svrfmt::Bytes load = Swap16(c->load.data(), c->load.size());  // (kept swapped: back to file order)
+                  c ? c->id : g_star_load_file);
+    } else if (!load_pic.empty()) {
+      const svrfmt::Bytes load = Swap16(load_pic.data(), load_pic.size());  // (kept swapped: back to file order)
       std::shared_ptr<const svrfmt::Bytes> parts[3];
       for (int k = 0; k < 3; ++k) parts[k] = std::make_shared<const svrfmt::Bytes>(LoadPart(load, k));
       for (const auto& lp : g_load_pics)
         if (lp.part >= 0 && lp.part < 3) add(lp.name, lp, parts[lp.part], true);
     }
-    if (!c->vs.empty()) {
+    if (c && !c->vs.empty()) {
       const auto theme = VsTheme(host);
       for (const auto& [name, mine] : c->vs)
         for (const auto& [tname, orig] : theme)
@@ -913,10 +935,27 @@ void SetDecodeSwaps(const CustomArena* c, int host) {
           }
     }
   }
-  REXLOG_INFO("[svr2011] arena mods: loading / VS pictures {} for {} (theme {:02})", t->swaps.size(),
-              c ? c->id : std::string("-"), host);
+  REXLOG_INFO("[svr2011] arena mods: loading / VS pictures {} for {} (theme {:02}){}", t->swaps.size(),
+              c ? c->id : std::string("-"), host, g_star_load.empty() ? "" : " - the loading picture " + g_star_load_file);
   std::lock_guard lock(g_decode_mutex);
-  g_decode = c ? std::move(t) : nullptr;
+  g_decode = c || !load_pic.empty() ? std::move(t) : nullptr;
+}
+
+void StarLoading(const std::string& file) {
+  if (file == g_star_load_file) return;
+  svrfmt::Bytes pic;
+  if (!file.empty()) {
+    svrfmt::Bytes dds;
+    svrfmt::DdsInfo info;
+    if (svrfmt::ReadFile(file, dds) && svrfmt::DdsInfoOf(dds, info) && info.w == 1024 && info.h == 512 &&
+        info.format == svrfmt::DxtFormat::kDxt5 && dds.size() >= 128 + 1024 * 512)
+      pic = Swap16(dds.data() + 128, 1024 * 512);
+    else
+      REXLOG_WARN("[svr2011] superstar mods: {} is not a 1024 x 512 DXT5 loading picture", file);
+  }
+  g_star_load = std::move(pic);
+  g_star_load_file = file;
+  SetDecodeSwaps(g_swaps_arena, g_swaps_host);
 }
 
 std::shared_ptr<const DecodeSwaps> CurrentDecodeSwaps() {
@@ -1589,6 +1628,7 @@ void UseBackstageRow(int i) {
 }
 
 void SetMatchLoading(bool loading) { g_match_loading = loading; }
+void SetSuperstarLoading(const std::string& file) { StarLoading(file); }
 
 std::string ArenaModInUse(int* tile) {
   // (the arena redirected is the one the match loads - the online screen's A

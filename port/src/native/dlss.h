@@ -22,6 +22,11 @@ struct Host {
   std::wstring dll_dir;    // (where nvngx_dlss.dll is: the exe's folder)
 };
 
+// Vulkan: NGX's instance / device extensions asked of the SDK's Vulkan provider (enabled only where the driver has
+// them; buffer device address only with VK_NVX_binary_import) - before the provider is made (the app's pre-setup),
+// only when DLSS is chosen.
+void RequestVulkanExtensions();
+
 // Whether DLSS can run on this device (NGX started, the GPU and driver support DLSS); `why` when not. Once per
 // device; the render thread, after the device is made.
 bool Probe(const Host& host, std::string* why);
