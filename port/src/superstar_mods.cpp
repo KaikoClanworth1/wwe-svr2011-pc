@@ -3344,6 +3344,22 @@ REX_HOOK_RAW(sub_8269BBA0) {
       static int told = 0;
       if (told++ < 3) REXLOG_INFO("[svr2011] model memory: a model heap full - {} bytes from the fallback memory", size);
     }
+  // (the stage's heap full - an arena with more 3D detail than the game's own: caw_limits.h kStageHeap; new takes
+  // its heap's blocks without sub_8269A8D8, whose hook does the same)
+  if (!ctx.r3.u32 && size && svr2011::BigModelMemory()) {
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    if (heap == svr2011::kStageHeap)
+      if (const uint32_t p = svr2011::FallbackBlock(size, true)) {
+        ctx.r3.u64 = p;
+        static int told = 0;
+        if (told++ < 5 || told % 200 == 0)
+          REXLOG_INFO("[svr2011] model memory: the stage's heap ({}) full - new {} bytes from the fallback memory ({} "
+                      "so)", heap, size, told);
+      }
+  }
   if (!MoveLogIds().empty() && !ctx.r3.u32) REXLOG_WARN("[svr2011] move log: alloc {} bytes failed (lr {:08X})", size, lr);
   if (svr2011::MemTraceOn() && ctx.r3.u32) {  // (test aid: mem_trace.h - which heap gave it)
     const auto saved = ctx;
