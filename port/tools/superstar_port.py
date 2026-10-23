@@ -45,7 +45,7 @@ Games:
               announcer, the moveset (moveset_maps.json svr2009) and the moves 2011 lacks
     svr2008   SvR 2008 - the same as 2009 (ids: 2011 id = 2008 id + 100)
     low       Legends of WrestleMania - as 2009 (its own ids; ratings fitted from its own scheme, abilities
-              guessed from them; the moveset stays the base's)
+              guessed from them; the moveset by move name - moveset_maps.json low, no motions ported)
     svr2007   SvR 2007 - the same, its per-part textures baked (svr07_char.py), XACT themes (xact.py);
               ratings stay the base's
     wwe12     WWE '12 - model (w13_char.py, within the vertex budget), attires, renders, theme
@@ -398,7 +398,6 @@ class GameLoW(Game09):
     label = 'Legends of WrestleMania'
     suffix = '_low'
     ratings_game = 'low'   # (ratings_port: its own scheme, fitted; no abilities in its records - guessed from them)
-    no_moves = "Legends of WrestleMania movesets are not ported yet: the base's"
 
     def __init__(self, src):
         super().__init__(src)
