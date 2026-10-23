@@ -77,6 +77,9 @@
 #include "keyboard_typing.h"
 #include "free_cam.h"
 #include "gpu_probe.h"
+#if SVR2011_DLSS
+#include "native/dlss.h"
+#endif
 #include "platform.h"
 #include "script_input.h"
 #include "touch_controls.h"
@@ -421,6 +424,17 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
       REXLOG_INFO("graphics: Direct3D 12 ({:.0f} ms to check{})", ms, cached ? ", known for this GPU and driver" : "");
     }
   }
+  // DLSS on Vulkan: NGX's extensions on the SDK's Vulkan device - asked before it's made, when the game has DLSS
+  // (nvngx_dlss.dll beside it), so GRAPHICS can offer it. Only drivers that list them enable them (NVIDIA's
+  // VK_NVX_*; buffer device address only with VK_NVX_binary_import): AMD / Intel devices stay as they were.
+#if SVR2011_DLSS
+  {
+    std::error_code ec;
+    if (rex::cvar::Query<std::string>("gpu_backend") == "vulkan" &&
+        std::filesystem::exists(rex::filesystem::GetExecutableFolder() / "nvngx_dlss.dll", ec))
+      svr2011::dlss::RequestVulkanExtensions();
+  }
+#endif
 #endif
   // Automated tests: the only controller is one driven by a command file.
   if (std::string file = Env("SVR2011_INPUT_FILE"); !file.empty()) {

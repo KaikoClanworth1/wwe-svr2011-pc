@@ -802,10 +802,18 @@ index 947817f..a1cc533 100644
  
    // Properties of the core API and enabled extensions, and enabled features.
 diff --git a/include/rex/ui/vulkan/instance.h b/include/rex/ui/vulkan/instance.h
-index 4edde2b..429b4c9 100644
+index 4edde2b..283fc75 100644
 --- a/include/rex/ui/vulkan/instance.h
 +++ b/include/rex/ui/vulkan/instance.h
-@@ -22,6 +22,12 @@ namespace rex {
+@@ -11,6 +11,7 @@
+  */
+ 
+ #include <memory>
++#include <string>
+ #include <vector>
+ 
+ #include <rex/platform.h>
+@@ -22,6 +23,24 @@ namespace rex {
  namespace ui {
  namespace vulkan {
  
@@ -814,6 +822,18 @@ index 4edde2b..429b4c9 100644
 +// the system's. Set before the instance is created.
 +using LoaderOpener = void* (*)();
 +void SetLoaderOpener(LoaderOpener opener);
++
++// [svr2011] An app's optional instance / device extensions (e.g. NVIDIA NGX for
++// DLSS), set in the process environment before the provider is made (it's
++// made in the GPU plugin DLL - no statics to share): REX_VULKAN_OPTIONAL_
++// INSTANCE_EXTENSIONS / REX_VULKAN_OPTIONAL_DEVICE_EXTENSIONS, names separated
++// by spaces, each enabled only where the driver lists it;
++// REX_VULKAN_BUFFER_DEVICE_ADDRESS_GATE=<device extension>: buffer device
++// address (Vulkan 1.2) only when the device has it and that extension was
++// enabled with it. Unset: nothing changes.
++std::vector<std::string> OptionalInstanceExtensions();
++std::vector<std::string> OptionalDeviceExtensions();
++std::string BufferDeviceAddressGate();
 +
  class VulkanInstance {
   public:
@@ -5864,10 +5884,18 @@ index 0000000..b1ba2a6
 +}  // namespace ui
 +}  // namespace rex
 diff --git a/src/ui/vulkan/vulkan_device.cpp b/src/ui/vulkan/vulkan_device.cpp
-index 8197bb4..2408810 100644
+index 8197bb4..e74870e 100644
 --- a/src/ui/vulkan/vulkan_device.cpp
 +++ b/src/ui/vulkan/vulkan_device.cpp
-@@ -26,9 +26,17 @@ REXCVAR_DEFINE_BOOL(vulkan_require_fragment_stores_and_atomics, true, "UI/Vulkan
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <memory>
+ #include <algorithm>
+ #include <cstring>
+ #include <string>
+@@ -26,9 +27,17 @@ REXCVAR_DEFINE_BOOL(vulkan_require_fragment_stores_and_atomics, true, "UI/Vulkan
                      "Deprecated and ignored for parity; fragmentStoresAndAtomics is always "
                      "required for Vulkan GPU emulation")
      .lifecycle(rex::cvar::Lifecycle::kInitOnly);
@@ -5887,7 +5915,7 @@ index 8197bb4..2408810 100644
      .lifecycle(rex::cvar::Lifecycle::kInitOnly);
  // Apple Silicon / MoltenVK does not expose geometryShader or fillModeNonSolid;
  // default both to false on macOS so the device can still be selected.
-@@ -91,6 +99,20 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -91,6 +100,20 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
  
    VkPhysicalDeviceFeatures supported_features = {};
    ifn.vkGetPhysicalDeviceFeatures(physical_device, &supported_features);
@@ -5908,7 +5936,7 @@ index 8197bb4..2408810 100644
  
    if (with_gpu_emulation) {
      if (!supported_features.independentBlend) {
-@@ -116,26 +138,30 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -116,26 +139,30 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
            properties.deviceName);
        return nullptr;
      }
@@ -5949,7 +5977,7 @@ index 8197bb4..2408810 100644
      }
    }
  
-@@ -205,6 +231,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -205,6 +232,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
  
    bool ext_1_2_KHR_sampler_mirror_clamp_to_edge = false;
    bool ext_1_1_KHR_maintenance1 = false;
@@ -5960,7 +5988,7 @@ index 8197bb4..2408810 100644
    bool ext_1_2_KHR_shader_float_controls = false;
    bool ext_EXT_fragment_shader_interlock = false;
    bool ext_1_3_EXT_shader_demote_to_helper_invocation = false;
-@@ -236,6 +266,9 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -236,6 +267,9 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
        XE_UI_VULKAN_STRUCT_EXTENSION(EXT_custom_border_color)
        // Required for true null descriptors in bindless texture bindings.
        XE_UI_VULKAN_STRUCT_EXTENSION(EXT_robustness2)
@@ -5970,7 +5998,27 @@ index 8197bb4..2408810 100644
      }
      if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
        // #237.
-@@ -273,6 +306,12 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -248,6 +282,19 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+ #undef XE_UI_VULKAN_STRUCT_PROMOTED_EXTENSION
+ #undef XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION
+ 
++  // [svr2011] the app's optional ones (instance.h), where the driver has them
++  const std::vector<std::string> app_extensions = OptionalDeviceExtensions();
++  std::unique_ptr<bool[]> app_extension_enabled(new bool[app_extensions.size() + 1]());
++  for (size_t i = 0; i < app_extensions.size(); ++i) {
++    requested_extensions.emplace(app_extensions[i], &app_extension_enabled[i]);
++  }
++  const auto app_extension_on = [&](const std::string& name) {
++    for (size_t i = 0; i < app_extensions.size(); ++i) {
++      if (app_extensions[i] == name && app_extension_enabled[i]) return true;
++    }
++    return false;
++  };
++
+   std::vector<const char*> enabled_extensions;
+   {
+     uint32_t supported_extension_count = 0;
+@@ -273,6 +320,12 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
          if (requested_extension_it == requested_extensions.cend()) {
            continue;
          }
@@ -5983,7 +6031,7 @@ index 8197bb4..2408810 100644
          assert_not_null(requested_extension_it->second);
          if (!*requested_extension_it->second) {
            enabled_extensions.emplace_back(requested_extension_it->first.c_str());
-@@ -335,10 +374,15 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -335,10 +388,15 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
    VulkanFeatures<VkPhysicalDeviceRobustness2FeaturesEXT,
                   VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT>
        features_EXT_robustness2;
@@ -5999,10 +6047,18 @@ index 8197bb4..2408810 100644
      }
      if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 3, 0)) {
        features_1_3.Link(supported_features_2, device_create_info);
-@@ -650,8 +694,48 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -650,8 +708,56 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
        XE_UI_VULKAN_FEATURE_2(features_1_2, samplerMirrorClampToEdge);
        XE_UI_VULKAN_FEATURE_2(features_1_2, uniformBufferStandardLayout);
        XE_UI_VULKAN_FEATURE_2(features_1_2, scalarBlockLayout);
++      // [svr2011] buffer device address: only for an app that asked, with its
++      // gate extension enabled (instance.h - NVIDIA NGX: VK_NVX_binary_import)
++      const std::string bda_gate = BufferDeviceAddressGate();
++      if (!bda_gate.empty() && app_extension_on(bda_gate) &&
++          features_1_2.supported.bufferDeviceAddress) {
++        features_1_2.enabled.bufferDeviceAddress = VK_TRUE;
++        REXLOG_INFO("* buffer device address (for {})", bda_gate);
++      }
 +      // [svr2011] for an app renderer on this device (rex/external_frame.h)
 +      // (the native renderer's shaders read their constants from a storage
 +      // buffer: no buffer device address or 64-bit integers needed)
@@ -6049,19 +6105,27 @@ index 8197bb4..2408810 100644
        XE_UI_VULKAN_FEATURE_IMPLIED(samplerMirrorClampToEdge)
      }
 diff --git a/src/ui/vulkan/vulkan_instance.cpp b/src/ui/vulkan/vulkan_instance.cpp
-index 914b311..fce845f 100644
+index 914b311..c91e74c 100644
 --- a/src/ui/vulkan/vulkan_instance.cpp
 +++ b/src/ui/vulkan/vulkan_instance.cpp
-@@ -9,6 +9,7 @@
+@@ -9,6 +9,10 @@
   * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
   */
  
++#include <algorithm>
++#include <cstdlib>
++#include <memory>
 +#include <mutex>
  #include <sstream>
  #include <string>
  #include <unordered_map>
-@@ -26,11 +27,18 @@
+@@ -24,13 +28,52 @@
+ #if REX_PLATFORM_MAC
+ #include "vulkan_moltenvk.h"
  #endif
++#if REX_PLATFORM_WIN32
++#include <windows.h>  // [svr2011] (GetEnvironmentVariableA)
++#endif
  
  REXCVAR_DEFINE_BOOL(vulkan_log_debug_messages, true, "UI/Vulkan", "Log Vulkan debug messages");
 +REXCVAR_DEFINE_INT32(vulkan_debug_message_repeats, 5, "UI/Vulkan",
@@ -6076,10 +6140,39 @@ index 914b311..fce845f 100644
 +
 +void SetLoaderOpener(LoaderOpener opener) { g_loader_opener = opener; }
 +
++// [svr2011] An app's optional extensions (instance.h): the process environment.
++static std::string ProcessEnv(const char* name) {
++#if REX_PLATFORM_WIN32
++  char value[4096];
++  const DWORD n = GetEnvironmentVariableA(name, value, DWORD(sizeof(value)));
++  return n && n < sizeof(value) ? std::string(value, n) : std::string();
++#else
++  const char* v = std::getenv(name);
++  return v ? std::string(v) : std::string();
++#endif
++}
++static std::vector<std::string> SplitNames(const std::string& s) {
++  std::vector<std::string> out;
++  size_t at = 0;
++  while (at < s.size()) {
++    const size_t end = std::min(s.find(' ', at), s.size());
++    if (end > at) out.emplace_back(s.substr(at, end - at));
++    at = end + 1;
++  }
++  return out;
++}
++std::vector<std::string> OptionalInstanceExtensions() {
++  return SplitNames(ProcessEnv("REX_VULKAN_OPTIONAL_INSTANCE_EXTENSIONS"));
++}
++std::vector<std::string> OptionalDeviceExtensions() {
++  return SplitNames(ProcessEnv("REX_VULKAN_OPTIONAL_DEVICE_EXTENSIONS"));
++}
++std::string BufferDeviceAddressGate() { return ProcessEnv("REX_VULKAN_BUFFER_DEVICE_ADDRESS_GATE"); }
++
  std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
                                                         const bool try_enable_validation) {
    std::unique_ptr<VulkanInstance> vulkan_instance(new VulkanInstance());
-@@ -75,7 +83,14 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
+@@ -75,7 +118,14 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
      return nullptr;
    }
  #else
@@ -6095,7 +6188,23 @@ index 914b311..fce845f 100644
    if (!loader_loaded) {
      REXLOG_ERROR("Failed to load {}", platform::lib_names::kVulkanLoader);
      return nullptr;
-@@ -615,6 +630,28 @@ VkBool32 VulkanInstance::DebugUtilsMessengerCallback(
+@@ -167,6 +217,15 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
+ #endif
+   }
+ 
++  // [svr2011] the app's optional ones (instance.h), where the driver has them
++  static std::vector<std::string> app_extensions;
++  static std::unique_ptr<bool[]> app_extension_enabled;
++  app_extensions = OptionalInstanceExtensions();
++  app_extension_enabled.reset(new bool[app_extensions.size() + 1]());
++  for (size_t i = 0; i < app_extensions.size(); ++i) {
++    requested_extensions.emplace(app_extensions[i], &app_extension_enabled[i]);
++  }
++
+   std::vector<const char*> enabled_extensions;
+ 
+   std::vector<VkExtensionProperties> supported_implementation_extensions;
+@@ -615,6 +674,28 @@ VkBool32 VulkanInstance::DebugUtilsMessengerCallback(
    }
  
    auto msg = log_str.str();
