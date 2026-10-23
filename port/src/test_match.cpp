@@ -35,6 +35,7 @@
 #include "p2p.h"
 #include "rtwm_streak.h"
 #include "script_input.h"
+#include "superstar_mods.h"
 
 namespace {
 
@@ -258,6 +259,13 @@ REX_HOOK_RAW(sub_828BC5E8) {
     static std::string last;
     if (!picks.empty() && picks != last) REXLOG_INFO("[svr2011] match picks: {}", picks);
     last = picks;
+    // (the loading picture: a superstar mod's in the match - person 0's, else the next person's in slot order)
+    std::string load;
+    for (uint32_t i = 0; i < kMaxPeople && load.empty(); ++i) {
+      const uint32_t v = Rd32(base + match + kSlots + i * kSlotSize + 8);
+      if (v != kNoPick && v / 100 < 512) load = svr2011::SuperstarModLoading(v / 100);
+    }
+    svr2011::SetSuperstarLoading(load);
   }
   __imp__sub_828BC5E8(ctx, base);
 }

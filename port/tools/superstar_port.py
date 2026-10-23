@@ -436,6 +436,15 @@ class GameLoW(Game09):
     def roster(self):
         return [c for c in super().roster() if not self.name(c).upper().startswith(('REFEREE', 'HOWARD FINKEL'))]
 
+    def loading_picture(self, i):
+        """menu/LoadHD.pac LOAD S<id>: loadtex01, the superstar's 512 x 512 loading picture (DDS), or None"""
+        import arena_port
+        try:
+            raw = open(self.src.get('pac/menu/LoadHD.pac'), 'rb').read()
+            return next((d for nm, d in arena_port.group_textures(raw, 'S%d' % i) if nm.lower() == 'loadtex01'), None)
+        except (OSError, KeyError, ValueError):
+            return None
+
 
 class Game08(Game09):
     """SvR 2008 (docs/OTHER_GAMES.md): misc.pac CHAR/DAT (232 B: name +0x20, ratings +4..+11,
@@ -602,6 +611,20 @@ def pad_render(dds, size=512):
         im = im.resize((int(im.width * k), int(im.height * k)), Image.LANCZOS)
     canvas.paste(im, ((size - im.width) // 2, size - im.height))
     return svr08_char.dds_encode(canvas, 'DXT5')
+
+
+def load_picture(dds):
+    """a source game's loading picture of the superstar (any size) -> the mod's load.dds: 1024 x 512 DXT5 (the NOW
+    LOADING screen's size, superstar_mods loading=), the picture on the right half, the left half a darkened,
+    blurred stretch of it"""
+    from PIL import Image, ImageEnhance, ImageFilter
+    import svr08_char
+    im = Image.open(io.BytesIO(dds)).convert('RGB')
+    canvas = ImageEnhance.Brightness(im.resize((1024, 512), Image.LANCZOS).filter(ImageFilter.GaussianBlur(18))).enhance(0.45)
+    k = min(512 / im.width, 512 / im.height)
+    pic = im.resize((int(im.width * k), int(im.height * k)), Image.LANCZOS)
+    canvas.paste(pic, (1024 - pic.width - (512 - pic.width) // 2, (512 - pic.height) // 2))
+    return svr08_char.dds_encode(canvas.convert('RGBA'), 'DXT5')
 
 
 # The children 2011's own entrance-gear models (kind 4: Undertaker 00010304) have none of: face animation, portraits,
@@ -837,6 +860,12 @@ def build09(cid, outdir, o, rep):
         note('renders: %s SSFB/SSFC %d (padded to 512 x 512)' % (g9.label, cid))
     else:
         warn('no %s render: the base\'s are used' % g9.label)
+    if hasattr(g9, 'loading_picture'):   # (the NOW LOADING screen's picture: superstar_mods loading=)
+        lp = g9.loading_picture(cid)
+        if lp:
+            open(os.path.join(mod, 'load.dds'), 'wb').write(load_picture(lp))
+            man['loading'] = 'load.dds'
+            note('loading picture: %s LoadHD S%d -> load.dds (1024 x 512)' % (g9.label, cid))
     # model
     progress(25, 'model')
     if o.get('model') == '11' and same11 and g11.chpac(i11):
