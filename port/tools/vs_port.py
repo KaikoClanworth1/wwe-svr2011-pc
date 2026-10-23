@@ -38,10 +38,8 @@ from arena_port import SVR2008, SVR2009, SVR2010  # noqa: E402
 
 GAMES = {'svr2008': 'SvR 2008', 'svr2009': 'SvR 2009', 'svr2010': 'SvR 2010'}
 DISC = {'svr2008': '5451080B', 'svr2009': '54510826', 'svr2010': '54510844'}  # (the Xbox 360 title ids: disc_hint)
-# Rebuilt into 2011's shape (reshape) their themes no longer crash 2011 and the superstars show, but the theme's own
-# pictures and the names line don't draw yet (2011's VS screen code: being looked into).
-RESEARCH = {'svr2008': "SvR 2008's VS screens don't draw in 2011 yet - not ready yet",
-            'svr2009': "SvR 2009's VS screens don't draw in 2011 yet - not ready yet"}
+# (SvR 2008 / 2009 draw once rebuilt in 2011's shape: reshape - 7 groups, 2011's six parallax layers)
+RESEARCH = {}  # (games listed but not offered yet: id -> why)
 
 
 class BadInput(Exception):
@@ -125,6 +123,12 @@ def move_text(old, new11, fallback=()):
 # more per group (main / main2 / sub2) - 2011's VS screen then shows no superstars and names (2009) or faults
 # walking its elements (2008). reshape() gives them 2011's shape.
 REC = 0x90
+# A text group's lines are placed from its first node. 2011's first nodes are animation nodes that put the lines at
+# their absolute places; an older theme's first node is its frame picture, wherever that sits - its lines then land
+# with the frame (SvR 2009 SummerSlam: below the menu row). So each rebuilt text group gets an empty first node (the
+# root's record) at this height: the lines at 2011's places (checked on screen, 23 Oct: 2009 RAW / SummerSlam, 2008
+# RAW / Royal Rumble), the frame an ordinary picture where it always was.
+ANCHOR_Y = 233.0
 
 
 def node_name(r):
@@ -165,6 +169,28 @@ def write_layout(head, groups, tail):
     return bytes(out + tail)
 
 
+def layout_resources(y):
+    """the layout's resource records (0x4C each: id, type, index, name)"""
+    n = struct.unpack_from('<I', y, 16)[0]
+    return [y[0x20 + i * 0x4C:0x20 + (i + 1) * 0x4C] for i in range(n)]
+
+
+def parallax_as_2011(head, y11):
+    """The header's parallax layers (type 11 resources) as 2011's six (nearbg01 - 05 index 1 - 5, farbg index 6):
+    SvR 2008 / 2009 have five (farbg index 5) and 2011's VS screen then draws none of the theme (23 Oct)."""
+    res = layout_resources(head)
+    res11 = [r for r in layout_resources(y11) if struct.unpack_from('<I', r, 4)[0] == 11]
+    old = [r for r in res if struct.unpack_from('<I', r, 4)[0] == 11]
+    if not res11 or old == res11:
+        return head, False
+    keep = [r for r in res if struct.unpack_from('<I', r, 4)[0] != 11]
+    end = [r for r in keep if struct.unpack_from('<I', r, 0)[0] == 99999]
+    new = [r for r in keep if r not in end] + res11 + end
+    h = bytearray(head[:0x20]) + b''.join(new)
+    struct.pack_into('<I', h, 16, len(new))
+    return bytes(h), True
+
+
 def reshape(y, y11):
     """The old layout in 2011's shape (y11: 2011's layout of that theme): its four text groups without the lines
     2011 never fills, with 2011's dummy_tonaight where 2011's group has one; then beta alone (the old one, else
@@ -175,9 +201,11 @@ def reshape(y, y11):
         return y, []
     used = {node_name(r) for g in g11 for r in g}
     notes = []
+    anchor = bytearray(groups[0][0])
+    struct.pack_into('<f', anchor, 8, ANCHOR_Y)
     out = [groups[0]]
     for i in range(1, 5):
-        keep = [r for r in groups[i] if not node_name(r).startswith('font000_') or node_name(r) in used]
+        keep = [bytes(anchor)] + [r for r in groups[i] if not node_name(r).startswith('font000_') or node_name(r) in used]
         dropped = len(groups[i]) - len(keep)
         for r in g11[i]:
             if node_name(r) not in {node_name(k) for k in keep} and not node_name(r).startswith('font000_') \
@@ -191,6 +219,9 @@ def reshape(y, y11):
     out.append(beta)
     out.append([r for r in rest if r not in beta])
     notes.append('reshaped %d -> 7 groups' % len(groups))
+    head, moved = parallax_as_2011(head, y11)
+    if moved:
+        notes.append("2011's six parallax layers")
     return write_layout(head, out, tail), notes
 
 

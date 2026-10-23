@@ -1,8 +1,8 @@
 """An older game's renders for 2011's own superstars (vs_port.py --renders): a media pack.
 
-For every superstar of SvR 2009 / 2010 that 2011 has too (the same id and name, as superstar_port.py's list
+For every superstar of SvR 2008 - 2010 that 2011 has too (the same id and name, as superstar_port.py's list
 finds them), the old game's renders become a media pack (docs/MEDIA_MODS.md): render.<id> = its body render
-(SSFB, else SSFA) on a transparent 512 x 512, bust.<id> = its 256 x 256 bust (SSFC). 2011 then shows them
+(SSFB, else SSFA; SvR 2008: SSFA) on a transparent 512 x 512, bust.<id> = its 256 x 256 bust (SSFC). 2011 shows them
 wherever it shows renders (the VS screen, the select screen, the busts) - the player's own disc, never shipped.
 
     py vs_renders.py --game svr2010 --src <disc> --pac11 <2011 game or pac folder> --out <pack folder>
@@ -16,7 +16,7 @@ sys.path.insert(0, HERE)
 import ch_tool  # noqa: E402
 import superstar_port as sp  # noqa: E402
 
-LABELS = {'svr2009': 'SvR 2009', 'svr2010': 'SvR 2010'}
+LABELS = {'svr2008': 'SvR 2008', 'svr2009': 'SvR 2009', 'svr2010': 'SvR 2010'}
 
 
 def pac_folder(pac11):
@@ -28,7 +28,7 @@ def pac_folder(pac11):
 
 def convert(game, src, pac11, out, cache=None):
     if game not in LABELS:
-        raise sp.BadInput('renders from %s are not ready (SvR 2009 and 2010 only)' % game)
+        raise sp.BadInput('renders from %s are not ready (SvR 2008 - 2010 only)' % game)
     S = sp.svr10()
     s = sp.Src(src, cache or os.path.join(HERE, 'work', 'src', game))
     g = sp.open_game(game, s)
@@ -41,7 +41,8 @@ def convert(game, src, pac11, out, cache=None):
         i11 = g.id11(c) if hasattr(g, 'id11') else c
         if i11 not in play or S.norm(g11.name(i11)) != S.norm(g.name(c)):
             continue
-        body = ssf.get(('SSFB', c)) or ssf.get(('SSFA', c))
+        # (the body render: 2009 / 2010's SSFB, 2008's SSFA - its SSFB is a 512 x 256 picture)
+        body = (ssf.get(('SSFA', c)) or ssf.get(('SSFB', c))) if game == 'svr2008' else (ssf.get(('SSFB', c)) or ssf.get(('SSFA', c)))
         bust = ssf.get(('SSFC', c))
         if not body and not bust:
             continue
