@@ -1491,6 +1491,7 @@ const uint8_t kModdedRgba[] = {
 };
 constexpr uint32_t kBadgeW = 256, kBadgeH = 64;
 constexpr uint32_t kBadgeCaller = 0x82466E40;  // sub_82466830: sub_828B6CD0(id) at the badge
+constexpr uint32_t kCaePickCaller = 0x824633CC;  // sub_82463090 state 14: sub_828B6CD0(id) - downloaded: easy editor
 
 struct Badge {
   svrfmt::Bytes data;  // swapped as in memory
@@ -1652,6 +1653,21 @@ void BadgeLoop() {
 // the cursor).
 REX_EXTERN(__imp__sub_828B6CD0);
 REX_HOOK_RAW(sub_828B6CD0) {
+  // CREATE AN ENTRANCE: the superstar picked (select screen state 14, sub_82463090) goes to the EASY / ADVANCED
+  // popup unless he is "downloaded" - then straight to the easy editor (state 23). Mods sit on downloaded slots,
+  // and the user asked for ADVANCED on the real DLC superstars too: none counts as downloaded here.
+  if (uint32_t(ctx.lr) == kCaePickCaller) {
+    __imp__sub_828B6CD0(ctx, base);
+    if (ctx.r3.u32) {
+      static bool told = false;
+      if (!told) {
+        told = true;
+        REXLOG_INFO("[svr2011] create an entrance: ADVANCED CREATION offered for downloaded superstars too");
+      }
+      ctx.r3.u64 = 0;
+    }
+    return;
+  }
   if (uint32_t(ctx.lr) != kBadgeCaller || g_badges.empty()) {
     __imp__sub_828B6CD0(ctx, base);
     return;
