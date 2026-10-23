@@ -137,6 +137,15 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
     <tbody id="live"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
   </table></div>
 
+  <h2>Ping <span class="spacer"></span><span class="note" id="ping-note"></span></h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Player</th><th>Last match ping</th><th>Path</th><th>Match network</th><th>Relay now</th><th>NAT</th><th>Version</th><th>Last match</th></tr></thead>
+    <tbody id="pings"><tr><td colspan="8" class="empty">Loading&hellip;</td></tr></tbody>
+  </table></div>
+
+  <h2>Player <span class="spacer"></span><input class="filter" id="f-player" placeholder="A player's name (Enter)"></h2>
+  <div id="player"><p class="empty">Type a name, or click a player in Ping.</p></div>
+
   <h2>Settings <span class="spacer"></span></h2>
   <div class="set" id="settings"><span class="empty">Loading&hellip;</span></div>
   <div class="row"><button class="btn" id="save-set">Save settings</button>
@@ -391,6 +400,61 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
       }).join('') : '<tr><td colspan="6" class="empty">No sessions reported right now (games report while they host).</td></tr>';
     }).catch(function () {});
   }
+  // Ping: who's online now, their last match's network report (each game sends one a
+  // match: the round trip to the other player, the path), and how they're on the relay now.
+  function pingCell(ms) {
+    if (ms == null) return '<span class="note">-</span>';
+    var cls = ms <= 80 ? ' on' : '';
+    return '<span class="tag' + cls + '">' + ms + ' ms</span>';
+  }
+  function pings() {
+    api('api/admin/pings').then(function (d) {
+      var withPing = d.players.filter(function (p) { return p.last; });
+      el('ping-note').textContent = d.players.length + ' online · ' + withPing.length + ' with a match report';
+      el('pings').innerHTML = d.players.length ? d.players.map(function (p) {
+        var l = p.last || {};
+        return '<tr><td><a href="#" data-player="' + esc(p.name) + '">' + esc(p.name) + '</a></td><td>' +
+          (p.last ? pingCell(l.rtt) : '<span class="note">no match yet</span>') + '</td><td>' + esc(l.path || '') +
+          '</td><td>' + esc(l.network || '') + '</td><td>' + (p.link ? '<span class="tag">' + esc(p.link) + '</span>' : '') +
+          '</td><td>' + esc(l.nat || '') + '</td><td>' + esc(l.version || '') + '</td><td class="note">' +
+          (p.last ? ago(l.at) : '') + '</td></tr>';
+      }).join('') : '<tr><td colspan="8" class="empty">Nobody online right now.</td></tr>';
+    }).catch(function () {});
+  }
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest('[data-player]');
+    if (!a) return;
+    e.preventDefault();
+    el('f-player').value = a.getAttribute('data-player');
+    player(a.getAttribute('data-player'));
+  });
+  el('f-player').addEventListener('keydown', function (e) { if (e.key === 'Enter') player(this.value.trim()); });
+  // A player: wins, losses, win rate (Ranked matches: the stats their game wrote), ping, then the recent matches.
+  function player(name) {
+    if (!name) return;
+    api('api/admin/player?name=' + encodeURIComponent(name)).then(function (d) {
+      var t = d.totals || {}, n = function (k) { return t[k] || 0; };
+      var games = n('win') + n('loss') + n('draw') + n('dq') + n('disconnect');
+      var rows = d.matches.map(function (m) {
+        var net = m.net || {};
+        return '<tr><td class="note">' + ago(m.at) + '</td><td>' + esc(m.type) + '</td><td><span class="tag' +
+          (m.result === 'win' ? ' on' : '') + '">' + esc(m.result) + '</span></td><td>' + (m.rated > 0 ? '+' : '') + m.rated +
+          '</td><td>' + (m.net ? pingCell(net.rtt) : '<span class="note">-</span>') + '</td><td>' + esc(net.path || '') +
+          '</td><td>' + esc(net.network || '') + '</td></tr>';
+      }).join('');
+      el('player').innerHTML = '<p><b>' + esc(d.name) + '</b> · ' + games + ' ranked match' + (games === 1 ? '' : 'es') +
+        ' · <b>' + n('win') + '</b> won, <b>' + n('loss') + '</b> lost' + (n('draw') ? ', ' + n('draw') + ' drawn' : '') +
+        (n('dq') ? ', ' + n('dq') + ' DQ' : '') + (n('disconnect') ? ', ' + n('disconnect') + ' disconnected' : '') +
+        ' · win rate ' + (d.win_rate == null ? '-' : d.win_rate + '%') +
+        (d.rating != null ? ' · rating ' + d.rating : '') +
+        ' · ping ' + (d.ping.avg == null ? '-' : d.ping.avg + ' ms average, ' + d.ping.max + ' ms max (' + d.ping.matches + ' match' + (d.ping.matches === 1 ? '' : 'es') + ')') +
+        '</p><p class="note">Ranked matches only (their game writes those results); every online match sends its ping.</p>' +
+        '<div class="scroll"><table><thead><tr><th>When</th><th>Match</th><th>Result</th><th>Rating</th><th>Ping</th><th>Path</th><th>Network</th></tr></thead><tbody>' +
+        (rows || '<tr><td colspan="7" class="empty">No ranked matches recorded yet.</td></tr>') + '</tbody></table></div>';
+    }).catch(function (e) {
+      el('player').innerHTML = '<p class="empty">' + esc(String(e.message).indexOf('404') === 0 ? 'No player called ' + name + '.' : e.message) + '</p>';
+    });
+  }
   var settingsList = [];
   function settings() {
     api('api/admin/settings').then(function (d) {
@@ -497,8 +561,9 @@ td .tag.bad { color: #ffb4bb; border-color: #5c2a30; }
         .finally(function () { location.href = 'login'; });
     });
   }
-  stats(); lists(); live(); settings(); log();
+  stats(); lists(); live(); pings(); settings(); log();
   setInterval(live, 5000);
+  setInterval(pings, 10000);
   setInterval(log, 15000);
   setInterval(stats, 5000);
   setInterval(lists, 30000);
