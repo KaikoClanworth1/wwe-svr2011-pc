@@ -669,17 +669,21 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
         Wr32(copy.data() + 0x04, k == 0 ? kWeaponsText : kStagesText);
         Wr32(copy.data() + 0x5C, m.normal);
         Wr32(copy.data() + 0x40, 0);
-        if (k == 1 && submenu) {  // (THREE STAGES OF HELL: a submenu of the sets - a new node, its rows a new group)
+        if (k == 1 && submenu) {  // (THREE STAGES OF HELL: a submenu of the sets, its rows a new group)
+          // Its node: the one of the record before it (node ids, above). A new top id here, in the middle of the
+          // table, left B doing nothing in the sets (player report, 2.1.5: "Gauntlet > Three Stages of Hell, you
+          // can't go back any more" - HANDICAP's and 6-MAN's).
+          const uint32_t shared = Rd32(out.data() + out.size() - kRec + 0x1C);
           std::vector<uint8_t> row(submenu, submenu + kRec);
           Wr32(row.data() + 0x00, kStagesLabel);
           Wr32(row.data() + 0x04, kStagesText);
           Wr32(row.data() + 0x18, m.group);
-          Wr32(row.data() + 0x1C, node);
+          Wr32(row.data() + 0x1C, shared);
           Wr32(row.data() + 0x38, Rd32(rec + 0x38));
           Wr32(row.data() + 0x40, 0);
           copy = row;
-          AddStageSets({node, Rd32(rec + 0x14) + 0x100, m.normal}, group, node + 1);
-          node += 1 + uint32_t(SetsFor(m.normal).size());
+          AddStageSets({shared, Rd32(rec + 0x14) + 0x100, m.normal}, group, node);
+          node += uint32_t(SetsFor(m.normal).size());
           ++group;
         }
         uint8_t* prev = out.data() + out.size() - kRec;  // (the group's last row stays last)
