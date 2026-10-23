@@ -48,11 +48,41 @@ LOG = None
 LOG_LOCK = threading.Lock()
 
 
+LOG_MAX = 50 << 20   # (--log rotates at this size: server.log -> .1 -> .2 -> .3, the oldest dropped)
+LOG_KEEP = 3
+
+
+def rotate_log():
+    """Caller holds LOG_LOCK. Copy-and-truncate (not rename): a supervisor and its child both hold the file
+    open, and Windows can't rename an open file; appends from either land at the new end."""
+    import shutil
+    try:
+        path = LOG.name
+        if os.fstat(LOG.fileno()).st_size < LOG_MAX:
+            return
+        for n in range(LOG_KEEP - 1, 0, -1):
+            if os.path.exists("%s.%d" % (path, n)):
+                os.replace("%s.%d" % (path, n), "%s.%d" % (path, n + 1))
+        shutil.copyfile(path, path + ".1")
+        LOG.seek(0)
+        LOG.truncate()
+        LOG.write(time.strftime("%H:%M:%S ") + "log: rotated (the earlier lines are in %s.1)\n" %
+                  os.path.basename(path))
+    except (OSError, AttributeError, ValueError):
+        pass
+
+
+_log_lines = [0]
+
+
 def log(*parts):
     line = time.strftime("%H:%M:%S ") + " ".join(str(p) for p in parts)
     print(line, flush=True)
     if LOG:
         with LOG_LOCK:
+            _log_lines[0] += 1
+            if _log_lines[0] % 500 == 1:   # (the size, now and then)
+                rotate_log()
             LOG.write(line + "\n")
             LOG.flush()
 
@@ -184,6 +214,49 @@ class LocalBlobs:
             except OSError:
                 pass
 
+    def list(self):
+        """Every blob file here: [{sha, size (on disk), packed, mtime, kind, name}] (the audit). A zip's
+        manifest name / type / version are read from it, for the dashboard."""
+        out = []
+        for d in sorted(os.listdir(self.folder)) if os.path.isdir(self.folder) else []:
+            sub = os.path.join(self.folder, d)
+            if len(d) != 2 or not os.path.isdir(sub):
+                continue
+            for f in os.listdir(sub):
+                sha, _, ext = f.partition(".")
+                if ext not in ("bin", "xz") or len(sha) != 64:
+                    continue
+                path = os.path.join(sub, f)
+                try:
+                    st = os.stat(path)
+                    with open(path, "rb") as fh:
+                        head = fh.read(12)
+                except OSError:
+                    continue
+                kind = ("xz" if head[:6] == b"\xfd7zXZ\x00" else "zip" if head[:4] == b"PK\x03\x04" else
+                        "jpeg" if head[:3] == b"\xff\xd8\xff" else "mp4" if head[4:8] == b"ftyp" else
+                        "mp3" if head[:3] == b"ID3" or head[:2] in (b"\xff\xfb", b"\xff\xf3") else "other")
+                row = {"sha": sha, "size": st.st_size, "packed": ext == "xz", "mtime": st.st_mtime, "kind": kind}
+                if kind == "zip":
+                    row["name"] = zip_title(path)
+                out.append(row)
+        return out
+
+
+def zip_title(path):
+    """A .svrmod's "name version (type)" from its manifest.txt, or ''."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = [n for n in z.namelist() if n.replace("\\", "/").rsplit("/", 1)[-1].lower() == "manifest.txt"]
+            if not names:
+                return ""
+            text = z.read(sorted(names, key=len)[0])[:4096].decode("utf-8", "replace")
+    except (zipfile.BadZipFile, OSError, RuntimeError, ValueError):
+        return ""
+    m = {k.strip().lower(): v.strip() for k, v in (ln.split("=", 1) for ln in text.splitlines() if "=" in ln)}
+    return ("%s %s (%s)" % (m.get("name", "?"), m.get("version", ""), m.get("type", "?"))).replace("  ", " ")
+
 
 class RemoteBlobs:
     """Blob bytes on a storage node (server.py --role storage, the user's PC behind the VPS): GET / PUT /
@@ -225,6 +298,14 @@ class RemoteBlobs:
             self._req("DELETE", sha).close()
         except Exception:
             pass
+
+    def list(self):
+        """The node's blob files (GET <url>/blobs): as LocalBlobs.list. Raises when the node can't answer."""
+        import json as _json
+        import urllib.request
+        r = urllib.request.Request(self.url + "/blobs", headers={"X-Storage-Key": self.key})
+        with urllib.request.urlopen(r, timeout=120) as f:
+            return _json.loads(f.read())
 
 
 class Store:
