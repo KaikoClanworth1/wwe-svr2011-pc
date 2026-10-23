@@ -54,6 +54,12 @@ namespace svr2011 {
 
 bool CrowdMatch() { return g_crowd.load(); }
 
+bool CrowdAreaFor(uint8_t* base) {
+  static const bool test = std::getenv("SVR2011_TEST_CROWD") != nullptr;
+  const uint32_t rule = base[kLive], arena = Rd32(base + kLive + 64);  // (the rule: the settings' first byte)
+  return rule >= kExtremeFirst && rule <= kExtremeLast && arena != kBackstageArena && (test || CrowdArena());
+}
+
 uint32_t CrowdCollisionId(uint8_t* base, uint32_t lr, uint32_t id) {
   if (lr < kLoaderFirst || lr >= kLoaderEnd || id != kMatchCollision) return id;
   const uint32_t rule = base[kLive], arena = Rd32(base + kLive + 64);
