@@ -66,6 +66,7 @@
 #include "online_overlay.h"
 #include "online_rules.h"
 #include "players.h"
+#include "mem_trace.h"
 #include "superstar_mods.h"
 #if SVR2011_DEBUG_SUITE
 #include "debug_suite/debug_suite.h"
@@ -1193,6 +1194,7 @@ REX_HOOK_RAW(sub_826E02A8) {
 REX_EXTERN(__imp__sub_8269B2D0);
 REX_HOOK_RAW(sub_8269B2D0) {
   const uint32_t ptr = ctx.r3.u32;
+  if (svr2011::MemTraceOn()) svr2011::MemTraceDelete(ptr, uint32_t(ctx.lr));  // (test aid: mem_trace.h)
   if (svr2011::CawHeapFree(ptr)) return;  // (a CAW editor part from the fallback memory: caw_limits.h)
   if (ptr && !g_frame_commands.empty() && std::this_thread::get_id() == g_logic_thread.load()) {
     constexpr uint32_t kWithin = 0x4000;  // (the object: at or just after the block's start)

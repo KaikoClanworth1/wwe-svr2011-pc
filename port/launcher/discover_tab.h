@@ -7,13 +7,16 @@
 
 #include "mods_tab.h" /* (mods_add_fn: the launcher's control helper) */
 
-/* The online server's base address (e.g. https://sho-ti.me/svr) and the account's token / name ("" signed out). */
+/* The online server's base address (e.g. https://sho-ti.me/svr) and the signed-in account: its token, name
+   ("" signed out) and id (*id: -1 signed out) - a mod is the player's own when its owner is that id. */
 typedef void (*discover_server_fn)(WCHAR *out, int n);
-typedef void (*discover_account_fn)(char *token, size_t token_n, WCHAR *name, size_t name_n);
+typedef void (*discover_account_fn)(char *token, size_t token_n, WCHAR *name, size_t name_n, long long *id);
 
 /* Builds the page's controls (ids id_base .. id_base + 63). */
 void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_server_fn server,
                     discover_account_fn account);
+/* Where Discovery remembers the last visit and the versions downloaded from it (launcher.ini). */
+void discover_set_ini(const WCHAR *ini);
 /* The page shown (the first time: the newest mods). */
 void discover_show(const WCHAR *game_dir);
 int discover_command(int id, int code);

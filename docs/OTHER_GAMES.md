@@ -19,6 +19,7 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
 | **SvR 2007 (360)** | `pac/bg/bg<k>.pac`, many arenas each | **ready** | as 2008, plus the host's arena motions |
 | **SvR 2008 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | texture sets moved to 2011's ids, crowd from a 2011 arena (`--pac11`) |
 | **SvR 2009 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | as 2008, plus light numbers remapped |
+| **Legends of WrestleMania (360)** | `pac/bg/bg201-216, 219.pac`, EPAC | **ready** | SvR 2009's format (the 2008 path); see below |
 | **SvR 2010 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | the same format as 2011: the file is used as it is |
 | **WWE '12 (360)** | `pac/bg/bgNN.pac`, plain EPAC | **ready (in the Mod Maker)** | the WWE '13 converter (`svrmod wwe13`) takes it as is |
 | **WWE '13 (360)** | `pac/bg/bgNN.pac`, `0x0FF512ED` LZX container around an EPK8 | **ready (in the Mod Maker)** | `svrfmt/wwe13.cpp` (`svrmod wwe13`); see below |
@@ -149,6 +150,21 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
   12 Backlash, 13 Judgment Day, 14 Night of Champions, 15 Bash,
   16 One Night Stand, 17 Cyber Sunday, 18 Vengeance (from the texture
   names; check in game).
+
+### Legends of WrestleMania
+
+- **Format:** SvR 2009's arenas (`arena_port.py` game `low`, the 2008 path:
+  texture sets moved, crowd / table pictures / card from 2011 RAW, 2011's
+  light set 10, light numbers remapped).
+- **Arenas:** bg201-215 WrestleMania I - XV (its `string.pac` SDB 0100, entry
+  674 + n - 200), bg216 Royal Rumble 2008 (MatchHD `MD8I` holds logoRR08),
+  bg219 its Rumble-match copy (the same textures). The WrestleManias play as
+  2011's WrestleMania slot, the Royal Rumbles as Royal Rumble. bg223 / 224 /
+  225 / 250 are its Create Moves, prop check and approval stages: not listed
+  (they still convert as one arena file).
+- **Pictures:** MatchHD `M<arena in hex>I` (`MC9I` = bg201; 2008 / 2009 name
+  them in decimal): the loading and VS pictures.
+- **Tested:** WrestleMania III (bg203) plays in 2011 (24 Oct 2026).
 
 ### WWE '12
 
@@ -286,6 +302,25 @@ names: SYM `PAC/MOVES.PAC` CATE (lists of 40-byte {id, name +8}), HCTP / SvR 200
 and name), else one of the same name with another number that 2011 uses in that kind of slot ("similar"),
 else the base's - no PS2 motions are ported. Mapped slots that get a 2011 move: JBI 34 % (EDIT.PAC MOVS entry 999 names; its records are SYM's layout + 4 and SYM's ids), SYM 32 %, HCTP 37 %, SvR 2004
 45 %, 2006 45 %, PS2 2007 60 %, 2008 60 %, 2009 69 %, 2010 82 % (offline, every superstar of each disc).
+
+### Legends of WrestleMania (360)
+
+`superstar_port.py` game `low` (disc id 54510838; `GameLoW`, on the SvR 2009 reader). SvR 2009's engine, all pacs
+EPAC: `pac/ch/ch100-254.pac` + `chEtc.pac`, `pac/evt/Nyujyo0-3.pac`, themes `sound/music1.yaf` / `music2.yaf`
+(record music id x 100), titantrons `movies/titantron/<movie id>.bik` (Bink 1).
+- **Records:** chEtc CHAR/DAT 262 B = 2009's with 12 rating bytes (twice) where 2009 keeps 8 (name +46 raw, full
+  name +114, short +182; read as 2009's record); CHAR/PRO 504 B, entrance block +0xE4 as 2009 (music, movie,
+  entrance 4000 + id - 100, champion entrance). 89 superstars with models (ids 100-254).
+- **Ids:** its own (100 The Rock); 2011's by name - 33 of them (its Ted DiBiase, 136, is the father: not 2011's 261).
+- **Model:** `svr08_char.py` unchanged (The Rock: 2 attires, 152 of 1024 pages; Ultimate Warrior 202 pages: needs
+  2.1.6+). Renders: `DLC_HD.pac` groups SSFA / SSFB / SSFC at the top level (2009 nests them in MENU), entries
+  named by the decimal id. Loading pictures: `menu/LoadHD.pac` LOAD `S<id>` (not used yet).
+- **Entrances:** `entrance_port.py` game `low` (2009's scripts plus LoW's generic extras); the ring-cart
+  "Gondola" entrances (4170-4186, 4230-4233, 4350-4359) are **not supported yet**.
+- **Not ported yet:** ratings and abilities (its DAT +4..+15 rate on another scheme: 0x01 = unused) and the
+  **moveset** (the base's; the `moveset` / `moveset-pack` verbs say so) - the same open item as 2009's slot map.
+- **Tested** (24 Oct 2026): The Rock, Andre the Giant, Ultimate Warrior converted; Ultimate Warrior in a match with
+  his model, theme, titantron and name plate.
 
 ### Converter plan
 

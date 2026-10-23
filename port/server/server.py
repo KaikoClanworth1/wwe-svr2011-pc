@@ -756,7 +756,7 @@ class Service:
         token = self.accounts.new_token(account, ip)
         self.stats.count("registrations" if register else "logins")
         gs.log("accounts: %s %s from %s" % (account["name"], "registered" if register else "signed in", ip))
-        return web.json_response({"ok": True, "token": token, "name": account["name"],
+        return web.json_response({"ok": True, "token": token, "name": account["name"], "id": account["id"],
                                   "xuid": "%016X" % Accounts.xuid(account)})
 
     async def api_logout(self, request):
@@ -1279,8 +1279,163 @@ class Service:
             await asyncio.get_running_loop().run_in_executor(None, discovery.delete, self.store, mid)
             gs.log("discovery: mod %d deleted by its owner %s" % (mid, account["name"]))
             return web.json_response({"ok": True})
+        if request.method == "PATCH":
+            return await self.api_mod_edit(request, mid)
+        if request.method not in ("GET", "HEAD"):
+            return web.Response(status=405)
         info, _ = discovery.get(self.store, mid)
-        return web.json_response(info) if info else web.Response(status=404)
+        if not info:
+            return web.Response(status=404)
+        # (asked with a Bearer token: is it the asker's own mod - the launchers' "my mod" buttons go by this)
+        account = self.account(request) if request.headers.get("Authorization") else None
+        info["mine"] = bool(account) and info["owner"] == account["id"]
+        return web.json_response(info)
+
+    # The owner's edits (docs/DISCOVERY_API.md): the same check as DELETE (the Bearer account is the uploader's),
+    # OWNER_EDITS an hour per account; a file update also takes the upload slot.
+    OWNER_EDITS = 30
+
+    def mod_owner_check(self, request, mid):
+        """(account, None) when the Bearer account owns mod mid, else (None, an error response)."""
+        account = self.account(request)
+        if not account:
+            return None, web.json_response({"ok": False, "error": "Sign in online first."}, status=401)
+        owner = discovery.owner_of(self.store, mid) if mid is not None else None
+        if owner is None:
+            return None, web.json_response({"ok": False, "error": "No such mod."}, status=404)
+        if owner != account["id"]:
+            return None, web.json_response({"ok": False, "error": "Only its uploader can change it."}, status=403)
+        if self.throttled("modedit:%d" % account["id"], limit=self.OWNER_EDITS, window=3600):
+            return None, web.json_response({"ok": False, "error": "Too many changes - wait a while."}, status=429)
+        return account, None
+
+    @staticmethod
+    def mod_fields(raw):
+        """The editable text fields of a request, limited as an upload's ({} entries left out); types -> bits.
+        Returns (fields, why)."""
+        fields = {}
+        for k, limit in discovery.MAX_TEXT.items():
+            if k in raw and raw[k] is not None:
+                fields[k] = str(raw[k]).strip()[:limit]
+        if "tags" in fields:
+            fields["tags"] = discovery.clean_tags(fields["tags"])
+        if "types" in raw and raw["types"] is not None:
+            t = raw["types"]
+            names = t if isinstance(t, list) else str(t).split(",")
+            fields["types"] = sum(v for k, v in discovery.TYPES.items() if k in [str(n).strip().lower() for n in names])
+            if not fields["types"]:
+                return None, "Pick the mod's type."
+        if "name" in fields and not fields["name"]:
+            return None, "A name is needed."
+        if "version" in fields and not fields["version"]:
+            return None, "A version is needed."
+        return fields, None
+
+    async def api_mod_edit(self, request, mid):
+        account, err = self.mod_owner_check(request, mid)
+        if err:
+            return err
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            return web.json_response({"ok": False, "error": "Send a JSON object."}, status=400)
+        fields, why = self.mod_fields(body)
+        order = body.get("picture_order")
+        if not why and order is not None:
+            if not (isinstance(order, list) and sorted(order) == list(range(discovery.IMAGES)) and
+                    all(isinstance(i, int) for i in order)):
+                why = "picture_order: the numbers 0-3, each once."
+            elif order == list(range(discovery.IMAGES)):
+                order = None
+        if not why and not fields and order is None:
+            why = "Nothing to change."
+        if why:
+            return web.json_response({"ok": False, "error": why}, status=400)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, discovery.edit, self.store, mid, fields, order)
+        what = [w for w, on in (("info", fields), ("pictures", order is not None)) if on]
+        gs.log("discovery: mod %d updated by its owner (%s)%s" % (
+            mid, " + ".join(what), (": " + ", ".join(sorted(fields))) if fields else ""))
+        info, _ = discovery.get(self.store, mid, True)
+        return web.json_response({"ok": True, "mod": info})
+
+    async def api_mod_update_file(self, request):
+        """PUT multipart: svrmod (the new file) + version (a new one); maybe name / tags / description / types."""
+        mid = self._mod_id(request)
+        account, err = self.mod_owner_check(request, mid)
+        if err:
+            return err
+        length = request.content_length
+        if not length:
+            return web.json_response({"ok": False, "error": "no length"}, status=411)
+        if length > discovery.MAX_MOD + (8 << 20):
+            return web.json_response({"ok": False, "error": "larger than %d MB" % (discovery.MAX_MOD >> 20)},
+                                     status=413)
+        if self.mod_upload.locked():
+            return web.json_response({"ok": False, "error": "Another mod is being stored - try again in a minute."},
+                                     status=503)
+        async with self.mod_upload:
+            raw, data, file_name = {}, None, ""
+            reader = await request.multipart()
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                name = part.name or ""
+                if name == "svrmod":
+                    file_name = os.path.basename((part.filename or "").replace("\\", "/"))
+                    data = await part.read()
+                elif name in discovery.MAX_TEXT or name == "types":
+                    raw[name] = (await part.text()).strip()[:discovery.MAX_TEXT.get(name, 100)]
+                else:
+                    await part.release()
+            fields, why = self.mod_fields(raw)
+            old, _ = discovery.get(self.store, mid, True)
+            loop = asyncio.get_running_loop()
+            if not why:
+                if not data or not file_name.lower().endswith(".svrmod"):
+                    why = "Only a .svrmod file can be uploaded."
+                elif not fields.get("version"):
+                    why = "Give the update a version."
+                elif fields["version"] == (old or {}).get("version"):
+                    why = "Give the update a new version (it is %s now)." % old["version"]
+            if not why:
+                manifest, why = await loop.run_in_executor(None, discovery.check_svrmod, data)
+            if why:
+                gs.log("discovery: update of mod %d from %s refused: %s" % (mid, account["name"], why))
+                return web.json_response({"ok": False, "error": why}, status=400)
+            was = await loop.run_in_executor(None, discovery.replace_file, self.store, mid, data, file_name, fields)
+            if was is None:
+                return web.json_response({"ok": False, "error": "No such mod."}, status=404)
+            gs.log("discovery: mod %d updated by its owner (file) %s -> %s (%d bytes, %s)" % (
+                mid, was, fields["version"], len(data), manifest.get("type", "?")))
+            info, _ = discovery.get(self.store, mid, True)
+            return web.json_response({"ok": True, "mod": info})
+
+    async def api_mod_update_picture(self, request):
+        """PUT: the body is picture n (0-3), a 1024 x 768 JPEG."""
+        mid = self._mod_id(request)
+        try:
+            n = int(request.match_info["n"])
+        except ValueError:
+            n = -1
+        if not 0 <= n < discovery.IMAGES:
+            return web.json_response({"ok": False, "error": "Pictures are 0-3."}, status=400)
+        account, err = self.mod_owner_check(request, mid)
+        if err:
+            return err
+        if (request.content_length or 0) > discovery.MAX_IMG:
+            return web.json_response({"ok": False, "error": "A picture is at most 1 MB."}, status=413)
+        img = await request.content.read(discovery.MAX_IMG + 1)
+        if len(img) > discovery.MAX_IMG or discovery.jpeg_size(img) != (discovery.IMG_W, discovery.IMG_H):
+            return web.json_response({"ok": False, "error": "Send a %d x %d JPEG." % (discovery.IMG_W, discovery.IMG_H)},
+                                     status=400)
+        await asyncio.get_running_loop().run_in_executor(None, discovery.replace_picture, self.store, mid, n, img)
+        gs.log("discovery: mod %d updated by its owner (pictures): picture %d" % (mid, n + 1))
+        info, _ = discovery.get(self.store, mid, True)
+        return web.json_response({"ok": True, "mod": info})
 
     async def api_mod_file(self, request):
         mid = self._mod_id(request)
@@ -1308,7 +1463,12 @@ class Service:
         data = await asyncio.get_running_loop().run_in_executor(None, self.store._get_blob, blobs["images"][n])
         if data is None:
             return web.Response(status=404)
-        return web.Response(body=data, content_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+        etag = '"%s"' % blobs["images"][n][:32]
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(status=304, headers={"ETag": etag})
+        # (clients ask for img/{n}?v=<pics>: a changed picture is a new URL)
+        return web.Response(body=data, content_type="image/jpeg",
+                            headers={"Cache-Control": "public, max-age=86400", "ETag": etag})
 
     async def api_mod_upload(self, request):
         """multipart: name, version, types (entrance,superstar,arena,moveset), tags, description; svrmod (the file);
@@ -1660,11 +1820,23 @@ class Service:
 
     @admin_only
     async def admin_pings(self, request):
-        """Players online now (presence) with their last match's network report and their relay link."""
+        """Players online now (presence) with their last match's network report (sent when a match ends), what
+        they're in now (the hosts' live reports: session) and their relay link."""
         t = now()
         cutoff = t - SETTINGS["presence_window"]
         ids = [a for a, at in list(self.stats.recent.items()) if at >= cutoff]
         links = self.relay_links()
+        # (a game sends its match report once a match ENDS: a player in a match now shows it from the hosts'
+        # live session reports - in a match or a lobby, the path the host sees, since when)
+        sessions = {}
+        for v in list(self.live.values()):
+            if t - v["seen"] > LIVE_LIFE:
+                continue
+            for p in v["players"]:
+                key = p["name"].lower()
+                if key and (key not in sessions or v["state"] == "match"):
+                    sessions[key] = {"state": v["state"], "path": p["path"], "since": v["state_since"],
+                                     "host": v["host"], "rule": v.get("rule", ""), "rule_name": v.get("rule_name", "")}
 
         def rows():
             out = []
@@ -1677,6 +1849,7 @@ class Service:
                         "SELECT at, path, nat, rtt, network, version FROM net_events WHERE account = ? "
                         "ORDER BY at DESC LIMIT 1", (aid,)).fetchone()
                     out.append({"name": a[0], "seen": self.stats.recent.get(aid, 0), "link": links.get(a[0], ""),
+                                "session": sessions.get(a[0].lower()),
                                 "last": dict(zip(("at", "path", "nat", "rtt", "network", "version"), e)) if e else None})
             return sorted(out, key=lambda r: r["name"].lower())
 
@@ -1920,8 +2093,10 @@ class Service:
         app.router.add_route("*", b + "/game/{tail:.*}", self.game)
         app.router.add_get(b + "/api/mods", self.api_mods)
         app.router.add_post(b + "/api/mods", self.api_mod_upload)
-        app.router.add_route("*", b + "/api/mods/{id}", self.api_mod)  # (GET; DELETE: its owner)
+        app.router.add_route("*", b + "/api/mods/{id}", self.api_mod)  # (GET; PATCH / DELETE: its owner)
         app.router.add_get(b + "/api/mods/{id}/file", self.api_mod_file)
+        app.router.add_put(b + "/api/mods/{id}/file", self.api_mod_update_file)  # (its owner: an update)
+        app.router.add_put(b + "/api/mods/{id}/pictures/{n}", self.api_mod_update_picture)  # (its owner)
         app.router.add_get(b + "/api/mods/{id}/img/{n}", self.api_mod_image)
         self.relay.routes(app, b)
         app.router.add_get("/__health", self.health)

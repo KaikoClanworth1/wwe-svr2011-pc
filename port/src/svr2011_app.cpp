@@ -54,6 +54,7 @@
 #include "crowd_signs.h"
 #include "hd_movies.h"
 #include "media_mods.h"
+#include "vs_styles.h"
 #include "frame_rate.h"
 #include "perf_hooks.h"
 #include "crash_report.h"
@@ -729,6 +730,7 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallJukebox(runtime()->memory());  // MY WWE -> JUKEBOX (jukebox.h)
   // Superstar mods: new characters in the free DLC slots (superstar_mods.h).
   svr2011::InstallMediaMods(runtime()->memory());  // (arenas branch: before the superstar mods mount its pac)
+  svr2011::InstallVsStyles(runtime()->memory());   // (the same: its overlay pac)
   svr2011::KeepWindowAlive();
 #ifndef SVR2011_D3D_TRACE
   svr2011::InstallModelMem(runtime()->memory());  // (model_mem.cpp)

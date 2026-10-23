@@ -279,9 +279,9 @@ constexpr uint32_t kOurPlaces = 64;
 uint32_t g_our_entries = 0;  // (guest: ours, allocated once)
 uint32_t g_lent_stock = 0, g_lent_entries = 0, g_lent_count = 0;  // the game's, while ours are in
 
-void GiveBackStock(uint8_t* base) {
+void GiveBackStock(uint8_t* base, uint32_t stock = 0) {
   if (!g_lent_stock) return;
-  if (Rd32(base + kUnderRing) == g_lent_stock && Rd32(base + g_lent_stock + 8) == g_our_entries) {
+  if ((stock ? stock : Rd32(base + kUnderRing)) == g_lent_stock && Rd32(base + g_lent_stock + 8) == g_our_entries) {
     Wr32(base + g_lent_stock, g_lent_count);
     Wr32(base + g_lent_stock + 8, g_lent_entries);
   }
@@ -295,6 +295,15 @@ REX_EXTERN(__imp__sub_82B8E9B8);
 REX_HOOK_RAW(sub_82B8E9B8) {
   GiveBackStock(base);
   __imp__sub_82B8E9B8(ctx, base);
+}
+
+// ... and its arrays (+4, +8: the entries) freed with the game's heap: sub_822DFCE0(stock). Quitting a match frees
+// it from the world update (sub_822FA930) before sub_82B8E9B8 - with our entries still in, the game freed our
+// system-heap array: a crash or a black screen after QUIT MATCH (a player's report, 23 Oct).
+REX_EXTERN(__imp__sub_822DFCE0);
+REX_HOOK_RAW(sub_822DFCE0) {
+  GiveBackStock(base, ctx.r3.u32);
+  __imp__sub_822DFCE0(ctx, base);
 }
 
 // The weapon maker (sub_821CF178(-1, model, 0, 0) -> the object): while the

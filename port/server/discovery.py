@@ -3,7 +3,8 @@
 A mod is one .svrmod (a zip with a manifest.txt: docs/SVRMOD_FORMAT.md) and four pictures, 1024 x 768 JPEG
 (the launcher makes them), with a name, types, tags, a version and a description. The uploader is a signed-in
 account: its online name is the author. Uploads are public at once; the dashboard hides or deletes them, and
-owners may delete their own. The bytes are blobs of the Community Creations store (gamespy.Store: here, or on
+owners may edit (name, version, tags, description, types, the pictures), update the file (the same id and
+download count: "updated") or delete their own (docs/DISCOVERY_API.md). The bytes are blobs of the Community Creations store (gamespy.Store: here, or on
 the storage node), so they share its de-duplication and its node.
 """
 import io
@@ -30,6 +31,12 @@ def init(store):
                 hidden INTEGER DEFAULT 0, created REAL, downloads INTEGER DEFAULT 0);
             CREATE INDEX IF NOT EXISTS mods_created ON mods (created);
         """)
+        # (owner edits: updated = the last file update, edited = the last info / picture edit,
+        # pics = a counter of picture changes for the clients' image URLs)
+        have = {r[1] for r in store.db.execute("PRAGMA table_info(mods)")}
+        for col, kind in (("updated", "REAL"), ("edited", "REAL"), ("pics", "INTEGER DEFAULT 0")):
+            if col not in have:
+                store.db.execute("ALTER TABLE mods ADD COLUMN %s %s" % (col, kind))
         store.db.commit()
 
 
@@ -102,14 +109,16 @@ def add(store, owner, author, fields, data, file_name, images):
 def _row(r, full=False):
     d = {"id": r[0], "owner": r[1], "author": r[2], "name": r[3],
          "types": [k for k, v in TYPES.items() if r[4] & v], "tags": [t for t in (r[5] or "").split(",") if t],
-         "version": r[6], "size": r[8], "hidden": bool(r[12]), "created": r[13], "downloads": r[14]}
+         "version": r[6], "size": r[8], "hidden": bool(r[12]), "created": r[13], "downloads": r[14],
+         "updated": r[15], "edited": r[16], "pics": r[17] or 0}
     if full:
         d["description"] = r[7]
         d["file_name"] = r[11]
     return d
 
 
-COLS = "id, owner, author, name, types, tags, version, description, size, sha, images, file_name, hidden, created, downloads"
+COLS = ("id, owner, author, name, types, tags, version, description, size, sha, images, file_name, hidden, created,"
+        " downloads, updated, edited, pics")
 
 
 def search(store, q="", types=0, tag="", sort="new", page=0, with_hidden=False):
@@ -126,8 +135,8 @@ def search(store, q="", types=0, tag="", sort="new", page=0, with_hidden=False):
         where.append("(',' || tags || ',') LIKE ?")
         args.append("%," + tag.lower().strip() + ",%")
     sql_where = (" WHERE " + " AND ".join(where)) if where else ""
-    order = {"new": "created DESC", "popular": "downloads DESC, created DESC", "name": "lower(name)"}.get(sort,
-                                                                                                    "created DESC")
+    order = {"new": "created DESC", "popular": "downloads DESC, created DESC", "name": "lower(name)",
+             "updated": "COALESCE(updated, created) DESC"}.get(sort, "created DESC")
     with store.lock:
         total = store.db.execute("SELECT COUNT(*) FROM mods" + sql_where, args).fetchone()[0]
         rows = store.db.execute("SELECT %s FROM mods%s ORDER BY %s LIMIT ? OFFSET ?" % (COLS, sql_where, order),
@@ -165,6 +174,68 @@ def delete(store, mod_id):
         for s in json.loads(r[1] or "[]"):
             store._drop_blob(s)
         store.db.execute("DELETE FROM mods WHERE id = ?", (mod_id,))
+        store.db.commit()
+    return True
+
+
+def edit(store, mod_id, fields, order=None):
+    """The owner's info edit: fields (name / version / tags / description / types, checked already) and / or a
+    new picture order (a permutation of 0-3)."""
+    sets, args = [], []
+    for k in ("name", "version", "tags", "description", "types"):
+        if k in fields:
+            sets.append("%s = ?" % k)
+            args.append(fields[k])
+    with store.lock:
+        if order is not None:
+            r = store.db.execute("SELECT images FROM mods WHERE id = ?", (mod_id,)).fetchone()
+            shas = json.loads(r[0] or "[]") if r else []
+            if len(shas) == len(order):
+                sets.append("images = ?")
+                args.append(json.dumps([shas[i] for i in order]))
+                sets.append("pics = COALESCE(pics, 0) + 1")
+        if not sets:
+            return False
+        sets.append("edited = ?")
+        args.append(time.time())
+        store.db.execute("UPDATE mods SET %s WHERE id = ?" % ", ".join(sets), args + [mod_id])
+        store.db.commit()
+    return True
+
+
+def replace_file(store, mod_id, data, file_name, fields):
+    """The owner's update: the new .svrmod (checked already) is stored first, then the row points at it and the
+    old file goes; the id and the download count stay. fields: version (and maybe name / tags / description /
+    types). Returns the old version, or None (no such mod)."""
+    with store.lock:
+        r = store.db.execute("SELECT sha, version FROM mods WHERE id = ?", (mod_id,)).fetchone()
+        if not r:
+            return None
+        sha = store._put_blob(data, compress=False)
+        sets, args = ["sha = ?", "size = ?", "file_name = ?", "updated = ?"], [sha, len(data), file_name, time.time()]
+        for k in ("name", "version", "tags", "description", "types"):
+            if k in fields:
+                sets.append("%s = ?" % k)
+                args.append(fields[k])
+        store.db.execute("UPDATE mods SET %s WHERE id = ?" % ", ".join(sets), args + [mod_id])
+        store.db.commit()
+        store._drop_blob(r[0])  # (after the new one is in: refcounted, so the same file again is fine)
+        store.db.commit()
+        return r[1]
+
+
+def replace_picture(store, mod_id, n, img):
+    """The owner's new picture n (a checked 1024 x 768 JPEG)."""
+    with store.lock:
+        r = store.db.execute("SELECT images FROM mods WHERE id = ?", (mod_id,)).fetchone()
+        shas = json.loads(r[0] or "[]") if r else []
+        if not 0 <= n < len(shas):
+            return False
+        old, shas[n] = shas[n], store._put_blob(img, compress=False)
+        store.db.execute("UPDATE mods SET images = ?, pics = COALESCE(pics, 0) + 1, edited = ? WHERE id = ?",
+                         (json.dumps(shas), time.time(), mod_id))
+        store.db.commit()
+        store._drop_blob(old)
         store.db.commit()
     return True
 

@@ -25,6 +25,8 @@
 // The select screen shows them in the EXTRA list (managers.cpp, the M tile).
 #include "cae_mod_motions.h"
 #include "no_mods.h"
+#include "caw_limits.h"
+#include "mem_trace.h"
 #include "superstar_mods.h"
 #include "superstar_threads.h"
 #include "universe_mods.h"
@@ -64,6 +66,7 @@
 #include "crowd_signs.h"
 #include "jukebox.h"
 #include "media_mods.h"
+#include "vs_styles.h"
 #include "music.h"
 #include "hd_movies.h"
 #include "user_movies.h"
@@ -654,8 +657,8 @@ uint32_t AttireMask(const fs::path& pac, uint32_t id) {
 // gets nothing and the match load crashes (an unchecked null). The largest
 // stock models fill it exactly. A mod's model over it: its blood overlays
 // (children 0x7532, 0x7531, 0x7530; stock ch164 has none) are left out of the
-// overlay copy until it fits, else the mod is left out - with a log line.
-constexpr uint32_t kModelPageLimit = 192;
+// overlay copy until it fits, else the mod is left out - with a log line. With the big-model memory (model_mem.cpp:
+// a full window takes fallback memory) the limit is ModelPageLimit() pages (caw_limits.h), not 192.
 
 uint32_t JboyPages(const svrfmt::Bytes& d) {
   if (d.size() < 0x48 || std::memcmp(d.data(), "JBOY", 4)) return 0;
@@ -700,7 +703,7 @@ bool FitModelBudget(svrfmt::Bytes& pac, std::string& notes) {
       uint32_t pages = EntryPages(en.data, &kids);
       const uint32_t before = pages;
       for (uint32_t drop : {0x7532u, 0x7531u, 0x7530u}) {
-        if (pages <= kModelPageLimit) break;
+        if (pages <= svr2011::ModelPageLimit()) break;
         const auto it = std::find_if(kids.begin(), kids.end(), [&](const svrfmt::PachEntry& c) { return c.id == drop; });
         if (it == kids.end()) continue;
         pages -= JboyPages(svrfmt::Unpack(it->data));
@@ -711,7 +714,7 @@ bool FitModelBudget(svrfmt::Bytes& pac, std::string& notes) {
       if (pages != before)
         notes += " attire " + std::to_string((en.name[6] - '0') + 1) + ": " + std::to_string(before) + " -> " +
                  std::to_string(pages) + " pages (blood overlays left out);";
-      if (pages > kModelPageLimit) {
+      if (pages > svr2011::ModelPageLimit()) {
         fits = false;
         notes += " attire " + std::to_string((en.name[6] - '0') + 1) + ": " + std::to_string(pages) + " pages;";
       }
@@ -898,7 +901,7 @@ void LoadMods() {
       if (!FitModelBudget(ch, notes)) {
         REXLOG_WARN("[svr2011] superstar mods: {}: model over the match's 768 KB per-wrestler budget ({} pages "
                     "at most):{} - left out, it would crash the match load (tools/model_budget.py)",
-                    m.folder, kModelPageLimit, notes);
+                    m.folder, svr2011::ModelPageLimit(), notes);
         left_out.push_back(m.folder);
         continue;
       }
@@ -1491,6 +1494,7 @@ const uint8_t kModdedRgba[] = {
 };
 constexpr uint32_t kBadgeW = 256, kBadgeH = 64;
 constexpr uint32_t kBadgeCaller = 0x82466E40;  // sub_82466830: sub_828B6CD0(id) at the badge
+constexpr uint32_t kCaePickCaller = 0x824633CC;  // sub_82463090 state 14: sub_828B6CD0(id) - downloaded: easy editor
 
 struct Badge {
   svrfmt::Bytes data;  // swapped as in memory
@@ -1648,10 +1652,72 @@ void BadgeLoop() {
 
 }  // namespace
 
+// CREATE AN ENTRANCE, ADVANCED CREATION of a superstar without a created entrance: the editor's block
+// (sub_82879AF8) gets the created flag and five scene parts from his default template, looked up by id
+// (sub_82883A10(list, id); none: a generic one whose parts name no scene - the entrance manager then had no
+// entrant, the scene ended and the editor backed out to the menu). A mod: its own entrance's template, else
+// its base's.
+constexpr uint32_t kCaeTemplateCaller = 0x82879CF4;
+REX_EXTERN(__imp__sub_82883A10);
+REX_HOOK_RAW(sub_82883A10) {
+  const Mod* m = uint32_t(ctx.lr) == kCaeTemplateCaller ? ModOf(ctx.r4.u32) : nullptr;
+  if (!m) {
+    __imp__sub_82883A10(ctx, base);
+    return;
+  }
+  const auto in = ctx;
+  for (const int id : {m->entrance, int(m->base)}) {
+    if (id <= 0) continue;
+    ctx = in;
+    ctx.r4.u64 = uint32_t(id);
+    __imp__sub_82883A10(ctx, base);
+    if (ctx.r3.u32) {
+      REXLOG_INFO("[svr2011] create an entrance: {} starts from the scene template of {}", m->name, id);
+      return;
+    }
+  }
+  ctx = in;
+  __imp__sub_82883A10(ctx, base);
+}
+
+// ... and its music, movie and entrance numbers from his defaults (sub_828C3318(out, id): the profile's default
+// copy, entrance block +0x04..+0x0C, out = {entrance, champion, movie, music, multi-title}) - a mod's are the
+// base's there: its own (the profile's current ones) instead.
+constexpr uint32_t kCaeDefaultsCallers[] = {0x82879C28, 0x82879C84};
+REX_EXTERN(__imp__sub_828C3318);
+REX_HOOK_RAW(sub_828C3318) {
+  const uint32_t out = ctx.r3.u32, id = ctx.r4.u32, lr = uint32_t(ctx.lr);
+  __imp__sub_828C3318(ctx, base);
+  if (lr != kCaeDefaultsCallers[0] && lr != kCaeDefaultsCallers[1]) return;
+  const uint32_t si = id < 512 ? Rd16(base + kIdToIndex + id * 2) : 512;
+  if (!out || si >= 512 || !ModOf(id)) return;
+  const uint8_t* e = base + kProfiles + si * kProfileSize + kEntrance;
+  std::memcpy(base + out + 0, e + 0x14, 2);  // entrance
+  std::memcpy(base + out + 2, e + 0x16, 2);  // champion
+  std::memcpy(base + out + 4, e + kMovie, 2);
+  std::memcpy(base + out + 6, e + kMusic, 2);
+  std::memcpy(base + out + 8, e + 0x18, 2);  // multi-title
+}
+
 // The select screen's panel: "is it DLC" for the badge (r26: the id; r31:
 // the cursor).
 REX_EXTERN(__imp__sub_828B6CD0);
 REX_HOOK_RAW(sub_828B6CD0) {
+  // CREATE AN ENTRANCE: the superstar picked (select screen state 14, sub_82463090) goes to the EASY / ADVANCED
+  // popup unless he is "downloaded" - then straight to the easy editor (state 23). Mods sit on downloaded slots,
+  // and the user asked for ADVANCED on the real DLC superstars too: none counts as downloaded here.
+  if (uint32_t(ctx.lr) == kCaePickCaller) {
+    __imp__sub_828B6CD0(ctx, base);
+    if (ctx.r3.u32) {
+      static bool told = false;
+      if (!told) {
+        told = true;
+        REXLOG_INFO("[svr2011] create an entrance: ADVANCED CREATION offered for downloaded superstars too");
+      }
+      ctx.r3.u64 = 0;
+    }
+    return;
+  }
   if (uint32_t(ctx.lr) != kBadgeCaller || g_badges.empty()) {
     __imp__sub_828B6CD0(ctx, base);
     return;
@@ -1696,6 +1762,8 @@ REX_HOOK_RAW(sub_826B87B0) {
   }();
   // Superstar Threads' list with the mods' records (superstar_threads.h): asked for by another name
   if (const uint32_t alias = svr2011::ThreadsAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) ctx.r4.u64 = alias;
+  // the chosen VS screen style's theme (vs_styles.h): asked for by another name, as below
+  if (const uint32_t alias = svr2011::VsStyleAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) ctx.r4.u64 = alias;
   // a media mod's replacement (renders: media_mods.h) - the first match in
   // the archive list wins, so the game's own would: asked for by another name
   if (const uint32_t alias = svr2011::MediaAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) {
@@ -2104,6 +2172,12 @@ REX_HOOK_RAW(sub_82756538) {
   }
   // (a number whose mod is gone: cae_mod_motions.cpp)
   ctx.r3.u64 = svr2011::EntranceFallback(base, mgr, idx, int(part), ctx.r3.u32);
+  // (test aid SVR2011_TEST_CAE_LOG: the number each slot's scene part plays - a created entrance's are 10000+)
+  static const bool on = std::getenv("SVR2011_TEST_CAE_LOG") != nullptr;
+  static std::set<uint64_t> told;
+  if (on && idx < 16 && told.insert(uint64_t(mgr) << 32 | uint64_t(idx) << 28 | uint64_t(part & 0xFF) << 20 | (ctx.r3.u32 & 0xFFFFF)).second)
+    REXLOG_INFO("[svr2011] cae: slot {} part {} plays {} (created {})", idx, part, ctx.r3.u32,
+                base[mgr + 36 + idx * 280 + 195]);
 }
 REX_EXTERN(__imp__sub_82756718);
 REX_HOOK_RAW(sub_82756718) {
@@ -3265,7 +3339,22 @@ REX_HOOK_RAW(sub_8269BBA0) {
     return;
   }
   __imp__sub_8269BBA0(ctx, base);
+  // Big models: a wrestler's model heap full copying its blood overlays (sub_826B6BA8; 2K17 Asuka crashed there) -
+  // the block from the fallback memory, given back by the delete hook (CawHeapFree, frame_rate.cpp)
+  if (!ctx.r3.u32 && size && lr == 0x826B6C4C && svr2011::BigModelMemory())
+    if (const uint32_t p = svr2011::FallbackBlock(size)) {
+      ctx.r3.u64 = p;
+      static int told = 0;
+      if (told++ < 3) REXLOG_INFO("[svr2011] model memory: a model heap full - {} bytes from the fallback memory", size);
+    }
   if (!MoveLogIds().empty() && !ctx.r3.u32) REXLOG_WARN("[svr2011] move log: alloc {} bytes failed (lr {:08X})", size, lr);
+  if (svr2011::MemTraceOn() && ctx.r3.u32) {  // (test aid: mem_trace.h - which heap gave it)
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    svr2011::MemTraceNew(ctx.r3.u32, size, heap, lr);
+  }
 }
 REX_EXTERN(__imp__sub_8258EB90);
 REX_HOOK_RAW(sub_8258EB90) {

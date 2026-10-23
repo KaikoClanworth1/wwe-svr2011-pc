@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <time.h>
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "windowscodecs.lib")
@@ -28,10 +29,11 @@ enum {
     D_SEARCH, D_TYPE, D_SORT, D_GO, D_GRID, D_PREV, D_PAGE, D_NEXT, D_UPLOAD, D_STATUS,
     D_PIC, D_PICPREV, D_PICLBL, D_PICNEXT, D_INFO, D_DESC, D_BACK, D_DOWNLOAD, D_DELETE,
     U_TITLE, U_NAME_L, U_NAME, U_VER_L, U_VER, U_TYPES_L, U_T0, U_T1, U_T2, U_T3, U_TAGS_L, U_TAGS, U_DESC_L, U_DESC,
-    U_FILE_L, U_FILE, U_FILE_PICK, U_PICS_L, U_PICS, U_PICS_PICK, U_AUTHOR, U_SEND, U_CANCEL, U_PROGRESS, D_COUNT
+    U_FILE_L, U_FILE, U_FILE_PICK, U_PICS_L, U_PICS, U_PICS_PICK, U_AUTHOR, U_SEND, U_CANCEL, U_PROGRESS,
+    D_EDIT, D_NEWFILE, D_FIRSTPIC, D_COUNT   /* (the uploader's own: Edit..., New version..., Make first) */
 };
 enum { V_GRID, V_MOD, V_UPLOAD };
-enum { R_LIST, R_THUMB, R_DETAIL, R_PIC, R_DOWNLOAD, R_UPLOAD, R_DELETE, R_PROGRESS };
+enum { R_LIST, R_THUMB, R_DETAIL, R_PIC, R_DOWNLOAD, R_UPLOAD, R_DELETE, R_PROGRESS, R_EDIT };
 #define PER_PAGE 24
 #define THUMB_W 160
 #define THUMB_H 120
@@ -40,12 +42,18 @@ enum { R_LIST, R_THUMB, R_DETAIL, R_PIC, R_DOWNLOAD, R_UPLOAD, R_DELETE, R_PROGR
 
 typedef struct {
     int id, downloads;
-    long long size;
+    long long owner;   /* (the uploader's account id) */
+    long long size, created, updated, edited;   /* (Unix seconds; updated / edited 0: never) */
+    int pics;          /* (goes up with each picture change: img/n?v=pics) */
     WCHAR name[64], author[48], types[80], tags[220], version[24];
 } Mod;
 
 static HWND s_wnd, s_c[D_COUNT];
 static int s_base, s_view = V_GRID, s_page, s_total, s_n, s_gen, s_shown, s_busy, s_pic, s_cur = -1;
+static int s_mine;   /* (the mod shown is the signed-in account's own: Edit / New version / Delete) */
+static int s_edit;   /* (the form edits this mod - its id - instead of uploading a new one) */
+static WCHAR s_cur_desc[2001], s_ini[MAX_PATH];
+static long long s_last_visit;   /* (the previous visit to Discovery: "Updated" since then) */
 static Mod s_mods[PER_PAGE];
 static HIMAGELIST s_thumbs;
 static HBITMAP s_pics[4];
@@ -65,6 +73,47 @@ static void fmt_bytes(WCHAR *out, size_t n, long long b)
     if (b >= (1ll << 30)) swprintf_s(out, n, L"%.2f GB", b / 1073741824.0);
     else if (b >= (1 << 20)) swprintf_s(out, n, L"%.1f MB", b / 1048576.0);
     else swprintf_s(out, n, L"%lld KB", (b + 1023) / 1024);
+}
+
+/* Unix seconds as the player's short date. */
+static void fmt_date(WCHAR *out, size_t n, long long t)
+{
+    ULARGE_INTEGER u;
+    FILETIME ft, lt;
+    SYSTEMTIME st;
+    out[0] = 0;
+    u.QuadPart = (unsigned long long)(t + 11644473600ll) * 10000000ull;
+    ft.dwLowDateTime = u.LowPart;
+    ft.dwHighDateTime = u.HighPart;
+    if (FileTimeToLocalFileTime(&ft, &lt) && FileTimeToSystemTime(&lt, &st))
+        GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_SHORTDATE, &st, NULL, out, (int)n, NULL);
+}
+
+/* Text as a JSON string (UTF-8; quotes, backslashes and control characters escaped), appended. */
+static void json_text(char *out, size_t n, const WCHAR *w)
+{
+    char u[6000];
+    const unsigned char *c;
+    size_t k = strlen(out);
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, u, sizeof u, NULL, NULL);
+    if (k + 2 < n) out[k++] = '"';
+    for (c = (const unsigned char *)u; *c && k + 8 < n; c++) {
+        if (*c == '"' || *c == '\\') { out[k++] = '\\'; out[k++] = (char)*c; }
+        else if (*c == '\n') { out[k++] = '\\'; out[k++] = 'n'; }
+        else if (*c >= 0x20) out[k++] = (char)*c;
+    }
+    out[k++] = '"';
+    out[k] = 0;
+}
+
+/* The version of a mod downloaded from Discovery (its "updated", else "created", at the download), or 0. */
+static long long downloaded_stamp(int id)
+{
+    WCHAR k[32], v[32];
+    if (!s_ini[0]) return 0;
+    swprintf_s(k, 32, L"Mod%d", id);
+    GetPrivateProfileStringW(L"Discovery", k, L"", v, 32, s_ini);
+    return _wtoi64(v);
 }
 
 /* A JSON value's start for "key" inside [p, end), or NULL. */
@@ -147,6 +196,11 @@ static void parse_mod(const char *p, const char *end, Mod *m)
 {
     ZeroMemory(m, sizeof *m);
     m->id = (int)jnum(jkey(p, end, "id"));
+    m->owner = jkey(p, end, "owner") ? jnum(jkey(p, end, "owner")) : -2;
+    m->created = jnum(jkey(p, end, "created"));
+    m->updated = jnum(jkey(p, end, "updated"));   /* (null: 0) */
+    m->edited = jnum(jkey(p, end, "edited"));
+    m->pics = (int)jnum(jkey(p, end, "pics"));
     jstr(jkey(p, end, "name"), end, m->name, 64);
     jstr(jkey(p, end, "author"), end, m->author, 48);
     jstr(jkey(p, end, "version"), end, m->version, 24);
@@ -297,9 +351,10 @@ static uint8_t *picture_jpeg(const WCHAR *path, size_t *n)
 /* ── requests (threads) ────────────────────────────────────────────────── */
 
 typedef struct {
-    int kind, gen, index, n_ids, ids[PER_PAGE];
+    int kind, gen, index, n_ids, ids[PER_PAGE], pics_v[PER_PAGE];
     WCHAR path[700], file[MAX_PATH], pics[4][MAX_PATH];
     char token[160], *fields;    /* (an upload: its text fields, "name\0value\0..." ) */
+    char *json;                  /* (an edit: the changed details, a PATCH body; NULL: none) */
     size_t fields_n;
 } Job;
 
@@ -389,6 +444,83 @@ static int http(const Job *j, const WCHAR *method, const WCHAR *path, const char
     return (int)status;
 }
 
+/* A multipart request: the text fields, the four pictures (with_pics: made here from j->pics), the .svrmod
+   (j->file). The HTTP status; why: what went wrong here. */
+static int send_multipart(Job *j, int with_pics, const WCHAR *method, const WCHAR *url, uint8_t **data, size_t *n,
+                          WCHAR *why)
+{
+    static const char bound[] = "----svr2011discovery7f3a9c";
+    uint8_t *pics[4] = { 0 }, *file = NULL, *body = NULL;
+    size_t pic_n[4] = { 0 }, file_n = 0, at = 0, cap;
+    const char *f;
+    HANDLE h;
+    int i, st = -1;
+    for (i = 0; i < 4 && with_pics && !why[0]; i++)
+        if (!(pics[i] = picture_jpeg(j->pics[i], &pic_n[i])) || pic_n[i] > (1u << 20))
+            swprintf_s(why, 200, L"Picture %d could not be made into a 1024 x 768 JPEG.", i + 1);
+    h = why[0] ? INVALID_HANDLE_VALUE : CreateFileW(j->file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (!why[0]) {
+        LARGE_INTEGER sz;
+        DWORD got = 0;
+        if (h == INVALID_HANDLE_VALUE || !GetFileSizeEx(h, &sz) || sz.QuadPart > (250ll << 20) ||
+            !(file = (uint8_t *)malloc((size_t)sz.QuadPart + 1)) ||
+            !ReadFile(h, file, (DWORD)sz.QuadPart, &got, NULL) || got != (DWORD)sz.QuadPart)
+            wcscpy_s(why, 200, L"The .svrmod could not be read (250 MB at most).");
+        else file_n = (size_t)sz.QuadPart;
+    }
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    cap = file_n + j->fields_n * 2 + 4 * (1u << 20) + 8192;
+    if (!why[0] && (body = (uint8_t *)malloc(cap))) {
+        char head[512], fname[MAX_PATH * 3];
+        const WCHAR *slash = wcsrchr(j->file, L'\\');
+#define PUT(src, len) (memcpy(body + at, (src), (len)), at += (len))
+        for (f = j->fields; f && f < j->fields + j->fields_n; f += strlen(f) + 1) {
+            const char *v = f + strlen(f) + 1;
+            int k = sprintf_s(head, sizeof head, "--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n", bound, f);
+            PUT(head, (size_t)k);
+            PUT(v, strlen(v));
+            PUT("\r\n", 2);
+            f = v;
+        }
+        for (i = 0; i < 4 && with_pics; i++) {
+            int k = sprintf_s(head, sizeof head, "--%s\r\nContent-Disposition: form-data; name=\"img%d\"; "
+                              "filename=\"%d.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n", bound, i, i);
+            PUT(head, (size_t)k);
+            PUT(pics[i], pic_n[i]);
+            PUT("\r\n", 2);
+        }
+        WideCharToMultiByte(CP_UTF8, 0, slash ? slash + 1 : j->file, -1, fname, sizeof fname, NULL, NULL);
+        {
+            char *q;
+            for (q = fname; *q; q++) if (*q == '"') *q = '_';
+        }
+        {
+            int k = sprintf_s(head, sizeof head, "--%s\r\nContent-Disposition: form-data; name=\"svrmod\"; "
+                              "filename=\"%.300s\"\r\nContent-Type: application/octet-stream\r\n\r\n", bound, fname);
+            PUT(head, (size_t)k);
+        }
+        PUT(file, file_n);
+        {
+            int k = sprintf_s(head, sizeof head, "\r\n--%s--\r\n", bound);
+            PUT(head, (size_t)k);
+        }
+#undef PUT
+        free(file);
+        file = NULL;
+        {
+            char ctype[96];
+            sprintf_s(ctype, sizeof ctype, "multipart/form-data; boundary=%s", bound);
+            st = http(j, method, url, ctype, body, at, data, n, 1 << 16);
+        }
+    } else if (!why[0]) {
+        wcscpy_s(why, 200, L"Not enough memory for the upload.");
+    }
+    free(body);
+    free(file);
+    for (i = 0; i < 4; i++) free(pics[i]);
+    return st;
+}
+
 static DWORD WINAPI job_thread(LPVOID p)
 {
     Job *j = (Job *)p;
@@ -400,10 +532,11 @@ static DWORD WINAPI job_thread(LPVOID p)
     switch (j->kind) {
     case R_LIST:
         st = http(j, L"GET", j->path, NULL, NULL, 0, &data, &n, 1 << 20);
-        if (st == 200 && data) {   /* (the page's ids, for its pictures) */
+        if (st == 200 && data) {   /* (the page's ids and picture counters, for its pictures) */
             const char *q = jkey((const char *)data, (const char *)data + n, "mods"), *end = (const char *)data + n;
             while (q && q < end && j->n_ids < PER_PAGE && (q = strchr(q, '{')) && q < end) {
                 const char *e = jobject_end(q, end);
+                j->pics_v[j->n_ids] = (int)jnum(jkey(q, e, "pics"));
                 j->ids[j->n_ids++] = (int)jnum(jkey(q, e, "id"));
                 q = e;
             }
@@ -412,7 +545,7 @@ static DWORD WINAPI job_thread(LPVOID p)
         /* then the pictures of the page, one after the other */
         for (i = 0; i < j->n_ids && st == 200; i++) {
             if (j->gen != s_gen) break;
-            swprintf_s(path, 64, L"/api/mods/%d/img/0", j->ids[i]);
+            swprintf_s(path, 64, L"/api/mods/%d/img/0?v=%d", j->ids[i], j->pics_v[i]);
             data = NULL;
             if (http(j, L"GET", path, NULL, NULL, 0, &data, &n, 2 << 20) == 200) {
                 j->kind = R_THUMB;
@@ -426,7 +559,7 @@ static DWORD WINAPI job_thread(LPVOID p)
         post(j, st, data, n, 0, NULL);
         j->kind = R_PIC;
         for (i = 0; i < 4 && st == 200 && j->gen == s_gen; i++) {
-            swprintf_s(path, 64, L"%s/img/%d", j->path, i);
+            swprintf_s(path, 64, L"%s/img/%d?v=%d", j->path, i, j->index);
             data = NULL;
             if (http(j, L"GET", path, NULL, NULL, 0, &data, &n, 2 << 20) == 200) post(j, 200, data, n, i, NULL);
             else free(data);
@@ -456,82 +589,47 @@ static DWORD WINAPI job_thread(LPVOID p)
         post(j, st, data, n, 0, NULL);
         break;
     case R_UPLOAD: {
-        /* multipart: the fields, the four pictures (made here), the file */
-        static const char bound[] = "----svr2011discovery7f3a9c";
-        uint8_t *pics[4] = { 0 }, *file = NULL, *body = NULL;
-        size_t pic_n[4] = { 0 }, file_n = 0, at = 0, cap;
         WCHAR why[200] = L"";
-        const char *f;
-        HANDLE h;
-        for (i = 0; i < 4 && !why[0]; i++)
-            if (!(pics[i] = picture_jpeg(j->pics[i], &pic_n[i])) || pic_n[i] > (1u << 20))
+        st = send_multipart(j, 1, L"POST", L"/api/mods", &data, &n, why);
+        post(j, st, data, n, 0, why[0] ? why : NULL);
+        break;
+    }
+    case R_EDIT: {
+        /* the details (PATCH), then the replaced pictures, then a new version of the file - stopping at a failure */
+        WCHAR why[200] = L"", url[96];
+        st = 200;
+        if (j->json) {
+            swprintf_s(url, 96, L"/api/mods/%d", j->index);
+            st = http(j, L"PATCH", url, "application/json", (const uint8_t *)j->json, strlen(j->json), &data, &n, 1 << 16);
+        }
+        for (i = 0; i < 4 && st == 200; i++) {
+            uint8_t *jpg;
+            size_t jn = 0;
+            if (!j->pics[i][0]) continue;
+            if (!(jpg = picture_jpeg(j->pics[i], &jn)) || jn > (1u << 20)) {
                 swprintf_s(why, 200, L"Picture %d could not be made into a 1024 x 768 JPEG.", i + 1);
-        h = why[0] ? INVALID_HANDLE_VALUE
-                   : CreateFileW(j->file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-        if (!why[0]) {
-            LARGE_INTEGER sz;
-            DWORD got = 0;
-            if (h == INVALID_HANDLE_VALUE || !GetFileSizeEx(h, &sz) || sz.QuadPart > (250ll << 20) ||
-                !(file = (uint8_t *)malloc((size_t)sz.QuadPart + 1)) ||
-                !ReadFile(h, file, (DWORD)sz.QuadPart, &got, NULL) || got != (DWORD)sz.QuadPart)
-                wcscpy_s(why, 200, L"The .svrmod could not be read (250 MB at most).");
-            else file_n = (size_t)sz.QuadPart;
+                st = -1;
+                free(jpg);
+                break;
+            }
+            free(data);
+            data = NULL;
+            swprintf_s(url, 96, L"/api/mods/%d/pictures/%d", j->index, i);
+            st = http(j, L"PUT", url, "image/jpeg", jpg, jn, &data, &n, 1 << 16);
+            free(jpg);
         }
-        if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
-        cap = file_n + j->fields_n + 4 * (1u << 20) + 8192;
-        if (!why[0] && (body = (uint8_t *)malloc(cap))) {
-            char head[512], fname[MAX_PATH * 3];
-            const WCHAR *slash = wcsrchr(j->file, L'\\');
-#define PUT(src, len) (memcpy(body + at, (src), (len)), at += (len))
-            for (f = j->fields; f < j->fields + j->fields_n; f += strlen(f) + 1) {
-                const char *v = f + strlen(f) + 1;
-                int k = sprintf_s(head, sizeof head, "--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n", bound, f);
-                PUT(head, (size_t)k);
-                PUT(v, strlen(v));
-                PUT("\r\n", 2);
-                f = v;
-            }
-            for (i = 0; i < 4; i++) {
-                int k = sprintf_s(head, sizeof head, "--%s\r\nContent-Disposition: form-data; name=\"img%d\"; "
-                                  "filename=\"%d.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n", bound, i, i);
-                PUT(head, (size_t)k);
-                PUT(pics[i], pic_n[i]);
-                PUT("\r\n", 2);
-            }
-            WideCharToMultiByte(CP_UTF8, 0, slash ? slash + 1 : j->file, -1, fname, sizeof fname, NULL, NULL);
-            {
-                char *q;
-                for (q = fname; *q; q++) if (*q == '"') *q = '_';
-            }
-            {
-                int k = sprintf_s(head, sizeof head, "--%s\r\nContent-Disposition: form-data; name=\"svrmod\"; "
-                                  "filename=\"%.300s\"\r\nContent-Type: application/octet-stream\r\n\r\n", bound, fname);
-                PUT(head, (size_t)k);
-            }
-            PUT(file, file_n);
-            {
-                int k = sprintf_s(head, sizeof head, "\r\n--%s--\r\n", bound);
-                PUT(head, (size_t)k);
-            }
-#undef PUT
-            free(file);
-            file = NULL;
-            {
-                char ctype[96];
-                sprintf_s(ctype, sizeof ctype, "multipart/form-data; boundary=%s", bound);
-                st = http(j, L"POST", L"/api/mods", ctype, body, at, &data, &n, 1 << 16);
-            }
-            post(j, st, data, n, 0, NULL);
-        } else {
-            post(j, -1, NULL, 0, 0, why[0] ? why : L"Not enough memory for the upload.");
+        if (st == 200 && j->file[0]) {
+            free(data);
+            data = NULL;
+            swprintf_s(url, 96, L"/api/mods/%d/file", j->index);
+            st = send_multipart(j, 0, L"PUT", url, &data, &n, why);
         }
-        free(body);
-        free(file);
-        for (i = 0; i < 4; i++) free(pics[i]);
+        post(j, st, data, n, 0, why[0] ? why : NULL);
         break;
     }
     }
     free(j->fields);
+    free(j->json);
     free(j);
     CoUninitialize();
     return 0;
@@ -542,7 +640,10 @@ static void start(Job *j)
     HANDLE t;
     WCHAR name[8];
     j->gen = s_gen;
-    if (!j->token[0]) s_account(j->token, sizeof j->token, name, 1);
+    if (!j->token[0]) {
+        long long id;
+        s_account(j->token, sizeof j->token, name, 1, &id);
+    }
     t = CreateThread(NULL, 0, job_thread, j, 0, NULL);
     if (t) CloseHandle(t);
     else { free(j->fields); free(j); }
@@ -558,7 +659,8 @@ static Job *job(int kind)
 /* ── the views ─────────────────────────────────────────────────────────── */
 
 static const int k_grid_ids[] = { D_SEARCH, D_TYPE, D_SORT, D_GO, D_GRID, D_PREV, D_PAGE, D_NEXT, D_UPLOAD };
-static const int k_mod_ids[] = { D_PIC, D_PICPREV, D_PICLBL, D_PICNEXT, D_INFO, D_DESC, D_BACK, D_DOWNLOAD, D_DELETE };
+static const int k_mod_ids[] = { D_PIC, D_PICPREV, D_PICLBL, D_PICNEXT, D_INFO, D_DESC, D_BACK, D_DOWNLOAD, D_DELETE,
+                                 D_EDIT, D_NEWFILE, D_FIRSTPIC };
 
 static void set_view(int v)
 {
@@ -570,6 +672,8 @@ static void set_view(int v)
         for (k = 0; k < sizeof k_grid_ids / sizeof k_grid_ids[0]; k++) if (k_grid_ids[k] == i) show = v == V_GRID;
         for (k = 0; k < sizeof k_mod_ids / sizeof k_mod_ids[0]; k++) if (k_mod_ids[k] == i) show = v == V_MOD;
         if (i >= U_TITLE && i <= U_PROGRESS) show = v == V_UPLOAD;
+        if (i == D_DELETE || i == D_EDIT || i == D_NEWFILE || i == D_FIRSTPIC)
+            show = show && s_mine;   /* (only on the player's own mod - also when the page is shown again) */
         if (s_c[i]) ShowWindow(s_c[i], show ? SW_SHOW : SW_HIDE);
     }
 }
@@ -577,7 +681,7 @@ static void set_view(int v)
 static void search(void)
 {
     static const char *const types[] = { "", "entrance", "superstar", "arena", "moveset" };
-    static const char *const sorts[] = { "new", "popular", "name" };
+    static const char *const sorts[] = { "new", "popular", "name", "updated" };
     WCHAR q[120], qe[400];
     char u[400];
     const char *s;
@@ -596,7 +700,7 @@ static void search(void)
     qe[k] = 0;
     s_gen++;
     swprintf_s(j->path, 700, L"/api/mods?q=%s&type=%S&sort=%S&page=%d", qe, types[ti > 0 && ti < 5 ? ti : 0],
-               sorts[si > 0 && si < 3 ? si : 0], s_page);
+               sorts[si > 0 && si < 4 ? si : 0], s_page);
     status(L"Looking\x2026");
     start(j);
 }
@@ -612,18 +716,20 @@ static void open_mod(int i)
     SetWindowTextW(s_c[D_INFO], L"");
     SetWindowTextW(s_c[D_DESC], L"");
     SetWindowTextW(s_c[D_PICLBL], L"1 / 4");
-    {
+    {   /* the player's own: the signed-in account's id is the mod's owner (not its name: an online name typed on
+           the Online page isn't the account until signed in with it) */
         char token[160];
         WCHAR me[64];
-        s_account(token, sizeof token, me, 64);
-        ShowWindow(s_c[D_DELETE], SW_HIDE);
+        long long my_id = -1;
+        s_account(token, sizeof token, me, 64, &my_id);
+        s_mine = token[0] && my_id >= 0 && s_mods[i].owner == my_id;
         set_view(V_MOD);
-        ShowWindow(s_c[D_DELETE], me[0] && !_wcsicmp(me, s_mods[i].author) ? SW_SHOW : SW_HIDE);
     }
     InvalidateRect(s_c[D_PIC], NULL, TRUE);
     if (!(j = job(R_DETAIL))) return;
     s_gen++;
     swprintf_s(j->path, 700, L"/api/mods/%d", s_mods[i].id);
+    j->index = s_mods[i].pics;
     start(j);
 }
 
@@ -631,8 +737,15 @@ static void upload_view(void)
 {
     char token[160];
     WCHAR me[64], t[160];
-    s_account(token, sizeof token, me, 64);
+    long long my_id;
+    s_account(token, sizeof token, me, 64, &my_id);
     set_view(V_UPLOAD);
+    SetWindowTextW(s_c[U_TITLE], s_edit ? L"Edit your mod: change what you like - the pictures and the file only when you "
+                                          L"choose new ones."
+                                        : L"Upload a mod: every field but tags and the description is needed. Only .svrmod files.");
+    SetWindowTextW(s_c[U_SEND], s_edit ? L"Save" : L"Upload");
+    SetWindowTextW(s_c[U_FILE_PICK], s_edit ? L"New version\x2026" : L"Choose\x2026");
+    SetWindowTextW(s_c[U_PICS_PICK], s_edit ? L"Replace\x2026" : L"Choose 4\x2026");
     if (token[0] && me[0]) swprintf_s(t, 160, L"Author: %s (your online name)", me);
     else wcscpy_s(t, 160, L"Sign in online first (the Online page): your online name is the author.");
     SetWindowTextW(s_c[U_AUTHOR], t);
@@ -670,8 +783,113 @@ static int pick_files(const WCHAR *title, int pictures, WCHAR out[][MAX_PATH], i
     return got;
 }
 
+static void form_clear(void)
+{
+    int k;
+    static const int clear[] = { U_NAME, U_VER, U_TAGS, U_DESC };
+    for (k = 0; k < 4; k++) SetWindowTextW(s_c[clear[k]], L"");
+    for (k = 0; k < 4; k++) { SendMessageW(s_c[U_T0 + k], BM_SETCHECK, BST_UNCHECKED, 0); s_up_pics[k][0] = 0; }
+    s_up_file[0] = 0;
+    SetWindowTextW(s_c[U_FILE], L"(none chosen)");
+    SetWindowTextW(s_c[U_PICS], L"(four, any size: made 1024 x 768)");
+}
+
+/* Edit... on the player's own mod: the form with its details. */
+static void edit_view(void)
+{
+    const Mod *m;
+    WCHAR crlf[4100];
+    size_t a, b2 = 0;
+    int k;
+    if (s_cur < 0) return;
+    m = &s_mods[s_cur];
+    form_clear();
+    s_edit = m->id;
+    SetWindowTextW(s_c[U_NAME], m->name);
+    SetWindowTextW(s_c[U_VER], m->version);
+    SetWindowTextW(s_c[U_TAGS], m->tags);
+    for (a = 0; s_cur_desc[a] && b2 + 3 < 4100; a++) {
+        if (s_cur_desc[a] == L'\n') crlf[b2++] = L'\r';
+        crlf[b2++] = s_cur_desc[a];
+    }
+    crlf[b2] = 0;
+    SetWindowTextW(s_c[U_DESC], crlf);
+    for (k = 0; k < 4; k++)
+        SendMessageW(s_c[U_T0 + k], BM_SETCHECK, wcsstr(m->types, k_type_names[k]) ? BST_CHECKED : BST_UNCHECKED, 0);
+    SetWindowTextW(s_c[U_FILE], L"(keep the current file - or a new version: then a new version number too)");
+    SetWindowTextW(s_c[U_PICS], L"(keep the current pictures - or replace 1-4 of them, from the first)");
+    upload_view();
+}
+
+/* Save on the edit form: what changed (PATCH), replaced pictures, a new file. */
+static void send_edit(void)
+{
+    static const int ids[] = { U_NAME, U_VER, U_TAGS, U_DESC };
+    static const char *const keys[] = { "name", "version", "tags", "description" };
+    const Mod *m = s_cur >= 0 ? &s_mods[s_cur] : NULL;
+    const WCHAR *was[4];
+    WCHAR w[2001], types[80] = L"";
+    char *json, typ[64] = "";
+    int k, changed = 0, pics = 0;
+    Job *j;
+    if (!m || m->id != s_edit) return;
+    was[0] = m->name; was[1] = m->version; was[2] = m->tags; was[3] = s_cur_desc;
+    if (!(j = job(R_EDIT)) || !(json = (char *)malloc(16384))) { free(j); return; }
+    strcpy_s(json, 16384, "{");
+    for (k = 0; k < 4; k++) {
+        GetWindowTextW(s_c[ids[k]], w, 2001);
+        {   /* (the edit control's line ends back to \n) */
+            WCHAR *r, *q;
+            for (r = q = w; *r; r++) if (*r != L'\r') *q++ = *r;
+            *q = 0;
+        }
+        if (k == 0 && !w[0]) { status(L"The name can't be empty."); free(json); free(j); return; }
+        if (k == 1 && !w[0]) { status(L"The version can't be empty."); free(json); free(j); return; }
+        if (k == 1 && s_up_file[0]) {   /* (a new file: its version goes with it) */
+            if (!wcscmp(w, m->version)) { status(L"A new version of the file needs a new version number."); free(json); free(j); return; }
+            j->fields = (char *)malloc(64);
+            if (j->fields) {
+                int n2 = sprintf_s(j->fields, 64, "version") + 1;
+                n2 += WideCharToMultiByte(CP_UTF8, 0, w, -1, j->fields + n2, 64 - n2, NULL, NULL);
+                j->fields_n = (size_t)n2;
+            }
+            continue;
+        }
+        if (!wcscmp(w, was[k])) continue;
+        if (changed++) strcat_s(json, 16384, ",");
+        sprintf_s(json + strlen(json), 16384 - strlen(json), "\"%s\":", keys[k]);
+        json_text(json, 16384, w);
+    }
+    for (k = 0; k < 4; k++)
+        if (SendMessageW(s_c[U_T0 + k], BM_GETCHECK, 0, 0) == BST_CHECKED) {
+            if (types[0]) wcscat_s(types, 80, L", ");
+            wcscat_s(types, 80, k_type_names[k]);
+            if (typ[0]) strcat_s(typ, sizeof typ, ",");
+            WideCharToMultiByte(CP_UTF8, 0, k_types[k], -1, typ + strlen(typ), (int)(sizeof typ - strlen(typ)), NULL, NULL);
+        }
+    if (!typ[0]) { status(L"Choose the mod's type."); free(json); free(j->fields); free(j); return; }
+    if (wcscmp(types, m->types)) {
+        if (changed++) strcat_s(json, 16384, ",");
+        sprintf_s(json + strlen(json), 16384 - strlen(json), "\"types\":\"%s\"", typ);
+    }
+    strcat_s(json, 16384, "}");
+    if (changed) j->json = json; else free(json);
+    for (k = 0; k < 4; k++) if (s_up_pics[k][0]) { wcscpy_s(j->pics[k], MAX_PATH, s_up_pics[k]); pics++; }
+    if (s_up_file[0]) wcscpy_s(j->file, MAX_PATH, s_up_file);
+    if (!changed && !pics && !s_up_file[0]) { status(L"Nothing changed."); free(j->fields); free(j->json); free(j); return; }
+    j->index = m->id;
+    s_busy = 1;
+    EnableWindow(s_c[U_SEND], FALSE);
+    SendMessageW(s_c[U_PROGRESS], PBM_SETPOS, 0, 0);
+    ShowWindow(s_c[U_PROGRESS], s_up_file[0] ? SW_SHOW : SW_HIDE);
+    status(s_up_file[0] ? L"Sending the new version\x2026" : L"Saving\x2026");
+    start(j);
+}
+
 static void send_upload(void)
 {
+    if (s_edit) { send_edit(); return; }
+    {
     static const char *const keys[] = { "name", "version", "tags", "description" };
     static const int ids[] = { U_NAME, U_VER, U_TAGS, U_DESC };
     Job *j;
@@ -706,6 +924,7 @@ static void send_upload(void)
     ShowWindow(s_c[U_PROGRESS], SW_SHOW);
     status(L"Making the pictures and sending the mod\x2026");
     start(j);
+    }
 }
 
 /* ── the launcher's side ───────────────────────────────────────────────── */
@@ -714,7 +933,7 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
                     discover_account_fn account)
 {
     static const WCHAR *const types[] = { L"All types", L"Entrance", L"Superstar", L"Arena", L"Move-set" };
-    static const WCHAR *const sorts[] = { L"Newest", L"Most downloaded", L"By name" };
+    static const WCHAR *const sorts[] = { L"Newest", L"Most downloaded", L"By name", L"Recently updated" };
     int i, y;
 #define C(i, cls, text, style, x, y, w, h) (s_c[i] = add(tab, cls, text, style, x, y, w, h, id_base + (i)))
     s_wnd = wnd;
@@ -728,7 +947,7 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
     for (i = 0; i < 5; i++) SendMessageW(s_c[D_TYPE], CB_ADDSTRING, 0, (LPARAM)types[i]);
     SendMessageW(s_c[D_TYPE], CB_SETCURSEL, 0, 0);
     C(D_SORT, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 378, 54, 120, 200);
-    for (i = 0; i < 3; i++) SendMessageW(s_c[D_SORT], CB_ADDSTRING, 0, (LPARAM)sorts[i]);
+    for (i = 0; i < 4; i++) SendMessageW(s_c[D_SORT], CB_ADDSTRING, 0, (LPARAM)sorts[i]);
     SendMessageW(s_c[D_SORT], CB_SETCURSEL, 0, 0);
     C(D_GO, L"Button", L"Search", BS_DEFPUSHBUTTON | WS_TABSTOP, 506, 53, 82, 28);
     C(D_GRID, WC_LISTVIEWW, L"", LVS_ICON | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 28, 88, 560, 392);
@@ -749,8 +968,12 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
     C(D_INFO, L"Static", L"", SS_LEFT | SS_NOPREFIX, 442, 54, 146, 300);
     C(D_DESC, L"Edit", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER, 28, 396, 560, 84);
     C(D_BACK, L"Button", L"\x2190 Back", BS_PUSHBUTTON | WS_TABSTOP, 28, 488, 100, 30);
-    C(D_DOWNLOAD, L"Button", L"Download and install", BS_DEFPUSHBUTTON | WS_TABSTOP, 136, 486, 200, 32);
-    C(D_DELETE, L"Button", L"Delete my mod", BS_PUSHBUTTON | WS_TABSTOP, 458, 488, 130, 30);
+    C(D_DOWNLOAD, L"Button", L"Download and install", BS_DEFPUSHBUTTON | WS_TABSTOP, 136, 486, 176, 32);
+    /* (the uploader's own: Edit, New version, Delete) */
+    C(D_EDIT, L"Button", L"Edit\x2026", BS_PUSHBUTTON | WS_TABSTOP, 320, 488, 70, 30);
+    C(D_NEWFILE, L"Button", L"New version\x2026", BS_PUSHBUTTON | WS_TABSTOP, 396, 488, 112, 30);
+    C(D_DELETE, L"Button", L"Delete", BS_PUSHBUTTON | WS_TABSTOP, 514, 488, 74, 30);
+    C(D_FIRSTPIC, L"Button", L"Make first", BS_PUSHBUTTON | WS_TABSTOP, 442, 360, 146, 28);
     /* the upload form */
     C(U_TITLE, L"Static", L"Upload a mod: every field but tags and the description is needed. Only .svrmod files.",
       SS_LEFT | SS_NOPREFIX, 28, 54, 560, 20);
@@ -792,8 +1015,17 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
     set_view(V_GRID);
 }
 
+void discover_set_ini(const WCHAR *ini) { wcscpy_s(s_ini, MAX_PATH, ini ? ini : L""); }
+
 void discover_show(const WCHAR *game_dir)
 {
+    if (!s_shown && s_ini[0]) {   /* (this run's first visit: what's newer than the last one is "Updated") */
+        WCHAR v[32];
+        GetPrivateProfileStringW(L"Discovery", L"LastVisit", L"0", v, 32, s_ini);
+        s_last_visit = _wtoi64(v);
+        swprintf_s(v, 32, L"%lld", (long long)time(NULL));
+        WritePrivateProfileStringW(L"Discovery", L"LastVisit", v, s_ini);
+    }
     wcscpy_s(s_game, MAX_PATH, game_dir ? game_dir : L"");
     set_view(s_view);
     if (s_view == V_UPLOAD) upload_view();
@@ -816,8 +1048,34 @@ int discover_command(int id, int code)
     case D_GO: s_page = 0; search(); return 1;
     case D_PREV: if (s_page > 0) { s_page--; search(); } return 1;
     case D_NEXT: if ((s_page + 1) * PER_PAGE < s_total) { s_page++; search(); } return 1;
-    case D_UPLOAD: upload_view(); return 1;
-    case D_BACK: case U_CANCEL: s_gen++; set_view(V_GRID); return 1;
+    case D_UPLOAD:
+        if (s_edit) { s_edit = 0; form_clear(); }
+        upload_view();
+        return 1;
+    case D_BACK: s_gen++; s_mine = 0; set_view(V_GRID); return 1;
+    case U_CANCEL:   /* (an edit: back to its page) */
+        if (s_edit && s_cur >= 0 && !s_busy) { s_edit = 0; form_clear(); open_mod(s_cur); return 1; }
+        s_gen++; s_mine = 0; set_view(V_GRID);
+        return 1;
+    case D_EDIT: edit_view(); return 1;
+    case D_NEWFILE:
+        edit_view();
+        SendMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + U_FILE_PICK, BN_CLICKED), 0);
+        return 1;
+    case D_FIRSTPIC: {   /* the picture shown becomes the first (PATCH picture_order) */
+        Job *j;
+        int k, o = 1;
+        if (s_cur < 0 || s_pic == 0 || s_busy) return 1;
+        if (!(j = job(R_EDIT)) || !(j->json = (char *)malloc(64))) { free(j); return 1; }
+        sprintf_s(j->json, 64, "{\"picture_order\":[%d", s_pic);
+        for (k = 0; k < 4; k++) if (k != s_pic) { sprintf_s(j->json + strlen(j->json), 64 - strlen(j->json), ",%d", k); o++; }
+        strcat_s(j->json, 64, "]}");
+        j->index = s_mods[s_cur].id;
+        s_busy = 1;
+        status(L"Saving the picture order\x2026");
+        start(j);
+        return 1;
+    }
     case D_PICPREV: case D_PICNEXT: {
         WCHAR t[16];
         s_pic = (s_pic + (i == D_PICNEXT ? 1 : 3)) % 4;
@@ -864,10 +1122,12 @@ int discover_command(int id, int code)
     }
     case U_PICS_PICK: {
         WCHAR p[4][MAX_PATH], t[600] = L"";
-        int n = pick_files(L"Choose four pictures of the mod (Ctrl+click)", 1, p, 4), k;
+        int n = pick_files(s_edit ? L"Choose 1-4 new pictures (they replace the first ones; Ctrl+click)"
+                                  : L"Choose four pictures of the mod (Ctrl+click)", 1, p, 4), k;
         if (!n) return 1;
-        if (n < 4) { status(L"Choose four pictures at once (Ctrl+click them)."); return 1; }
-        for (k = 0; k < 4; k++) {
+        if (n < 4 && !s_edit) { status(L"Choose four pictures at once (Ctrl+click them)."); return 1; }
+        for (k = 0; k < 4; k++) s_up_pics[k][0] = 0;
+        for (k = 0; k < n; k++) {
             wcscpy_s(s_up_pics[k], MAX_PATH, p[k]);
             if (t[0]) wcscat_s(t, 600, L", ");
             wcscat_s(t, 600, wcsrchr(p[k], L'\\') ? wcsrchr(p[k], L'\\') + 1 : p[k]);
@@ -959,13 +1219,22 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
             LVITEMW it;
             WCHAR label[140];
             parse_mod(p, e, &s_mods[s_n]);
-            swprintf_s(label, 140, L"%s\n%s", s_mods[s_n].name, s_mods[s_n].author);
+            {
+                const Mod *m = &s_mods[s_n];
+                const long long got = downloaded_stamp(m->id), now_v = m->updated ? m->updated : m->created;
+                if (got && now_v > got)
+                    swprintf_s(label, 140, L"\x2191 Update: %s", m->name);   /* (downloaded here; newer now) */
+                else if (m->updated && s_last_visit && m->updated > s_last_visit)
+                    swprintf_s(label, 140, L"\x2022 Updated: %s", m->name);
+                else
+                    wcscpy_s(label, 140, m->name);
+            }
             ZeroMemory(&it, sizeof it);
             it.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
             it.iItem = s_n;
             it.iImage = -1;
             it.lParam = s_n;
-            it.pszText = s_mods[s_n].name;
+            it.pszText = label;
             ListView_InsertItem(s_c[D_GRID], &it);
             s_n++;
             p = e;
@@ -1023,11 +1292,55 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         if (r->status != 200 || !r->data) { answer_error(r, L"The mod's page", t, 400); status(t); break; }
         parse_mod((const char *)r->data, end, md);
         jstr(jkey((const char *)r->data, end, "description"), end, desc, 2001);
+        wcscpy_s(s_cur_desc, 2001, desc);
+        {   /* the server's word on whose it is (asked with the token), when it gives one */
+            const char *mine = jkey((const char *)r->data, end, "mine");
+            if (mine) {
+                s_mine = !strncmp(mine, "true", 4);
+                if (s_view == V_MOD) set_view(V_MOD);
+            }
+        }
+        {
+            const long long got = downloaded_stamp(md->id), now_v = md->updated ? md->updated : md->created;
+            SetWindowTextW(s_c[D_DOWNLOAD], got && now_v > got ? L"Download the update" : L"Download and install");
+        }
+        {   /* test aid (--capture discover with SVR2011_DISCOVER_OPEN), once: SVR2011_DISCOVER_EDIT=1 edits the mod -
+               " (edited)" on its name, SVR2011_DISCOVER_EDIT_PIC=<picture> as its 2nd picture,
+               SVR2011_DISCOVER_EDIT_FILE=<svrmod> as a new version "<version>.1"; =first: the 3rd picture first */
+            static int edited;
+            const char *v = getenv("SVR2011_DISCOVER_EDIT");
+            if (v && *v && !edited++ && s_mine) {
+                if (!strcmp(v, "view")) {   /* (=view: the edit form only) */
+                    edit_view();
+                } else if (!strcmp(v, "first")) {
+                    s_pic = 2;
+                    SendMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_FIRSTPIC, BN_CLICKED), 0);
+                } else {
+                    WCHAR w[MAX_PATH], nv[40];
+                    const char *pic = getenv("SVR2011_DISCOVER_EDIT_PIC"), *file = getenv("SVR2011_DISCOVER_EDIT_FILE");
+                    edit_view();
+                    swprintf_s(w, MAX_PATH, L"%s (edited)", md->name);
+                    SetWindowTextW(s_c[U_NAME], w);
+                    if (pic && *pic) MultiByteToWideChar(CP_UTF8, 0, pic, -1, s_up_pics[1], MAX_PATH);
+                    if (file && *file) {
+                        MultiByteToWideChar(CP_UTF8, 0, file, -1, s_up_file, MAX_PATH);
+                        swprintf_s(nv, 40, L"%s.1", md->version);
+                        SetWindowTextW(s_c[U_VER], nv);
+                    }
+                    send_edit();
+                }
+            }
+        }
         jstr(jkey((const char *)r->data, end, "file_name"), end, s_file_name, MAX_PATH);
         fmt_bytes(sz, 32, md->size);
-        swprintf_s(t, 400, L"%s\nby %s\n\n%s\nVersion %s\n%s\n%d download%s%s%s", md->name, md->author, md->types,
-                   md->version, sz, md->downloads, md->downloads == 1 ? L"" : L"s", md->tags[0] ? L"\n\nTags: " : L"",
-                   md->tags);
+        {
+            WCHAR when[48], date[32];
+            fmt_date(date, 32, md->updated ? md->updated : md->created);
+            swprintf_s(when, 48, md->updated ? L"Updated %s" : L"New (%s)", date);
+            swprintf_s(t, 400, L"%s\nby %s\n\n%s\nVersion %s\n%s\n%s\n%d download%s%s%s", md->name, md->author, md->types,
+                       md->version, when, sz, md->downloads, md->downloads == 1 ? L"" : L"s",
+                       md->tags[0] ? L"\n\nTags: " : L"", md->tags);
+        }
         SetWindowTextW(s_c[D_INFO], t);
         {   /* (the description's line ends as the edit control wants them) */
             WCHAR crlf[4100];
@@ -1054,6 +1367,13 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         EnableWindow(s_c[D_DOWNLOAD], TRUE);
         if (r->status != 200) { answer_error(r, L"Download", t, 400); status(t); break; }
         if (mods_install(s_game, r->text)) {
+            if (s_ini[0] && s_cur >= 0) {
+                WCHAR k[32], v[32];
+                swprintf_s(k, 32, L"Mod%d", s_mods[s_cur].id);
+                swprintf_s(v, 32, L"%lld", s_mods[s_cur].updated ? s_mods[s_cur].updated : s_mods[s_cur].created);
+                WritePrivateProfileStringW(L"Discovery", k, v, s_ini);
+                SetWindowTextW(s_c[D_DOWNLOAD], L"Download and install");
+            }
             swprintf_s(t, 400, L"Installed \"%s\" - it's on the Installed Mods tab and loads the next time the game starts.",
                        s_cur >= 0 ? s_mods[s_cur].name : L"");
             status(t);
@@ -1067,6 +1387,19 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         status(L"Deleted from Discovery.");
         set_view(V_GRID);
         search();
+        break;
+    case R_EDIT:
+        s_busy = 0;
+        ShowWindow(s_c[U_PROGRESS], SW_HIDE);
+        EnableWindow(s_c[U_SEND], TRUE);
+        if (r->status != 200) { answer_error(r, L"Saving", t, 400); status(t); break; }
+        if (s_view == V_UPLOAD) { s_edit = 0; form_clear(); }
+        {   /* the row as it is now: its page again, the list behind it too */
+            const char *end = (const char *)r->data + r->n, *row = r->data ? jkey((const char *)r->data, end, "mod") : NULL;
+            if (row && *row == '{' && s_cur >= 0) parse_mod(row, jobject_end(row, end), &s_mods[s_cur]);
+        }
+        status(L"Saved - everyone sees it now.");
+        if (s_cur >= 0) open_mod(s_cur);
         break;
     case R_UPLOAD:
         s_busy = 0;

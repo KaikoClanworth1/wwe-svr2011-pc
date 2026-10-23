@@ -249,10 +249,10 @@ td.acts { text-align: right; white-space: nowrap; }
 
   <section role="tabpanel" id="p-ping" aria-labelledby="tab-ping" tabindex="0" hidden>
     <h2>Online now <span class="spacer"></span><span class="note" id="ping-note"></span></h2>
-    <p class="intro">Each online match sends one network report: the round trip to the other player and the path. Relay now is how the game is on the relay at this moment.</p>
+    <p class="intro">Now is what the player is in at this moment (from the session host's report). Each game sends its network report (the round trip to the other player, the path) when a match <b>ends</b>: a player's first match shows no ping until it's over. Relay now is how the game is on the relay at this moment.</p>
     <div class="scroll"><table>
-      <thead><tr><th>Player</th><th>Last match ping</th><th>Path</th><th>Match network</th><th>Relay now</th><th>NAT</th><th>Version</th><th>Last match</th></tr></thead>
-      <tbody id="pings"><tr><td colspan="8" class="empty">Loading&hellip;</td></tr></tbody>
+      <thead><tr><th>Player</th><th>Now</th><th>Last match ping</th><th>Path</th><th>Match network</th><th>Relay now</th><th>NAT</th><th>Version</th><th>Last match</th></tr></thead>
+      <tbody id="pings"><tr><td colspan="9" class="empty">Loading&hellip;</td></tr></tbody>
     </table></div>
   </section>
 
@@ -572,16 +572,26 @@ td.acts { text-align: right; white-space: nowrap; }
   function pings() {
     return api('api/admin/pings').then(function (d) {
       var withPing = d.players.filter(function (p) { return p.last; });
+      var playing = d.players.filter(function (p) { return p.session && p.session.state === 'match'; });
       el('n-ping').textContent = d.players.length || '';
-      el('ping-note').textContent = d.players.length + ' online · ' + withPing.length + ' with a match report';
+      el('ping-note').textContent = d.players.length + ' online · ' + playing.length + ' in a match now · ' +
+        withPing.length + ' with a match report';
       el('pings').innerHTML = d.players.length ? d.players.map(function (p) {
-        var l = p.last || {};
+        var l = p.last || {}, s = p.session, inMatch = s && s.state === 'match';
+        // (what they're in now: a match or a lobby, the path the host sees, for how long)
+        var nowCell = !s ? '<span class="note">menus</span>' :
+          '<span class="tag' + (inMatch ? ' on' : '') + '" title="' + esc((s.rule_name || s.rule || '') + ' · host ' + s.host) + '">' +
+          (inMatch ? 'in a match' : 'in a lobby') + '</span> ' + esc(s.path === 'host' ? 'hosting' : s.path) +
+          ' <span class="note">' + dur(d.now - s.since) + '</span>';
+        var lastCell = p.last ? pingCell(l.rtt) : inMatch ?
+          '<span class="note">first match in progress: its report comes when it ends</span>' :
+          '<span class="note">no match finished yet</span>';
         return '<tr><td><button class="linkish" data-player="' + esc(p.name) + '">' + esc(p.name) + '</button></td><td>' +
-          (p.last ? pingCell(l.rtt) : '<span class="note">no match yet</span>') + '</td><td>' + esc(l.path || '') +
+          nowCell + '</td><td>' + lastCell + '</td><td>' + esc(l.path || '') +
           '</td><td>' + esc(l.network || '') + '</td><td>' + (p.link ? '<span class="tag">' + esc(p.link) + '</span>' : '') +
           '</td><td>' + esc(l.nat || '') + '</td><td>' + esc(l.version || '') + '</td><td class="note">' +
           (p.last ? ago(l.at) : '') + '</td></tr>';
-      }).join('') : '<tr><td colspan="8" class="empty">Nobody online right now.</td></tr>';
+      }).join('') : '<tr><td colspan="9" class="empty">Nobody online right now.</td></tr>';
     }).catch(function () {});
   }
 
@@ -664,6 +674,7 @@ td.acts { text-align: right; white-space: nowrap; }
     var rows = mods.filter(function (m) { return !f || (m.name + ' ' + m.author + ' ' + m.tags.join(' ')).toLowerCase().indexOf(f) >= 0; });
     el('mods').innerHTML = rows.length ? rows.map(function (m) {
       return '<tr><td>' + esc(m.name) + (m.hidden ? ' <span class="tag bad">hidden</span>' : '') +
+        (m.updated ? ' <span class="tag on" title="file updated by its owner">updated ' + ago(m.updated) + '</span>' : '') +
         '</td><td>' + esc(m.types.join(', ')) + '</td><td>' + esc(m.author) + '</td><td>' + esc(m.version) +
         '</td><td class="num">' + bytes(m.size) + '</td><td class="num">' + m.downloads + '</td><td>' + ago(m.created) +
         '</td><td class="acts"><button class="btn" data-modview="' + m.id + '">View</button>' +

@@ -1663,12 +1663,19 @@ static void discover_server(WCHAR *out, int n)
     }
 }
 
-static void discover_account(char *token, size_t token_n, WCHAR *name, size_t name_n)
+static void discover_account(char *token, size_t token_n, WCHAR *name, size_t name_n, long long *id)
 {
     strcpy_s(token, token_n, s_online_token);
     name[0] = 0;
+    *id = -1;
     if (s_online_token[0] && name_n > 1)
         GetWindowTextW(ctl(ID_ON_NAME), name, (int)name_n);
+    /* (the account's id: its XUID less the server's base, server.py XUID_BASE 0x0009000100000000) */
+    if (s_online_token[0] && s_online_xuid[0]) {
+        const unsigned long long x = _strtoui64(s_online_xuid, NULL, 16);
+        if (x > 0x0009000100000000ull && x < 0x0009000200000000ull)
+            *id = (long long)(x - 0x0009000100000000ull);
+    }
 }
 
 static int online_post(const char *path, const char *body, const char *token, char *out, size_t outn)
@@ -3659,6 +3666,7 @@ static void build_ui(void)
     /* Texture packs (texpacks_tab.c) */
     texpacks_build(s_wnd, add, TAB_TEXPACKS, ID_TEXPACKS_BASE, toml_get, toml_set);
     discover_build(s_wnd, add, TAB_DISCOVER, ID_DISCOVER_BASE, discover_server, discover_account);
+    discover_set_ini(s_launcher_ini);
     /* Setup: what's needed, found or missing; the Mod Maker's tools (setup_tab.c) */
     setup_build(s_wnd, add, TAB_SETUP, TAB_TOOLS, ID_SETUP_BASE, setup_go_install);
 

@@ -44,6 +44,7 @@ Games:
     svr2009   SvR 2009 - model (svr08_char.py), renders, theme, titantron, ratings, entrance,
               announcer; the moveset stays the base's for now (the 2009 slot map is next)
     svr2008   SvR 2008 - the same as 2009 (ids: 2011 id = 2008 id + 100)
+    low       Legends of WrestleMania - as 2009 (its own ids; ratings, abilities and moveset stay the base's)
     svr2007   SvR 2007 - the same, its per-part textures baked (svr07_char.py), XACT themes (xact.py);
               ratings stay the base's
     wwe12     WWE '12 - model (w13_char.py, within the vertex budget), attires, renders, theme
@@ -85,6 +86,7 @@ GAMES = [
     dict(id='svr2009', name='WWE SmackDown vs. Raw 2009', platform='x360', disc_hint='54510826', status='ready'),
     dict(id='svr2008', name='WWE SmackDown vs. Raw 2008', platform='x360', disc_hint='5451080B', status='ready'),
     dict(id='svr2007', name='WWE SmackDown vs. Raw 2007', platform='x360', disc_hint='545107E0', status='ready'),
+    dict(id='low', name='WWE Legends of WrestleMania', platform='x360', disc_hint='54510838', status='ready'),
     dict(id='ps2_jbi', name='WWF SmackDown! Just Bring It', platform='ps2', disc_hints=['SLES_504.77', 'SLUS_203.16', 'SLUS_202.69', 'SLUS_201.22'], status='ready'),
     dict(id='ps2_sym', name='WWE SmackDown! Shut Your Mouth', platform='ps2', disc_hints=['SLES_512.83', 'SLUS_204.83', 'SLUS_205.12'], status='ready'),
     dict(id='ps2_hctp', name='WWE SmackDown! Here Comes the Pain', platform='ps2', disc_hints=['SLES_520.36', 'SLUS_207.87'], status='ready'),
@@ -382,6 +384,54 @@ class Game09:
                 and (self.has_chpac(c) or self.src.no_models())]
 
 
+class GameLoW(Game09):
+    """WWE Legends of WrestleMania (2009, SvR 2009's engine; docs/OTHER_GAMES.md): chEtc.pac CHAR/DAT 262 B =
+    2009's with 12 rating bytes (twice) where 2009 keeps 8 - made into 2009's record here (name +34 after the
+    header, short +170, gender +208, weight class +209, scale +28); its ratings are another scheme (0x01 =
+    unused): the base's. CHAR/PRO 504 B, entrance block +0xE4 as 2009. Renders DLC_HD.pac groups SSFA / SSFB /
+    SSFC at the top (2009 nests them in MENU), entries named by the decimal id. Titantrons movies/titantron/
+    <movie id>.bik. Its ids are its own (100 The Rock): 2011's superstar of the same name, else none (0)."""
+
+    year = 9
+    label = 'Legends of WrestleMania'
+    suffix = '_low'
+    no_ratings = "Legends of WrestleMania rates on another scheme (its DAT +4..+15): the base's"
+    no_moves = "Legends of WrestleMania movesets are not ported yet: the base's"
+
+    def __init__(self, src):
+        super().__init__(src)
+        self.g.dat = {i: r[0:8] + r[12:20] + r[24:] for i, r in self.g.dat.items()}   # (2009's layout)
+        self._g11 = self._id11 = None
+
+    def bind11(self, g11):
+        self._g11, self._id11 = g11, None
+
+    def id11(self, i):
+        if self._g11 is None:
+            return 0
+        if self._id11 is None:
+            S = svr10()
+            by = {S.norm(self._g11.name(c)): c for c in sorted(self._g11.dat) if 100 <= c < 400 and self._g11.named(c)}
+            self._id11 = {c: by.get(S.norm(self.name(c)), 0) for c in self.g.dat if self.named(c) and c not in self.NOT_2011s}
+        return self._id11.get(i, 0)
+
+    NOT_2011s = {136}   # (its Ted DiBiase is the father; 2011's, 261, the son)
+
+    def ssf(self):
+        if self._ssf is None:
+            self._ssf = {}
+            h, g, t = svrfmt.epac_read(open(self.src.get('pac/DLC_HD.pac'), 'rb').read())
+            for ty, es in g:
+                if ty in (b'SSFA', b'SSFB', b'SSFC'):
+                    for n, b in es:
+                        if n.strip(b'\0 ').isdigit():
+                            self._ssf[(ty.decode(), int(n))] = b
+        return self._ssf
+
+    def roster(self):
+        return [c for c in super().roster() if not self.name(c).upper().startswith(('REFEREE', 'HOWARD FINKEL'))]
+
+
 class Game08(Game09):
     """SvR 2008 (docs/OTHER_GAMES.md): misc.pac CHAR/DAT (232 B: name +0x20, ratings +4..+11,
     gender +206, weight class +207, scale +26) and CHAR/PRO (450 B, no entrance block: the theme
@@ -673,8 +723,16 @@ def write_mod(mod, man, out_svrmod, rep=None, pac11=None):
         for d_ in fit_budget(os.path.join(mod, 'ch.pac'), template104(pac11)):
             if rep is not None:
                 rep['dropped'].append(d_)
-    order = ['type', 'id', 'name', 'short', 'base', 'author', 'made_with', 'version', 'ratings', 'abilities', 'moves',
-             'entrance', 'announcer', 'call', 'height', 'song', 'movie']
+    if os.path.exists(os.path.join(mod, 'ch.pac')):   # (a model over the old window: newer games only - model_budget)
+        import model_budget
+        nv = model_budget.needs(os.path.join(mod, 'ch.pac'))
+        if nv:
+            man['needs'] = nv
+            if rep is not None:
+                rep['notes'].append('the model is over %d vertex pages: it needs version %s or newer (older games leave '
+                                    'it out)' % (model_budget.OLD_LIMIT, nv))
+    order = ['type', 'id', 'name', 'short', 'base', 'author', 'made_with', 'version', 'needs', 'ratings', 'abilities',
+             'moves', 'entrance', 'announcer', 'call', 'height', 'song', 'movie']
     txt = ''.join('%s=%s\n' % (k, man[k]) for k in order if k in man)
     txt += ''.join('%s=%s\n' % (k, v) for k, v in man.items() if k not in order)   # (attire<N>_name= ...)
     open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n').write(txt)
@@ -739,6 +797,8 @@ def build09(cid, outdir, o, rep):
     if cid not in g9.g.dat or not g9.named(cid):
         raise BadInput('%s has no superstar %d' % (g9.label, cid))
     name = g9.name(cid)
+    if hasattr(g9, 'bind11'):   # (Legends of WrestleMania: its own ids, 2011's by name)
+        g9.bind11(g11)
     i11 = g9.id11(cid)
     mid = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') + g9.suffix
     work = os.path.join(outdir, '.work_%d' % cid)
@@ -802,7 +862,9 @@ def build09(cid, outdir, o, rep):
         warn('%s has no model for %d: the base\'s is used' % (g9.label, cid))
     # ratings
     r = g9.g.dat[cid]
-    if any(x not in (0, 50) for x in r[:7]):
+    if getattr(g9, 'no_ratings', None):
+        note(g9.no_ratings)
+    elif any(x not in (0, 50) for x in r[:7]):
         man['ratings'] = ','.join(str(max(0, x - 1)) for x in r[:7])
         note('ratings %s %s -> %s' % (g9.label, list(r[:8]), man['ratings']))
     if type(g9).__name__ == 'Game07':   # (another scale: fitted, tools/ratings_port.py)
@@ -811,9 +873,14 @@ def build09(cid, outdir, o, rep):
         if rr:
             man['ratings'] = ','.join(map(str, rr))
         note(ratings_port.report_line(g9.label, rr, rrep))
-    abilities_step(type(g9).__name__, g9, cid, man, note)
+    if getattr(g9, 'no_ratings', None):
+        note("abilities: the base's")
+    else:
+        abilities_step(type(g9).__name__, g9, cid, man, note)
     # moves
-    if not o.get('no_moves') and base != i11:
+    if getattr(g9, 'no_moves', None):
+        note(g9.no_moves)
+    elif not o.get('no_moves') and base != i11:
         progress(40, 'moveset')
         moveset_step(g9, cid, base, o, work, mod, man, rep, prog=(40, 55))
     # entrance
@@ -1963,8 +2030,8 @@ def open_game(game, src, svrmod=None):
         g.render_ids = {i for (t, i) in g.ssf if t == 'SSFB'}
         g.entrance_block_ = g.entrance_block
         return g
-    if game in ('svr2009', 'svr2008', 'svr2007'):
-        g = {'svr2009': Game09, 'svr2008': Game08, 'svr2007': Game07}[game](src)
+    if game in ('svr2009', 'svr2008', 'svr2007', 'low'):
+        g = {'svr2009': Game09, 'svr2008': Game08, 'svr2007': Game07, 'low': GameLoW}[game](src)
         g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFB'}
         g.dat = g.g.dat
         return g
@@ -1996,6 +2063,8 @@ def cmd_list(a):
     src = Src(a['src'], os.path.join(a.get('cache') or os.path.join(HERE, 'work', 'src'), a['game']))
     g = open_game(a['game'], src, a.get('svrmod'))
     g11, snd = game11(a['pac11'])
+    if hasattr(g, 'bind11'):
+        g.bind11(g11)
     play = playable11(g11)
     out = []
     for c in g.roster():
@@ -2301,6 +2370,8 @@ def cmd_moveset(a):
     work = tempfile.mkdtemp(prefix='svr_moveset_')
     try:
         src, g, cache = verb_game(a, work)
+        if getattr(g, 'no_moves', None):   # (Legends of WrestleMania)
+            raise BadInput(g.no_moves)
         rep = dict(notes=[], warnings=[], dropped=[])
         if a['game'] == 'svr2010':   # (its own move path: svr10_superstar.Moves)
             rows, moves_txt, pack, base = svr10_moveset(a, g, src, cid, g11, cache)
@@ -2352,6 +2423,8 @@ def cmd_moveset_pack(a):
         shutil.rmtree(work)
     os.makedirs(work)
     src, g, cache = verb_game(a, work)
+    if getattr(g, 'no_moves', None):   # (Legends of WrestleMania)
+        raise BadInput(g.no_moves)
     rep = dict(notes=[], warnings=[], dropped=[])
     if a['game'] == 'svr2010':   # (its own move path: svr10_superstar.Moves + svr10_moves + movepack)
         nm = re.sub(r'[^a-z0-9]+', '_', g.name(cid).lower()).strip('_') if cid in g.dat else 'moves'
@@ -2502,7 +2575,7 @@ def cmd_convert(a):
     for k in ('base', 'entrance', 'call', 'max_port'):
         if o.get(k) is not None:
             o[k] = int(o[k])
-    fn = {'svr2010': build10, 'svr2009': build09, 'svr2008': build09, 'svr2007': build09, 'wwe12': buildW, 'wwe13': buildW,
+    fn = {'svr2010': build10, 'svr2009': build09, 'svr2008': build09, 'svr2007': build09, 'low': build09, 'wwe12': buildW, 'wwe13': buildW,
           'wwe2k14': buildW, 'wwe2k15': buildW, 'wwe2k16': buildW,
           'wwe2k17': buildW}.get(a['game'])
     if fn is None and a['game'].startswith('ps2_'):

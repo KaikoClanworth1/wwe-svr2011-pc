@@ -17,6 +17,7 @@
 #include "backgrounds_page.h"
 #include "weapons_page.h"
 #include "mystery_opponent.h"
+#include "vs_styles.h"
 
 #include <algorithm>
 #include <array>
@@ -120,6 +121,7 @@ enum Row {
   kCawLimits,                                                    // DISPLAY (last: caw_limits.cpp)
   kMatchCamera,                                                  // DISPLAY (free_cam.h)
   kMatFix,                                                       // GRAPHICS (after ARENA BRIGHTNESS)
+  kVsStyle,                                                      // GRAPHICS (after RING MAT: vs_styles.h)
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
@@ -134,7 +136,7 @@ const std::vector<Row> kTabRowsAll[kTabs] = {{kFrameRate, kFullSpeed, kVsync, kF
 const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate, kFullSpeed, kVsync, kFpsCounter, kOverlayCorner, kMatchCamera, kPing, kRouterPort, kRenderer, kTouch,
                                               kReplays, kCpuPriority, kFastStart, kCawLimits},
 #endif
-                                             {kRenderScale, kAntiAliasing, kUpscaling, kTextureQuality, kArenaBrightness, kMatFix, kWide, kCutsceneFps},
+                                             {kRenderScale, kAntiAliasing, kUpscaling, kTextureQuality, kArenaBrightness, kMatFix, kVsStyle, kWide, kCutsceneFps},
                                              {kCrowd, kShadows, kEffects, kDof, kMotionBlur, kSoft, kPrepare}};
 // SHADOWS: only with the renderer's native_shadows setting.
 bool HasShadows() {
@@ -146,7 +148,8 @@ const std::vector<Row>& TabRows(int tab) {
     std::array<std::vector<Row>, kTabs> r;
     for (int t = 0; t < kTabs; ++t)
       for (Row id : kTabRowsAll[t])
-        if (id != kShadows || HasShadows()) r[t].push_back(id);
+        if ((id != kShadows || HasShadows()) && (id != kVsStyle || !svr2011::VsStyles().empty()))
+          r[t].push_back(id);
     return r;
   }();
   return rows[tab];
@@ -407,6 +410,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool crowd_ = true, crowd_at_start_ = true;  // arena_crowd (read when the game starts)
   bool shadows_ = true;  // native_shadows
   bool mat_fix_ = true;  // native_mat_fix
+  int vs_style_ = 0;      // vs_style: 0 2011's, k the k-th installed style (vs_styles.h)
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
   int language_at_start_ = 0;
   int aa_ = 1;  // anti-aliasing level: 1 off, 2-4 supersampling per side
@@ -539,6 +543,13 @@ void GraphicsPage::Load() {
   shadows_ = !HasShadows() || rex::cvar::Query<bool>("native_shadows");
   mat_fix_ = rex::cvar::Query<bool>("native_mat_fix");
   {
+    const std::string v = rex::cvar::Query<std::string>("vs_style");
+    const auto& styles = svr2011::VsStyles();
+    vs_style_ = 0;
+    for (size_t i = 0; i < styles.size(); ++i)
+      if (styles[i].first == v) vs_style_ = int(i) + 1;
+  }
+  {
     const uint32_t id = rex::cvar::Query<uint32_t>("user_language");
     language_ = 0;
     for (int i = 0; i < kNumLanguages; ++i)
@@ -584,6 +595,15 @@ void GraphicsPage::Change(int row, int dir) {
       rex::cvar::SetFlagByName("native_mat_fix", mat_fix_ ? "true" : "false");
       SaveSetting("native_mat_fix", mat_fix_ ? "true" : "false");
       break;
+    case kVsStyle: {
+      const auto& styles = svr2011::VsStyles();
+      const int n = int(styles.size()) + 1;
+      vs_style_ = (vs_style_ + (dir ? dir : 1) + n) % n;
+      const std::string v = vs_style_ ? styles[size_t(vs_style_ - 1)].first : "";
+      rex::cvar::SetFlagByName("vs_style", v);
+      SaveSetting("vs_style", "\"" + v + "\"");
+      break;
+    }
     case kArenaBrightness:
       brightness_ += 10 * (dir ? dir : 1);  // (50-200%, round as the other rows)
       if (brightness_ > 200) brightness_ = 50;
@@ -1185,6 +1205,13 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kRenderScale: return kScales[scale_].label;
       case kTextureQuality: return kTextureQualityLabels[textures_];
       case kMatFix: return mat_fix_ ? "SMOOTH" : "ORIGINAL";
+      case kVsStyle: {
+        static std::string up;
+        const auto& styles = svr2011::VsStyles();
+        up = vs_style_ && vs_style_ <= int(styles.size()) ? styles[size_t(vs_style_ - 1)].second : "SvR 2011";
+        for (char& c : up) c = char(std::toupper(uint8_t(c)));
+        return up.c_str();
+      }
       case kArenaBrightness: {
         static char b[16];
         std::snprintf(b, sizeof b, "%d%%", brightness_);
@@ -1242,6 +1269,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kTextureQuality: return "TEXTURES";
       case kArenaBrightness: return "ARENA BRIGHTNESS";
       case kMatFix: return "RING MAT";
+      case kVsStyle: return "VS SCREEN STYLE";
       case kAntiAliasing: return "ANTI-ALIASING";
       case kUpscaling: return "UPSCALING";
       case kEffects: return "EFFECT DETAIL";
@@ -1308,6 +1336,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                      "than FSR 1, smooth edges; fast moves can leave faint trails. Menus use FSR 1."
                    : "AMD FSR 1: the game drawn smaller (77%, 67%, 59% or 50% of the screen's height) and scaled up "
                      "sharp - faster on weak PCs and phones. Replaces RENDER SCALE while on.";
+      case kVsStyle:
+        return "The match set-up screen's look: SvR 2011's, or an older game's made by the Mod Maker from your "
+               "disc (From another game). From the next start of the game.";
       case kMatFix:
         return "SMOOTH: the game's ring mats without the rows of light patches in their art. ORIGINAL: as on the "
                "Xbox 360. From the next arena that loads.";
