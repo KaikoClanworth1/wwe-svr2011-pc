@@ -40,12 +40,14 @@ enum { R_LIST, R_THUMB, R_DETAIL, R_PIC, R_DOWNLOAD, R_UPLOAD, R_DELETE, R_PROGR
 
 typedef struct {
     int id, downloads;
+    long long owner;   /* (the uploader's account id) */
     long long size;
     WCHAR name[64], author[48], types[80], tags[220], version[24];
 } Mod;
 
 static HWND s_wnd, s_c[D_COUNT];
 static int s_base, s_view = V_GRID, s_page, s_total, s_n, s_gen, s_shown, s_busy, s_pic, s_cur = -1;
+static int s_mine;   /* (the mod shown is the signed-in account's own: its Delete button) */
 static Mod s_mods[PER_PAGE];
 static HIMAGELIST s_thumbs;
 static HBITMAP s_pics[4];
@@ -147,6 +149,7 @@ static void parse_mod(const char *p, const char *end, Mod *m)
 {
     ZeroMemory(m, sizeof *m);
     m->id = (int)jnum(jkey(p, end, "id"));
+    m->owner = jkey(p, end, "owner") ? jnum(jkey(p, end, "owner")) : -2;
     jstr(jkey(p, end, "name"), end, m->name, 64);
     jstr(jkey(p, end, "author"), end, m->author, 48);
     jstr(jkey(p, end, "version"), end, m->version, 24);
@@ -542,7 +545,10 @@ static void start(Job *j)
     HANDLE t;
     WCHAR name[8];
     j->gen = s_gen;
-    if (!j->token[0]) s_account(j->token, sizeof j->token, name, 1);
+    if (!j->token[0]) {
+        long long id;
+        s_account(j->token, sizeof j->token, name, 1, &id);
+    }
     t = CreateThread(NULL, 0, job_thread, j, 0, NULL);
     if (t) CloseHandle(t);
     else { free(j->fields); free(j); }
@@ -570,6 +576,8 @@ static void set_view(int v)
         for (k = 0; k < sizeof k_grid_ids / sizeof k_grid_ids[0]; k++) if (k_grid_ids[k] == i) show = v == V_GRID;
         for (k = 0; k < sizeof k_mod_ids / sizeof k_mod_ids[0]; k++) if (k_mod_ids[k] == i) show = v == V_MOD;
         if (i >= U_TITLE && i <= U_PROGRESS) show = v == V_UPLOAD;
+        if (i == D_DELETE)
+            show = show && s_mine;   /* (only on the player's own mod - also when the page is shown again) */
         if (s_c[i]) ShowWindow(s_c[i], show ? SW_SHOW : SW_HIDE);
     }
 }
@@ -612,13 +620,14 @@ static void open_mod(int i)
     SetWindowTextW(s_c[D_INFO], L"");
     SetWindowTextW(s_c[D_DESC], L"");
     SetWindowTextW(s_c[D_PICLBL], L"1 / 4");
-    {
+    {   /* the player's own: the signed-in account's id is the mod's owner (not its name: an online name typed on
+           the Online page isn't the account until signed in with it) */
         char token[160];
         WCHAR me[64];
-        s_account(token, sizeof token, me, 64);
-        ShowWindow(s_c[D_DELETE], SW_HIDE);
+        long long my_id = -1;
+        s_account(token, sizeof token, me, 64, &my_id);
+        s_mine = token[0] && my_id >= 0 && s_mods[i].owner == my_id;
         set_view(V_MOD);
-        ShowWindow(s_c[D_DELETE], me[0] && !_wcsicmp(me, s_mods[i].author) ? SW_SHOW : SW_HIDE);
     }
     InvalidateRect(s_c[D_PIC], NULL, TRUE);
     if (!(j = job(R_DETAIL))) return;
@@ -631,7 +640,8 @@ static void upload_view(void)
 {
     char token[160];
     WCHAR me[64], t[160];
-    s_account(token, sizeof token, me, 64);
+    long long my_id;
+    s_account(token, sizeof token, me, 64, &my_id);
     set_view(V_UPLOAD);
     if (token[0] && me[0]) swprintf_s(t, 160, L"Author: %s (your online name)", me);
     else wcscpy_s(t, 160, L"Sign in online first (the Online page): your online name is the author.");
@@ -817,7 +827,7 @@ int discover_command(int id, int code)
     case D_PREV: if (s_page > 0) { s_page--; search(); } return 1;
     case D_NEXT: if ((s_page + 1) * PER_PAGE < s_total) { s_page++; search(); } return 1;
     case D_UPLOAD: upload_view(); return 1;
-    case D_BACK: case U_CANCEL: s_gen++; set_view(V_GRID); return 1;
+    case D_BACK: case U_CANCEL: s_gen++; s_mine = 0; set_view(V_GRID); return 1;
     case D_PICPREV: case D_PICNEXT: {
         WCHAR t[16];
         s_pic = (s_pic + (i == D_PICNEXT ? 1 : 3)) % 4;
