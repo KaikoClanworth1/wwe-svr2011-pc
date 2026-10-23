@@ -1065,9 +1065,15 @@ void StartBackstage(int area) {
   LoadInBackground(PathStr(fs::path(g_game) / L"pac" / L"bg" / L"bg78.pac"), nullptr, true, false);
 }
 
-void SetArenaFromPac(const Bytes& pac, int host, const std::string& name, const std::string& source, bool to_editor) {
+void SetArenaFromPac(const Bytes& pac, int host, const std::string& name, const std::string& source, bool to_editor,
+                     const std::wstring& picture) {
   LeaveBackstage();
   g_proj = Project();
+  if (Image img; !picture.empty() && LoadPicture(picture, img)) {  // (the disc's arena picture: banner + loading screen)
+    g_proj.banner.Set(Resize(img, 256, 128));
+    g_proj.load.Set(Resize(img, 1024, 512));
+    Log("Banner and loading picture from " + Utf8(picture));
+  }
   editor::Ring() = RingSpec();
   editor::Light() = editor::Lighting();
   editor::SetArena(nullptr, "");
