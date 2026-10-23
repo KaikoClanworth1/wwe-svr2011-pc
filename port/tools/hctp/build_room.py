@@ -5,8 +5,8 @@
 
 Inputs: the HCTP files hctp_unpack.py writes (bg/stg_00NN, gm/GMMC_GOBJ, m/MOT_GAME) and 2011's
 pac/bg/bg78.pac + pac/gm.pac (the player's own game). The room goes into bg78's parking slot turned a
-half turn, its centre on the parking fight-box centre (125, -410) (ROOMS: offset, optional tighter crop for
-a room over 2011's ~13k-vertex stage budget - more fails the GPU buffer allocation at load).
+half turn, its centre on the parking fight-box centre (125, -410) (ROOMS: offset, optional crop. Room 34 was
+cropped for 2011's stage vertex window until a stage over it was placed elsewhere, 2.1.5 - src/model_mem.cpp).
 """
 import os
 import re
@@ -20,13 +20,17 @@ sys.path.insert(0, TOOLS)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folder: the embeddable Python doesn't add it)
 sys.path.insert(0, os.path.join(HERE, 'mot'))
 
+# the first game version that loads a stage over its vertex window (src/model_mem.cpp): what such a room says
+# in its manifest (needs=) - older games crash at its load
+NEEDS_BIG_STAGE = '2.1.5'
+BIG_STAGE_ROOMS = {34}   # (uncropped: over the window)
 # room -> (dx, dz, crop x0,x1,z0,z1 or None, row name)
 ROOMS = {
     30: (180.0, -440.0, None, 'Back Entrance'),
     31: (140.0, -437.7, None, 'Parking Lot'),
     32: (103.5, -388.0, None, 'Training Room'),
     33: (86.5, -408.0, None, 'Times Square'),
-    34: (205.0, -334.0, (-60, 345, -534, -322), 'Outside the Arena'),
+    34: (205.0, -334.0, None, 'Outside the Arena'),
     35: (235.0, -617.5, None, 'Fountain Square'),
     36: (235.0, -607.0, None, 'Fountain Square (dry)'),
 }
@@ -172,6 +176,8 @@ def build(room, unpacked, pac11, work, mod, name=None, progress=lambda p, t: Non
              'row=%s' % name, 'gimmick=78H3',
              'box=%.1f,%.1f,%.1f,%.1f' % ((x0 + x1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (z1 - z0) / 2),
              'camera_height=45', 'hctp=%d' % room, 'weapons=%s' % weapons]
+    if room in BIG_STAGE_ROOMS and not ROOMS[room][2]:
+        lines.insert(5, 'needs=%s' % NEEDS_BIG_STAGE)
     if drops:
         lines.append('load_weapons=%s' % ','.join(map(str, drops)))
     open(os.path.join(mod, 'manifest.txt'), 'w', newline='').write('\r\n'.join(lines) + '\r\n')

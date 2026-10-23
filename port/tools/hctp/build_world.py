@@ -2,7 +2,7 @@
 
     py build_world.py <HCTP unpacked folder> <2011 pac folder> <work folder> <mod folder> [rooms, e.g. 30,31,32]
 
-The rooms (build_room.py's ROOMS; default 30-34 - backstage_port.py's hctpworld / hctpfountain) in one bg78
+The rooms (build_room.py's ROOMS; default 30-35 - backstage_port.py's hctpworld / hctpfountain) in one bg78
 (world_stage.py), all in the same place - the parking room's, where one room alone sits (the match camera's
 target stays inside the stock backstage: rooms side by side 1000 apart left it looking at nothing). Their props,
 climb spots and motions
@@ -25,7 +25,9 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, 'mot'))
 import build_room as B  # noqa: E402
 
-WORLD_ROOMS = (30, 31, 32, 33, 34)   # (2011 loads ~400 stage meshes: room 35 alone is 225 - its own world with 34)
+# (the whole backstage, about 625 stage meshes: a stage over the game's vertex window is placed elsewhere since
+# 2.1.5, src/model_mem.cpp - before, ~400 meshes crashed the load)
+WORLD_ROOMS = (30, 31, 32, 33, 34, 35)
 OBJ_ACT = {31: 13000, 32: 13100, 33: 13200, 34: 13300, 35: 13400, 36: 13500}
 FIRST_OBJ, LAST_OBJ = 1000, 1139    # (stock CFRS rooms' object ids; hctp_room shows only the current room's)
 TEX_UPSCALE = int(os.environ.get('HCTP_WORLD_UPSCALE', '2'))                    # (props' textures: the stage, the package and their buffers share a ~17 MB window)
@@ -145,6 +147,8 @@ def build(unpacked, pac11, work, mod, rooms=WORLD_ROOMS, name='HCTP Backstage', 
              'row=%s' % name, 'gimmick=78H3',
              'box=%.1f,%.1f,%.1f,%.1f' % ((x0 + x1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (z1 - z0) / 2),
              'camera_height=45', 'hctp=%d' % rooms[0], 'weapons=%s' % (';'.join(weapons) or 'none')]
+    if len(rooms) > 5 or any(r in B.BIG_STAGE_ROOMS and not B.ROOMS[r][2] for r in rooms):   # (over the window)
+        lines.insert(5, 'needs=%s' % B.NEEDS_BIG_STAGE)
     if drops:
         lines.append('load_weapons=%s' % ','.join(map(str, sorted(drops))))
     open(os.path.join(mod, 'manifest.txt'), 'w', newline='').write('\r\n'.join(lines) + '\r\n')
