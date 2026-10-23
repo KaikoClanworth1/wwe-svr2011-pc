@@ -356,9 +356,22 @@ class StockEnds:
 
     def __init__(self, pac11, cache):
         if os.path.exists(cache):
-            self.ends, self.exh = pickle.load(open(cache, 'rb'))
-            return
+            got = pickle.load(open(cache, 'rb'))
+            if len(got) == 3:   # (an older cache has no ids: made again)
+                self.ends, self.exh, self.ids = got
+                return
         self.ends = {}
+        self.ids = set()   # every motion id 2011's m.pac / mpsp.pac banks have (missing_end_fix)
+        for pac in ('m.pac', 'mpsp.pac'):
+            if not os.path.exists(os.path.join(pac11, pac)):
+                continue
+            h, g, t = read_epac(os.path.join(pac11, pac))
+            for path, raw in walk_banks(g):
+                if raw[:4] in (b'YMKs', b'YMBs') and len(raw) >= 0x114:
+                    n = struct.unpack_from('<I', raw, 0x110)[0]
+                    for i in range(n):
+                        if 0x114 + 16 * i + 4 <= len(raw):
+                            self.ids.add(struct.unpack_from('<H', raw, 0x114 + 16 * i + 2)[0])
         h, g, t = read_epac(os.path.join(pac11, 'm.pac'))
         for path, raw in walk_banks(g):
             if not path.startswith('MOT/BM') or raw[:4] != b'YMKs':
@@ -376,7 +389,7 @@ class StockEnds:
         h, g, t = read_epac(os.path.join(pac11, 'misc.pac'))
         self.exh = {gid: exh_parse(u, 36) for gid, pk, u in subgroups(waza_children(g)[0])}
         os.makedirs(os.path.dirname(cache) or '.', exist_ok=True)
-        pickle.dump((self.ends, self.exh), open(cache, 'wb'))
+        pickle.dump((self.ends, self.exh, self.ids), open(cache, 'wb'))
 
     def donor(self, group, rec):
         """the most similar stock record's (id, x) and its victim's end target, or None"""
@@ -417,6 +430,29 @@ def down_end_fix(motions, exh, stock, T):
                 struct.pack_into('<H', b, at, new)
                 m['data'] = bytes(b)
         notes.append('x=%d: victim end 0 -> %d (from %d/%d; victim ends at root y %.0f)' % (x, new, did, dx, y))
+    return notes
+
+
+def missing_end_fix(motions, known, T):
+    """motions: dict(id, x, y, data, motp). A track whose end chain (the last op 49) names a motion that neither
+    2011 nor the pack has (`known`: their ids) - a 2010 / 2008 move ported as is: 869 in 5786 / 5768 / 5697, 170 in
+    Sabu's 5790 - left the character in no motion: lying until a state reset stood him up ("the mod falls to the
+    floor, then teleports standing", 23 Oct). Set to 0 (the game's own follow-up), in place. -> notes"""
+    notes = []
+    for m in motions:
+        try:
+            at, tgt = end_chain(m['data'], T, m['motp'])
+        except (ValueError, IndexError):
+            continue
+        # (y 50+ tracks and ids that high don't read as this layout - Sabu's packed y 52 copies gave 47927, 64047:
+        # left as they are)
+        if at is None or not tgt or tgt in known or m['y'] >= 50 or tgt >= 20000:
+            continue
+        b = bytearray(m['data'])
+        struct.pack_into('<H', b, at, 0)
+        m['data'] = bytes(b)
+        notes.append('x=%d y=%d%s: goes on to motion %d, which 2011 doesn\'t have -> 0' % (
+            m['x'], m['y'], ' (packed copy)' if m['motp'] else '', tgt))
     return notes
 
 
@@ -903,6 +939,8 @@ def build(ctx, ids, namelist=False):
         mine = [dict(m, motp=p11.startswith('MOTP'), _ref=m) for p11, lst in per_bank.items() for m in lst if m['id'] == mid]
         for n in down_end_fix(mine, exh, stock, ctx.T11()):
             ctx.p('victim end %d: %s' % (mid, n))
+        for n in missing_end_fix(mine, stock.ids | set(plan), ctx.T11()):
+            ctx.p('missing follow-up %d: %s' % (mid, n))
         for m in mine:
             m['_ref']['data'] = m['data']
     os.makedirs(os.path.join(out, 'banks'), exist_ok=True)
@@ -1358,9 +1396,10 @@ def fix_svrmod(pac10, pac11, path, dry=False, cache=None):
         files = {i.filename: z.read(i) for i in infos}
     motions = collections.defaultdict(list)
     for n in files:
-        m = re.fullmatch(r'moves/motions/(motp_)?(\d+)_(\d+)_(\d+)\.ymk', n)
+        m = re.fullmatch(r'moves/motions/(motp_)?(\d+)_(\d+)_(\d+)(_p)?\.ymk', n)   # (_p: the SvR 2008 ports' packed copies)
         if m:
-            motions[int(m[2])].append(dict(id=int(m[2]), x=int(m[3]), y=int(m[4]), data=files[n], name=n, motp=bool(m[1])))
+            motions[int(m[2])].append(dict(id=int(m[2]), x=int(m[3]), y=int(m[4]), data=files[n], name=n,
+                                           motp=bool(m[1] or m[5])))
     notes = []
     kinds = []
     # victims ending on the mat (BM and MOTP copies)
@@ -1377,7 +1416,10 @@ def fix_svrmod(pac10, pac11, path, dry=False, cache=None):
         got = down_end_fix(motions[mid], exh.get(mid, {}), stock, T11)
         for n in got:
             notes.append('victim end %d: %s' % (mid, n))
-        if got:
+        missing = missing_end_fix(motions[mid], stock.ids | set(motions), T11)
+        for n in missing:
+            notes.append('missing follow-up %d: %s' % (mid, n))
+        if got or missing:
             for m in motions[mid]:
                 files[m['name']] = m['data']
     if notes:

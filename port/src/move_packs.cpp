@@ -64,6 +64,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
@@ -86,7 +87,7 @@ namespace {
 namespace fs = std::filesystem;
 using svrfmt::Bytes;
 
-constexpr const char* kFormat = "movepacks 12";  // (12: new pacentry names keep the others' places, propfallback; 11: BATS / BATH INIT get the records themselves, not WAZA's tables - a DLC's differ; 2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines; 9: YMBs motions appended after the stock ones; 10: pacentry into EPAC pacs (prtcls.pac pyro))
+constexpr const char* kFormat = "movepacks 13";  // (13: pack motions going on to a motion nobody has get the game's own follow-up - every install merged again once; 12: new pacentry names keep the others' places, propfallback; 11: BATS / BATH INIT get the records themselves, not WAZA's tables - a DLC's differ; 2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines; 9: YMBs motions appended after the stock ones; 10: pacentry into EPAC pacs (prtcls.pac pyro))
 std::string g_folder;  // PacListFolder
 constexpr const char* kPropPac = "evt\\evtobj.pac";  // (entrance props: SOBJ <id>)
 
@@ -97,6 +98,7 @@ struct Motion {
   Bytes data;
   Bytes hdr;  // (YMBs: the 20-byte motion header)
   std::string pack;  // (the pack it came from: its folder, or the superstar mod's)
+  bool motp = false;  // (a packed copy for a MOTP bank: its frames' event blocks are laid out differently)
 };
 struct Record {
   uint32_t group = 0;
@@ -192,6 +194,7 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = tru
       m.hdr = Hex(hdr);
       if (m.hdr.size() == 20) g_ymbs_motion[id & 0x7FFF] = true;
       m.pack = (dir.filename() == "moves" ? dir.parent_path() : dir).filename().string();
+      m.motp = parts[0] == "MOTP";  // (by its bank: the SvR 2008 ports name their packed copies *_p.ymk, not motp_*)
       // (the motion file in the stamp - size and time, no read: a pack whose
       // motion files changed but not its pack.txt was kept merged as it was)
       {
@@ -278,6 +281,62 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = tru
 
 uint32_t Key(uint16_t id, uint8_t x, uint8_t y) { return uint32_t(id) << 16 | uint32_t(x) << 8 | y; }
 
+// A motion's end chain: its last event op 49 names the motion that follows it (the victim's down motion, the
+// attacker's get-up ...; tools/svr10_moves.py end_chain). A 2010 / 2008 move ported as is can name a motion 2011
+// doesn't have (869 in 5786 / 5768 / 5697, 170 in Sabu's 5790): the character is left in no motion - lying in a
+// fallback pose until a state reset stands him up ("the mod falls to the floor, then teleports standing", 23 Oct).
+// The ids the game's banks and the packs have (built before a merge, KnownMotions); empty: not checked.
+std::vector<bool> g_known_motions;
+
+// The frame stream (re_moveport.md): bytes below 0x60 skip frames, 0x60 + u16 size or 0x61.. a record of that size
+// minus 0x60. A frame's event block leads its record: BM 0x80 | length, MOTP a byte below 0x40 = length - 1.
+// Offset of the last op 49's u16 (0: none); T: the bank's event-size table (0x10..0x110).
+size_t EndChainAt(const Bytes& d, const uint8_t* T, bool motp) {
+  size_t p = 0, at = 0;
+  while (p < d.size()) {
+    const uint8_t b = d[p];
+    if (b < 0x60) {
+      ++p;
+      continue;
+    }
+    size_t sz;
+    if (b == 0x60) {
+      if (p + 3 > d.size()) return 0;
+      sz = size_t(d[p + 1]) | size_t(d[p + 2]) << 8, p += 3;
+    } else {
+      sz = size_t(b - 0x60), p += 1;
+    }
+    if (p + sz > d.size()) return 0;  // (not a frame stream as expected: left as it is)
+    if (sz) {
+      size_t q = 0, end = 0;
+      if (!motp && (d[p] & 0x80)) q = p + 1, end = p + 1 + (d[p] & 0x7F);
+      else if (motp && d[p] < 0x40) q = p + 1, end = p + 2 + d[p];
+      end = std::min(end, d.size());
+      while (q && q < end) {
+        const uint8_t op = d[q], len = T[op];
+        if (!len || q + len > end) break;
+        if (op == 49 && len >= 3) at = q + 1;
+        q += len;
+      }
+    }
+    p += sz;
+  }
+  return at;
+}
+
+// Every motion id in a pac's YMKs / YMBs banks (all its entries, every level of their trees).
+void CollectMotionIds(const Bytes& blob, std::vector<bool>& ids, int depth = 0) {
+  const Bytes raw = svrfmt::Unpack(blob);
+  if (raw.size() >= 0x114 && (!std::memcmp(raw.data(), "YMKs", 4) || !std::memcmp(raw.data(), "YMBs", 4))) {
+    const uint32_t n = Le32(&raw[0x110]);
+    for (uint32_t i = 0; i < n && 0x114 + 16 * size_t(i) + 4 <= raw.size(); ++i) ids[Le16(&raw[0x114 + 16 * i + 2])] = true;
+    return;
+  }
+  std::vector<svrfmt::PachEntry> kids;
+  if (depth < 6 && svrfmt::PachRead(raw, kids))
+    for (const auto& k : kids) CollectMotionIds(k.data, ids, depth + 1);
+}
+
 bool YmbsInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added);
 
 // Inserts the motions (keys the bank lacks) and lays the data out in
@@ -327,6 +386,7 @@ bool BankInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
   for (const auto& m : add) sorted.push_back(&m);
   std::stable_sort(sorted.begin(), sorted.end(), [](auto a, auto b) { return Key(a->id, a->x, a->y) < Key(b->id, b->x, b->y); });
   added = 0;
+  std::vector<std::unique_ptr<Bytes>> fixed;  // (copies whose end chain was cleared: ents point into them)
   for (const Motion* m : sorted) {
     const uint32_t k = Key(m->id, m->x, m->y);
     if (present.count(k)) continue;
@@ -334,8 +394,21 @@ bool BankInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
     size_t pos = 0;
     while (pos < keys.size() && keys[pos] <= k) ++pos;
     if (pos && keys[pos - 1] > k) return false;
+    const uint8_t* data = m->data.data();
+    if (!g_known_motions.empty()) {
+      if (const size_t at = EndChainAt(m->data, &raw[0x10], m->motp)) {
+        const uint16_t next = Le16(&m->data[at]);
+        if (next && next < 20000 && m->y < 50 && !g_known_motions[next]) {  // (y 50+ / higher ids: not read as this layout)
+          fixed.push_back(std::make_unique<Bytes>(m->data));
+          PutLe16(fixed.back()->data() + at, 0);
+          data = fixed.back()->data();
+          REXLOG_WARN("[svr2011] move packs: {}: motion {} x {} y {} goes on to motion {}, which neither the game nor "
+                      "a pack has - cleared (the game's own follow-up instead of none)", m->pack, m->id, m->x, m->y, next);
+        }
+      }
+    }
     keys.insert(keys.begin() + long(pos), k);
-    ents.insert(ents.begin() + long(pos), E{m->y, m->x, m->id, -1, m->frames, rt, m->data.data(), m->data.size()});
+    ents.insert(ents.begin() + long(pos), E{m->y, m->x, m->id, -1, m->frames, rt, data, m->data.size()});
     present.insert(k);
     ++added;
   }
@@ -1706,6 +1779,30 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   fs::create_directories(overlay, ec);
   fs::remove(overlay / "stamp.txt", ec);
   bool ok = true;
+  {  // (the motions the game and the packs have: a pack motion going on to none of them is cleared, BankInsert)
+    g_known_motions.assign(0x10000, false);
+    for (const char* name : {"m.pac", "mpsp.pac"}) {
+      std::ifstream in(game / "pac" / name, std::ios::binary);
+      Bytes head, blob;
+      std::vector<TocEntry> toc;
+      if (!in || !ReadToc(in, head, toc)) continue;
+      for (const auto& e : toc) {
+        svr2011::KeepWindowAlive();
+        blob.resize(size_t(e.size256) * 0x100);
+        in.seekg(std::streamoff(0x4000 + uint64_t(e.sector) * 0x800));
+        if (in.read(reinterpret_cast<char*>(blob.data()), std::streamsize(blob.size()))) CollectMotionIds(blob, g_known_motions);
+        else in.clear();
+      }
+    }
+    size_t n = 0;
+    for (bool b : g_known_motions) n += b;
+    for (const auto& [pac, entries] : packs.motions)
+      for (const auto& [type_name, banks] : entries)
+        for (const auto& [path, motions] : banks)
+          for (const auto& m : motions) g_known_motions[m.id] = true;
+    if (n < 1000) g_known_motions.clear();  // (the game's motions not read: nothing judged)
+    REXLOG_INFO("[svr2011] move packs: {} motion ids in the game's m.pac / mpsp.pac", n);
+  }
   for (const auto& [pac, entries] : packs.motions) {
     svr2011::KeepWindowAlive();
     ok = ok && BuildMotionPac(game, overlay, Lower(pac), entries);
