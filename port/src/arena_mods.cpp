@@ -291,6 +291,9 @@ struct CustomArena {
   std::vector<std::pair<std::string, svrfmt::Bytes>> vs;
   // its loading screen (load.dds, 1024 x 512 DXT5): blocks, swapped
   svrfmt::Bytes load;
+  // its own VS screen (vs/theme.pac: VSTL / VSTI / VSTF, tools/vs_port.py theme): the file, and its group in the VS
+  // styles' overlay pac once vs_styles.cpp merged it ("VA00" ...; empty: the game's / the VS style's theme)
+  std::string theme_pac, theme_group;
 };
 std::vector<CustomArena> g_customs;
 
@@ -510,6 +513,7 @@ void LoadCustomArenas() {
     svrfmt::Bytes dds;
     if (svrfmt::ReadFile((f / "banner.dds").string(), dds)) c.banner = BannerBlocks(dds);
     if (c.banner.empty()) REXLOG_WARN("[svr2011] arena mods: {} has no 256 x 128 DXT5 banner.dds", c.id);
+    if (fs::exists(f / "vs" / "theme.pac", ec)) c.theme_pac = (f / "vs" / "theme.pac").string();
     if (fs::is_directory(f / "vs", ec))
       for (const auto& v : fs::directory_iterator(f / "vs", ec)) {
         svrfmt::Bytes vdds;
@@ -737,6 +741,7 @@ struct DecodeSwaps {
   std::unordered_map<uint64_t, std::vector<size_t>> keys;  // middle 32 bytes -> swaps
   std::vector<size_t> sizes;                               // the swaps' top level sizes (distinct)
   int theme = -1;                                          // VS theme forced (-1 none)
+  std::string arena;                                       // the arena mod's id (its own VS theme: theme_group)
 };
 std::mutex g_decode_mutex;
 std::shared_ptr<const DecodeSwaps> g_decode;
@@ -844,6 +849,7 @@ void SetDecodeSwaps(const CustomArena* c, int host) {
   auto t = std::make_shared<DecodeSwaps>();
   if (c) {
     t->theme = host;
+    t->arena = c->id;
     // (a game picture by its key / hash; the replacement shared - not 240
     // copies of the game's pictures and 240 of the custom one's)
     auto add = [&](const std::string& name, const LoadPic& orig, std::shared_ptr<const svrfmt::Bytes> mine, bool loading) {
@@ -1232,6 +1238,20 @@ REX_HOOK_RAW(sub_826A17D0) {
     // (the VS screen opening: its theme - test scripts wait for this line, vs_styles.h)
     static int logged = 0;
     if (!std::strncmp(path, "/MENU/M", 7) && logged++ < 100) REXLOG_INFO("[svr2011] VS screen: theme {:.16}", path);
+    // An arena mod with its own VS theme (vs/theme.pac): "/MENU/M<nn>x" -> "/VA<k>/VSTx" (the same length), its group
+    // in the VS styles' overlay pac. Decided here, as the screen opens: the game finds the file by this name now
+    // (the boot-time names are only the game's own).
+    const auto t = CurrentDecodeSwaps();
+    const CustomArena* own = nullptr;
+    for (const auto& c : g_customs)
+      if (t && !t->arena.empty() && c.id == t->arena && c.theme_group.size() == 4) own = &c;
+    if (own && !std::strncmp(path, "/MENU/M", 7) && std::isdigit(uint8_t(path[7])) && std::isdigit(uint8_t(path[8])) &&
+        (path[9] == 'L' || path[9] == 'I' || path[9] == 'F') && !path[10]) {
+      std::memcpy(path + 1, own->theme_group.data(), 4);
+      std::memcpy(path + 6, "VST", 3);
+      static int told = 0;
+      if (told++ < 30) REXLOG_INFO("[svr2011] arena mods: VS screen -> the arena mod's own theme {}", path);
+    }
   }
   __imp__sub_826A17D0(ctx, base);
 }
@@ -1882,6 +1902,18 @@ class ArenaPageLabel final : public rex::ui::ImGuiDialog {
 namespace svr2011 {
 
 void InstallArenaModsOverlay(rex::ui::ImGuiDrawer* drawer) { new ArenaPageLabel(drawer); }
+
+std::vector<std::pair<std::string, std::string>> ArenaThemePacs() {
+  std::vector<std::pair<std::string, std::string>> out;
+  for (const auto& c : g_customs)
+    if (!c.theme_pac.empty()) out.push_back({c.id, c.theme_pac});
+  return out;
+}
+
+void SetArenaThemeGroup(const std::string& id, const std::string& group) {
+  for (auto& c : g_customs)
+    if (c.id == id) c.theme_group = group;
+}
 
 }  // namespace svr2011
 
