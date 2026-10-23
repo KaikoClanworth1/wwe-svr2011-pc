@@ -1226,7 +1226,13 @@ REX_HOOK_RAW(sub_826AEF10) {
 // the game would pick (see SetDecodeSwaps).
 REX_EXTERN(__imp__sub_826A17D0);
 REX_HOOK_RAW(sub_826A17D0) {
-  if (ctx.r3.u32) ForceTheme(reinterpret_cast<char*>(base + ctx.r3.u32));
+  if (ctx.r3.u32) {
+    char* path = reinterpret_cast<char*>(base + ctx.r3.u32);
+    ForceTheme(path);
+    // (the VS screen opening: its theme - test scripts wait for this line, vs_styles.h)
+    static int logged = 0;
+    if (!std::strncmp(path, "/MENU/M", 7) && logged++ < 100) REXLOG_INFO("[svr2011] VS screen: theme {:.16}", path);
+  }
   __imp__sub_826A17D0(ctx, base);
 }
 

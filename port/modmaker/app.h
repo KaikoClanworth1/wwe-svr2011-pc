@@ -474,7 +474,7 @@ namespace port_page { void Draw();
                       // only the kinds in mask (bit k: Superstars, Moves, Entrances, Arenas, Attires, Belts, Weapons,
                       // Backstage), for the pages' "From another game" tabs; Kind(): the shown kind's bit number
                       enum : unsigned { kSuperstars = 1, kMovesKind = 2, kEntrances = 4, kArenas = 8, kAttires = 16, kBelts = 32,
-                                        kWeapons = 64, kBackstageKind = 128 };
+                                        kWeapons = 64, kBackstageKind = 128, kVsScreens = 256 };
                       void DrawKinds(unsigned mask); int Kind();
                       void TestStart(const std::string& spec); void TestClear(); void TestFullPreview();
                       // the superstar steps alone (Simple mode): a converted .svrmod comes back in EmbeddedResult()

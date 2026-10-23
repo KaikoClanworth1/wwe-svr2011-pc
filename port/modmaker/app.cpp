@@ -1972,9 +1972,10 @@ const PageDesc kPages[] = {
      }},
     {PageId::kArenaPort, "Arena from another game", "", nullptr,
      [] {
-       FromAnotherGame("An arena or a backstage room from your other WWE games: pick the disc or one arena file; it opens "
-                       "on the Arena tab to finish.",
-                       port_page::kArenas | port_page::kBackstageKind, other_page::kW13Arena | other_page::kSvr08,
+       FromAnotherGame("An arena, a backstage room or the VS screens from your other WWE games: pick the disc or one "
+                       "arena file; an arena opens on the Arena tab to finish.",
+                       port_page::kArenas | port_page::kBackstageKind | port_page::kVsScreens,
+                       other_page::kW13Arena | other_page::kSvr08,
                        "an arena pac (pac\\bg\\bgNN.pac)");
      }},
     {PageId::kMovesPort, "Moves from another game", "", nullptr,
