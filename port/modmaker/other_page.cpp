@@ -100,14 +100,16 @@ int g_w13_host = 1;  // tile (RAW: the bundled ones used it)
 Wwe13Options g_w13;
 char g_w13_drop[128] = "";
 char g_w13_name[64] = "";
+std::wstring g_w13_picture;  // the banner + loading picture (the Port page's scan of the disc, or picked), "" none
 bool g_show_arena_tab = false;  // (the Port page handed a file: that tab comes up)
 
 // A WWE '12 - 2K17 arena pac onto a host tile, in the background; the result is the Arena page's project.
-void Convert(const std::wstring& file, int host, const std::string& name, const Wwe13Options& opt, bool to_editor) {
+void Convert(const std::wstring& file, int host, const std::string& name, const Wwe13Options& opt, bool to_editor,
+             const std::wstring& picture) {
   std::string source = Utf8(fs::path(file).stem().wstring());  // ("Arenas_wwe2k16_bg01" from the Port page, or "bg01")
   if (source.rfind("Arenas_", 0) == 0) source = source.substr(7);
   std::replace(source.begin(), source.end(), '_', ' ');
-  RunInBackground([file, host, opt, name, source, to_editor] {
+  RunInBackground([file, host, opt, name, source, to_editor, picture] {
     Progress("Reading the arena ...");
     Bytes w13, hostpac;
     if (!ReadFile(Utf8(file), w13)) { Status("Could not read " + Utf8(file)); return; }
@@ -123,7 +125,7 @@ void Convert(const std::wstring& file, int host, const std::string& name, const 
     std::snprintf(b, sizeof b, "Converted: %d models, %d meshes, %d entries (%d from the host, %d dropped, %d ring parts).",
                   rep.conv.models, rep.conv.meshes, rep.entries, rep.from_host, rep.dropped, rep.ring_parts);
     Status(b);
-    OnUiThread([out, host, name, source, to_editor] { arena_page::SetArenaFromPac(out, host, name, source, to_editor); });
+    OnUiThread([out, host, name, source, to_editor, picture] { arena_page::SetArenaFromPac(out, host, name, source, to_editor, picture); });
   });
 }
 
@@ -151,8 +153,24 @@ void Wwe13ArenaTab() {
       }
     }
   }
-  if (FileRow("Arena file...", g_w13_file, "pick a bgNN.pac", kPacFilter, 1) && g_w13_name[0] == 0)
-    std::snprintf(g_w13_name, sizeof g_w13_name, "%s", IdFrom(FileName(g_w13_file), "wwe13").c_str());
+  if (FileRow("Arena file...", g_w13_file, "pick a bgNN.pac", kPacFilter, 1)) {
+    g_w13_picture.clear();  // (another file: the picture was the old one's)
+    if (g_w13_name[0] == 0) std::snprintf(g_w13_name, sizeof g_w13_name, "%s", IdFrom(FileName(g_w13_file), "wwe13").c_str());
+  }
+  FileRow("Banner picture...", g_w13_picture, "none: set the banner and loading picture on the Arena page", kPictureFilter, 1,
+          "The arena select banner and the loading screen picture. From the disc's own picture of the arena when it "
+          "came from the From another game tab; pick another or remove it here, or change them on the Arena page after.");
+  if (!g_w13_picture.empty()) {
+    static std::wstring shown;
+    static Picture pic;
+    if (shown != g_w13_picture) {
+      shown = g_w13_picture;
+      Image img;
+      if (LoadPicture(g_w13_picture, img)) pic.Set(Resize(img, 256, 128));
+      else pic.Clear();
+    }
+    if (!pic.Empty()) pic.Draw(256 * g_scale, 128 * g_scale);
+  }
   ImGui::SetNextItemWidth(320 * g_scale);
   if (ImGui::BeginCombo("Host arena (the room it plays in)", g_arenas[g_w13_host].name)) {
     for (int i = 0; i < 20; ++i)
@@ -198,7 +216,7 @@ void Wwe13ArenaTab() {
       while (*p && *p != ',') ++p;
       if (*p == ',') ++p;
     }
-    Convert(g_w13_file, g_w13_host, g_w13_name, opt, true);
+    Convert(g_w13_file, g_w13_host, g_w13_name, opt, true, g_w13_picture);
   }
   PopAccent();
   ImGui::EndDisabled();
@@ -429,12 +447,14 @@ void Svr08Tab() {
 
 }  // namespace
 
-void ConvertArena(const std::wstring& file, int host, const std::string& name, bool to_editor) {
-  Convert(file, host, name, g_w13, to_editor);
+void ConvertArena(const std::wstring& file, int host, const std::string& name, bool to_editor, const std::wstring& picture) {
+  Convert(file, host, name, g_w13, to_editor, picture);
 }
 
-void UseArenaFile(const std::wstring& file, const std::string& name) {
+void UseArenaFile(const std::wstring& file, const std::string& name, const std::wstring& picture) {
   g_w13_file = file;
+  g_w13_picture = picture;
+  if (!picture.empty()) Log("arena: banner + loading picture from " + Utf8(picture));
   std::snprintf(g_w13_name, sizeof g_w13_name, "%s", name.c_str());
   g_show_arena_tab = true;
 }

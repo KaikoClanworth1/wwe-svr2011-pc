@@ -85,6 +85,7 @@ std::vector<std::wstring> g_lone_args;
 // Embedded (a Simple mode's steps): the result is handed back (EmbeddedResult), not opened on its page.
 bool g_embedded = false;
 std::wstring g_embedded_result;
+std::wstring g_embedded_picture;  // (an arena result: the disc's picture of it, from the scan)
 
 // ---- the work folder (<game>\Mods\.convert\port): the converters' results and their copies of disc files
 constexpr uint64_t kTrimAbove = 3ull << 30, kTrimTo = 3ull << 29;  // 3 GB -> 1.5 GB
@@ -702,7 +703,8 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
   const std::wstring image = src_folder ? L"" : src, folder = src_folder ? src : L"";
   const fs::path out = WorkDir() / Wide("Arenas_" + game + "_" + p.name);
   const bool embedded = g_embedded;
-  RunInBackground([p, image, folder, out, game, embedded] {
+  const std::wstring thumb = Wide(NativeItem(p)["thumb"].Str());  // (the scan's picture: the banner + loading picture)
+  RunInBackground([p, image, folder, out, game, embedded, thumb] {
     Progress("Copying " + p.name + " off the disc ...");
     Bytes b;
     bool ok = false;
@@ -715,15 +717,15 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
     std::error_code ec;
     fs::create_directories(out.parent_path(), ec);
     if (!ok || !svrfmt::WriteFile(Utf8(out.wstring()), b)) { Status("Could not copy " + p.name + "."); return; }
-    OnUiThread([out, p, game, embedded] {
+    OnUiThread([out, p, game, embedded, thumb] {
       if (embedded) {  // (a Simple mode converts it itself)
         Log("port: " + p.name + " -> " + Utf8(out.wstring()));
-        g_embedded_result = out.wstring();
+        g_embedded_result = out.wstring(), g_embedded_picture = thumb;
         CacheJob(true, false, out.parent_path());
         return;
       }
       Log("port: " + p.name + " -> " + Utf8(out.wstring()) + " (Arena > From another game)");
-      other_page::UseArenaFile(out.wstring(), IdFrom(game + "_" + fs::path(p.name).stem().string(), "arena"));
+      other_page::UseArenaFile(out.wstring(), IdFrom(game + "_" + fs::path(p.name).stem().string(), "arena"), thumb);
       GoTo(PageId::kOther);
       CacheJob(true, false, out.parent_path());
     });
@@ -1473,7 +1475,8 @@ std::string KindsFor(const std::string& disc_id) {
 }
 
 std::wstring EmbeddedResult() { return g_embedded_result; }
-void ClearEmbeddedResult() { g_embedded_result.clear(); }
+std::wstring EmbeddedPicture() { return g_embedded_picture; }
+void ClearEmbeddedResult() { g_embedded_result.clear(), g_embedded_picture.clear(); }
 
 }  // namespace port_page
 }  // namespace mm

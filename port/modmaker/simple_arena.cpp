@@ -300,8 +300,9 @@ void StartFromDisc() {
       const std::string name = !g_name_typed.empty() ? g_name_typed
                                : !g_lone_file.empty() ? stem
                                                       : std::string(g ? g->name : "Arena") + " " + stem.substr(stem.rfind('_') + 1);
+      const std::wstring picture = port_page::EmbeddedPicture();  // (the disc's picture: banner + loading screen)
       port_page::ClearEmbeddedResult();
-      other_page::ConvertArena(got, g_native_host, name, false);
+      other_page::ConvertArena(got, g_native_host, name, false, picture);
     }
     return;
   }

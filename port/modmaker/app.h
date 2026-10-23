@@ -422,8 +422,9 @@ namespace arena_page { extern PageHooks hooks; void Tick(); void OpenEditor(int 
                        void TestInGame(); void SetTestSave(const std::wstring& f, int lib); void StartNew(int tile);
                        void StartBackstage(int area);
                        // a converted arena.pac as the arena project (host tile, name), into the 3D editor
+                       // picture: a PNG made the banner (256 x 128) and loading picture (1024 x 512), "" none
                        void SetArenaFromPac(const Bytes& pac, int host, const std::string& name, const std::string& source = "",
-                                            bool to_editor = true);
+                                            bool to_editor = true, const std::wstring& picture = L"");
                        // Simple arena (simple_arena.cpp): the Arena page's step-by-step mode at <step> (test aid)
                        void TestSimple(int step); void TestSimpleStart(const std::string& spec);
                        // a converted bg78 as a backstage project: area, name, and its own-area gimmick pac (or "")
@@ -467,9 +468,12 @@ namespace other_page { void Draw();
                        void TestConvertW13(const std::wstring& file, int host);
                        // a WWE '12 - 2K17 bgNN.pac onto host tile `host` with the tab's options (svrfmt/wwe13), in the
                        // background, then the result as the Arena page's project (to_editor: the 3D editor shown)
-                       void ConvertArena(const std::wstring& file, int host, const std::string& name, bool to_editor);
-                       // an arena pac (WWE '12 / '13 / 2K14 bgNN.pac) into the built-in converter's tab, shown next
-                       void UseArenaFile(const std::wstring& file, const std::string& name); }
+                       // picture: the banner + loading picture (a PNG, e.g. the Port page's scan of the disc), "" none
+                       void ConvertArena(const std::wstring& file, int host, const std::string& name, bool to_editor,
+                                         const std::wstring& picture = L"");
+                       // an arena pac (WWE '12 / '13 / 2K14 bgNN.pac) into the built-in converter's tab, shown next;
+                       // picture: its banner + loading picture (the disc's arena picture from the scan), "" none
+                       void UseArenaFile(const std::wstring& file, const std::string& name, const std::wstring& picture = L""); }
 namespace match_page { extern PageHooks hooks; void TestTab(int tab, int rule); }
 namespace port_page { void Draw();
                       // only the kinds in mask (bit k: Superstars, Moves, Entrances, Arenas, Attires, Belts, Weapons,
@@ -480,6 +484,8 @@ namespace port_page { void Draw();
                       void TestStart(const std::string& spec); void TestClear(); void TestFullPreview();
                       // the superstar steps alone (Simple mode): a converted .svrmod comes back in EmbeddedResult()
                       void SuperstarFlow(); std::wstring EmbeddedResult(); void ClearEmbeddedResult();
+                      // with an arena EmbeddedResult(): the disc's picture of it (a PNG from the scan), "" none
+                      std::wstring EmbeddedPicture();
                       // one character file instead of a disc, embedded: a "Pick a character file" button, then the
                       // lone file's steps (game, character, convert); the .svrmod comes back in EmbeddedResult()
                       void SuperstarFileFlow();
