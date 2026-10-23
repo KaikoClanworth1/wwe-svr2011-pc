@@ -20,6 +20,8 @@
 #include <cstring>
 #include <string>
 
+#include <fmt/format.h>
+
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
@@ -35,6 +37,8 @@ constexpr uint32_t kLive = 0x82E3DE00;      // the match's settings: +0 its rule
 constexpr uint32_t kExtremeFirst = 0x4D, kExtremeLast = 0x50;
 constexpr uint32_t kBackstageArena = 78;
 constexpr uint32_t kMatchCollision = 996, kCrowdCollision = 999;
+// (each collision's z-band index: the entry before it - 995 for 996, 997 for 999; svr08_stage.index_build)
+constexpr uint32_t kMatchIndex = 995, kCrowdIndex = 997;
 constexpr uint32_t kLoaderFirst = 0x82187258, kLoaderEnd = 0x821874C8;  // sub_82187258
 
 std::atomic<bool> g_crowd{false};
@@ -46,6 +50,11 @@ float RdF(const uint8_t* p) {
   float f;
   std::memcpy(&f, &v, 4);
   return f;
+}
+void WrF(uint8_t* p, float f) {
+  uint32_t v;
+  std::memcpy(&v, &f, 4);
+  Wr32(p, v);
 }
 
 // The fan's hand-off (crowd_fight.h). People: *0x82E3CC50 + 4i (+288 / +292 / +296 x y z: the floor y 0, the ring
@@ -134,12 +143,52 @@ void CrowdMoveAsked(uint32_t fighter, uint32_t slot) {
   }
 }
 
+// Test aids (crowd fighting): SVR2011_TEST_PLACE="<person>:<x>,<z>[;<person>:<x>,<z>...]" - at match frame
+// SVR2011_TEST_PLACE_AT (300) those people are put there on the floor (the real position vector *(+304), its copy
+// +288; y 0; the area +444 1, outside the ring), once a match; SVR2011_TEST_CROWD_LOG=1 - each half second people 0-3: place, area bytes (+441, +444),
+// motion (+212).
+void CrowdTestAids(uint8_t* base, uint32_t frames, bool new_match) {
+  static const std::string place = [] { const char* v = std::getenv("SVR2011_TEST_PLACE"); return std::string(v ? v : ""); }();
+  static const uint32_t place_at = [] { const char* v = std::getenv("SVR2011_TEST_PLACE_AT"); return uint32_t(v ? std::atoi(v) : 300); }();
+  static const bool log = std::getenv("SVR2011_TEST_CROWD_LOG") != nullptr;
+  static bool placed = false;
+  if (new_match) placed = false;
+  if (!place.empty() && !placed && frames >= place_at && g_crowd.load()) {  // (crowd matches only: not the demo)
+    placed = true;
+    for (size_t at = 0; at < place.size();) {
+      size_t semi = place.find(';', at);
+      if (semi == std::string::npos) semi = place.size();
+      int person = -1;
+      float x = 0, z = 0;
+      if (std::sscanf(place.substr(at, semi - at).c_str(), "%d:%f,%f", &person, &x, &z) == 3 && person >= 0 && person < 6)
+        if (const uint32_t c = Rd32(base + kChars + uint32_t(person) * 4)) {
+          if (const uint32_t v = Rd32(base + c + 304)) WrF(base + v, x), WrF(base + v + 4, 0.f), WrF(base + v + 8, z);
+          WrF(base + c + 288, x), WrF(base + c + 292, 0.f), WrF(base + c + 296, z);
+          base[c + 444] = 1;  // (outside the ring: 0 is in it, 10 the cell's roof)
+          REXLOG_INFO("crowd: test - person {} put at ({}, {})", person, x, z);
+        }
+      at = semi + 1;
+    }
+  }
+  static uint32_t logged_at = ~0u;
+  if (log && g_crowd.load() && frames && frames % 30 == 0 && frames != logged_at) {
+    logged_at = frames;
+    std::string line;
+    for (uint32_t i = 0; i < 4; ++i)
+      if (const uint32_t c = Rd32(base + kChars + i * 4))
+        line += fmt::format(" | {}: ({:.1f}, {:.1f}, {:.1f}) area {} {} motion {}", i, RdF(base + c + 288),
+                            RdF(base + c + 292), RdF(base + c + 296), base[c + 441], base[c + 444], Rd32(base + c + 212));
+    REXLOG_INFO("crowd: frame {}{}", frames, line);
+  }
+}
+
 void CrowdHandoffUpdate(PPCContext& ctx, uint8_t* base) {
   uint32_t asked_set[8];
   for (int i = 0; i < 8; ++i) asked_set[i] = g_asked[i].exchange(0);
   const uint32_t frames = Rd32(base + kMatchFrames);
   const bool new_match = frames < g_last_frames;
-  if (new_match) {
+  CrowdTestAids(base, frames, new_match);
+  if (new_match) {  // (a new match)
     g_given = g_turn = 0;
     for (auto& f : g_fighter_at) f = 0;
   }
@@ -177,7 +226,18 @@ bool CrowdAreaFor(uint8_t* base) {
 }
 
 uint32_t CrowdCollisionId(uint8_t* base, uint32_t lr, uint32_t id) {
-  if (lr < kLoaderFirst || lr >= kLoaderEnd || id != kMatchCollision) return id;
+  if (lr < kLoaderFirst || lr >= kLoaderEnd) return id;
+  static const bool log = std::getenv("SVR2011_TEST_CROWD_LOG") != nullptr;  // (the stage loader's look-ups, once each)
+  if (log) {
+    static uint64_t told = 0;
+    if (id >= 990 && id < 1054 && !(told >> (id - 990) & 1)) {
+      told |= 1ull << (id - 990);
+      REXLOG_INFO("crowd: stage loader asks {} (lr {:08X})", id, lr);
+    }
+  }
+  // (the index: asked right after the collision (996, then 995) - that look-up's decision, not a second one)
+  if (id == kMatchIndex) return g_crowd.load() ? kCrowdIndex : id;
+  if (id != kMatchCollision) return id;
   const uint32_t rule = base[kLive], arena = Rd32(base + kLive + 64);
   static const bool test = std::getenv("SVR2011_TEST_CROWD") != nullptr;
   const bool crowd = rule >= kExtremeFirst && rule <= kExtremeLast && arena != kBackstageArena &&
@@ -185,6 +245,8 @@ uint32_t CrowdCollisionId(uint8_t* base, uint32_t lr, uint32_t id) {
   g_crowd = crowd;
   if (lr == 0x821872BC && crowd)  // (once a stage: its first look-up)
     REXLOG_INFO("crowd fight: the crowd area is open - SvR 2008's crowd collision (rule {:02X}, arena {})", rule, arena);
+  // (the collision and its index together: 999's triangles looked up through 996's index found the wrong ones -
+  // the crowd area's walls and floors were missing from it)
   return crowd ? kCrowdCollision : id;
 }
 
