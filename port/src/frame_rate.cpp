@@ -66,6 +66,7 @@
 #include "online_overlay.h"
 #include "online_rules.h"
 #include "players.h"
+#include "android_perf.h"
 #include "mem_trace.h"
 #include "superstar_mods.h"
 #if SVR2011_DEBUG_SUITE
@@ -432,6 +433,7 @@ void TestMatchTime(uint8_t* base) {
 // this frame runs (at least one).
 REX_EXTERN(__imp__sub_8269D768);
 REX_HOOK_RAW(sub_8269D768) {
+  svr2011::PerfHintThread();  // (android_perf.h: the world update's thread in the phone's hint session)
   if (!g_kernel) g_kernel = REX_KERNEL_STATE();  // (for the stuck-update thread dump)
   // Test aid: SVR2011_TEST_SLOW_MS=<ms> - a slow PC (each frame that much longer).
   static const int slow_ms = [] { const char* v = std::getenv("SVR2011_TEST_SLOW_MS"); return v ? std::atoi(v) : 0; }();
