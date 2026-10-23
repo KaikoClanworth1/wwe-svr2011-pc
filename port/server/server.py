@@ -51,6 +51,7 @@ import admin_auth as aa
 import gamespy as gs
 import discovery
 import leaderboards
+import match_names
 import media
 import relay
 import thumbs
@@ -886,7 +887,8 @@ class Service:
         state = str(body.get("state") or "lobby")[:12]
         self.live[sid] = {
             "session": sid, "host": account["name"], "kind": str(body.get("kind") or "")[:40],
-            "rule": str(body.get("rule") or "")[:40], "arena": str(body.get("arena") or "")[:40], "state": state,
+            "rule": str(body.get("rule") or "")[:40],
+            "rule_name": match_names.rule_name(str(body.get("rule") or "")) or "", "arena": str(body.get("arena") or "")[:40], "state": state,
             "players": players, "slots": int(body.get("slots") or 0), "version": str(body.get("version") or "")[:16],
             "network": str(body.get("network") or "")[:8],
             "since": old.get("since", now()), "state_since": old.get("state_since", now())
@@ -1014,7 +1016,8 @@ class Service:
             if int(str(body.get("xuid") or "0"), 16) != xuid:
                 return web.json_response({"ok": False, "error": "Only your own stats."}, status=403)
             done = await loop.run_in_executor(None, lb.write, xuid, account["id"], body.get("views") or [])
-            gs.log("stats: %s wrote %d view(s)" % (account["name"], done))
+            gs.log("stats: %s wrote %d view(s): %s" % (account["name"], done, ", ".join(
+                self.view_label(v.get("view")) for v in (body.get("views") or [])[:8] if isinstance(v, dict))))
             await loop.run_in_executor(None, self.record_match, account["id"], body.get("views") or [])
             return web.json_response({"ok": True, "views": done})
         names = await loop.run_in_executor(None, self.lb_names)
@@ -1562,7 +1565,7 @@ class Service:
         loop = asyncio.get_running_loop()
         names = await loop.run_in_executor(None, self.lb_names)
         rows = await loop.run_in_executor(None, lb.page_by_rank, vid, 1, count)
-        views = [{"id": k, "name": v["name"], "weekly": v["reset"] == "Weekly", "rows": 0}
+        views = [{"id": k, "name": v["name"], "label": self.view_label(k), "weekly": v["reset"] == "Weekly", "rows": 0}
                  for k, v in sorted(lb.views.items())]
         for v in views:
             v["rows"] = await loop.run_in_executor(None, lb.total, v["id"])
@@ -1630,9 +1633,16 @@ class Service:
             self.store.db.commit()
 
     def view_label(self, vid):
+        """A leaderboard view's name as the game's LEADERBOARDS show it (match_names.py)."""
+        try:
+            vid = int(vid)
+        except (TypeError, ValueError):
+            return "view ?"
+        name = match_names.view_name(vid)
+        if name:
+            return name
         name = self.leaderboards.views.get(vid, {}).get("name", "view %d" % vid)
-        name = re.sub(r"^LB_\d+_", "", name).replace("_RANKING", "").replace("_", " ")
-        return name.title()
+        return re.sub(r"^LB_\d+_", "", name).replace("_RANKING", "").replace("_", " ")
 
     def relay_links(self):
         """Account name -> how its game is on the relay now (https / UDP / UDP at the edge)."""
@@ -1699,7 +1709,7 @@ class Service:
                 near = min(events, key=lambda e: abs(e[0] - at), default=None)
                 net = dict(zip(("at", "path", "nat", "rtt", "network", "version"), near)) \
                     if near and abs(near[0] - at) <= 300 else None
-                out_matches.append({"at": at, "type": self.view_label(vid), "result": result, "rated": rated,
+                out_matches.append({"at": at, "type": self.view_label(vid), "view": vid, "result": result, "rated": rated,
                                     "net": net})
             rtts = [e[3] for e in events if e[3]]
             wins, losses = totals.get("win", 0), totals.get("loss", 0)
