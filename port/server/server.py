@@ -1820,11 +1820,23 @@ class Service:
 
     @admin_only
     async def admin_pings(self, request):
-        """Players online now (presence) with their last match's network report and their relay link."""
+        """Players online now (presence) with their last match's network report (sent when a match ends), what
+        they're in now (the hosts' live reports: session) and their relay link."""
         t = now()
         cutoff = t - SETTINGS["presence_window"]
         ids = [a for a, at in list(self.stats.recent.items()) if at >= cutoff]
         links = self.relay_links()
+        # (a game sends its match report once a match ENDS: a player in a match now shows it from the hosts'
+        # live session reports - in a match or a lobby, the path the host sees, since when)
+        sessions = {}
+        for v in list(self.live.values()):
+            if t - v["seen"] > LIVE_LIFE:
+                continue
+            for p in v["players"]:
+                key = p["name"].lower()
+                if key and (key not in sessions or v["state"] == "match"):
+                    sessions[key] = {"state": v["state"], "path": p["path"], "since": v["state_since"],
+                                     "host": v["host"], "rule": v.get("rule", ""), "rule_name": v.get("rule_name", "")}
 
         def rows():
             out = []
@@ -1837,6 +1849,7 @@ class Service:
                         "SELECT at, path, nat, rtt, network, version FROM net_events WHERE account = ? "
                         "ORDER BY at DESC LIMIT 1", (aid,)).fetchone()
                     out.append({"name": a[0], "seen": self.stats.recent.get(aid, 0), "link": links.get(a[0], ""),
+                                "session": sessions.get(a[0].lower()),
                                 "last": dict(zip(("at", "path", "nat", "rtt", "network", "version"), e)) if e else None})
             return sorted(out, key=lambda r: r["name"].lower())
 
