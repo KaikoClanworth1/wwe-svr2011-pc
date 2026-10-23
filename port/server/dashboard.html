@@ -286,6 +286,11 @@ td.acts { text-align: right; white-space: nowrap; }
       <thead><tr><th>Name</th><th>Type</th><th>Author</th><th>Version</th><th class="num">Size</th><th class="num">Downloads</th><th>Uploaded</th><th></th></tr></thead>
       <tbody id="mods"><tr><td colspan="8" class="empty">Loading&hellip;</td></tr></tbody>
     </table></div>
+
+    <h2>Storage audit <span class="spacer"></span><span class="note" id="audit-note"></span>
+      <button class="btn" id="audit-run">Run audit</button></h2>
+    <p class="intro">Compares the files where the uploads' bytes live (the storage node) with what the database refers to. An orphan is a file nothing refers to (e.g. a delete while the node was down): it goes only with its Delete. Hidden mods are listed so they aren't mistaken for orphans.</p>
+    <div id="audit"></div>
   </section>
 
   <section role="tabpanel" id="p-settings" aria-labelledby="tab-settings" tabindex="0" hidden>
@@ -687,6 +692,39 @@ td.acts { text-align: right; white-space: nowrap; }
       mods = d.mods; el('n-discovery').textContent = d.total != null ? d.total : d.mods.length; renderMods();
     }).catch(function () {});
   }
+
+  // ---- the storage audit (Discovery tab): orphans on the node, hidden mods, missing files
+  function auditRow(f, act) {
+    return '<tr><td><span class="id" title="' + esc(f.sha) + '">' + esc(f.sha.slice(0, 16)) + '</span></td><td>' +
+      esc(f.what || f.name || f.kind || '') + '</td><td class="num">' + (f.size != null ? bytes(f.size) : '') + '</td><td>' +
+      (f.packed ? '<span class="tag">xz</span>' : '') + '</td><td>' + (f.mtime ? ago(f.mtime) : '') + '</td><td class="acts">' + (act || '') + '</td></tr>';
+  }
+  function audit() {
+    el('audit-note').textContent = 'Running…';
+    return api('api/admin/blobs/audit').then(function (d) {
+      el('audit-note').textContent = d.files + ' files, ' + bytes(d.bytes) + ' (' + d.packed + ' packed) · ' + d.referenced +
+        ' referenced · ' + d.orphans.length + ' orphans (' + bytes(d.orphan_bytes) + ') · ' + d.missing.length + ' missing';
+      var head = '<thead><tr><th>Blob</th><th>What</th><th class="num">Size</th><th></th><th>File date</th><th></th></tr></thead>';
+      el('audit').innerHTML =
+        '<h2>Orphans</h2><div class="scroll"><table>' + head + '<tbody>' + (d.orphans.length ? d.orphans.map(function (f) {
+          return auditRow(f, '<button class="btn danger" data-blob="' + f.sha + '">Delete</button>');
+        }).join('') : '<tr><td colspan="6" class="empty">No orphans.</td></tr>') + '</tbody></table></div>' +
+        '<h2>Hidden mods</h2><div class="scroll"><table>' + head + '<tbody>' + (d.hidden_mods.length ?
+          d.hidden_mods.map(function (f) { return auditRow(f); }).join('') :
+          '<tr><td colspan="6" class="empty">No hidden mods.</td></tr>') + '</tbody></table></div>' +
+        (d.missing.length ? '<h2>Missing (referred to, no file)</h2><div class="scroll"><table>' + head + '<tbody>' +
+          d.missing.map(function (f) { return auditRow(f); }).join('') + '</tbody></table></div>' : '');
+    }).catch(function (e) { el('audit-note').textContent = 'Audit failed: ' + e.message; });
+  }
+  el('audit-run').addEventListener('click', audit);
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-blob]');
+    if (!b) return;
+    if (!confirm('Delete this orphan file from the storage for good? Nothing refers to it.')) return;
+    b.disabled = true;
+    api('api/admin/blobs/' + b.dataset.blob + '/delete', {method: 'POST'}).then(audit)
+      .catch(function (err) { alert(err.message); b.disabled = false; });
+  });
 
   // ---- settings + log
   var settingsList = [];

@@ -140,6 +140,12 @@ SETTINGS_SPEC = {
     "latest_release": {"default": "", "text": True, "max_len": 16, "live": True,
                        "help": "the newest published release (e.g. 2.1.5): unmarked uploads are refused only "
                                "once it is 2.1.5 or newer (the release with the check). Empty = not yet"},
+    "discovery_quota_mb": {"default": 1024, "min": 50, "max": 102400, "live": True,
+                           "help": "Discovery: the most one account's mods may take in all (MB); an upload or an "
+                                   "update over it is refused"},
+    "discovery_warn_mb": {"default": 50, "min": 5, "max": 1024, "live": True,
+                          "help": "Discovery: mods larger than this (MB) are stored, with a warning in the answer "
+                                  "(big entrance movies: an .mp4 is ~10x smaller than a Bink one)"},
     "max_connections": {"default": 100, "min": 10, "max": 1000, "live": False,
                         "help": "game requests at once (more wait up to 10 s, then 503)"},
 }
@@ -1331,6 +1337,23 @@ class Service:
             return None, "A version is needed."
         return fields, None
 
+    def mod_quota_why(self, account, size, but=None):
+        """Why an upload / update of `size` bytes is over the account's Discovery total, or None."""
+        quota = SETTINGS["discovery_quota_mb"] << 20
+        have = discovery.account_bytes(self.store, account["id"], but)
+        if have + size <= quota:
+            return None
+        return ("Your Discovery mods would take %.0f MB; one account may have %d MB in all. Delete or update an "
+                "older mod first." % ((have + size) / 1048576, SETTINGS["discovery_quota_mb"]))
+
+    @staticmethod
+    def mod_size_warning(size):
+        """{"warning": text} for a big mod (stored all the same), else {}."""
+        if size <= SETTINGS["discovery_warn_mb"] << 20:
+            return {}
+        return {"warning": "This mod is %.0f MB: players wait a while for it. A big entrance movie is usually why - "
+                           "an .mp4 is about 10x smaller than a Bink .bik." % (size / 1048576)}
+
     async def api_mod_edit(self, request, mid):
         account, err = self.mod_owner_check(request, mid)
         if err:
@@ -1403,6 +1426,8 @@ class Service:
                     why = "Give the update a new version (it is %s now)." % old["version"]
             if not why:
                 manifest, why = await loop.run_in_executor(None, discovery.check_svrmod, data)
+            if not why:
+                why = self.mod_quota_why(account, len(data), but=mid)
             if why:
                 gs.log("discovery: update of mod %d from %s refused: %s" % (mid, account["name"], why))
                 return web.json_response({"ok": False, "error": why}, status=400)
@@ -1412,7 +1437,7 @@ class Service:
             gs.log("discovery: mod %d updated by its owner (file) %s -> %s (%d bytes, %s)" % (
                 mid, was, fields["version"], len(data), manifest.get("type", "?")))
             info, _ = discovery.get(self.store, mid, True)
-            return web.json_response({"ok": True, "mod": info})
+            return web.json_response(dict({"ok": True, "mod": info}, **self.mod_size_warning(len(data))))
 
     async def api_mod_update_picture(self, request):
         """PUT: the body is picture n (0-3), a 1024 x 768 JPEG."""
@@ -1518,6 +1543,8 @@ class Service:
             loop = asyncio.get_running_loop()
             if not why:
                 manifest, why = await loop.run_in_executor(None, discovery.check_svrmod, data)
+            if not why:
+                why = self.mod_quota_why(account, len(data))
             if why:
                 gs.log("discovery: upload from %s refused: %s" % (account["name"], why))
                 return web.json_response({"ok": False, "error": why}, status=400)
@@ -1528,7 +1555,55 @@ class Service:
                                              data, file_name, [images[n] for n in range(discovery.IMAGES)])
             gs.log("discovery: mod %d \"%s\" %s (%d bytes, %s) from %s" % (
                 mid, fields["name"], fields["version"], len(data), manifest.get("type", "?"), account["name"]))
-            return web.json_response({"ok": True, "id": mid, "size": len(data)})
+            return web.json_response(dict({"ok": True, "id": mid, "size": len(data)}, **self.mod_size_warning(len(data))))
+
+    # The blob audit: the files where the bytes live (here, or the storage node) against the blobs the
+    # database refers to. Orphans (a file nothing refers to: a delete while the node was down) are listed;
+    # one goes only with the dashboard's Delete on it.
+    def blob_audit(self):
+        files = self.store.blobs.list()
+        with self.store.lock:
+            refs = dict(self.store.db.execute("SELECT sha, refs FROM blobs").fetchall())
+        labels = discovery.blob_labels(self.store)
+        have = {f["sha"] for f in files}
+        orphans = [dict(f, refs=refs.get(f["sha"])) for f in files if (refs.get(f["sha"]) or 0) <= 0]
+        missing = [{"sha": s, "refs": r, "what": labels.get(s, "")} for s, r in refs.items() if r > 0 and s not in have]
+        hidden = [dict(f, what=labels[f["sha"]]) for f in files
+                  if f["sha"] in labels and "(hidden)" in labels[f["sha"]] and "picture" not in labels[f["sha"]]]
+        return {"files": len(files), "bytes": sum(f["size"] for f in files),
+                "packed": sum(1 for f in files if f["packed"]), "referenced": sum(1 for r in refs.values() if r > 0),
+                "orphans": sorted(orphans, key=lambda f: -f["size"]),
+                "orphan_bytes": sum(f["size"] for f in orphans), "missing": missing, "hidden_mods": hidden}
+
+    @admin_only
+    async def admin_blob_audit(self, request):
+        try:
+            res = await asyncio.get_running_loop().run_in_executor(None, self.blob_audit)
+        except Exception as e:  # (the node down: say so)
+            return web.json_response({"ok": False, "error": "The storage didn't answer: %s" % e}, status=502)
+        gs.log("admin: blob audit - %d files, %d orphans (%.1f MB), %d missing" % (
+            res["files"], len(res["orphans"]), res["orphan_bytes"] / 1e6, len(res["missing"])))
+        return web.json_response(dict(ok=True, **res))
+
+    @admin_only
+    async def admin_blob_delete(self, request):
+        """POST: deletes one orphan's file - only when the database still refers to nothing by it."""
+        sha = request.match_info["sha"]
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            return web.json_response({"ok": False}, status=400)
+        with self.store.lock:
+            r = self.store.db.execute("SELECT refs FROM blobs WHERE sha = ?", (sha,)).fetchone()
+            if r and r[0] > 0:
+                return web.json_response({"ok": False, "error": "Something refers to it: not an orphan."},
+                                         status=409)
+            if sha in discovery.blob_labels(self.store):
+                return web.json_response({"ok": False, "error": "A Discovery mod refers to it."}, status=409)
+            if r:
+                self.store.db.execute("DELETE FROM blobs WHERE sha = ?", (sha,))
+                self.store.db.commit()
+        await asyncio.get_running_loop().run_in_executor(None, self.store.blobs.delete, sha)
+        gs.log("admin: orphan blob %s deleted" % sha[:16])
+        return web.json_response({"ok": True})
 
     @admin_only
     async def admin_mods(self, request):
@@ -2115,6 +2190,8 @@ class Service:
             app.router.add_get(p + "/api/admin/leaderboard", self.admin_leaderboard)
             app.router.add_post(p + "/api/admin/upload/{id}/{action}", self.admin_upload_action)
             app.router.add_get(p + "/api/admin/mods", self.admin_mods)
+            app.router.add_get(p + "/api/admin/blobs/audit", self.admin_blob_audit)
+            app.router.add_post(p + "/api/admin/blobs/{sha}/delete", self.admin_blob_delete)
             app.router.add_get(p + "/api/admin/mod/{id}/image.jpg", self.admin_mod_image)
             app.router.add_post(p + "/api/admin/mod/{id}/{action}", self.admin_mod_action)
             app.router.add_get(p + "/api/admin/users", self.admin_users)
@@ -2170,9 +2247,15 @@ def storage_app(args):
     async def health(request):
         return web.json_response({"ok": True, "role": "storage"})
 
+    async def blob_list(request):  # (the core's blob audit)
+        if not ok(request):
+            return web.Response(status=403)
+        return web.json_response(await asyncio.get_running_loop().run_in_executor(None, blobs.list))
+
     app = web.Application(client_max_size=1 << 31)  # (any blob: songs, movies, mods - only the key's holder puts)
     app.router.add_route("*", "/blob/{sha}", blob)
     app.router.add_get("/__health", health)
+    app.router.add_get("/blobs", blob_list)
     return app
 
 

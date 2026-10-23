@@ -240,6 +240,27 @@ def replace_picture(store, mod_id, n, img):
     return True
 
 
+def account_bytes(store, owner, but=None):
+    """The size of an account's Discovery mods (but: leave that mod out - the one being updated)."""
+    with store.lock:
+        r = store.db.execute("SELECT COALESCE(SUM(size), 0) FROM mods WHERE owner = ? AND id != ?",
+                             (owner, but if but is not None else -1)).fetchone()
+    return r[0]
+
+
+def blob_labels(store):
+    """sha -> what refers to it in Discovery (the audit's names): "mod 12 'Name' (hidden)" / "... picture 2"."""
+    out = {}
+    with store.lock:
+        rows = store.db.execute("SELECT id, name, hidden, sha, images FROM mods").fetchall()
+    for mid, name, hidden, sha, images in rows:
+        tag = "mod %d '%s'%s" % (mid, name, " (hidden)" if hidden else "")
+        out[sha] = tag
+        for n, s in enumerate(json.loads(images or "[]")):
+            out.setdefault(s, "%s picture %d" % (tag, n + 1))
+    return out
+
+
 def owner_of(store, mod_id):
     with store.lock:
         r = store.db.execute("SELECT owner FROM mods WHERE id = ?", (mod_id,)).fetchone()

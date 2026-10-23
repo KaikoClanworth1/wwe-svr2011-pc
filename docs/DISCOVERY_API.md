@@ -58,7 +58,10 @@ Every list and detail answer uses this shape:
   - `img0` to `img3`: four 1024 x 768 JPEGs, ≤ 1 MB each.
 - All are needed except `tags` and `description`.
 - One upload is stored at a time server-wide: while another is stored you get a 503, so try again in a minute.
-- Answer: `{"ok": true, "id", "size"}`.
+- Answer: `{"ok": true, "id", "size"}`, plus `"warning": "<text>"` when the mod is larger than the dashboard's
+  `discovery_warn_mb` (default 50 MB). It is stored all the same; show the text to the uploader.
+- One account's mods may take `discovery_quota_mb` in all (default 1024 MB). An upload or a file update over it is
+  refused (400, the error says how much it would take).
 
 ### Owner-only
 
@@ -85,6 +88,7 @@ A change answers `{"ok": true, "mod": <row with description>}`.
   - Size limit and the one-at-a-time slot: the same as upload (413 / 503).
   - The new file is checked as an upload is (a zip with a `manifest.txt` that has `type=`). It is stored before the mod points at it, and only then is the old file dropped. A refused or failed update leaves the old file in place.
   - The id and the download count stay the same; `updated` becomes now.
+  - The same quota (counted without the mod's old file) and `warning` as an upload.
 - `PUT /api/mods/{id}/pictures/{n}` (n 0-3): the request body **is** the new picture, a 1024 x 768 JPEG ≤ 1 MB (`Content-Type: image/jpeg`). It replaces picture n, and `pics` goes up.
 - `DELETE /api/mods/{id}`: deletes the mod and its file and pictures for everyone.
 
