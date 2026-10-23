@@ -9,7 +9,9 @@
 
 #include "app.h"
 #include "arena_page_internal.h"
+#include "json.h"
 #include "mod_check.h"
+#include "tool_run.h"
 #include <shellapi.h>
 
 #include "editor.h"
@@ -174,7 +176,11 @@ void NewArena(int slot, bool to_editor) {
   }, to_editor, true);
 }
 
-std::string ModId() { return IdFrom(g_proj.name, g_proj.backstage >= 0 ? "backstage" : "arena"); }
+std::string ModId() {
+  return !g_proj.id.empty() ? g_proj.id : IdFrom(g_proj.name, g_proj.backstage >= 0 ? "backstage" : "arena");
+}
+
+Bytes BakeTheme(const Bytes& pac, const std::map<std::string, Image>& mine);
 
 // A mod build: copied and set up on the UI thread (the editor keeps
 // editing g_proj.edited), compressed in the background.
@@ -186,6 +192,8 @@ struct BuildJob {
   std::string manifest, id;
   Image banner, load;
   std::map<std::string, Image> vs;
+  Bytes theme_pac;  // its own VS theme (the vs pictures go into it)
+  Bytes kept_pac;   // the opened mod's arena.pac, unedited since: written as it is
   std::wstring gimmick_pac;
   std::string project;  // (ModProjectText: the page's project keys, into the mod)
 };
@@ -235,6 +243,9 @@ bool PrepareBuild(BuildJob& job) {
   job.banner = g_proj.banner.image;
   job.load = g_proj.load.image;
   job.vs = g_proj.vs;
+  job.theme_pac = g_proj.theme_pac;
+  if (!g_proj.opened_pac.empty() && g_proj.opened_edits >= 0 && editor::EditCount() == g_proj.opened_edits)
+    job.kept_pac = g_proj.opened_pac;
   if (job.banner.rgba.empty()) {
     job.banner.w = 256;
     job.banner.h = 128;
@@ -245,12 +256,28 @@ bool PrepareBuild(BuildJob& job) {
   job.manifest = "type=arena\nid=" + job.id + "\nname=" + g_proj.name + "\nauthor=" + g_proj.author +
                  "\nversion=" + g_proj.version + "\n" + MadeWith() + "base=" + g_arenas[g_proj.arena].banner + "\n" +
                  (g_proj.source.empty() ? std::string() : "source=" + g_proj.source + "\n") +
+                 (g_proj.theme_pac.empty() ? std::string() : "vs_theme=" + g_proj.theme_label + "\n") +
+                 (g_proj.theme_pac.empty() || g_proj.theme_font.empty() ? std::string() : "vs_font=" + g_proj.theme_font + "\n") +
                  editor::ManifestLines();
   return true;
 }
 
 // manifest.txt, arena.pac, banner.dds (false on error, logged)
 bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
+  if (!job.kept_pac.empty()) {  // (the arena unedited since the mod was opened: its file as it was)
+    Log("  The arena wasn't edited: its arena.pac stays as it was.");
+    files.push_back({"manifest.txt", Bytes(job.manifest.begin(), job.manifest.end())});
+    AddModProject(files, job.project);
+    files.push_back({"arena.pac", std::move(job.kept_pac)});
+    files.push_back({"banner.dds", DdsEncode(job.banner, DxtFormat::kDxt5, false)});
+    if (job.load.w) files.push_back({"load.dds", DdsEncode(job.load, DxtFormat::kDxt5, false)});
+    if (!job.theme_pac.empty()) {
+      files.push_back({"vs/theme.pac", BakeTheme(job.theme_pac, job.vs)});
+      return true;
+    }
+    for (const auto& [name, img] : job.vs) files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
+    return true;
+  }
   if (const int grown = GrowVisibility(*job.arena))  // (moved / turned objects: svrfmt/arena.h)
     Log("  " + std::to_string(grown) + " visibility boxes grown to hold moved objects.");
   Progress("Fitting the arena into the game's room ...");
@@ -274,6 +301,11 @@ bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
   }
   files.push_back({"banner.dds", DdsEncode(job.banner, DxtFormat::kDxt5, false)});
   if (job.load.w) files.push_back({"load.dds", DdsEncode(job.load, DxtFormat::kDxt5, false)});
+  if (!job.theme_pac.empty()) {  // its own VS theme, the replaced pictures in it
+    Progress("The VS screen ...");
+    files.push_back({"vs/theme.pac", BakeTheme(job.theme_pac, job.vs)});
+    return true;
+  }
   for (const auto& [name, img] : job.vs)  // (same size as the original: the VS tab resizes)
     files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
   return true;
@@ -422,16 +454,266 @@ struct VsTexture {
   Picture original, mine;
 };
 int g_vs_slot = -1;
+int g_vs_rev = 0, g_vs_loaded_rev = -1;  // (the own theme changed: its pictures read again)
 std::vector<VsTexture> g_vs;
+
+// ---- an own VS theme (vs/theme.pac)
+
+// Its pictures: entry VSTI, PACH child 0x1B59 (a texture bundle).
+bool ThemePictures(const Bytes& pac, std::vector<BundleTexture>& out) {
+  Epac e;
+  if (!EpacRead(pac, e)) return false;
+  for (const auto& g : e.groups)
+    for (const auto& en : g.entries) {
+      if (en.name != "VSTI") continue;
+      std::vector<PachEntry> kids;
+      if (!PachRead(Unpack(en.data), kids)) return false;
+      for (const auto& k : kids)
+        if (k.id == 0x1B59) return BundleRead(Unpack(k.data), out);
+    }
+  return false;
+}
+
+// The theme with the replaced pictures (by name, fitted to each picture's size and format) in it.
+Bytes BakeTheme(const Bytes& pac, const std::map<std::string, Image>& mine) {
+  Epac e;
+  if (mine.empty() || !EpacRead(pac, e)) return pac;
+  for (auto& g : e.groups)
+    for (auto& en : g.entries) {
+      if (en.name != "VSTI") continue;
+      const bool packed = IsBpe(en.data);
+      std::vector<PachEntry> kids;
+      if (!PachRead(Unpack(en.data), kids)) return pac;
+      for (auto& k : kids) {
+        if (k.id != 0x1B59) continue;
+        const bool kpacked = IsBpe(k.data);
+        std::vector<BundleTexture> texs;
+        if (!BundleRead(Unpack(k.data), texs)) return pac;
+        for (auto& t : texs) {
+          const auto it = mine.find(t.name);
+          DdsInfo info;
+          if (it == mine.end() || !DdsInfoOf(t.data, info)) continue;
+          t.data = DdsEncode(Resize(it->second, info.w, info.h),
+                             info.format == DxtFormat::kDxt1 ? DxtFormat::kDxt1 : DxtFormat::kDxt5, info.mips > 1);
+        }
+        const Bytes raw = BundleWrite(texs);
+        k.data = kpacked ? BpeEncode(raw) : raw;
+      }
+      const Bytes p = PachWrite(kids);
+      en.data = packed ? BpeEncode(p) : p;
+    }
+  return EpacWrite(e);
+}
+
+// One entry of a theme pac replaced by another's (the font: VSTF).
+Bytes ThemeWithEntry(const Bytes& pac, const Bytes& from, const char* name) {
+  Epac e, f;
+  if (!EpacRead(pac, e) || !EpacRead(from, f)) return pac;
+  const EpacEntry* src = nullptr;
+  for (const auto& g : f.groups)
+    for (const auto& en : g.entries)
+      if (en.name == name) src = &en;
+  if (!src) return pac;
+  for (auto& g : e.groups)
+    for (auto& en : g.entries)
+      if (en.name == name) en.data = src->data;
+  return EpacWrite(e);
+}
+
+// The theme picker: VS themes of the player's 2011 and of their discs (vs_port.py themes), previews, a pick.
+struct ThemePick {
+  bool open = false;
+  bool font = false;      // picking a font (the theme's VSTF) instead of a whole theme
+  int source = -1;        // -1 the 2011 game, else an index into Sources()
+  std::string asked;      // the source the list is for
+  Json list;
+  std::string error;
+  std::map<std::string, Picture> previews;
+} g_tp;
+
+struct ThemeSource {
+  std::string game, label;
+  std::wstring path;
+};
+std::vector<ThemeSource> ThemeSources() {
+  static const std::pair<const char*, const char*> kIds[] = {
+      {"54510844", "svr2010"}, {"54510826", "svr2009"}, {"5451080B", "svr2008"}};
+  std::vector<ThemeSource> out;
+  for (const auto& d : Discs())
+    for (const auto& [id, game] : kIds)
+      if (d.id == id) out.push_back({game, d.game, d.path});
+  return out;
+}
+
+fs::path ThemeWork() { return fs::path(g_game) / L"Mods" / L".convert" / L"vs"; }
+
+void AskThemes() {
+  const auto sources = ThemeSources();
+  const bool own = g_tp.source < 0 || g_tp.source >= int(sources.size());
+  const std::string game = own ? "svr2011" : sources[size_t(g_tp.source)].game;
+  const std::wstring src = own ? std::wstring(g_game) : sources[size_t(g_tp.source)].path;
+  const std::string want = game + "|" + Utf8(src);
+  if (g_tp.asked == want || Busy()) return;
+  g_tp.asked = want;
+  g_tp.list = Json();
+  g_tp.error.clear();
+  g_tp.previews.clear();
+  std::error_code ec;
+  fs::create_directories(ThemeWork() / L"previews", ec);
+  RunToolJson(L"vs_port.py", {L"themes", L"--game", Wide(game), L"--src", src, L"--pac11", fs::path(g_game).wstring(),
+                              L"--out", (ThemeWork() / L"previews").wstring()},
+              [want](int code, const std::string& out) {
+                if (g_tp.asked != want) return;
+                Json j;
+                if (code == 0 && ParseJson(out, j) && j.type == Json::Type::kArray) g_tp.list = std::move(j);
+                else g_tp.error = "the converter couldn't list the themes (exit " + std::to_string(code) + "): see the log";
+              });
+}
+
+void PickTheme(const std::string& game, const std::wstring& src, const std::string& key, const std::string& label) {
+  const fs::path out = ThemeWork() / Wide("picked_" + game + "_" + key + ".pac");
+  const bool font = g_tp.font;
+  RunToolJson(L"vs_port.py", {L"theme", L"--game", Wide(game), L"--src", src, L"--pac11", fs::path(g_game).wstring(),
+                              L"--theme", Wide(key), L"--out", out.wstring()},
+              [out, label, font](int code, const std::string&) {
+                Bytes d;
+                if (code != 0 || !ReadFile(PathStr(out), d)) {
+                  Status("The theme couldn't be made: see the log.");
+                  return;
+                }
+                if (font && !g_proj.theme_pac.empty()) {
+                  g_proj.theme_pac = ThemeWithEntry(g_proj.theme_pac, d, "VSTF");
+                  g_proj.theme_font = label;
+                  Status("VS screen: the font of " + label + ".");
+                } else {
+                  g_proj.theme_pac = std::move(d);
+                  g_proj.theme_label = label;
+                  g_proj.theme_font.clear();
+                  g_proj.vs.clear();  // (pictures replaced in the theme it had)
+                  Status("VS screen: " + label + ".");
+                }
+                ++g_vs_rev;
+                Touch();
+                Log("VS screen: " + std::string(font ? "font of " : "") + label);
+              });
+  g_tp.open = false;
+}
+
+// Test aid (--vs-test "<step>;<step>..."): the VS screen tab's steps on the opened mod, as its buttons do -
+// theme=<game>,<src>,<n>[,<label>] (Pick a theme), font=<game>,<src>,<n>[,<label>] (Font from another theme), replace=<picture>,<png>
+// (Replace...), version=<v>, save=<file.svrmod> (the mod made, then the Mod Maker closes; the log beside it).
+std::vector<std::string> g_vs_test;
+size_t g_vs_test_at = 0;
+int g_vs_test_wait = 0;  // frames (an opened mod settles first)
+
+void VsTestStep() {
+  if (g_vs_test_at >= g_vs_test.size() || Busy() || ++g_vs_test_wait < 30) return;
+  const std::string step = g_vs_test[g_vs_test_at++];
+  g_vs_test_wait = 0;
+  const size_t eq = step.find('=');
+  const std::string what = step.substr(0, eq), arg = eq == std::string::npos ? "" : step.substr(eq + 1);
+  std::vector<std::string> p;
+  for (size_t at = 0; at <= arg.size();) {
+    const size_t c = arg.find(',', at);
+    p.push_back(arg.substr(at, c == std::string::npos ? std::string::npos : c - at));
+    if (c == std::string::npos) break;
+    at = c + 1;
+  }
+  Log("vs test: " + step);
+  if ((what == "theme" || what == "font") && (p.size() == 3 || p.size() == 4)) {
+    g_tp.font = what == "font";
+    PickTheme(p[0], Wide(p[1]), p[2], p.size() == 4 ? p[3] : p[0] + " " + p[2]);
+  } else if (what == "replace" && p.size() == 2) {
+    LoadVsTheme(g_proj.arena);
+    Image img;
+    for (const auto& t : g_vs)
+      if (t.name == p[0] && LoadPicture(Wide(p[1]), img)) g_proj.vs[t.name] = Resize(img, t.w, t.h), Touch();
+    if (!g_proj.vs.count(p[0])) Log("vs test: no picture " + p[0]);
+  } else if (what == "version") {
+    std::snprintf(g_proj.version, sizeof g_proj.version, "%s", arg.c_str());
+    Touch();
+  } else if (what == "save") {
+    SaveModTo(Wide(arg), [arg](bool ok) {
+      Log(std::string("vs test: ") + (ok ? "saved " : "save FAILED ") + arg);
+      WriteLogTo(Wide(arg) + L".log");
+      PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    });
+  }
+}
+
+void ThemePicker() {
+  if (!g_tp.open) return;
+  ImGui::SeparatorText(g_tp.font ? "Pick the theme whose font to use" : "Pick a VS screen theme");
+  const auto sources = ThemeSources();
+  std::string cur = g_tp.source < 0 ? "SvR 2011 (your game)" : sources[size_t(g_tp.source)].label;
+  ImGui::SetNextItemWidth(320 * g_scale);
+  if (ImGui::BeginCombo("From", cur.c_str())) {
+    if (ImGui::Selectable("SvR 2011 (your game)", g_tp.source < 0)) g_tp.source = -1;
+    for (int i = 0; i < int(sources.size()); ++i)
+      if (ImGui::Selectable((sources[size_t(i)].label + "##" + std::to_string(i)).c_str(), g_tp.source == i)) g_tp.source = i;
+    ImGui::EndCombo();
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Close")) g_tp.open = false;
+  if (sources.empty()) ImGui::TextDisabled("Your SvR 2008 - 2010 discs show here once they're in My game discs.");
+  AskThemes();
+  if (!g_tp.error.empty()) ImGui::TextColored(kWarn, "%s", g_tp.error.c_str());
+  if (g_tp.list.type != Json::Type::kArray) {
+    ImGui::TextDisabled(Busy() ? "Reading the themes ..." : "");
+    return;
+  }
+  const bool own = g_tp.source < 0 || g_tp.source >= int(sources.size());
+  const std::string game = own ? "svr2011" : sources[size_t(g_tp.source)].game;
+  const std::wstring src = own ? std::wstring(g_game) : sources[size_t(g_tp.source)].path;
+  const std::string from = own ? "SvR 2011" : sources[size_t(g_tp.source)].label;
+  const float w = 240 * g_scale, h = w / 2;
+  const int cols = std::max(1, int(ImGui::GetContentRegionAvail().x / (w + 10 * g_scale)));
+  int i = 0;
+  for (const auto& it : g_tp.list.items) {
+    const std::string key = it["key"].Str(), name = it["name"].Str();
+    if (i++ % cols) ImGui::SameLine();
+    ImGui::PushID(key.c_str());
+    ImGui::BeginGroup();
+    auto& pic = g_tp.previews[key];
+    if (pic.Empty() && !it["preview"].Str().empty()) {
+      Image img;
+      if (LoadPicture(Wide(it["preview"].Str()), img)) pic.Set(std::move(img));
+    }
+    pic.Draw(w, h);
+    const bool research = it["status"].Str() == "research";
+    ImGui::BeginDisabled(research || Busy());
+    if (ImGui::Button((name + "##pick").c_str(), ImVec2(w, 0))) PickTheme(game, src, key, from + " " + name);
+    ImGui::EndDisabled();
+    if (research && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("%s", it["reason"].Str().c_str());
+    ImGui::EndGroup();
+    ImGui::PopID();
+  }
+}
 
 // The VS screen (the match screen behind the two Superstars) is a theme per
 // arena: menu/MatchHD.pac group M<nn>I (nn = the arena's bg number), DXT5
 // textures. A custom arena shows its slot's theme; the mod can replace any
 // of its textures (vs/<name>.dds, same size).
 void LoadVsTheme(int slot) {
-  if (slot == g_vs_slot) return;
+  if (slot == g_vs_slot && g_vs_rev == g_vs_loaded_rev) return;
   g_vs.clear();
   g_vs_slot = slot;
+  g_vs_loaded_rev = g_vs_rev;
+  if (!g_proj.theme_pac.empty()) {  // (its own theme's pictures)
+    std::vector<BundleTexture> texs;
+    if (ThemePictures(g_proj.theme_pac, texs))
+      for (const auto& t : texs) {
+        VsTexture v;
+        v.name = t.name;
+        Image img;
+        if (!DdsDecode(t.data, img) || img.w < 64 || img.h < 32) continue;
+        v.w = img.w, v.h = img.h;
+        v.original.Set(std::move(img));
+        g_vs.push_back(std::move(v));
+      }
+    return;
+  }
   if (slot < 0 || g_game.empty()) return;
   Bytes d;
   Epac e;
@@ -462,9 +744,26 @@ void LoadVsTheme(int slot) {
 void VsTab() {
   const int slot = g_proj.arena >= 0 ? g_proj.arena : g_sel;
   LoadVsTheme(slot);
-  ImGui::TextWrapped("The screen behind the two Superstars before the match: the %s theme, which your arena uses "
-                     "because it plays in that arena's place. Replace any of its pictures (they are fitted to the "
-                     "same size).", g_arenas[slot].name);
+  if (g_proj.theme_pac.empty())
+    ImGui::TextWrapped("The screen behind the two Superstars before the match: the %s theme, which your arena uses "
+                       "because it plays in that arena's place - or pick any theme of your games for it. Replace any "
+                       "of its pictures (they are fitted to the same size).", g_arenas[slot].name);
+  else
+    ImGui::TextWrapped("The screen behind the two Superstars before the match: %s%s%s, your arena's own. Replace any "
+                       "of its pictures (they are fitted to the same size).", g_proj.theme_label.c_str(),
+                       g_proj.theme_font.empty() ? "" : ", with the font of ", g_proj.theme_font.c_str());
+  if (ImGui::Button("Pick a theme...")) g_tp.open = true, g_tp.font = false;
+  ImGui::SameLine();
+  ImGui::BeginDisabled(g_proj.theme_pac.empty());
+  if (ImGui::Button("Font from another theme...")) g_tp.open = true, g_tp.font = true;
+  ImGui::SameLine();
+  if (ImGui::Button("Back to the slot's theme")) {
+    g_proj.theme_pac.clear(), g_proj.theme_label.clear(), g_proj.theme_font.clear(), g_proj.vs.clear();
+    ++g_vs_rev;
+    Touch();
+  }
+  ImGui::EndDisabled();
+  ThemePicker();
   ImGui::Spacing();
   if (g_vs.empty()) {
     ImGui::TextDisabled("No VS screen theme found for this arena.");
@@ -663,7 +962,18 @@ void OwnAreaFields() {
 
 // ---------------------------------------------------------------- public
 
+void SetVsTest(const std::string& spec) {
+  g_vs_test.clear();
+  for (size_t at = 0; at <= spec.size();) {
+    const size_t c = spec.find(';', at);
+    g_vs_test.push_back(spec.substr(at, c == std::string::npos ? std::string::npos : c - at));
+    if (c == std::string::npos) break;
+    at = c + 1;
+  }
+}
+
 void Tick() {
+  VsTestStep();
   std::lock_guard lock(g_pending_mutex);
   if (!g_pending) {
     if (g_test_state == 2 && !Busy()) {
@@ -822,6 +1132,7 @@ bool ReadModOrProject(const ProjectIn& in, bool mod) {
   }
   std::snprintf(g_proj.name, sizeof g_proj.name, "%s", in.Get("name").c_str());
   g_proj.source = in.Get("source");
+  g_proj.id = mod ? in.Get("id") : in.Get("mod_id");  // (a mod's own id; a project: the mod it came from)
   std::snprintf(g_proj.author, sizeof g_proj.author, "%s", in.Get("author").c_str());
   std::snprintf(g_proj.version, sizeof g_proj.version, "%s", in.Get("version").c_str());
   if (!g_proj.version[0]) std::snprintf(g_proj.version, sizeof g_proj.version, "1.0");
@@ -831,6 +1142,11 @@ bool ReadModOrProject(const ProjectIn& in, bool mod) {
       Image img;
       if (DdsDecode(e.data, img)) g_proj.vs[e.name.substr(3, e.name.size() - 7)] = img;
     }
+  g_proj.theme_pac.clear();
+  if (const ZipEntry* tp = in.Find("vs/theme.pac")) g_proj.theme_pac = tp->data;
+  g_proj.theme_label = in.Get("vs_theme");
+  g_proj.theme_font = in.Get("vs_font");
+  ++g_vs_rev;
   if (const ZipEntry* b = in.Find("banner.dds")) {
     Image img;
     if (DdsDecode(b->data, img)) g_proj.banner.Set(std::move(img));
@@ -866,6 +1182,7 @@ bool ReadModOrProject(const ProjectIn& in, bool mod) {
   if (pac) {
     std::string err;
     if (!LoadEditedArena(pac->data, host, area, in.text, &err)) { Status("The arena in it could not be read: " + err); return false; }
+    if (mod) g_proj.opened_pac = pac->data, g_proj.opened_edits = editor::EditCount();
     GoTo(PageId::kEditor);
   } else {  // (a project saved before any edit)
     g_proj.arena = backstage ? -1 : host;
@@ -902,7 +1219,15 @@ void WriteProject(ProjectOut& out) {
   if (!out.keys_only) {  // (the pictures: files, not keys)
     if (!g_proj.banner.Empty()) out.files.push_back({"banner.dds", DdsEncode(g_proj.banner.image, DxtFormat::kDxt5, false)});
     if (!g_proj.load.Empty()) out.files.push_back({"load.dds", DdsEncode(g_proj.load.image, DxtFormat::kDxt5, false)});
-    for (const auto& [name, img] : g_proj.vs) out.files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
+    if (!g_proj.theme_pac.empty())  // (its own theme, the replaced pictures baked in)
+      out.files.push_back({"vs/theme.pac", BakeTheme(g_proj.theme_pac, g_proj.vs)});
+    else
+      for (const auto& [name, img] : g_proj.vs) out.files.push_back({"vs/" + name + ".dds", DdsEncode(img, DxtFormat::kDxt5, false)});
+  }
+  if (!g_proj.id.empty()) out.Key("mod_id", g_proj.id);
+  if (!g_proj.theme_pac.empty()) {
+    out.Key("vs_theme", g_proj.theme_label);
+    if (!g_proj.theme_font.empty()) out.Key("vs_font", g_proj.theme_font);
   }
   for (size_t i = 0; i < g_proj.signs.size(); ++i) {  // (Simple arena's crowd signs)
     out.Key("sign_name" + std::to_string(i), g_proj.signs[i].first);

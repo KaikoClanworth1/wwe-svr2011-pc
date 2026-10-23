@@ -23,7 +23,17 @@ struct Project {
   char name[96] = "";
   char author[64] = "";
   char version[16] = "1.0";
-  std::map<std::string, Image> vs;  // the VS screen: replaced textures of the slot's theme
+  std::map<std::string, Image> vs;  // the VS screen: replaced textures of the slot's theme (or of its own theme)
+  // its own VS screen theme (vs/theme.pac, tools/vs_port.py theme: VSTL / VSTI / VSTF), any disc's or 2011's;
+  // empty: the slot's. The replaced textures are baked into it when the mod is made.
+  svrfmt::Bytes theme_pac;
+  std::string theme_label;          // vs_theme=<where it is from>, e.g. "SvR 2010 Royal Rumble"
+  std::string theme_font;           // the font's, when taken from another theme
+  std::string id;                   // the id of the mod it was opened from (kept: a new version replaces it)
+  // the arena.pac of the mod it was opened from and the 3D editor's edit count then: unedited since, a new version
+  // keeps that file as it is (no refit, no textures halved again - only the mod's other parts changed)
+  svrfmt::Bytes opened_pac;
+  int opened_edits = -1;
   Picture load;                     // the loading screen (1024 x 512), optional
   // backstage: an area of its own (arena_mods.cpp / match_types.cpp read these)
   bool own_area = false;
