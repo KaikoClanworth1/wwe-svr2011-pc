@@ -343,6 +343,26 @@ class Game09:
                             self._ssf[(n.decode(), i)] = d
         return self._ssf
 
+    # menu/LoadHD.pac LOAD S000-S037: 38 featured superstars' loading pictures in their own order (no ids) - by hand
+    # from the pictures (duplicates: the first one; pictures not told apart for sure left out: 6, 10, 12, 13, 18,
+    # 21, 22, 27, 33)
+    LOAD_PICTURES = {102: 0, 103: 1, 111: 2, 118: 3, 125: 4, 130: 5, 139: 7, 158: 8, 160: 9, 157: 11, 208: 15, 114: 17,
+                     131: 19, 123: 20, 165: 23, 178: 23, 174: 25, 135: 26, 161: 28, 179: 29, 168: 30, 107: 31, 176: 32,
+                     195: 37}
+
+    def loading_picture(self, i):
+        """the superstar's 512 x 512 loading picture (LoadHD S<n>: loadtex01, LOAD_PICTURES), or None"""
+        import arena_port
+        n = self.LOAD_PICTURES.get(i)
+        p = self.src.get('pac/menu/LoadHD.pac') if n is not None else None
+        if not p:
+            return None
+        try:
+            return next((d for nm, d in arena_port.group_textures(open(p, 'rb').read(), 'S%03d' % n)
+                         if nm.lower() == 'loadtex01'), None)
+        except (OSError, KeyError, ValueError):
+            return None
+
     def chpac(self, i):
         return self.src.get('pac/ch/ch%d.pac' % i)
 
