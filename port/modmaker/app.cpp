@@ -3066,7 +3066,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       char line[256];
       std::snprintf(line, sizeof line, "%s: %d meshes, %d vertices, %d triangles, %d textures (sheet %d), %d bones aimed (worst %.3f deg), %d 2011 bones, scale %.4f, height %.1f cm\n",
                     ok ? "OK" : "FAILED", rep.meshes, rep.vertices, rep.triangles, rep.textures, rep.atlas, rep.aimed, rep.aim_error_deg, rep.bones_used, rep.scale, rep.height_cm);
-      if (rep.reduced_from) out += "  reduced from " + std::to_string(rep.reduced_from) + " vertices\n";
+      if (rep.reduced_from)
+        out += "  reduced from " + std::to_string(rep.reduced_from) + " vertices (" + std::to_string(rep.cross_merges) +
+               " merges across bones)\n";
+      for (const auto& w : rep.reduced_lines) out += "  reduced: " + w + "\n";
       out = out + line + err + (rep.aim_worst.empty() ? "" : "  worst aim: " + rep.aim_worst + "\n");
       for (const auto& w : rep.warnings) out += "  warning: " + w + "\n";
       for (const auto& w : rep.skipped) out += "  skipped: " + w + "\n";

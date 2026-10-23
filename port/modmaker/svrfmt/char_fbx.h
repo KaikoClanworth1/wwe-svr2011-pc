@@ -65,6 +65,9 @@ struct FbxImportReport {
   double aim_error_deg = 0;         // (test: the posed bones against the template's directions)
   std::string aim_worst;
   std::vector<std::string> warnings, skipped, mesh_lines;
+  // Reduce detail per mesh: "<name>: <before> -> <after> vertices[, <n> merges across bones]" (small meshes: "kept")
+  std::vector<std::string> reduced_lines;
+  int cross_merges = 0;  // vertices merged into one weighted to other bones (a stretched finger, a torn seam)
 };
 // The user's choices per mesh (by FbxMeshInfo::name): on / off (default: the visible ones), its kind ("skin", "eye",
 // "hair", "lash"; default by its name), a picture file in place of its material's.
