@@ -44,6 +44,7 @@ struct StarProject {
   Image picture_small;            // the 256 bust made with it (or own_bust)
   bool own_bust = false;          // picture_small is the user's own bust picture
   Image picture_full;             // own full-body picture (render_full.dds -> SSFB; none: render.dds)
+  Image picture_load;             // the NOW LOADING picture (load.dds, 1024 x 512 DXT5; none: the arena's / the game's)
   bool game_look = false;         // the picture's tone moved toward the game's renders
   Image picture_src;              // the picture as picked (this session: the game look can be undone)
   int call = -1;                  // -1: "The Superstar"

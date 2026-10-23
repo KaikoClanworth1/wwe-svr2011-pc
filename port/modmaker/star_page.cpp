@@ -108,7 +108,7 @@ bool UseMadeEntrance(int id, const std::string& name);
 void CreatedEntranceRow();
 extern std::string g_test_import;  // (--star-import-moveset: TestImportMoveset)
 void RunTestImport(const std::string& spec);
-std::wstring g_test_model, g_test_picture, g_test_save, g_test_full;
+std::wstring g_test_model, g_test_picture, g_test_save, g_test_full, g_test_load;
 std::string g_test_hometown;
 int g_test_pose = -1;
 std::string g_test_name;
@@ -204,7 +204,7 @@ struct Job {
   std::wstring model, song, movie, voice, cae, attires[4];
   std::string threads;  // (the Threads parts tab's threads.txt)
   std::string attire_names[4];
-  Image picture, picture_small, picture_full;
+  Image picture, picture_small, picture_full, picture_load;
   std::vector<Image> signs;
   std::wstring moves, pack;
   std::map<int, std::string> gear;  // (entrance gear choices)
@@ -1173,6 +1173,7 @@ bool PrepareJob(Job& j) {
   j.mats = g_star.mats;
   for (int a = 1; a < 4; ++a) j.attires[a] = g_star.attires[a], j.attire_names[a] = g_star.attire_names[a];
   j.picture = g_star.picture.image, j.picture_small = g_star.picture_small, j.picture_full = g_star.picture_full;
+  j.picture_load = g_star.picture_load;
   for (const auto& s : g_star.signs) j.signs.push_back(s.image);
   return true;
 }
@@ -1295,6 +1296,8 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
     files.push_back({"render_small.dds", DdsEncode(j.picture_small, DxtFormat::kDxt5, false)});
   }
   if (j.picture_full.w) files.push_back({"render_full.dds", DdsEncode(j.picture_full, DxtFormat::kDxt5, false)});
+  if (j.picture_load.w == 1024 && j.picture_load.h == 512)  // (the game takes exactly 1024 x 512 DXT5)
+    files.push_back({"load.dds", DdsEncode(j.picture_load, DxtFormat::kDxt5, false)});
   files.insert(files.begin(), ZipEntry{"manifest.txt", Bytes(man.begin(), man.end())});
   AddModProject(files, j.project);
   return true;
@@ -3151,6 +3154,7 @@ void Draw() {
       if (LoadPicture(g_test_picture, img)) SetPicture(img);
     }
     if (Image img; !g_test_full.empty() && LoadPicture(g_test_full, img)) g_star.picture_full = FitFigure(img, 512);
+    if (Image img; !g_test_load.empty() && LoadPicture(g_test_load, img)) g_star.picture_load = FitLoading(img);
     if (g_test_pose >= 0) g_star.pose = g_test_pose;  // (previewed once the model is in: below)
     if (const size_t c = g_test_hometown.find(','); !g_test_hometown.empty()) {
       std::snprintf(g_star.hometown_city, sizeof g_star.hometown_city, "%s", g_test_hometown.substr(0, c).c_str());
@@ -3477,6 +3481,30 @@ void Draw() {
   } else ImGui::TextDisabled(g_star.picture.Empty() ? "none" : "the select picture");
   Hint("The full-body render (512 x 512, the game's SSFB: the screens that show the whole superstar). Without one "
        "the select picture is used, as the game's own superstars mostly do. Framed like the game's.");
+  static int scroll_to_load = 40;  // (--star-load: the row scrolled into view for a screenshot, a few frames)
+  if (!g_test_load.empty() && scroll_to_load > 0 && --scroll_to_load < 20) ImGui::SetScrollHereY(0.5f);
+  if (ImGui::Button(g_star.picture_load.w ? "Replace the loading picture..." : "Loading picture (optional)...", ImVec2(204 * g_scale, 0))) {
+    const std::wstring f = PickFile(false, L"Loading screen picture (fitted to 1024 x 512)", kPictureFilter, 1);
+    Image img;
+    if (!f.empty() && LoadPicture(f, img)) {
+      g_star.picture_load = FitLoading(img), Touch();
+      Log("Loading picture set from " + Utf8(f));
+    }
+  }
+  ImGui::SameLine();
+  if (g_star.picture_load.w) {
+    static Picture load_view;
+    if (load_view.image.rgba != g_star.picture_load.rgba) load_view.Set(g_star.picture_load);
+    load_view.Draw(96 * g_scale, 48 * g_scale);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The NOW LOADING picture (load.dds)");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Remove##load")) g_star.picture_load = Image(), Touch();
+  } else {
+    ImGui::TextDisabled("none: the arena's or the game's");
+  }
+  Hint("The picture on the NOW LOADING screen before a match (1024 x 512). In a match the first player's superstar's "
+       "picture shows, else the next one's that has one; it wins over a custom arena's own. Any picture is fitted: a "
+       "wide one fills it, a square or tall one sits on the right over a blurred copy of itself."); 
   ImGui::TextDisabled("Bust:");
   Hint("The small render (256 x 256, the game's SSFC) and the model's own portrait. Made from the top of the select "
        "picture unless you give one; a head-and-shoulders picture, cropped and framed like the game's.");
@@ -3518,7 +3546,7 @@ std::string StateText() {
   std::string s = std::string("name=") + g_star.name + "\nshort=" + g_star.short_name + "\nstyle=" +
                   std::to_string(g_star.style) + "\ncall=" + std::to_string(g_star.call) + "\nauthor=" + g_star.author +
                   "\nversion=" + g_star.version + "\nheight=" + HeightText() + "\ngain=" + GainText() + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) + "\nmusic=" + std::to_string(g_star.music) + "\nmats=" + MaterialsText(g_star.mats) +
-                  "\nmovie=" + Utf8(g_star.movie) + "\nvoice=" + Utf8(g_star.voice) + "\ncall_gain=" + CallGainText() + "\nratings=";
+                  "\nmovie=" + Utf8(g_star.movie) + "\nvoice=" + Utf8(g_star.voice) + "\ncall_gain=" + CallGainText() + "\nloading=" + std::to_string(g_star.picture_load.rgba.size()) + "\nratings=";
   // (the style's own attributes, filled in when the page is first drawn, aren't a change: a new project stays clean)
   bool style_ratings = true;
   for (int k = 0; k < 7; ++k) style_ratings &= g_star.ratings[k] == StarRating(kStyles[g_star.style].template_id, k);
@@ -3684,6 +3712,7 @@ void WriteProject(ProjectOut& out) {
   out.Png("picture", g_star.picture.image, "star/picture");
   if (g_star.own_bust) out.Png("bust", g_star.picture_small, "star/bust");
   if (g_star.picture_full.w) out.Png("full", g_star.picture_full, "star/full");
+  if (g_star.picture_load.w) out.Png("loading", g_star.picture_load, "star/loading");
   if (g_star.game_look) out.Key("game_look", "1");
   for (size_t k = 0; k < g_star.signs.size(); ++k) out.Png("sign" + std::to_string(k + 1), g_star.signs[k].image, "star/sign" + std::to_string(k + 1));
 }
@@ -3845,6 +3874,11 @@ bool Read(const ProjectIn& in, bool mod) {
       }
     }
     if (const ZipEntry* f = in.Find("render_full.dds"); f) DdsDecode(f->data, g_star.picture_full);
+    {  // the NOW LOADING picture: load.dds, or the file the manifest's loading= names (converters write both)
+      const std::string named = in.Get("loading");
+      const ZipEntry* l = in.Find(named.empty() ? std::string("load.dds") : named);
+      if (Image li; l && DdsDecode(l->data, li)) g_star.picture_load = FitLoading(li);
+    }
     for (int k = 1; k <= 4; ++k)
       if (const ZipEntry* s = in.Find("sign" + std::to_string(k) + ".dds"); s && DdsDecode(s->data, img)) {
         Picture p;
@@ -3855,6 +3889,7 @@ bool Read(const ProjectIn& in, bool mod) {
     g_star.game_look = false;  // (the saved picture has it already)
     if (in.Png("bust", img)) g_star.picture_small = img, g_star.own_bust = true;
     if (in.Png("full", img)) g_star.picture_full = img;
+    if (in.Png("loading", img)) g_star.picture_load = FitLoading(img);
     if (in.Png("picture", img)) SetPicture(img);
     g_star.game_look = in.GetInt("game_look", 0) != 0;
     for (int k = 1; k <= 4; ++k)
@@ -3928,6 +3963,7 @@ void TestInstall() { Install(false); }
 bool PickEntrance(const char* label, int& value, const char* none, float width) { return EntrancePicker(label, value, none, width); }
 bool EntranceOutfit(const std::wstring& pac) { return HasEntranceOutfit(pac); }
 void TestFull(const std::wstring& png) { g_test_full = png; }
+void TestLoad(const std::wstring& png) { g_test_load = png; }
 void ShowPose(int motion) { PreviewPose(motion); }
 const std::vector<std::string>& AnnouncerNames() { return AnnouncerCalls().names; }
 bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width) {
@@ -4014,6 +4050,7 @@ bool TakePartFromMod(const std::wstring& svrmod, StarPart part, int slot) {
     case StarPart::kPictures:  // (their select picture, bust and full picture - the converter makes them from their renders)
       g_star.picture = got.picture, g_star.picture_small = got.picture_small, g_star.own_bust = got.own_bust;
       g_star.picture_full = got.picture_full, g_star.picture_src = got.picture_src, g_star.game_look = got.game_look;
+      if (got.picture_load.w) g_star.picture_load = got.picture_load;
       Status(got.picture.Empty() ? who + " came without pictures: the converter found none." : "The pictures are " + who + "'s now.");
       break;
     case StarPart::kMusic:  // (their theme and titantron video)
