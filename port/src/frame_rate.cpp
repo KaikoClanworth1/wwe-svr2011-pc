@@ -62,6 +62,7 @@
 #include "generated/default/svr2011_init.h"
 #include "jukebox.h"
 #include "match_types.h"
+#include "rtwm_streak.h"
 #include "native/native_renderer.h"
 #include "online_overlay.h"
 #include "online_rules.h"
@@ -471,6 +472,7 @@ REX_HOOK_RAW(sub_8269D768) {
     }
   }
   svr2011::HctpBeforeFrame(base);  // (match_types.h: a door's placements held)
+  svr2011::RtwmBeforeFrame(base);  // (rtwm_streak.h: test aids)
   __imp__sub_8269D768(ctx, base);
 #if SVR2011_DEBUG_SUITE
   svr2011::dbg::BootFrame(ctx, base);  // (dbg_boot: debug_suite.h)
