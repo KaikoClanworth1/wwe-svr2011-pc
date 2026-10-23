@@ -869,6 +869,10 @@ struct OutMesh {
 // half-edge collapses - a vertex merges into a neighbour, so the kept ones keep their exact UVs, normals and
 // weights. Seam vertices (one position, several UV / normal copies) and open edges stay put; a collapse that
 // flips or squashes a triangle is refused. keep: the vertices to keep at most. Returns the new vertex count.
+// A merge between vertices weighted to different bones moves the kept one's weights onto the gone one's place - a
+// finger's tip pulled by the hand, a sleeve by the arm (user report: "stretched fingers"): such a merge costs more
+// the more the weights differ (kCrossBone), so it comes after every same-bone one; *cross counts those done (the
+// weights more than half apart).
 struct Quadric {
   double a[10] = {};  // the symmetric 4x4 (upper triangle)
   void AddPlane(const V3& n, double d, double w) {
@@ -887,9 +891,21 @@ struct Quadric {
   }
 };
 
-int Decimate(OutMesh& m, int keep, std::vector<bool>* lock = nullptr) {
+int Decimate(OutMesh& m, int keep, std::vector<bool>* lock = nullptr, int* cross = nullptr) {
   const int nv = int(m.pos.size());
   if (keep >= nv || m.tris.empty()) return nv;
+  // (test aid SVR2011_TEST_REDUCE_OLD=1: the cost without the bones - to compare)
+  static const bool by_bones = std::getenv("SVR2011_TEST_REDUCE_OLD") == nullptr;
+  constexpr double kCrossBone = 40.0;
+  auto wdist = [&](int a, int b) {  // (0: the same weights, 2: no bone in common)
+    if (size_t(std::max(a, b)) >= m.w.size()) return 0.0;
+    std::map<int, double> d;
+    for (const auto& [bn, w] : m.w[size_t(a)]) d[bn] += w;
+    for (const auto& [bn, w] : m.w[size_t(b)]) d[bn] -= w;
+    double s = 0;
+    for (const auto& [bn, v] : d) s += std::fabs(v);
+    return s;
+  };
   // positions welded: a seam vertex's copies (UV / normal splits) are one position
   std::map<std::array<double, 3>, int> weld;
   std::vector<int> pid(static_cast<size_t>(nv));
@@ -965,7 +981,9 @@ int Decimate(OutMesh& m, int keep, std::vector<bool>* lock = nullptr) {
           if (!fadj[size_t(pu)].empty() && !is_feature(pu, pv)) continue;  // (a feature vertex slides along its line only)
           Quadric s = q[size_t(pu)];
           s.Add(q[size_t(pv)]);
-          const double cost = s.Eval(m.pos[size_t(x)]);
+          double cost = s.Eval(m.pos[size_t(x)]);
+          if (by_bones)
+            if (const double wd = wdist(members[size_t(pu)][0], x); wd > 0.05) cost = cost * (1 + kCrossBone * wd) + 1e-4 * wd;
           heap.push_back({plock[size_t(pu)] ? cost * 30 + 2e-4 : cost, pu, pv, stamp[size_t(pu)]});  // (the face: last)
           std::push_heap(heap.begin(), heap.end(), worse);
         }
@@ -1010,6 +1028,7 @@ int Decimate(OutMesh& m, int keep, std::vector<bool>* lock = nullptr) {
       if (!ok) break;
     }
     if (!ok) continue;
+    if (cross && wdist(pairs[0].first, pairs[0].second) > 1.0) ++*cross;
     for (const auto& [u, v] : pairs) {
       for (int t : vt[size_t(u)]) {
         if (tri_dead[size_t(t)]) continue;
@@ -1566,19 +1585,37 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
     }
   }
   {
+    // (left as they are: eyes, lashes and every mesh under kSmallMesh vertices - a ring, a tooth row, a nail: cut,
+    // they lost their shape for almost nothing; test aid SVR2011_TEST_REDUCE_OLD=1: only eyes and lashes, to compare)
+    constexpr int kSmallMesh = 300;
+    static const bool old_rule = std::getenv("SVR2011_TEST_REDUCE_OLD") != nullptr;
+    auto kept = [&](const OutMesh& m) {
+      return m.kind == "eye" || m.kind == "lash" || (!old_rule && int(m.pos.size()) < kSmallMesh);
+    };
     int total = 0, small = 0;
-    for (const auto& m : meshes) total += int(m.pos.size()), small += (m.kind == "eye" || m.kind == "lash") ? int(m.pos.size()) : 0;
+    for (const auto& m : meshes) total += int(m.pos.size()), small += kept(m) ? int(m.pos.size()) : 0;
     if (opts.max_vertices > 0 && total > opts.max_vertices) {
       rep.reduced_from = total;
+      std::vector<int> before(meshes.size()), cross(meshes.size());
+      std::vector<bool> keep_mesh(meshes.size());
+      for (size_t mi = 0; mi < meshes.size(); ++mi) before[mi] = int(meshes[mi].pos.size()), keep_mesh[mi] = kept(meshes[mi]);
       for (int pass = 0; pass < 3 && total > opts.max_vertices; ++pass) {
         const int big = total - small;
         const double ratio = std::max(0.05, double(opts.max_vertices - small) / std::max(1, big));
         total = small;
         for (size_t mi = 0; mi < meshes.size(); ++mi) {
           OutMesh& m = meshes[mi];
-          if (m.kind == "eye" || m.kind == "lash") continue;
-          total += Decimate(m, std::max(24, int(double(m.pos.size()) * ratio)), locks[mi].empty() ? nullptr : &locks[mi]);
+          if (keep_mesh[mi]) continue;
+          total += Decimate(m, std::max(24, int(double(m.pos.size()) * ratio)), locks[mi].empty() ? nullptr : &locks[mi], &cross[mi]);
         }
+      }
+      for (size_t mi = 0; mi < meshes.size(); ++mi) {
+        const OutMesh& m = meshes[mi];
+        std::string l = m.name + ": " + std::to_string(before[mi]) + " -> " + std::to_string(m.pos.size()) + " vertices";
+        if (keep_mesh[mi]) l += " (kept: " + std::string(m.kind == "eye" || m.kind == "lash" ? m.kind : "small") + ")";
+        if (cross[mi]) l += ", " + std::to_string(cross[mi]) + " merges across bones";
+        rep.reduced_lines.push_back(l);
+        rep.cross_merges += cross[mi];
       }
       rep.vertices = 0, rep.triangles = 0;
       for (const auto& m : meshes) rep.vertices += int(m.pos.size()), rep.triangles += int(m.tris.size());

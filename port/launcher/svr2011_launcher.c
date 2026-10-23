@@ -8762,7 +8762,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     /* Tests: --mods-add <game folder> <file.svrmod> installs a mod as the Mods
        tab's + does (exit code 0 when installed). */
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--mods-add")) {
-        const int ok = mods_install(argv[2], argv[3]);
+        int ok;
+        console_setup();  /* (what the Mods tab would say, printed) */
+        ok = mods_install(argv[2], argv[3]);
         LocalFree(argv);
         return ok ? 0 : 1;
     }

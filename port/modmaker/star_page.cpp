@@ -1578,9 +1578,11 @@ void MakeFromFbx() {
         std::to_string(int(rep.height_cm + 0.5)) + " cm tall)");
     const double scale = rep.scale;
     std::vector<FbxIssue> after;
-    if (rep.reduced_from)
+    if (rep.reduced_from) {
       after.push_back({0, "Cut from " + std::to_string(rep.reduced_from) + " to " + std::to_string(rep.vertices) + " vertices to fit the game.",
                        "Look it over in the 3D view; reduce it yourself in Blender for full control."});
+      for (const auto& l : rep.reduced_lines) Log("  " + l);  // (each part's count: a part cut too far shows here)
+    }
     for (const auto& w : rep.warnings) after.push_back({1, w, ""});
     {
       const double back = 1.0 / std::max(0.01, rep.scale);
