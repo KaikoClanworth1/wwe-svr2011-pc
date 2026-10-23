@@ -752,11 +752,16 @@ void CheckArenaPac(const fs::path& dir, const fs::path& f, std::vector<Problem>&
   }
   Arena a;
   if (!b.empty() && !std::memcmp(b.data(), "EPAC", 4) && a.LoadData(b)) {
-    // (svrfmt/arena.h kMaxArenaVerts: over the game's own arenas' 3D detail, ports crashed at match load)
+    // (svrfmt/arena.h: over the game's own arenas' 3D detail needs 2.1.6; over kMaxArenaVertsNew it crashes)
     if (const ArenaGeometry g = GeometryOf(a); g.Over())
-      p.push_back(Error("The arena has more 3D detail than the game can load (" + std::to_string(g.verts) + " points; the game's own "
-                        "arenas have up to " + std::to_string(kMaxArenaVerts) + "): the game crashes when the match loads.")
+      p.push_back(Error("The arena has more 3D detail than the game can load (" + std::to_string(g.verts) + " points; it "
+                        "takes up to " + std::to_string(kMaxArenaVertsNew) + "): the game crashes when the match loads.")
                       .With("Turn it off", TurnOff(dir)).With(kOpen, OpenIt(dir)));
+    else if (g.OverStock())
+      p.push_back(Warning("The arena has more 3D detail than the game's own arenas (" + std::to_string(g.verts) +
+                          " points; theirs: up to " + std::to_string(kMaxArenaVerts) + ").",
+                          std::string("Version ") + kNeedsVersion + " or newer plays it; older ones crash loading it.")
+                      .With(kOpen, OpenIt(dir)));
     int odd = 0;  // (pictures the game can't show: 2011's arenas use DXT1 / DXT3 / DXT5 and ARGB)
     for (const auto& set : a.bundles)
       for (const auto& t : set.textures) {

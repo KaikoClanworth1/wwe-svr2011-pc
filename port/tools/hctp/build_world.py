@@ -147,7 +147,10 @@ def build(unpacked, pac11, work, mod, rooms=WORLD_ROOMS, name='HCTP Backstage', 
              'row=%s' % name, 'gimmick=78H3',
              'box=%.1f,%.1f,%.1f,%.1f' % ((x0 + x1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (z1 - z0) / 2),
              'camera_height=45', 'hctp=%d' % rooms[0], 'weapons=%s' % (';'.join(weapons) or 'none')]
-    if len(rooms) > 5 or any(r in B.BIG_STAGE_ROOMS and not B.ROOMS[r][2] for r in rooms):   # (over the window)
+    if st['file'] > st['orig_file']:   # (bigger than the shipped bg78: world_stage.py)
+        import model_budget
+        lines.insert(5, 'needs=%s' % model_budget.NEEDS_VERSION)
+    elif len(rooms) > 5 or any(r in B.BIG_STAGE_ROOMS and not B.ROOMS[r][2] for r in rooms):   # (over the window)
         lines.insert(5, 'needs=%s' % B.NEEDS_BIG_STAGE)
     if drops:
         lines.append('load_weapons=%s' % ','.join(map(str, sorted(drops))))

@@ -1937,16 +1937,20 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
   }
   // (the canvas is the picture most on screen: something else gives way)
   a.fit_margin = opt.fit;
+  a.file_max = kArenaFileMax;  // (bigger than the host's file: 2.1.6 - the Arena page's save says needs=)
   rep.halved = a.FitFile({"rin_mat00"});
   out = a.Save(error);
   if (error && !error->empty()) return false;
-  if (out.size() > host.original_file) rep.notes.push_back("still bigger than the host file");
+  if (out.size() > host.original_file)
+    rep.notes.push_back("bigger than the host file (" + std::to_string(out.size()) + " bytes): it needs a newer game (the manifest says needs=)");
+  if (GeometryOf(a).OverStock())
+    rep.notes.push_back("more 3D detail than the game's own arenas: it needs a newer game (the manifest says needs=)");
   // (more geometry than any 2011 arena: the game crashes loading it - WWE 2K16 bg06 / bg12 / bg15)
   if (const ArenaGeometry g = GeometryOf(a); g.Over()) {
     if (error)
       *error = "this arena has more 3D detail than SvR 2011 can load (" + std::to_string(g.verts) + " points and " +
-               std::to_string(g.indices) + " corners; the game's own arenas have up to " + std::to_string(kMaxArenaVerts) +
-               " and " + std::to_string(kMaxArenaIndices) + "): it would crash the game when the match loads";
+               std::to_string(g.indices) + " corners; it takes up to " + std::to_string(kMaxArenaVertsNew) +
+               " and " + std::to_string(kMaxArenaIndicesNew) + "): it would crash the game when the match loads";
     return false;
   }
   return true;

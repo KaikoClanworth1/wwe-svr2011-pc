@@ -41,6 +41,11 @@ struct Arena {
 
   size_t original_file = 0;  // .pac size as shipped
   double fit_margin = 1.0;   // FitFile's target as a share of the budget
+  // FitFile's file budget when the arena may be bigger than shipped (kArenaFileMax, 2.1.6); 0: the shipped size. Taken
+  // only when the stage is the pac's last entry (StageLast): the game reads every entry at the place the shipped
+  // file had it, so a bigger stage may only push the file's end out, no entry after it.
+  size_t file_max = 0;
+  bool StageLast() const;
 
   bool Load(const std::string& path, std::string* error = nullptr);
   // From memory (a mod's arena.pac). The budget (original_*) is then the
@@ -65,13 +70,24 @@ struct Arena {
 // An arena's geometry against what 2011's arenas hold: every model's vertices and strip indices, summed. The stock
 // maxima (15 Oct, all 27 stock bgNN.pac): 65,450 vertices (bg16), 110,522 indices (bg16). WWE 2K16 ports over them
 // (bg06 / bg12 / bg15: 78,935-91,476 vertices) crashed at load (lr 8215A008, the arena's buffers); every port that
-// played was under (up to 65,431).
+// played was under (up to 65,431). That was the stage's heap (6 MB, heap 10): since 2.1.6 the game gives it fallback
+// memory (src/ring_rules.cpp, caw_limits.h kStageHeap) and an arena may hold more - tested up to 130,900 vertices /
+// 221,044 indices (bg16 with models repeated, 60 fps, two matches in a row) - so kMaxArenaVerts is now where an
+// arena needs 2.1.6 (its manifest says needs=), kMaxArenaVertsNew the most it may have.
 constexpr size_t kMaxArenaVerts = 65450, kMaxArenaIndices = 110522;
+constexpr size_t kMaxArenaVertsNew = 130000, kMaxArenaIndicesNew = 220000;
+// An arena's file may outgrow its slot's shipped one since 2.1.6 (the game reads its stage entry at its own size:
+// src/arena_mods.cpp ServedStageUnits) - tested to 18.1 MB, 2.2x; FitFile keeps it under this (file_max).
+constexpr size_t kArenaFileMax = size_t(17) << 20;
 struct ArenaGeometry {
   size_t verts = 0, indices = 0;
-  bool Over() const { return verts > kMaxArenaVerts || indices > kMaxArenaIndices; }
+  bool Over() const { return verts > kMaxArenaVertsNew || indices > kMaxArenaIndicesNew; }
+  bool OverStock() const { return verts > kMaxArenaVerts || indices > kMaxArenaIndices; }  // (needs 2.1.6)
 };
 ArenaGeometry GeometryOf(const Arena& a);
+// The arena saved as `saved_size` bytes needs 2.1.6: bigger than its slot's shipped file, or more 3D detail than the
+// game's own arenas (older games crash loading it).
+bool ArenaNeedsNew(const Arena& a, size_t saved_size);
 
 // The visibility tree (entry 0xC364: a text of named boxes, one per arena model, in metres on 3ds Max axes -
 // X = x / 10, Y = +-z / 10, Z = -y / 10 - under a root box): every changed model's box, and its parents' up to

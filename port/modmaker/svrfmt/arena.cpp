@@ -146,7 +146,9 @@ std::vector<std::string> Arena::FitBudget(const std::vector<std::string>& keep) 
 }
 
 std::vector<std::string> Arena::FitFile(const std::vector<std::string>& keep) {
-  std::vector<std::string> reduced = FitBudget(keep);
+  // (each texture set within its shipped size too - only for an arena kept at its shipped size: a bigger one, 2.1.6,
+  // loads its sets whole - its file is read at its own size, the textures' memory takes fallback memory)
+  std::vector<std::string> reduced = file_max && StageLast() ? std::vector<std::string>{} : FitBudget(keep);
   for (int guard = 0; guard < 64; ++guard) {
     size_t unpacked = 0;
     for (const auto& e : entries) {
@@ -160,7 +162,10 @@ std::vector<std::string> Arena::FitFile(const std::vector<std::string>& keep) {
     for (const auto& m : models)
       if (m.added) unpacked += JboyWrite(m.model).size();
     const size_t file = Save().size();
-    if (file <= size_t(original_file * fit_margin) && unpacked <= size_t(original_unpacked * fit_margin)) break;
+    const size_t file_budget = file_max && StageLast() ? std::max(file_max, original_file) : original_file;
+    const size_t unpacked_budget =
+        original_file ? size_t(double(original_unpacked) * double(file_budget) / double(original_file)) : original_unpacked;
+    if (file <= size_t(file_budget * fit_margin) && unpacked <= size_t(unpacked_budget * fit_margin)) break;
     BundleTexture* big = nullptr;
     ArenaTextureSet* set = nullptr;
     for (auto& b : bundles)
@@ -179,6 +184,15 @@ std::vector<std::string> Arena::FitFile(const std::vector<std::string>& keep) {
     reduced.push_back(big->name);
   }
   return reduced;
+}
+
+bool Arena::StageLast() const {
+  // (EpacWrite lays the entries out in group / entry order)
+  return group + 1 == epac.groups.size() && entry + 1 == epac.groups[group].entries.size();
+}
+
+bool ArenaNeedsNew(const Arena& a, size_t saved_size) {
+  return (a.original_file && saved_size > a.original_file) || GeometryOf(a).OverStock();
 }
 
 ArenaGeometry GeometryOf(const Arena& a) {
