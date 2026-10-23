@@ -39,6 +39,7 @@ typedef struct {
     WCHAR folder[MAX_PATH];  /* full path */
     WCHAR type[32], id[64], name[128], author[64], version[32];
     WCHAR made_with[64];  /* manifest made_with= (the Mod Maker stamps its mods); "" = not made with it */
+    WCHAR needs[32];      /* manifest needs= : the oldest game version that plays it ("" = any) */
     unsigned long long bytes;
     int enabled;
     int left_out;  /* a superstar mod over the game's ids (s_star_ids): not in the game (superstar_limit) */
@@ -53,7 +54,11 @@ static int s_filling;              /* (checkbox notifications while filling the 
 
 enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS, M_BACKGROUND, M_ON, M_OFF };
 
-static void status(const WCHAR *t) { SetWindowTextW(s_status, t); }
+static void status(const WCHAR *t)
+{
+    if (s_status) SetWindowTextW(s_status, t);
+    else wprintf(L"%ls\n", t);  /* (the --mods-add tests: no window) */
+}
 
 /* The game has 137 ids for superstar mods (src/superstar_mods.cpp kPool; it
    writes the number to Mods\Superstars\limit.txt at each start), kept
@@ -143,6 +148,7 @@ static int read_manifest(const WCHAR *path, Mod *m)
         else if (!wcscmp(w, L"author")) wcsncpy_s(m->author, 64, eq, _TRUNCATE);
         else if (!wcscmp(w, L"version")) wcsncpy_s(m->version, 32, eq, _TRUNCATE);
         else if (!wcscmp(w, L"made_with")) wcsncpy_s(m->made_with, 64, eq, _TRUNCATE);
+        else if (!wcscmp(w, L"needs")) wcsncpy_s(m->needs, 32, eq, _TRUNCATE);
     }
     fclose(f);
     return m->type[0] && m->id[0];
@@ -207,6 +213,11 @@ static void scan(void)
     }
 }
 
+static int version_newer(const WCHAR *a, const WCHAR *b);
+/* The mod needs a newer game than this one (manifest needs=: a big model or arena, docs/SVRMOD_FORMAT.md). The
+   launcher installs the game of its own release, so its version is the game's. */
+static int needs_newer(const Mod *m) { return m->needs[0] && version_newer(m->needs, PORT_VERSION); }
+
 static void fill(void)
 {
     int i;
@@ -222,7 +233,11 @@ static void fill(void)
         it.pszText = s_mods[i].name;
         it.lParam = i;
         ListView_InsertItem(s_list, &it);
-        ListView_SetItemText(s_list, i, 1, s_mods[i].left_out ? s_over_label : s_mods[i].type);
+        WCHAR type[96];
+        if (s_mods[i].left_out) wcsncpy_s(type, 96, s_over_label, _TRUNCATE);
+        else if (needs_newer(&s_mods[i])) swprintf_s(type, 96, L"%s - NEEDS GAME %s", s_mods[i].type, s_mods[i].needs);
+        else wcsncpy_s(type, 96, s_mods[i].type, _TRUNCATE);
+        ListView_SetItemText(s_list, i, 1, type);
         ListView_SetItemText(s_list, i, 2, s_mods[i].version);
         ListView_SetItemText(s_list, i, 3, s_mods[i].author);
         swprintf_s(size, 32, L"%.1f MB", s_mods[i].bytes / 1048576.0);
@@ -1676,6 +1691,12 @@ place:
                                                  : L"Installed \"%s\". It is on the arena select pages after the "
                                                    L"game's own arenas.",
                m.name[0] ? m.name : m.id);
+    if (needs_newer(&m)) {  /* (older games leave a big model out, and crash loading a big arena) */
+        WCHAR n[200];
+        swprintf_s(n, 200, L" It needs game version %s or newer - this one is %s: update the game first.", m.needs,
+                   PORT_VERSION);
+        wcsncat_s(t, 512, n, _TRUNCATE);
+    }
     if (!wcscmp(kind, L"Attires")) {  /* (two attire mods on one attire: the new one moves) */
         static WCHAR clash[2048];
         if (mods_attire_guard(s_game, dst, clash, 2048)) {
