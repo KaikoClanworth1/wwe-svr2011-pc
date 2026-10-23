@@ -96,6 +96,7 @@ GAMES = [
     dict(id='ps2_svr08', name='WWE SmackDown vs. Raw 2008 (PS2)', platform='ps2', disc_hints=['SLES_548.79', 'SLUS_216.45'], status='ready'),
     dict(id='ps2_svr09', name='WWE SmackDown vs. Raw 2009 (PS2)', platform='ps2', disc_hints=['SLES_552.51', 'SLUS_218.10'], status='ready'),
     dict(id='ps2_svr10', name='WWE SmackDown vs. Raw 2010 (PS2)', platform='ps2', disc_hints=['SLES_555.45', 'SLUS_219.01'], status='ready'),
+    dict(id='ps2_svr11', name='WWE SmackDown vs. Raw 2011 (PS2)', platform='ps2', disc_hints=['SLES_556.35', 'SLUS_219.39'], status='ready'),
     dict(id='wwe12', name="WWE '12", platform='x360', disc_hint='54510890', status='ready'),
     dict(id='wwe13', name="WWE '13", platform='x360', disc_hint='545108B4', status='ready'),
     dict(id='wwe2k14', name='WWE 2K14', platform='x360', disc_hint='545408B2', status='ready'),
@@ -1800,7 +1801,7 @@ SINGLE = {   # game -> mod id suffix (labels: lone_pac.LABELS)
     'svr2007': '_07', 'svr2008': '_08', 'svr2009': '_09', 'low': '_low', 'svr2010': '_10', 'wwe12': '_12', 'wwe13': '_13',
     'wwe2k14': '_2k14', 'wwe2k15': '_2k15', 'wwe2k16': '_2k16', 'wwe2k17': '_2k17',
     'ps2_jbi': '_jbi', 'ps2_sym': '_sym', 'ps2_hctp': '_hctp', 'ps2_svr04': '_svr04', 'ps2_svr06': '_svr06',
-    'ps2_svr07': '_svr07', 'ps2_svr08': '_svr08', 'ps2_svr09': '_svr09', 'ps2_svr10': '_svr10'}
+    'ps2_svr07': '_svr07', 'ps2_svr08': '_svr08', 'ps2_svr09': '_svr09', 'ps2_svr10': '_svr10', 'ps2_svr11': '_svr11ps2'}
 SINGLE_MISSING = ["pictures / renders (the base's)", "theme (the base's)", "titantron (the base's)",
                   "entrance (the base's)", "moveset (the base's)", "ratings and abilities (the base's)",
                   'name and profile (--name, else the file name)', 'attire names']
