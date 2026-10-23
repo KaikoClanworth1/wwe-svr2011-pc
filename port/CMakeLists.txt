@@ -88,6 +88,7 @@ set(SVR2011_SOURCES
     src/universe_welcome.cpp
     src/crowd_signs.cpp
     src/media_mods.cpp
+    src/vs_styles.cpp
     src/move_packs.cpp
     modmaker/svrfmt/pac.cpp
     modmaker/svrfmt/texture.cpp

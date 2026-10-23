@@ -66,6 +66,7 @@
 #include "crowd_signs.h"
 #include "jukebox.h"
 #include "media_mods.h"
+#include "vs_styles.h"
 #include "music.h"
 #include "hd_movies.h"
 #include "user_movies.h"
@@ -1761,6 +1762,8 @@ REX_HOOK_RAW(sub_826B87B0) {
   }();
   // Superstar Threads' list with the mods' records (superstar_threads.h): asked for by another name
   if (const uint32_t alias = svr2011::ThreadsAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) ctx.r4.u64 = alias;
+  // the chosen VS screen style's theme (vs_styles.h): asked for by another name, as below
+  if (const uint32_t alias = svr2011::VsStyleAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) ctx.r4.u64 = alias;
   // a media mod's replacement (renders: media_mods.h) - the first match in
   // the archive list wins, so the game's own would: asked for by another name
   if (const uint32_t alias = svr2011::MediaAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) {

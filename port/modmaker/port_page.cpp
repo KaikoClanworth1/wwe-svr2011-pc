@@ -42,6 +42,8 @@ const Kind kKinds[] = {
     {"Weapons", L"weapon_port.py", "Weapons' looks, as a texture pack."},
     {"Backstage", L"backstage_port.py", "A backstage room from another game, built into a copy of your own 2011 backstage files and "
                                         "installed into the game's Mods\\Backstage (its own row in the BACKSTAGE list)."},
+    {"VS screens", L"vs_port.py", "An older game's VS screens (SvR 2010 so far: the match set-up page behind the two superstars) as a VS style, "
+                                  "installed into the game's Mods\\VsStyles: pick it in GRAPHICS > VS SCREEN STYLE."},
 };
 constexpr int kKindCount = int(sizeof kKinds / sizeof kKinds[0]);
 
@@ -63,6 +65,7 @@ char g_options[256] = "";      // extra converter options (advanced)
 std::string g_test_item;
 int g_force_kind = -1;  // (the test's tab: ImGui reports the first tab selected until SetSelected takes)
 bool g_same_moves = false;      // (PS2 superstars: --same-moves, no "similar" stand-ins)
+bool g_vs_renders = true;       // (VS screens: --renders, that game's renders for 2011's superstars too)
 bool g_test_fp = false;         // (--port-fullpreview: an entrance test's result opens in the Full preview)
 int g_test_stage = -1;          // 0 list, 1 convert, 2 open, 3 done
 std::string g_test_game;        // (--port-test kind@game: a folder's game, as picked in its combo)
@@ -458,6 +461,7 @@ void Convert(int k, const std::string& game, const Json& item) {
   if (entrance && !g_settings.bink2_tool.empty())  // (its --titantron: Bink 2 movies through the player's tool)
     args.push_back(L"--bink2-tool"), args.push_back(g_settings.bink2_tool);
   if (NeedsPicture(item) && !g_pp.pick.empty()) args.push_back(L"--picture"), args.push_back(Wide(g_pp.pick));
+  if (g_vs_renders && std::wstring(kKinds[k].script) == L"vs_port.py" && game != "svr2008") args.push_back(L"--renders");
   for (auto& o : Options()) args.push_back(o);
   for (auto& o : g_lone_args) args.push_back(o);
   g_result = Json();
@@ -747,6 +751,20 @@ void OpenResult() {
   }
   if (opens == "backstage" && fs::exists(p / L"manifest.txt", ec)) {  // (installed already: opened as a project, the folder only read)
     if (ProjectOpenFolder(p.wstring())) Status("Installed into Mods\\Backstage\\" + Utf8(p.filename().wstring()) + ", opened on the Backstage tab.");
+    return;
+  }
+  if (opens == "vs_style") {  // a VS style folder: into the game's Mods\VsStyles\<game id> (vs_port.py)
+    const std::string as = g_result["install_as"].Str().empty() ? Utf8(p.filename().wstring()) : g_result["install_as"].Str();
+    const fs::path dst = fs::path(g_game) / L"Mods" / L"VsStyles" / Wide(as);
+    fs::create_directories(dst, ec);
+    for (const wchar_t* f : {L"manifest.txt", L"vs.pac"})
+      if (!ec) fs::copy_file(p / f, dst / f, fs::copy_options::overwrite_existing, ec);
+    if (!ec && fs::exists(p / L"renders", ec)) {  // (its renders: a media pack of their own)
+      const fs::path media = fs::path(g_game) / L"Mods" / L"Media" / Wide(as + "_renders");
+      fs::copy(p / L"renders", media, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+    }
+    Status(ec ? "Could not install the style: " + ec.message()
+              : "Installed into Mods\\VsStyles\\" + as + ": pick it in the game's GRAPHICS > VS SCREEN STYLE (from the next start).");
     return;
   }
   if (opens == "belt" || opens == "weapon") {  // a texture pack folder: into the game's Texture Packs
@@ -1238,6 +1256,11 @@ void KindBody(int k) {
     Hint("Ticked: only the moves 2011 has too come over; a move it lacks keeps the fighting style's. Unticked: a "
          "similar 2011 move stands in for one it lacks (marked \"similar\" in the moveset, to swap if you like).");
   }
+  if (std::wstring(kKinds[k].script) == L"vs_port.py") {
+    ImGui::Checkbox("That game's renders for 2011's superstars too", &g_vs_renders);
+    Hint("Ticked: the superstars both games have (the same name) show this game's renders - on the VS screen and "
+         "everywhere 2011 shows renders - as a media pack of their own (Mods\Media, off there to go back).");
+  }
   if (NeedsPicture(item)) {
     AskPictures(k, game, item);
     PicturePicker();
@@ -1278,7 +1301,8 @@ void KindBody(int k) {
   if (!g_result_error.empty()) ImGui::TextColored(kBad, "%s", g_result_error.c_str());
   if (g_result.type == Json::Type::kObject && g_result["ok"].Truthy()) {
     ImGui::SameLine();
-    if (ImGui::Button(g_result["opens"].Str() == "belt" || g_result["opens"].Str() == "weapon" ? "Install the pack" : g_embedded ? "5. Use it" : "5. Open it to finish")) OpenResult();
+    if (ImGui::Button(g_result["opens"].Str() == "belt" || g_result["opens"].Str() == "weapon" ? "Install the pack" :
+                      g_result["opens"].Str() == "vs_style" ? "Install the style" : g_embedded ? "5. Use it" : "5. Open it to finish")) OpenResult();
     if (const int t = std::atoi(g_result["template"].Str().c_str()); t > 0)  // (moves: what it was built on)
       ImGui::TextDisabled("Built on the 2011 move %s (%d)%s; record %s. Not right? Pick a template above and convert again.",
                           MoveName(t).c_str(), t, g_template > 0 ? "" : ", picked automatically", g_result["id"].Str().c_str());
