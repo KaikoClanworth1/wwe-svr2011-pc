@@ -16,8 +16,10 @@ Exit codes: 0 ok, 2 bad input, 3 conversion failed.
   converted motions) and hctp.txt (tools/hctp/build_room.py; docs/HCTP_BACKSTAGE.md). Each item is its own
   row in the BACKSTAGE list. Needs the player's 2011 pac/bg/bg78.pac and pac/gm.pac (--pac11).
   The worlds (hctpworld, hctpfountain) are several rooms in one row that the wrestlers walk between
-  through HCTP's doors (tools/hctp/build_world.py); 2011 loads at most ~400 room meshes, so HCTP's
-  backstage is two worlds: rooms 30-34, and 34 + 35.
+  through HCTP's doors (tools/hctp/build_world.py). hctpworld is the whole backstage, rooms 30-35 (about 625
+  stage meshes: since 2.1.5 a stage over the game's vertex window is placed elsewhere - src/model_mem.cpp,
+  sub_8215A380; before, ~400 meshes crashed the load and it was two worlds). hctpfountain (34 + 35) is kept
+  for the rows already installed.
 """
 import argparse
 import json
@@ -47,9 +49,9 @@ HCTP_ROOMS = {
 }
 # world item -> (row name, rooms - the first is where the match starts, about)
 HCTP_WORLDS = {
-    'hctpworld': ('HCTP Backstage', (30, 31, 32, 33, 34),
-                  'Back Entrance, Parking Lot, Training Room, Times Square and Outside the Arena in one: '
-                  'walk through the doors'),
+    'hctpworld': ('HCTP Backstage', (30, 31, 32, 33, 34, 35),
+                  'Back Entrance, Parking Lot, Training Room, Times Square, Outside the Arena and Fountain Square '
+                  'in one: walk through the doors'),
     'hctpfountain': ('HCTP Fountain Square', (34, 35), 'Outside the Arena and Fountain Square in one: walk through the doors'),
 }
 
