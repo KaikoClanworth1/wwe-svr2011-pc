@@ -39,7 +39,8 @@ void SetSongGain(const std::filesystem::path& file, float db);
 
 // Plays a short sound file once on its own voice (any format the songs can
 // be; honours audio_mute) - a superstar mod's recorded name call.
-void PlayClip(const std::filesystem::path& file);
+// A short clip, once, on its own player; `db`: its level (0 = the file's own).
+void PlayClip(const std::filesystem::path& file, float db = 0.0f);
 
 // Host sounds (media mods' replacements of the game's sounds): Start gives a
 // handle (-1: none free), each on its own voice; Active while playing or

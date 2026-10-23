@@ -141,6 +141,7 @@ struct Mod {
   bool styled = false;
   int ratings[7] = {-1, -1, -1, -1, -1, -1, -1};
   fs::path voice;  // its own recorded name for the ring announcer (manifest voice=)
+  float call_gain = 0.0f;  // call_gain=<dB>: its level against the game's own calls (0 = as loud as they are)
   // a superstar the game's sound banks still have (manifest announcer=<NAME>,
   // e.g. JEFFHARDY): the ring announcer says it with the game's own
   // RA_*_<NAME>_* clips, in the categories where the base says its own name
@@ -792,6 +793,7 @@ void LoadMods() {
         if (l.rfind("base=", 0) == 0) m.base = uint32_t(std::atoi(l.c_str() + 5));
         if (l.rfind("song=", 0) == 0) song = l.substr(5);
         if (l.rfind("theme_gain=", 0) == 0) song_gain = std::clamp(float(std::atof(l.c_str() + 11)), -20.0f, 6.0f);
+        if (l.rfind("call_gain=", 0) == 0) m.call_gain = std::clamp(float(std::atof(l.c_str() + 10)), -20.0f, 12.0f);
         if (l.rfind("movie=", 0) == 0) movie = l.substr(6);
         if (l.rfind("voice=", 0) == 0 && l.size() > 6) m.voice = f / l.substr(6);
         if (l.rfind("style=", 0) == 0) m.styled = true;
@@ -2242,8 +2244,13 @@ REX_HOOK_RAW(sub_82BEC030) {
       if (!std::strncmp(e, "Play_RA_", 8))
         if (const char* mod = std::strstr(e, "_MOD_"))
           if (const Mod* m = ModOf(uint32_t(std::atoi(mod + 5))); m && !m->voice.empty()) {
-            REXLOG_INFO("[svr2011] superstar mods: {}: name call {}", m->name, m->voice.filename().string());
-            svr2011::PlayClip(m->voice);
+            // The game's own calls play 7 dB down: RA.pck's one actor-mixer (1AB691A1), every RA sound's parent,
+            // has a volume of -7.0. A mod's call (its own player, at the file's level) the same, then call_gain=.
+            constexpr float kGameCalls = -7.0f;
+            REXLOG_INFO("[svr2011] superstar mods: {}: name call {} at {:.1f} dB (the game's calls' {:.0f}{})", m->name,
+                        m->voice.filename().string(), kGameCalls + m->call_gain, kGameCalls,
+                        m->call_gain ? fmt::format(", call_gain {:+.1f}", m->call_gain) : std::string());
+            svr2011::PlayClip(m->voice, kGameCalls + m->call_gain);
           }
     }
   }
