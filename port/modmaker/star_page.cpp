@@ -3878,6 +3878,7 @@ void TestMaterials(const std::string& spec, bool open) {
   if (open) g_test_open_mats = true;
 }
 void ApplyTestMaterials() {
+  if (const auto [pac, in] = AttireSource(g_view_attire); MaterialTestApply(pac, in, false, g_view_attire, g_star.mats)) Touch();
   if (g_test_mats.empty()) return;
   std::string all = g_test_mats;
   g_test_mats.clear();

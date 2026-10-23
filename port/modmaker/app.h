@@ -274,6 +274,12 @@ std::vector<int> ProfileMoves(int star_id);
 // attire (view_attire), previewed live. Simple's plain words with `simple`. -> true when an edit changed.
 bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int view_attire,
                    std::map<std::tuple<int, bool, uint32_t, int>, struct MatEdit>& edits, bool simple);
+// test aid (--mat-select): "all" or "<model id>:<mesh>/..." picked in the panel, then ":spec=..,tint=r/g/b,cut=,both=,flip="
+// applied to all of them as the panel's "all picked" row does; MaterialTestApply: the same without the panel drawn
+// (a test save right at start), true when it ran
+void MaterialTestSelect(const std::string& spec);
+bool MaterialTestApply(const std::wstring& pac, int attire_in_pac, bool gear, int view_attire,
+                       std::map<std::tuple<int, bool, uint32_t, int>, struct MatEdit>& edits);
 // A superstar's entrance theme: the game's music id (profile +0x1C0 +0x10; 1-253 the game's own themes), 0 if none.
 int ProfileMusic(int star_id);
 // Whether a move fits a slot (unknown moves: false); the moves that do, by name.

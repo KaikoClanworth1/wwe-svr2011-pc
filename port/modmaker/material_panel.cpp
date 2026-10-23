@@ -6,12 +6,15 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <map>
+#include <set>
 #include <vector>
 
 #include "app.h"
 #include "char_preview.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "model_materials.h"
 
 namespace fs = std::filesystem;
@@ -29,6 +32,19 @@ struct Cache {
 Cache g_cache;
 std::pair<uint32_t, int> g_atlas_for{~0u, -1};  // the mesh whose picture sheet is open
 bool g_atlas_normal = false;
+std::set<MatKey> g_sel;   // the parts picked to change together (their boxes; Ctrl / Shift click)
+int g_sel_anchor = -1;    // (Shift: the range from the last part clicked)
+std::string g_test_select;  // --mat-select: parts picked and changed together as if by hand (test aid)
+
+// A checkbox that also shows "some on, some off" (state 2): clicking it sets them all on.
+bool MixedCheckbox(const char* label, int state, bool* out) {
+  bool b = state == 1;
+  ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, state == 2);
+  const bool hit = ImGui::Checkbox(label, &b);
+  ImGui::PopItemFlag();
+  if (hit) *out = state == 2 ? true : b;
+  return hit;
+}
 
 const std::vector<MeshMat>& MeshesOf(const std::wstring& pac, int attire, bool gear) {
   std::error_code ec;
@@ -93,7 +109,69 @@ void AtlasView(uint32_t id, int mesh, bool normal) {
   }
   dl->PopClipRect();
 }
+// The parts the panel lists: blood overlays left out.
+std::vector<const MeshMat*> Shown(const std::vector<MeshMat>& meshes) {
+  std::vector<const MeshMat*> v;
+  for (const MeshMat& m : meshes)
+    if (!(Lower(m.model).rfind("blood", 0) == 0 || (m.model_id >= 0x7530 && m.model_id <= 0x7532))) v.push_back(&m);
+  return v;
+}
+
+// One change made to every picked part (g_sel) of those shown: each its own edit, emptied ones dropped.
+using PartChange = std::function<void(MatEdit&, const MeshMat&)>;
+void ChangePicked(const std::vector<const MeshMat*>& shown, int view_attire, bool gear, std::map<MatKey, MatEdit>& edits, const PartChange& f) {
+  for (const MeshMat* m : shown) {
+    const MatKey key{view_attire, gear, m->model_id, m->mesh};
+    if (!g_sel.count(key)) continue;
+    MatEdit e = edits.count(key) ? edits[key] : MatEdit();
+    f(e, *m);
+    if (e.Empty()) edits.erase(key);
+    else edits[key] = e;
+  }
+}
+
+// Test aid (--mat-select): "all" or "<model id>:<mesh>/..." picked, then ":spec=..,tint=r/g/b,cut=,both=,flip=" made
+// to all of them the way the panel's "all picked" row does. True when it ran.
+bool RunTestSelect(const std::vector<const MeshMat*>& shown, int view_attire, bool gear, std::map<MatKey, MatEdit>& edits) {
+  if (g_test_select.empty() || shown.empty()) return false;
+  const std::string t = g_test_select;
+  g_test_select.clear();
+  const size_t at = t.find('=') == std::string::npos ? t.size() : t.rfind(':', t.find('='));
+  const std::string which = t.substr(0, at), what = at < t.size() ? t.substr(at + 1) : "";
+  g_sel.clear();
+  for (const MeshMat* m : shown) {
+    const std::string id = std::to_string(m->model_id) + ":" + std::to_string(m->mesh);
+    if (which == "all" || ("/" + which + "/").find("/" + id + "/") != std::string::npos) g_sel.insert(MatKey{view_attire, gear, m->model_id, m->mesh});
+  }
+  Log("test: " + std::to_string(g_sel.size()) + " parts picked (" + which + ")");
+  auto apply = [&](const PartChange& f) { ChangePicked(shown, view_attire, gear, edits, f); };
+  for (size_t p = 0; p < what.size();) {
+    size_t q = what.find(',', p);
+    if (q == std::string::npos) q = what.size();
+    const std::string kv = what.substr(p, q - p);
+    p = q + 1;
+    const size_t eq = kv.find('=');
+    if (eq == std::string::npos) continue;
+    const std::string k = kv.substr(0, eq);
+    const float v = float(std::atof(kv.c_str() + eq + 1));
+    float c[3] = {1, 1, 1};
+    if (k == "spec") apply([v](MatEdit& e, const MeshMat& m) { if (m.has_spec) e.has_spec = true, e.spec = v; });
+    if (k == "tint" && std::sscanf(kv.c_str() + eq + 1, "%f/%f/%f", &c[0], &c[1], &c[2]) == 3)
+      apply([c](MatEdit& e, const MeshMat& m) { if (m.has_tint) e.has_tint = true, std::copy(c, c + 3, e.tint); });
+    if (k == "cut") apply([v](MatEdit& e, const MeshMat&) { e.cutout = int(v); });
+    if (k == "both") apply([v](MatEdit& e, const MeshMat&) { e.two_sided = int(v); });
+    if (k == "flip") apply([v](MatEdit& e, const MeshMat&) { e.flip = v != 0 ? 1 : -1; });
+    Log("test: picked parts " + kv);
+  }
+  return true;
+}
 }  // namespace
+
+void MaterialTestSelect(const std::string& spec) { g_test_select = spec; }
+bool MaterialTestApply(const std::wstring& pac, int attire_in_pac, bool gear, int view_attire, std::map<MatKey, MatEdit>& edits) {
+  if (g_test_select.empty() || pac.empty()) return false;
+  return RunTestSelect(Shown(MeshesOf(pac, attire_in_pac, gear)), view_attire, gear, edits);
+}
 
 bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int view_attire, std::map<MatKey, MatEdit>& edits, bool simple) {
   bool changed = false;
@@ -115,15 +193,160 @@ bool MaterialPanel(const std::wstring& pac, int attire_in_pac, bool gear, int vi
                              : "Per mesh, as the game keeps it (the model in the 3D view%s). The 3D view shows each change.",
                       gear ? ": the entrance gear" : "");
   std::pair<uint32_t, int> hover{~0u, -1};
-  for (const MeshMat& m : meshes) {
-    if (Lower(m.model).rfind("blood", 0) == 0 || (m.model_id >= 0x7530 && m.model_id <= 0x7532)) continue;  // (blood overlays)
+  // the parts shown (blood overlays left out), and the picked ones among them
+  std::vector<const MeshMat*> shown;
+  shown = Shown(meshes);
+  auto key_of = [&](const MeshMat& m) { return MatKey{view_attire, gear, m.model_id, m.mesh}; };
+  {
+    std::set<MatKey> keep;  // (another attire or the gear in view: its picks go)
+    for (const MeshMat* m : shown)
+      if (g_sel.count(key_of(*m))) keep.insert(key_of(*m));
+    g_sel.swap(keep);
+  }
+  // every picked part changed the same way (its edit kept apart from the others' values)
+  auto apply = [&](const PartChange& f) {
+    ChangePicked(shown, view_attire, gear, edits, f);
+    for (const MeshMat* m : shown)
+      if (g_sel.count(key_of(*m))) preview[{m->model_id, m->mesh}] = edits.count(key_of(*m)) ? edits[key_of(*m)] : MatEdit();
+    changed = true;
+  };
+  if (RunTestSelect(shown, view_attire, gear, edits)) {
+    changed = true;
+    for (const MeshMat* m : shown) preview[{m->model_id, m->mesh}] = edits.count(key_of(*m)) ? edits[key_of(*m)] : MatEdit();
+  }
+  if (shown.size() > 1) {  // picking several parts: one change for all of them
+    if (ImGui::SmallButton("Select all")) {
+      for (const MeshMat* m : shown) g_sel.insert(key_of(*m));
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(g_sel.empty());
+    if (ImGui::SmallButton("Select none")) g_sel.clear(), g_sel_anchor = -1;
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled(g_sel.size() > 1 ? "%d parts picked: the changes below go to all of them" : "Tick parts (Shift: a run of them) to change several at once",
+                        int(g_sel.size()));
+  }
+  if (g_sel.size() > 1) {
+    ImGui::PushID("allpicked");
+    ImGui::Indent();
+    std::vector<const MeshMat*> picked;
+    for (const MeshMat* m : shown)
+      if (g_sel.count(key_of(*m))) picked.push_back(m);
+    auto edit_of = [&](const MeshMat& m) { const MatKey k = key_of(m); return edits.count(k) ? edits[k] : MatEdit(); };
+    // shine: the same on all of them, else "mixed" until it is moved
+    std::vector<float> specs;
+    for (const MeshMat* m : picked)
+      if (m->has_spec) { const MatEdit e = edit_of(*m); specs.push_back(e.has_spec ? e.spec : m->spec); }
+    if (!specs.empty()) {
+      const bool same = std::all_of(specs.begin(), specs.end(), [&](float v) { return std::fabs(v - specs[0]) < 1e-4f; });
+      float v = specs[0];
+      ImGui::SetNextItemWidth(220 * g_scale);
+      if (ImGui::SliderFloat(simple ? "Shine (all picked)" : "Shine (specular level, all picked)", &v, 0, 4, same ? "%.2f" : "mixed",
+                             ImGuiSliderFlags_Logarithmic))
+        apply([v](MatEdit& e, const MeshMat& m) { if (m.has_spec) e.has_spec = true, e.spec = v; });
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sets the shine of every picked part (the ones that have one). \"mixed\": they differ now.");
+    }
+    // colour
+    std::vector<std::array<float, 3>> tints;
+    for (const MeshMat* m : picked)
+      if (m->has_tint) {
+        const MatEdit e = edit_of(*m);
+        tints.push_back(e.has_tint ? std::array<float, 3>{e.tint[0], e.tint[1], e.tint[2]} : std::array<float, 3>{m->tint[0], m->tint[1], m->tint[2]});
+      }
+    if (!tints.empty()) {
+      const bool same = std::all_of(tints.begin(), tints.end(), [&](const std::array<float, 3>& t) {
+        return std::fabs(t[0] - tints[0][0]) < 1e-4f && std::fabs(t[1] - tints[0][1]) < 1e-4f && std::fabs(t[2] - tints[0][2]) < 1e-4f;
+      });
+      float c[3] = {tints[0][0], tints[0][1], tints[0][2]};
+      ImGui::SetNextItemWidth(220 * g_scale);
+      if (ImGui::ColorEdit3(simple ? "Colour (all picked)" : "Colour (multiplier, all picked)", c, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR))
+        apply([c](MatEdit& e, const MeshMat& m) { if (m.has_tint) e.has_tint = true, std::copy(c, c + 3, e.tint); });
+      if (!same) ImGui::SameLine(), ImGui::TextDisabled("mixed");
+    }
+    // bumps
+    if (std::any_of(picked.begin(), picked.end(), [](const MeshMat* m) { return m->normal_slot; })) {
+      ImGui::TextUnformatted(simple ? "Bumps (all picked):" : "Normal map (all picked):");
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Pick...")) {
+        static const COMDLG_FILTERSPEC kPics[1] = {{L"Pictures", L"*.png;*.dds;*.tga;*.jpg;*.bmp"}};
+        const std::wstring f = PickFile(false, L"A normal map picture for every picked part (PNG, DDS ...)", kPics, 1);
+        if (!f.empty()) apply([f](MatEdit& e, const MeshMat& m) { if (m.normal_slot) e.normal = 1, e.normal_file = f; });
+      }
+      ImGui::SameLine();
+      if (ImGui::SmallButton(simple ? "Smooth" : "Flat")) apply([](MatEdit& e, const MeshMat& m) { if (m.normal_slot) e.normal = 2, e.normal_file.clear(); });
+      ImGui::SameLine();
+      if (ImGui::SmallButton("As it was")) apply([](MatEdit& e, const MeshMat&) { e.normal = 0, e.normal_file.clear(); });
+    }
+    // see-through, both sides, flip, flat look: on / off / "some of them" (mixed)
+    auto state = [&](const std::function<bool(const MatEdit&, const MeshMat&)>& is, bool only_spec) {
+      int on = 0, n = 0;
+      for (const MeshMat* m : picked)
+        if (!only_spec || m->has_spec) ++n, on += is(edit_of(*m), *m) ? 1 : 0;
+      return on == 0 ? 0 : on == n ? 1 : 2;
+    };
+    bool b = false;
+    if (MixedCheckbox(simple ? "See-through where clear" : "See-through cut-out",
+                      state([](const MatEdit& e, const MeshMat& m) { return e.cutout >= 0 ? e.cutout != 0 : (m.flags & 0x100) != 0; }, false), &b))
+      apply([b](MatEdit& e, const MeshMat&) { e.cutout = b; });
+    ImGui::SameLine();
+    if (MixedCheckbox(simple ? "Both sides" : "Double-sided",
+                      state([](const MatEdit& e, const MeshMat& m) { return e.two_sided >= 0 ? e.two_sided != 0 : (m.flags & 0x2) == 0; }, false), &b))
+      apply([b](MatEdit& e, const MeshMat&) { e.two_sided = b; });
+    ImGui::SameLine();
+    if (MixedCheckbox("Flip faces", state([](const MatEdit& e, const MeshMat&) { return e.flip == 1; }, false), &b))
+      apply([b](MatEdit& e, const MeshMat&) { e.flip = b ? 1 : -1; });
+    if (!specs.empty()) {
+      ImGui::SameLine();
+      if (MixedCheckbox("Flat look", state([](const MatEdit& e, const MeshMat& m) { return e.has_spec && e.spec <= 0.0f && (e.normal == 2 || !m.normal_slot); }, true), &b))
+        apply([b](MatEdit& e, const MeshMat& m) {
+          if (!m.has_spec) return;
+          if (b) e.has_spec = true, e.spec = 0, e.normal = m.normal_slot ? 2 : e.normal, e.normal_file.clear();
+          else e.has_spec = false, e.normal = 0;
+        });
+    }
+    if (std::any_of(picked.begin(), picked.end(), [&](const MeshMat* m) { return !edit_of(*m).Empty(); })) {
+      if (ImGui::SmallButton("Undo all (picked parts)")) apply([](MatEdit& e, const MeshMat&) { e = MatEdit(); });
+    }
+    ImGui::Unindent();
+    ImGui::PopID();
+    ImGui::Separator();
+  }
+  for (int row = 0; row < int(shown.size()); ++row) {
+    const MeshMat& m = *shown[size_t(row)];
     const MatKey key{view_attire, gear, m.model_id, m.mesh};
     MatEdit e = edits.count(key) ? edits[key] : MatEdit();
     char label[160];
     std::snprintf(label, sizeof label, "%s, part %d%s###m%u_%d", PartName(m).c_str(), m.mesh + 1, e.Empty() ? "" : "  - changed",
                   unsigned(m.model_id), m.mesh);
+    // its box: picked to change with the others (Shift: every part from the last one clicked)
+    auto pick = [&](bool on) {
+      const ImGuiIO& io = ImGui::GetIO();
+      if (io.KeyShift && g_sel_anchor >= 0 && g_sel_anchor < int(shown.size())) {
+        for (int r = std::min(row, g_sel_anchor); r <= std::max(row, g_sel_anchor); ++r) g_sel.insert(key_of(*shown[size_t(r)]));
+      } else if (on) {
+        g_sel.insert(key);
+      } else {
+        g_sel.erase(key);
+      }
+      g_sel_anchor = row;
+    };
+    if (shown.size() > 1) {
+      bool on = g_sel.count(key) > 0;
+      ImGui::PushID(row);
+      if (ImGui::Checkbox("##pick", &on)) pick(on);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pick it to change it together with the other picked parts (Shift: a run of parts).");
+      ImGui::PopID();
+      ImGui::SameLine();
+    }
     if (PartThumb(m.model_id, m.mesh, ImGui::GetFrameHeight())) ImGui::SameLine();
-    const bool node = ImGui::TreeNode(label);
+    const bool was_open = ImGui::TreeNodeGetOpen(ImGui::GetID(label));
+    bool node = ImGui::TreeNode(label);
+    if (shown.size() > 1 && ImGui::IsItemClicked() && (ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift)) {
+      // Ctrl / Shift click on the name: picks it (as its box), leaving it folded as it was
+      ImGui::TreeNodeSetOpen(ImGui::GetItemID(), was_open);
+      pick(!g_sel.count(key) || ImGui::GetIO().KeyShift);
+      if (node && !was_open) ImGui::TreePop(), node = false;
+    }
     if (ImGui::IsItemHovered() || node) hover = {m.model_id, m.mesh};  // (lit up in the 3D view)
     if (!node) continue;
     ImGui::PushID(label);
