@@ -33,7 +33,7 @@ LABELS = {'svr2007': 'SvR 2007', 'svr2008': 'SvR 2008', 'svr2009': 'SvR 2009', '
           'wwe2k16': 'WWE 2K16', 'wwe2k17': 'WWE 2K17', 'ps2_jbi': 'Just Bring It (PS2)', 'ps2_sym': 'Shut Your Mouth (PS2)',
           'ps2_hctp': 'Here Comes the Pain (PS2)', 'ps2_svr04': 'SvR 2004 (PS2)', 'ps2_svr06': 'SvR 2006 (PS2)',
           'ps2_svr07': 'SvR 2007 (PS2)', 'ps2_svr08': 'SvR 2008 (PS2)', 'ps2_svr09': 'SvR 2009 (PS2)',
-          'ps2_svr10': 'SvR 2010 (PS2)'}
+          'ps2_svr10': 'SvR 2010 (PS2)', 'ps2_svr11': 'SvR 2011 (PS2)'}
 
 
 class BadInput(Exception):
@@ -137,8 +137,9 @@ def detect(path, svrmod=None):
 def _detect_ps2(path, head):
     import ps2_char as PC
     out = dict(format=head[:4].decode(), games=[], raw=None, note='')
-    if head[:4] == b'DPK8':
-        out['games'] = ['ps2_svr10']
+    if head[:4] == b'DPK8':   # (PS2 2010 and 2011 keep the same archive: asked)
+        out['games'] = ['ps2_svr10', 'ps2_svr11']
+        out['note'] = 'SvR 2010 and SvR 2011 (PS2) keep the same format'
         return out
     ents = PC.dpac(head)
     if not ents:
@@ -249,7 +250,7 @@ def ps2_disc(path, game, work):
     d = os.path.join(work, 'ps2_disc')
     if os.path.exists(d):
         shutil.rmtree(d)
-    rel = 'CH.PAC' if game == 'ps2_jbi' else 'PAC/CH/CH.PAC' if game in ('ps2_svr07', 'ps2_svr08', 'ps2_svr09', 'ps2_svr10') \
+    rel = 'CH.PAC' if game == 'ps2_jbi' else 'PAC/CH/CH.PAC' if game in ('ps2_svr07', 'ps2_svr08', 'ps2_svr09', 'ps2_svr10', 'ps2_svr11') \
         else 'PAC/CH.PAC'
     dst = os.path.join(d, *rel.split('/'))
     os.makedirs(os.path.dirname(dst))

@@ -39,6 +39,7 @@ const std::vector<Game> kGames = {
     {"ps2_svr08", "SmackDown vs. Raw 2008 (PS2)", false, {"SLES_548.79", "SLUS_216.45"}},
     {"ps2_svr09", "SmackDown vs. Raw 2009 (PS2)", false, {"SLES_552.51", "SLUS_218.10"}},
     {"ps2_svr10", "SmackDown vs. Raw 2010 (PS2)", false, {"SLES_555.45", "SLUS_219.01"}},
+    {"ps2_svr11", "SmackDown vs. Raw 2011 (PS2)", false, {"SLES_556.35", "SLUS_219.39"}},
 };
 
 Settings::MyDisc* Find(const std::string& key) {

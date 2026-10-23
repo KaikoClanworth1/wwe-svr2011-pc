@@ -71,7 +71,7 @@ RATING_LIN.update({
                   (11.32, ((5, 3.269, 'u8'), (7, 1.278, 'u8'))), (55.61, ((3, -1.25, 'u8'), (4, 2.61, 'u8')))),
 })
 RATING_LIN['ps2_svr07'] = RATING_LIN['svr2007']   # (the same records)
-DIRECT_PS2 = ('ps2_svr08', 'ps2_svr09', 'ps2_svr10')   # 2011's seven, raw +4..+10, display values
+DIRECT_PS2 = ('ps2_svr08', 'ps2_svr09', 'ps2_svr10', 'ps2_svr11')   # 2011's seven, raw +4..+10, display values
 ERROR = {'ps2_jbi': 4.7, 'ps2_sym': 5.9, 'ps2_hctp': 5.1, 'ps2_svr04': 4.9, 'ps2_svr06': 5.0, 'ps2_svr07': 5.9,
          'wwe12': 4.6, 'wwe13': 5.1, 'wwe2k14': 4.9, 'wwe2k15': 6.1, 'wwe2k16': 5.9, 'wwe2k17': 5.9, 'svr2007': 5.9}
 # the record must reach the last field read

@@ -10,6 +10,7 @@ count and 4-byte {u16 id, u16 size / 0x100} entries packed from their sector). T
   ps2_hctp  PAC/M.PAC entry "ALL " = a PS2 PAC (u32 n, n x {u16 id, u24 offset, u24 size}) of BPE leaves, 365 B
   ps2_svr04 PAC/M.PAC "ALL ", 384 B;  ps2_svr06 PAC/M.PAC "DAT ", 159 B;  ps2_svr07 / 08 PAC/MISC.PAC "DAT "
   ps2_svr09 / 10 PAC/CH/CHETC.PAC "DAT "  (2007-2010: byte for byte the X360 versions' CHAR/DAT leaves)
+  ps2_svr11 PAC/CH/CHETC.PAC "DAT ", 264 B (2011's own ids and names; its CHAR/PRO is 652 B, not mapped)
 A superstar's record: HCTP's by its record number (src.number(cid)); the others by name (NAME_AT).
 """
 import re
@@ -20,7 +21,7 @@ SPEC = {  # game id: (file, CHAR entry or None = numbered entries, name offset, 
     'ps2_hctp': ('PAC/M.PAC', 'ALL', 0x116, 30), 'ps2_svr04': ('PAC/M.PAC', 'ALL', 0x136, 30),
     'ps2_svr06': ('PAC/M.PAC', 'DAT', 0x12, 30), 'ps2_svr07': ('PAC/MISC.PAC', 'DAT', 0x1C, 30),
     'ps2_svr08': ('PAC/MISC.PAC', 'DAT', 0x20, 36), 'ps2_svr09': ('PAC/CH/CHETC.PAC', 'DAT', 38, 32),
-    'ps2_svr10': ('PAC/CH/CHETC.PAC', 'DAT', 38, 32),
+    'ps2_svr10': ('PAC/CH/CHETC.PAC', 'DAT', 38, 32), 'ps2_svr11': ('PAC/CH/CHETC.PAC', 'DAT', 38, 32),
 }
 # the PS2 2007-2010 records are the X360 games' (same bytes): their X360 ids in abilities_port / ratings_port
 X360_TWIN = {'ps2_svr07': 'svr2007', 'ps2_svr08': 'svr2008', 'ps2_svr09': 'svr2009', 'ps2_svr10': 'svr2010'}
