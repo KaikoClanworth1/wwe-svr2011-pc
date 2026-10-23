@@ -1362,6 +1362,41 @@ Image FitFigure(const Image& src, int size) {
   return out;
 }
 
+Image FitLoading(const Image& src) {
+  constexpr int W = 1024, H = 512;
+  if (!src.w || !src.h) return Image();
+  if (src.w == W && src.h == H) return src;
+  const float aspect = float(src.w) / float(src.h);
+  if (aspect > 1.8f && aspect < 2.2f) return Resize(src, W, H);  // (wide: it fills the screen)
+  // the back: the picture covering the whole screen, blurred (down to 32 x 16 and up again) and darkened
+  const float cover = std::max(float(W) / src.w, float(H) / src.h);
+  const int cw = std::max(1, int(src.w * cover + 0.5f)), chh = std::max(1, int(src.h * cover + 0.5f));
+  const Image covered = Resize(src, cw, chh);
+  Image crop;
+  crop.w = W, crop.h = H;
+  crop.rgba.resize(size_t(W) * H * 4);
+  for (int y = 0; y < H; ++y)
+    std::memcpy(&crop.rgba[size_t(y) * W * 4], &covered.rgba[(size_t(y + (chh - H) / 2) * cw + (cw - W) / 2) * 4], size_t(W) * 4);
+  Image out = Resize(Resize(Resize(crop, 128, 64), 32, 16), W, H);
+  for (size_t i = 0; i < out.rgba.size(); i += 4) {
+    for (int c = 0; c < 3; ++c) out.rgba[i + c] = uint8_t(out.rgba[i + c] * 0.55f);
+    out.rgba[i + 3] = 255;
+  }
+  // the picture itself, whole: on the right half when it is square or tall (as the converters place a render), else centred
+  const float fit = std::min(float(W) / src.w, float(H) / src.h);
+  const int fw = std::max(1, int(src.w * fit + 0.5f)), fh = std::max(1, int(src.h * fit + 0.5f));
+  const Image front = Resize(src, fw, fh);
+  const int x0 = fw <= W / 2 + 64 ? std::min(W - fw, W * 3 / 4 - fw / 2) : (W - fw) / 2, y0 = (H - fh) / 2;
+  for (int y = 0; y < fh; ++y)
+    for (int x = 0; x < fw; ++x) {
+      const uint8_t* s = &front.rgba[(size_t(y) * fw + x) * 4];
+      uint8_t* d = &out.rgba[(size_t(y0 + y) * W + x0 + x) * 4];
+      const float a = s[3] / 255.0f;
+      for (int c = 0; c < 3; ++c) d[c] = uint8_t(s[c] * a + d[c] * (1 - a) + 0.5f);
+    }
+  return out;
+}
+
 Image GameLook(const Image& src) {
   // the figure's luminance mean / spread and saturation, moved half way to the stock renders' medians
   double sum = 0, sum2 = 0, sat = 0, n = 0;
@@ -3202,6 +3237,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-movie") && more) star_movie = argv[++i];
     else if (!wcscmp(argv[i], L"--star-picture") && more) star_picture = argv[++i];
     else if (!wcscmp(argv[i], L"--star-full") && more) star_page::TestFull(argv[++i]);
+    else if (!wcscmp(argv[i], L"--star-load") && more) star_page::TestLoad(argv[++i]);  // the loading picture (fitted to 1024 x 512)
     else if (!wcscmp(argv[i], L"--star-hometown") && more) star_page::TestHometown(Utf8(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-pose") && more) star_page::TestPose(_wtoi(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-fbx-make")) star_page::TestFbxMake();
