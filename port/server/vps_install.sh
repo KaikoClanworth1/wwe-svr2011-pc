@@ -247,6 +247,22 @@ location = /svr/api/mods {
     proxy_send_timeout 3600s;
     client_max_body_size 260m;
 }
+# ...and an owner's update of one (PUT /svr/api/mods/{id}/file: the same limit; GET downloads pass too)
+location ~ ^/svr/api/mods/[0-9]+/file$ {
+    proxy_pass http://127.0.0.1:8101;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Portal-Role "";
+    proxy_set_header X-Portal-Public "";
+    proxy_set_header X-Portal-User "";
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    client_max_body_size 260m;
+}
 
 # entrance songs and movies are larger (--max-music-mb 512, --max-movie-mb 1024)
 location = /svr/api/media {
