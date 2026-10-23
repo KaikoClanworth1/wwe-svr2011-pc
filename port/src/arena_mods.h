@@ -93,4 +93,8 @@ const std::vector<BackstageRow>& BackstageRows();
 void UseBackstageRow(int i);
 extern int g_active_row;  // (the row in use, -1 none)
 
+// The size (in 0x100 bytes) of stage entry `entry` ("/STG/0019") in the file a redirected arena serves, when it
+// differs from the shipped file's - the size the game's file loader must read it at (model_mem.cpp); 0 otherwise.
+uint32_t ServedStageUnits(const char* entry);
+
 }  // namespace svr2011
