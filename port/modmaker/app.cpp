@@ -532,7 +532,7 @@ bool InstallModFiles(const fs::path& dir, const std::vector<ZipEntry>& files, st
     for (const auto& f : files)
       if (f.name == "manifest.txt") {
         const std::string t(f.data.begin(), f.data.end());
-        for (const char* k : {"type", "name", "base", "song", "music", "movie", "theme_gain", "entrance", "cae", "moves", "pack"})
+        for (const char* k : {"type", "name", "base", "song", "music", "movie", "theme_gain", "call_gain", "entrance", "cae", "moves", "pack"})
           if (const std::string v = Value(t, k); !v.empty()) keys += std::string(" ") + k + "=" + v;
       }
     Log("install: " + PathStr(dir.parent_path().filename()) + "/" + PathStr(dir.filename()) + " (" + std::to_string(files.size()) +
@@ -2877,7 +2877,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   double shot_after = 6;
   std::vector<std::pair<double, std::wstring>> page_at;  // --page-at <page>@<s>[,...]: page switches at those times (tests)
   int star_id = 0, star_call = -1;
-  float star_height = 0;
+  float star_height = 0, star_call_gain = 0;
   std::string star_moveset, star_import_moveset;
   int star_entrance = 0;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
@@ -3240,6 +3240,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
     else if (!wcscmp(argv[i], L"--star-call") && more) star_call = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--star-height") && more) star_height = float(_wtof(argv[++i]));
+    else if (!wcscmp(argv[i], L"--star-call-gain") && more) star_call_gain = float(_wtof(argv[++i]));
     else if (!wcscmp(argv[i], L"--star-moveset") && more) star_moveset = Utf8(argv[++i]);
     else if (!wcscmp(argv[i], L"--threads-edit") && more) star_page::ThreadsTest(Utf8(argv[++i]));  // <attire>[,make|name][,save]
     else if (!wcscmp(argv[i], L"--star-cae") && more) star_page::TestCae(Utf8(argv[++i]));  // a created entrance (Mods\.cae id)
@@ -3392,6 +3393,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (star_call >= 0 || !star_song.empty() || !star_movie.empty() || !star_voice.empty())
     star_page::TestFiles(star_song, star_movie, star_voice, star_call);
   if (star_height > 0) star_page::TestHeight(star_height);
+  if (star_call_gain != 0) star_page::TestCallGain(star_call_gain);
   if (!star_moveset.empty()) star_page::TestMoveset(star_moveset);
   if (!star_import_moveset.empty()) star_page::TestImportMoveset(star_import_moveset);
   if (star_entrance) star_page::TestEntrance(star_entrance);

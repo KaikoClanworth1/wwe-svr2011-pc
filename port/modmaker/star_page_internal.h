@@ -49,6 +49,7 @@ struct StarProject {
   int call = -1;                  // -1: "The Superstar"
   float height = 1.0f;            // height=<scale> from the feet (0.80-1.25; 1: left out)
   float theme_gain = 0.0f;        // theme_gain=<dB> (-20..+6; 0: left out)
+  float call_gain = 0.0f;         // call_gain=<dB>: the name recording against the game's own calls (-20..+12; 0: left out)
   std::vector<Picture> signs;     // its fans' signs (up to 4; 128 x 64)
   // the SvR 2010-style extras (the game: superstar_mods.cpp)
   int pose = -1;                  // pose=<motion id>: the select / VS panel's pose (-1: the style's)
