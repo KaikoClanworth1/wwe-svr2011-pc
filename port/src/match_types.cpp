@@ -29,6 +29,8 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <mutex>
+#include <set>
 #include <random>
 #include <string>
 #include <vector>
@@ -3367,6 +3369,34 @@ SVR2011_ONLINE_TRACE(sub_82470AA0)
 SVR2011_ONLINE_TRACE(sub_82470AE0)
 SVR2011_ONLINE_TRACE(sub_828B4A48)
 
+// Test aids for the event scripts' conditions (both tables below): SVR2011_TEST_EVENT_LOG=1 - each id's first
+// answer of each value, with its caller; SVR2011_TEST_EVENT_TRUE=<id>[,<id>...] - those ids answer 1 (an
+// objective reached without walking there: Road to WrestleMania's backstage walks).
+static void EventAnswer(uint32_t id, PPCContext& ctx) {
+  static const bool log = std::getenv("SVR2011_TEST_EVENT_LOG") != nullptr;
+  static const std::set<uint32_t> forced = [] {
+    std::set<uint32_t> s;
+    if (const char* v = std::getenv("SVR2011_TEST_EVENT_TRUE"))
+      for (const char* q = v; *q;) {
+        s.insert(uint32_t(std::strtoul(q, nullptr, 10)));
+        while (*q && *q != ',') ++q;
+        if (*q == ',') ++q;
+      }
+    return s;
+  }();
+  if (forced.count(id)) {
+    static std::set<uint32_t> told;
+    if (told.insert(id).second) REXLOG_INFO("[svr2011] event condition {}: test - answered 1 (was {})", id, ctx.r3.u32);
+    ctx.r3.u64 = 1;
+  }
+  if (!log) return;
+  static std::mutex mu;
+  static std::set<uint64_t> seen;
+  std::lock_guard lock(mu);
+  if (seen.insert(uint64_t(id) << 32 | ctx.r3.u32).second)
+    REXLOG_INFO("[svr2011] event condition {} = {} (from {:08X})", id, ctx.r3.u32, uint32_t(ctx.lr));
+}
+
 // A condition of the game's event scripts (sub_82856B00(object, id), 99 of
 // them): id 32 reads the object's character's +20 (another character - the
 // one it's handling) and that one's +212 / +220 without checking it's there
@@ -3393,6 +3423,7 @@ REX_HOOK_RAW(sub_82856B00) {
     }
   }
   __imp__sub_82856B00(ctx, base);
+  EventAnswer(id, ctx);
 }
 
 // ...and its conditions 400-483 (sub_82858B08(object, id), which sub_82859388 hands the 400s): the same kind
@@ -3425,6 +3456,7 @@ REX_HOOK_RAW(sub_82858B08) {
     }
   }
   __imp__sub_82858B08(ctx, base);
+  EventAnswer(id, ctx);
 }
 
 namespace svr2011 {
