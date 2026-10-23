@@ -1649,6 +1649,53 @@ void BadgeLoop() {
 
 }  // namespace
 
+// CREATE AN ENTRANCE, ADVANCED CREATION of a superstar without a created entrance: the editor's block
+// (sub_82879AF8) gets the created flag and five scene parts from his default template, looked up by id
+// (sub_82883A10(list, id); none: a generic one whose parts name no scene - the entrance manager then had no
+// entrant, the scene ended and the editor backed out to the menu). A mod: its own entrance's template, else
+// its base's.
+constexpr uint32_t kCaeTemplateCaller = 0x82879CF4;
+REX_EXTERN(__imp__sub_82883A10);
+REX_HOOK_RAW(sub_82883A10) {
+  const Mod* m = uint32_t(ctx.lr) == kCaeTemplateCaller ? ModOf(ctx.r4.u32) : nullptr;
+  if (!m) {
+    __imp__sub_82883A10(ctx, base);
+    return;
+  }
+  const auto in = ctx;
+  for (const int id : {m->entrance, int(m->base)}) {
+    if (id <= 0) continue;
+    ctx = in;
+    ctx.r4.u64 = uint32_t(id);
+    __imp__sub_82883A10(ctx, base);
+    if (ctx.r3.u32) {
+      REXLOG_INFO("[svr2011] create an entrance: {} starts from the scene template of {}", m->name, id);
+      return;
+    }
+  }
+  ctx = in;
+  __imp__sub_82883A10(ctx, base);
+}
+
+// ... and its music, movie and entrance numbers from his defaults (sub_828C3318(out, id): the profile's default
+// copy, entrance block +0x04..+0x0C, out = {entrance, champion, movie, music, multi-title}) - a mod's are the
+// base's there: its own (the profile's current ones) instead.
+constexpr uint32_t kCaeDefaultsCallers[] = {0x82879C28, 0x82879C84};
+REX_EXTERN(__imp__sub_828C3318);
+REX_HOOK_RAW(sub_828C3318) {
+  const uint32_t out = ctx.r3.u32, id = ctx.r4.u32, lr = uint32_t(ctx.lr);
+  __imp__sub_828C3318(ctx, base);
+  if (lr != kCaeDefaultsCallers[0] && lr != kCaeDefaultsCallers[1]) return;
+  const uint32_t si = id < 512 ? Rd16(base + kIdToIndex + id * 2) : 512;
+  if (!out || si >= 512 || !ModOf(id)) return;
+  const uint8_t* e = base + kProfiles + si * kProfileSize + kEntrance;
+  std::memcpy(base + out + 0, e + 0x14, 2);  // entrance
+  std::memcpy(base + out + 2, e + 0x16, 2);  // champion
+  std::memcpy(base + out + 4, e + kMovie, 2);
+  std::memcpy(base + out + 6, e + kMusic, 2);
+  std::memcpy(base + out + 8, e + 0x18, 2);  // multi-title
+}
+
 // The select screen's panel: "is it DLC" for the badge (r26: the id; r31:
 // the cursor).
 REX_EXTERN(__imp__sub_828B6CD0);
@@ -2120,6 +2167,12 @@ REX_HOOK_RAW(sub_82756538) {
   }
   // (a number whose mod is gone: cae_mod_motions.cpp)
   ctx.r3.u64 = svr2011::EntranceFallback(base, mgr, idx, int(part), ctx.r3.u32);
+  // (test aid SVR2011_TEST_CAE_LOG: the number each slot's scene part plays - a created entrance's are 10000+)
+  static const bool on = std::getenv("SVR2011_TEST_CAE_LOG") != nullptr;
+  static std::set<uint64_t> told;
+  if (on && idx < 16 && told.insert(uint64_t(mgr) << 32 | uint64_t(idx) << 28 | uint64_t(part & 0xFF) << 20 | (ctx.r3.u32 & 0xFFFFF)).second)
+    REXLOG_INFO("[svr2011] cae: slot {} part {} plays {} (created {})", idx, part, ctx.r3.u32,
+                base[mgr + 36 + idx * 280 + 195]);
 }
 REX_EXTERN(__imp__sub_82756718);
 REX_HOOK_RAW(sub_82756718) {
