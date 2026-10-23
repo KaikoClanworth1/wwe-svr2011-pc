@@ -919,14 +919,16 @@ void MovesetSection() {
   ImGui::Unindent();
 }
 
-// theme_gain= as written (1 decimal), "" at 0.0 (the key left out)
-std::string GainText() {
-  const int t = int(std::lround(std::clamp(g_star.theme_gain, -20.0f, 6.0f) * 10));
+// theme_gain= / call_gain= as written (1 decimal), "" at 0.0 (the key left out)
+std::string DbText(float db, float lo, float hi) {
+  const int t = int(std::lround(std::clamp(db, lo, hi) * 10));
   if (!t) return "";
   char b[16];
   std::snprintf(b, sizeof b, "%s%d.%d", t < 0 ? "-" : "", std::abs(t) / 10, std::abs(t) % 10);
   return b;
 }
+std::string GainText() { return DbText(g_star.theme_gain, -20.0f, 6.0f); }
+std::string CallGainText() { return DbText(g_star.call_gain, -20.0f, 12.0f); }
 
 // the theme's measured loudness (a worker measures; the page shows it)
 std::wstring g_lufs_for;
@@ -1094,6 +1096,28 @@ void ThemeGainRow() {
   ImGui::Unindent();
 }
 
+// call_gain=: the mod's own name recording (voice=) plays at the game's call level (-7 dB) plus this
+int g_test_scroll_call = 0;  // (--star-call-gain: the row scrolled into view for a screenshot, a few frames)
+void CallGainRow() {
+  if (g_test_scroll_call > 0 && --g_test_scroll_call < 20) ImGui::SetScrollHereY(0.5f);
+  ImGui::Indent();
+  ImGui::BeginDisabled(g_star.voice.empty());
+  ImGui::SetNextItemWidth(236 * g_scale);
+  if (ImGui::SliderFloat("##callgain", &g_star.call_gain, -20.0f, 12.0f, "%+.1f dB")) Touch();
+  ImGui::SameLine(0, 4 * g_scale);
+  ImGui::SetNextItemWidth(80 * g_scale);
+  if (ImGui::InputFloat("Ring announcer volume", &g_star.call_gain, 0, 0, "%.1f")) Touch();
+  g_star.call_gain = std::clamp(std::round(g_star.call_gain * 10) / 10, -20.0f, 12.0f);
+  ImGui::EndDisabled();
+  Hint("0 = as loud as the game's own announcer calls. It sets how loud the name recording (below) plays when the "
+       "ring announcer calls the superstar.");
+  if (g_star.voice.empty()) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("(for a name recording, below)");
+  }
+  ImGui::Unindent();
+}
+
 // height= as written (2 decimals), "" at 1.00 (the key left out)
 std::string HeightText() {
   const int c = int(std::lround(std::clamp(g_star.height, 0.8f, 1.25f) * 100));
@@ -1126,6 +1150,7 @@ bool PrepareJob(Job& j) {
   if (g_star.call >= 0) j.manifest += "call=" + std::to_string(g_star.call) + "\n";
   if (const std::string h = HeightText(); !h.empty()) j.manifest += "height=" + h + "\n";
   if (const std::string g = GainText(); !g.empty() && !g_star.song.empty()) j.manifest += "theme_gain=" + g + "\n";
+  if (const std::string g = CallGainText(); !g.empty() && !g_star.voice.empty()) j.manifest += "call_gain=" + g + "\n";
   if (g_star.entrance >= 0) j.manifest += "entrance=" + std::to_string(g_star.entrance) + "\n";
   if (g_star.song.empty() && g_star.music > 0) j.manifest += "music=" + std::to_string(g_star.music) + "\n";
   for (int a = 1; a < 4; ++a)
@@ -3331,6 +3356,7 @@ void Draw() {
   if (!g_star.song.empty() && g_star.music) g_star.music = 0;  // (a song file picked: it wins)
   StockThemeRow();
   ThemeGainRow();
+  CallGainRow();
   FileRow("Entrance movie (optional)...", g_star.movie, "the style's", kBinkFilter, 1,
           "A 320 x 320 Bink movie: From a video... makes one here, the launcher's Movies tab too.");
   ImGui::SameLine();
@@ -3490,7 +3516,7 @@ std::string StateText() {
   std::string s = std::string("name=") + g_star.name + "\nshort=" + g_star.short_name + "\nstyle=" +
                   std::to_string(g_star.style) + "\ncall=" + std::to_string(g_star.call) + "\nauthor=" + g_star.author +
                   "\nversion=" + g_star.version + "\nheight=" + HeightText() + "\ngain=" + GainText() + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) + "\nmusic=" + std::to_string(g_star.music) + "\nmats=" + MaterialsText(g_star.mats) +
-                  "\nmovie=" + Utf8(g_star.movie) + "\nvoice=" + Utf8(g_star.voice) + "\nratings=";
+                  "\nmovie=" + Utf8(g_star.movie) + "\nvoice=" + Utf8(g_star.voice) + "\ncall_gain=" + CallGainText() + "\nratings=";
   // (the style's own attributes, filled in when the page is first drawn, aren't a change: a new project stays clean)
   bool style_ratings = true;
   for (int k = 0; k < 7; ++k) style_ratings &= g_star.ratings[k] == StarRating(kStyles[g_star.style].template_id, k);
@@ -3622,6 +3648,7 @@ void WriteProject(ProjectOut& out) {
   }
   if (!g_star.cae_name.empty()) out.Key("cae_name", g_star.cae_name);
   out.File("voice", g_star.voice, "star/voice");
+  if (const std::string g = CallGainText(); !g.empty()) out.Key("call_gain", g);
   for (int a = 1; a < 4; ++a) {
     out.File("attire" + std::to_string(a + 1), g_star.attires[a], "star/attire" + std::to_string(a + 1));
     out.Key("attire" + std::to_string(a + 1) + "_name", g_star.attire_names[a]);
@@ -3799,6 +3826,7 @@ bool Read(const ProjectIn& in, bool mod) {
   g_star.cae_name = in.Get("cae_name");
   if (!g_star.cae.empty() && g_star.cae_name.empty()) g_star.cae_name = "this mod's";
   g_star.voice = file("voice", nullptr);
+  if (const std::string g = in.Get("call_gain"); !g.empty()) g_star.call_gain = std::clamp(float(std::atof(g.c_str())), -20.0f, 12.0f);
   for (int a = 1; a < 4; ++a) {
     g_star.attires[a] = file(("attire" + std::to_string(a + 1)).c_str(), nullptr);
     std::snprintf(g_star.attire_names[a], sizeof g_star.attire_names[a], "%s",
@@ -4026,6 +4054,7 @@ void TestFbxReport(const std::wstring& out) {  // with --star-fbx: the import re
 }
 
 void TestHeight(float scale) { g_star.height = std::clamp(scale, 0.8f, 1.25f); }
+void TestCallGain(float db) { g_star.call_gain = std::clamp(db, -20.0f, 12.0f), g_test_scroll_call = 40; }
 
 void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call) {
   if (!song.empty()) g_star.song = song;
