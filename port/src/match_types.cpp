@@ -2216,6 +2216,7 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
   OnlineFirstBlood(base);
   constexpr uint32_t kChars = 0x82E3CC50;
   MatchHudTick(base);  // (match_hud.h: the HUD shows while the match's clock runs)
+  svr2011::CrowdHandoffUpdate(ctx, base);  // (a fan hands a weapon over the barricade: crowd_fight.h)
   // Research aid (stuck wrestlers, B11/B12): SVR2011_TEST_STUCK_CHARS=1 - each
   // second, people 0-5 whose place and motion (+212) haven't changed for 10 s
   // while the match clock runs are logged (once each time), with the motion.
