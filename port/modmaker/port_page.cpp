@@ -42,7 +42,7 @@ const Kind kKinds[] = {
     {"Weapons", L"weapon_port.py", "Weapons' looks, as a texture pack."},
     {"Backstage", L"backstage_port.py", "A backstage room from another game, built into a copy of your own 2011 backstage files and "
                                         "installed into the game's Mods\\Backstage (its own row in the BACKSTAGE list)."},
-    {"VS screens", L"vs_port.py", "An older game's VS screens (SvR 2010 so far: the match set-up page behind the two superstars) as a VS style, "
+    {"VS screens", L"vs_port.py", "An older game's VS screens (SvR 2008 - 2010: the match set-up page behind the two superstars) as a VS style, "
                                   "installed into the game's Mods\\VsStyles: pick it in GRAPHICS > VS SCREEN STYLE."},
 };
 constexpr int kKindCount = int(sizeof kKinds / sizeof kKinds[0]);
@@ -461,7 +461,7 @@ void Convert(int k, const std::string& game, const Json& item) {
   if (entrance && !g_settings.bink2_tool.empty())  // (its --titantron: Bink 2 movies through the player's tool)
     args.push_back(L"--bink2-tool"), args.push_back(g_settings.bink2_tool);
   if (NeedsPicture(item) && !g_pp.pick.empty()) args.push_back(L"--picture"), args.push_back(Wide(g_pp.pick));
-  if (g_vs_renders && std::wstring(kKinds[k].script) == L"vs_port.py" && game != "svr2008") args.push_back(L"--renders");
+  if (g_vs_renders && std::wstring(kKinds[k].script) == L"vs_port.py") args.push_back(L"--renders");
   for (auto& o : Options()) args.push_back(o);
   for (auto& o : g_lone_args) args.push_back(o);
   g_result = Json();

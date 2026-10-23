@@ -22,8 +22,12 @@ Each arena has a VS theme of three entries in `pac/menu/MatchHD.pac`:
 ## The older games
 
 - **SvR 2010** uses the same system. Its `M<nn>L` are in `pac/menu/menu.pac`, while `M<nn>I` / `M<nn>F` are in `MatchHD.pac`. Its themes play in 2011 as they are; only their text lines sit lower, behind 2011's menu row. Ready.
-- **SvR 2009** has the same files and its themes load, but the renders and the names line never show. Its layouts have 6 scene groups where 2010's and 2011's have 7 (the likely cause, not checked). `research`; its renders (`vs_renders.py`) work on their own.
-- **SvR 2008** has the same files, but its layouts have another shape: 30 nodes, with an extra text line in each group. 2011's screen faults on them in `sub_8269BE90`, with or without the text move, so 2008 is `research`.
+- **SvR 2008 and 2009** have the same files, but their layouts differ in three ways that 2011's VS screen trips over. `vs_port.reshape` rebuilds them:
+  1. **Groups:** 2009 puts beta with the background (6 groups), and 2008 has no beta and three text lines more per group (main / main2 / sub2). 2008 also stores its layouts in another serialization: every record in a row, then a (count, first record) table per group. 2011 crashed in `sub_8269BE90` on that. Rebuilt into 2011's 7 groups (root, four text groups, beta alone, background); the unused lines are dropped and 2011's `dummy_tonaight` is added.
+  2. **Parallax layers:** they have five type-11 resources (farbg at index 5) where 2011 expects six (nearbg01-05 index 1-5, farbg index 6). With five, nothing of the theme draws, only the superstars. Replaced by 2011's six.
+  3. **Text placement:** a text group's lines are placed from its first node. 2011's is an animation node, whereas an older theme's is its frame picture, wherever it sits (2009 SummerSlam: lines below the menu row). Each rebuilt text group gets an empty first node (the root's record) at y 233, so the lines sit at 2011's places.
+
+  Checked on screen: 2009 RAW / SummerSlam, 2008 RAW / Royal Rumble / ECW.
 - **SvR 2007** has no themes of this kind.
 
 ## Converter: `tools/vs_port.py`
