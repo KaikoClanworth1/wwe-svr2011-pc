@@ -541,7 +541,9 @@ def bake_own(rider_recs, bike_recs, nframes, seat):
     for f in range(nframes):
         while frames and frames[0] <= f:
             last = poses[frames.pop(0)]
-        a = path[f] if path[f] is not None else b0y[f] + turn
+        # (the bike's own front is its -z, as 2011's 2540: heading the way he goes = his path turned 180 degrees - with
+        # the path itself it rode backward, the rider on its seat facing the tail)
+        a = (path[f] if path[f] is not None else b0y[f] + turn) + math.pi
         c, s = math.cos(a), math.sin(a)
         off = (seat[0] * c + seat[2] * s, seat[1], -seat[0] * s + seat[2] * c)  # (seat @ R_y(a): back to world)
         p = [pos[f][j] - off[j] for j in range(3)]
