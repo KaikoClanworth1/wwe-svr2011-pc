@@ -3272,6 +3272,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-model") && more) star_model = argv[++i];
     else if (!wcscmp(argv[i], L"--star-mat") && more) star_page::TestMaterials(Utf8(argv[++i]), false);
     else if (!wcscmp(argv[i], L"--open-materials")) star_page::TestMaterials("", true);
+    else if (!wcscmp(argv[i], L"--mat-select") && more) MaterialTestSelect(Utf8(argv[++i])), star_page::TestMaterials("", true);
     else if (!wcscmp(argv[i], L"--tools-panel")) TestToolsPanel(false, L"");
     else if (!wcscmp(argv[i], L"--tools-install")) TestToolsPanel(true, L"");
     else if (!wcscmp(argv[i], L"--tools-install-from") && more) TestToolsPanel(false, argv[++i]);
