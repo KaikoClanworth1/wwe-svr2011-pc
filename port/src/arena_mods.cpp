@@ -1359,32 +1359,27 @@ REX_HOOK_RAW(sub_823D4FC0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(hitch));
     }
   }
-  // (the cursor: the offline grid's row and column; the online screen's tile)
-  const uint32_t at = uint32_t(g_online_tile.load());
-  const uint32_t row = online_grid ? at / 5 : rd(28), col = online_grid ? at % 5 : rd(44), cols = online_grid ? 5 : rd(48);
   __imp__sub_823D4FC0(ctx, base);
+  // (the cursor: the offline grid's row and column; the online screen's tile)
   const uint32_t now_at = uint32_t(g_online_tile.load());
   const uint32_t new_col = online_grid ? now_at % 5 : rd(44), new_row = online_grid ? now_at / 5 : rd(28);
-  // Past an edge: the cursor jumped from the last column to the first or back
-  // in its row (the game wraps it), whatever moved it - a check of the button
-  // field's direction bits missed a 2.0.3 player's presses. Any player's
-  // LB / RB page too (not in that field: read with the game's pad reads).
+  // Pages turn with any player's LB / RB (or LT / RT - pads, the touch MENU layout's buttons, keys 1 / 3: read
+  // with the game's pad reads). LEFT / RIGHT past an edge wrap the cursor within its row, on the same page (the
+  // game's own wrap): turning the page there put a stock tile under the cursor by accident (a player's
+  // report, 23 Oct - the match was then in a stock arena).
   static uint32_t held = 0;
   uint32_t shoulders = 0;
   for (const auto& s : g_shoulders) shoulders |= s.load();
   const uint32_t pressed = shoulders & ~held;
   held = shoulders;
   int page = g_page;
-  const bool wrapped = row < 4 && new_row == row && cols > 2;
   // a page button turns one page per press: a press within 250 ms of the last
   // turn is the same press read again (a hitch's repeated pad reads turned
   // page 2 straight back to page 1)
   static int64_t last_turn = 0;
   const bool button_ok = NowMs() - last_turn > 250;
   const char* why = nullptr;
-  if (wrapped && col + 1 == cols && new_col == 0) why = "right edge";
-  else if (wrapped && col == 0 && new_col + 1 == cols) why = "left edge";
-  else if (button_ok && (pressed & 0xA00)) why = pressed & 0x800 ? "RT" : "RB";
+  if (button_ok && (pressed & 0xA00)) why = pressed & 0x800 ? "RT" : "RB";
   else if (button_ok && (pressed & 0x500)) why = pressed & 0x400 ? "LT" : "LB";
   if (why) page = (why[0] == 'r' || why[0] == 'R' ? g_page + 1 : g_page + Pages() - 1) % Pages();
   // A picks the tile under the cursor (kept); B leaves the screen with the
