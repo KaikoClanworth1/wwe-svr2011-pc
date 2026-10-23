@@ -71,9 +71,17 @@ RATING_LIN.update({
                   (11.32, ((5, 3.269, 'u8'), (7, 1.278, 'u8'))), (55.61, ((3, -1.25, 'u8'), (4, 2.61, 'u8')))),
 })
 RATING_LIN['ps2_svr07'] = RATING_LIN['svr2007']   # (the same records)
+# Legends of WrestleMania: raw DAT +4..+15, five real fields (+6 +7 +8 +12 +13, the rest 0x01; its own scheme) -
+# fitted on 35 shared superstars, leave-one-out 7.4-10.2 vs 9.0-12.5 for the roster's mean: rough, it rates people
+# on another basis (the superstars 2011 has keep their own)
+RATING_LIN['low'] = ((43.86, ((12, 0.367, 'u8'),)), (39.53, ((8, 0.415, 'u8'),)),
+                     (48.4, ((12, -1.416, 'u8'), (13, 1.7, 'u8'))), (44.49, ((8, 2.239, 'u8'), (12, -1.851, 'u8'))),
+                     (38.07, ((8, 0.447, 'u8'),)), (41.63, ((8, 2.054, 'u8'), (12, -1.614, 'u8'))),
+                     (47.55, ((12, 0.31, 'u8'),)))
 DIRECT_PS2 = ('ps2_svr08', 'ps2_svr09', 'ps2_svr10', 'ps2_svr11')   # 2011's seven, raw +4..+10, display values
 ERROR = {'ps2_jbi': 4.7, 'ps2_sym': 5.9, 'ps2_hctp': 5.1, 'ps2_svr04': 4.9, 'ps2_svr06': 5.0, 'ps2_svr07': 5.9,
-         'wwe12': 4.6, 'wwe13': 5.1, 'wwe2k14': 4.9, 'wwe2k15': 6.1, 'wwe2k16': 5.9, 'wwe2k17': 5.9, 'svr2007': 5.9}
+         'wwe12': 4.6, 'wwe13': 5.1, 'wwe2k14': 4.9, 'wwe2k15': 6.1, 'wwe2k16': 5.9, 'wwe2k17': 5.9, 'svr2007': 5.9,
+         'low': 8.8}
 # the record must reach the last field read
 NEED = {g: max(o + (2 if k == 'u16' else 1) for _b, terms in lin for o, _a, k in terms) for g, lin in RATING_LIN.items()}
 

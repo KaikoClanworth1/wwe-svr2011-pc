@@ -42,9 +42,10 @@ Games:
     svr2010   SvR 2010 - everything (svr10_superstar.py: model, renders, theme, titantron,
               ratings, abilities, the moveset and the moves 2011 lacks as a move pack)
     svr2009   SvR 2009 - model (svr08_char.py), renders, theme, titantron, ratings, entrance,
-              announcer; the moveset stays the base's for now (the 2009 slot map is next)
+              announcer, the moveset (moveset_maps.json svr2009) and the moves 2011 lacks
     svr2008   SvR 2008 - the same as 2009 (ids: 2011 id = 2008 id + 100)
-    low       Legends of WrestleMania - as 2009 (its own ids; ratings, abilities and moveset stay the base's)
+    low       Legends of WrestleMania - as 2009 (its own ids; ratings fitted from its own scheme, abilities
+              guessed from them; the moveset stays the base's)
     svr2007   SvR 2007 - the same, its per-part textures baked (svr07_char.py), XACT themes (xact.py);
               ratings stay the base's
     wwe12     WWE '12 - model (w13_char.py, within the vertex budget), attires, renders, theme
@@ -389,18 +390,21 @@ class GameLoW(Game09):
     """WWE Legends of WrestleMania (2009, SvR 2009's engine; docs/OTHER_GAMES.md): chEtc.pac CHAR/DAT 262 B =
     2009's with 12 rating bytes (twice) where 2009 keeps 8 - made into 2009's record here (name +34 after the
     header, short +170, gender +208, weight class +209, scale +28); its ratings are another scheme (0x01 =
-    unused): the base's. CHAR/PRO 504 B, entrance block +0xE4 as 2009. Renders DLC_HD.pac groups SSFA / SSFB /
+    unused) - ratings_port's 'low' formula, rough. CHAR/PRO 504 B, entrance block +0xE4 as 2009. Renders DLC_HD.pac groups SSFA / SSFB /
     SSFC at the top (2009 nests them in MENU), entries named by the decimal id. Titantrons movies/titantron/
     <movie id>.bik. Its ids are its own (100 The Rock): 2011's superstar of the same name, else none (0)."""
 
     year = 9
     label = 'Legends of WrestleMania'
     suffix = '_low'
-    no_ratings = "Legends of WrestleMania rates on another scheme (its DAT +4..+15): the base's"
+    ratings_game = 'low'   # (ratings_port: its own scheme, fitted; no abilities in its records - guessed from them)
     no_moves = "Legends of WrestleMania movesets are not ported yet: the base's"
 
     def __init__(self, src):
         super().__init__(src)
+        h, g, t = svrfmt.epac_read(open(os.path.join(self.g.pac, 'ch', 'chEtc.pac'), 'rb').read())
+        dat = next(b for ty, es in g for n, b in es if (ty, n) == (b'CHAR', b'DAT '))
+        self.raw_dat = {i: ch_tool.unpack(d) for i, d in svrfmt.pach_read(ch_tool.unpack(dat))}   # (as stored)
         self.g.dat = {i: r[0:8] + r[12:20] + r[24:] for i, r in self.g.dat.items()}   # (2009's layout)
         self._g11 = self._id11 = None
 
@@ -783,7 +787,7 @@ def abilities_step(game, g, cid, man, note):
     """the source's abilities as 2011's (tools/abilities_port.py) into man['abilities']; notes what was mapped
     or guessed (none: the base's)"""
     import abilities_port
-    game = {'Game09': 'svr2009', 'Game08': 'svr2008', 'Game07': 'svr2007'}.get(game, game)
+    game = {'Game09': 'svr2009', 'Game08': 'svr2008', 'Game07': 'svr2007', 'GameLoW': 'low'}.get(game, game)
     ratings = [int(x) for x in man['ratings'].split(',')] if man.get('ratings') else None
     ids, ar = abilities_port.map_abilities(game, cid, g, ratings)
     if ids:
@@ -863,21 +867,19 @@ def build09(cid, outdir, o, rep):
         warn('%s has no model for %d: the base\'s is used' % (g9.label, cid))
     # ratings
     r = g9.g.dat[cid]
-    if getattr(g9, 'no_ratings', None):
-        note(g9.no_ratings)
+    if getattr(g9, 'ratings_game', None):
+        pass   # (below: its own formula)
     elif any(x not in (0, 50) for x in r[:7]):
         man['ratings'] = ','.join(str(max(0, x - 1)) for x in r[:7])
         note('ratings %s %s -> %s' % (g9.label, list(r[:8]), man['ratings']))
-    if type(g9).__name__ == 'Game07':   # (another scale: fitted, tools/ratings_port.py)
+    rg = 'svr2007' if type(g9).__name__ == 'Game07' else getattr(g9, 'ratings_game', None)
+    if rg:   # (another scale: fitted, tools/ratings_port.py)
         import ratings_port
-        rr, rrep = ratings_port.map_ratings('svr2007', cid, g9)
+        rr, rrep = ratings_port.map_ratings(rg, cid, g9)
         if rr:
             man['ratings'] = ','.join(map(str, rr))
         note(ratings_port.report_line(g9.label, rr, rrep))
-    if getattr(g9, 'no_ratings', None):
-        note("abilities: the base's")
-    else:
-        abilities_step(type(g9).__name__, g9, cid, man, note)
+    abilities_step(type(g9).__name__, g9, cid, man, note)
     # moves
     if getattr(g9, 'no_moves', None):
         note(g9.no_moves)
