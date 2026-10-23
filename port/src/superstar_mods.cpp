@@ -25,6 +25,7 @@
 // The select screen shows them in the EXTRA list (managers.cpp, the M tile).
 #include "cae_mod_motions.h"
 #include "no_mods.h"
+#include "mem_trace.h"
 #include "superstar_mods.h"
 #include "superstar_threads.h"
 #include "universe_mods.h"
@@ -3266,6 +3267,13 @@ REX_HOOK_RAW(sub_8269BBA0) {
   }
   __imp__sub_8269BBA0(ctx, base);
   if (!MoveLogIds().empty() && !ctx.r3.u32) REXLOG_WARN("[svr2011] move log: alloc {} bytes failed (lr {:08X})", size, lr);
+  if (svr2011::MemTraceOn() && ctx.r3.u32) {  // (test aid: mem_trace.h - which heap gave it)
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    svr2011::MemTraceNew(ctx.r3.u32, size, heap, lr);
+  }
 }
 REX_EXTERN(__imp__sub_8258EB90);
 REX_HOOK_RAW(sub_8258EB90) {

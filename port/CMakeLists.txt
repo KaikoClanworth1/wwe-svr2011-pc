@@ -132,7 +132,7 @@ if(SVR2011_D3D_TRACE)
 else()
     # Native renderer (native_renderer=main), drawing through plume. Its hooks
     # overlap the census hooks, so it is left out of census builds.
-    list(APPEND SVR2011_SOURCES src/model_mem.cpp)   # hooks sub_82914DD0, as the census does
+    list(APPEND SVR2011_SOURCES src/model_mem.cpp src/mem_trace.cpp)   # hooks sub_82914DD0, as the census does
     list(APPEND SVR2011_SOURCES
         src/native/gpu.cpp
         src/native/backend_vulkan.cpp

@@ -24,6 +24,7 @@
 #include <rex/system/xmemory.h>
 
 #include "caw_limits.h"
+#include "mem_trace.h"
 #include "generated/default/svr2011_init.h"
 
 namespace {
@@ -85,6 +86,7 @@ REX_EXTERN(__imp__sub_82158C70);
 REX_HOOK_RAW(sub_82158C70) {
   const uint32_t size = ctx.r3.u32, attr = ctx.r4.u32, caller = uint32_t(ctx.lr);
   __imp__sub_82158C70(ctx, base);
+  if (svr2011::MemTraceOn() && ((attr >> 16) & 0xFF) == 128) svr2011::MemTraceXAlloc(ctx.r3.u32, size, attr, caller);
   if (ctx.r3.u32 == 0 && size) {
     std::lock_guard<std::mutex> lock(g_mutex);
     static std::set<uint64_t> seen;
@@ -92,6 +94,13 @@ REX_HOOK_RAW(sub_82158C70) {
       REXLOG_WARN("[svr2011] model memory: XMemAlloc {} bytes, attributes {:08X} (allocator {}) failed (caller {:08X})", size,
                   attr, (attr >> 16) & 0xFF, caller);
   }
+}
+
+// The game's XMemFree (sub_82158940(ptr, attributes)): test aid SVR2011_TEST_MEMTRACE (mem_trace.h).
+REX_EXTERN(__imp__sub_82158940);
+REX_HOOK_RAW(sub_82158940) {
+  if (svr2011::MemTraceOn()) svr2011::MemTraceXFree(ctx.r3.u32, ctx.r4.u32, uint32_t(ctx.lr));
+  __imp__sub_82158940(ctx, base);
 }
 
 // sub_8215A380(size, min, max, align, protect) -> MmAllocatePhysicalMemoryEx: an
