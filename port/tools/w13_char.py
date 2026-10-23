@@ -237,7 +237,9 @@ HAIR_LINES_MAX = 16   # (the most chain lines a stock 2011 0x3C has)
 # needs: Asuka 2K17 (6 chains, 1 067 988 bytes) ran out building her blood overlay (blood_face: the game crashed
 # copying into a null allocation, sub_826B6BA8 -> sub_8215A000) or hung on NOW LOADING; without the blood
 # (963 864) or with still hair (1 027 412) she plays, and still-haired ports load at up to 1 086 232 (Rollins 2K17).
-CHAIN_MODEL_BYTES_MAX = 1006376
+# Since 2.1.6 the game gives a full model heap fallback memory where Asuka's blood overlay ran out (model_mem.cpp: the
+# copy at sub_826B6BA8): a 38,000-vertex test model (2 MB blood overlay copy) plays in 1v1 / 6-man / Royal Rumble.
+CHAIN_MODEL_BYTES_MAX = 4000000
 
 
 def hair_chain_count(text):

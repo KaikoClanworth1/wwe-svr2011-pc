@@ -10,6 +10,7 @@
 // Every failed allocation is logged once per caller with its size, so a
 // model that doesn't fit shows what it asked for.
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -30,6 +31,9 @@
 namespace {
 std::mutex g_mutex;
 std::set<uint32_t> g_logged;
+std::set<uint32_t> g_x128;  // allocator-128 blocks from the fallback memory (FallbackBlock), freed by XMemFree
+uint64_t g_x128_bytes = 0, g_x128_count = 0;
+std::atomic<uint32_t> g_x128_n{0};  // (their count: XMemFree's hook asks without the lock while there are none)
 uint64_t g_failed = 0;
 rex::memory::Memory* g_memory = nullptr;
 
@@ -86,6 +90,20 @@ REX_EXTERN(__imp__sub_82158C70);
 REX_HOOK_RAW(sub_82158C70) {
   const uint32_t size = ctx.r3.u32, attr = ctx.r4.u32, caller = uint32_t(ctx.lr);
   __imp__sub_82158C70(ctx, base);
+  // Big models / arenas: allocator 128 (the model loader's vertex / index buffers and textures - a wrestler's 768 KB
+  // window, the stage's) full - the block from the fallback memory; XMemFree's hook (below) gives it back. Every
+  // allocator-128 block is freed by XMemFree (SVR2011_TEST_MEMTRACE, 23 Oct: 21,782 of 21,782, two call sites).
+  if (ctx.r3.u32 == 0 && size && ((attr >> 16) & 0xFF) == 128 && svr2011::BigModelMemory())
+    if (const uint32_t p = svr2011::FallbackBlock(size)) {
+      ctx.r3.u64 = p;
+      std::lock_guard<std::mutex> lock(g_mutex);
+      g_x128.insert(p);
+      g_x128_n = uint32_t(g_x128.size());
+      g_x128_bytes += size;
+      if (++g_x128_count <= 3 || g_x128_count % 200 == 0)
+        REXLOG_INFO("[svr2011] model memory: allocator 128 full - {} bytes at {:08X} from the fallback memory (caller {:08X};"
+                    " {} blocks, {:.1f} MB held there)", size, p, caller, g_x128.size(), g_x128_bytes / 1048576.0);
+    }
   if (svr2011::MemTraceOn() && ((attr >> 16) & 0xFF) == 128) svr2011::MemTraceXAlloc(ctx.r3.u32, size, attr, caller);
   if (ctx.r3.u32 == 0 && size) {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -100,6 +118,17 @@ REX_HOOK_RAW(sub_82158C70) {
 REX_EXTERN(__imp__sub_82158940);
 REX_HOOK_RAW(sub_82158940) {
   if (svr2011::MemTraceOn()) svr2011::MemTraceXFree(ctx.r3.u32, ctx.r4.u32, uint32_t(ctx.lr));
+  if (const uint32_t ptr = ctx.r3.u32; ptr && g_x128_n.load(std::memory_order_relaxed)) {  // (a fallback block: back there)
+    bool mine = false;
+    {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      mine = g_x128.erase(ptr) != 0;
+      g_x128_n = uint32_t(g_x128.size());
+      if (mine && g_x128.empty())
+        REXLOG_INFO("[svr2011] model memory: every allocator-128 fallback block given back ({} given so far)", g_x128_count);
+    }
+    if (mine && svr2011::CawHeapFree(ptr)) return;
+  }
   __imp__sub_82158940(ctx, base);
 }
 
