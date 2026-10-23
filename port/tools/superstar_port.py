@@ -519,6 +519,19 @@ class Game08(Game09):
                 and not self.name(c).upper().startswith(('MOTION', 'MOVES', 'EDIT', 'DLC', 'DUMMY'))
                 and (self.has_chpac(c) or self.src.no_models())]
 
+    def loading_picture(self, i):
+        """menu/LoadHD.pac LOAD S<id, 3 digits>: load01_B01, the superstar's 1024 x 512 loading picture (DDS), or None
+        (SvR 2007 has no such group: None)"""
+        import arena_port
+        try:
+            p = self.src.get('pac/menu/LoadHD.pac')
+            if not p:
+                return None
+            return next((d for nm, d in arena_port.group_textures(open(p, 'rb').read(), 'S%03d' % i)
+                         if nm.lower() == 'load01_b01'), None)
+        except (OSError, KeyError, ValueError):
+            return None
+
 
 class Game07(Game08):
     """SvR 2007 (docs/OTHER_GAMES.md): 2008's id space (2011 id = id + 100); misc.pac CHAR/DAT
@@ -619,6 +632,8 @@ def load_picture(dds):
     from PIL import Image, ImageEnhance, ImageFilter
     import svr08_char
     im = Image.open(io.BytesIO(dds)).convert('RGB')
+    if im.size == (1024, 512):   # (already the screen's size: SvR 2008)
+        return svr08_char.dds_encode(im.convert('RGBA'), 'DXT5')
     canvas = ImageEnhance.Brightness(im.resize((1024, 512), Image.LANCZOS).filter(ImageFilter.GaussianBlur(18))).enhance(0.45)
     k = min(512 / im.width, 512 / im.height)
     pic = im.resize((int(im.width * k), int(im.height * k)), Image.LANCZOS)
