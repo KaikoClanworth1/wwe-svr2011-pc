@@ -1519,6 +1519,9 @@ void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_
     if (!worst || p.pages > worst->pages) worst = &p;
     if (first_only) break;
   }
+  if (worst && worst->pages > kModelPagesOld && worst->pages <= kModelPagesWarn)
+    out.push_back(Warning(who + "'s model takes " + std::to_string(worst->pages) + " memory pages: version " + kNeedsVersion +
+                       " or newer plays it (older games had " + std::to_string(kModelPagesOld) + " and leave it out).", ""));
   if (!worst || worst->pages <= kModelPagesWarn) return;
   const int pct = worst->pages * 100 / kModelPages;
   // a lighter copy: the model without its blood, used in its place

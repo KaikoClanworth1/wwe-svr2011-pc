@@ -673,8 +673,16 @@ def write_mod(mod, man, out_svrmod, rep=None, pac11=None):
         for d_ in fit_budget(os.path.join(mod, 'ch.pac'), template104(pac11)):
             if rep is not None:
                 rep['dropped'].append(d_)
-    order = ['type', 'id', 'name', 'short', 'base', 'author', 'made_with', 'version', 'ratings', 'abilities', 'moves',
-             'entrance', 'announcer', 'call', 'height', 'song', 'movie']
+    if os.path.exists(os.path.join(mod, 'ch.pac')):   # (a model over the old window: newer games only - model_budget)
+        import model_budget
+        nv = model_budget.needs(os.path.join(mod, 'ch.pac'))
+        if nv:
+            man['needs'] = nv
+            if rep is not None:
+                rep['notes'].append('the model is over %d vertex pages: it needs version %s or newer (older games leave '
+                                    'it out)' % (model_budget.OLD_LIMIT, nv))
+    order = ['type', 'id', 'name', 'short', 'base', 'author', 'made_with', 'version', 'needs', 'ratings', 'abilities',
+             'moves', 'entrance', 'announcer', 'call', 'height', 'song', 'movie']
     txt = ''.join('%s=%s\n' % (k, man[k]) for k in order if k in man)
     txt += ''.join('%s=%s\n' % (k, v) for k, v in man.items() if k not in order)   # (attire<N>_name= ...)
     open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n').write(txt)

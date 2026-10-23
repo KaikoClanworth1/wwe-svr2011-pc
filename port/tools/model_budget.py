@@ -24,12 +24,26 @@ import jboy  # noqa: E402
 import svrfmt  # noqa: E402
 
 PAGE = 4096
-LIMIT = 192          # pages per wrestler
-WARN = 180           # stock models go up to about here
+# Since 2.1.6 a full window takes the game's fallback memory (src/model_mem.cpp, the big-model memory): a wrestler's
+# model may take LIMIT pages (4 MB, about 70,000 vertices). Older games keep the window (OLD_LIMIT) and leave a bigger
+# model out (no crash): such a mod says needs=NEEDS_VERSION in its manifest.
+OLD_LIMIT = 192      # pages per wrestler before 2.1.6 (the window)
+LIMIT = 1024         # pages per wrestler (the game's ModelPageLimit, src/caw_limits.h)
+WARN = 980           # near the limit
+NEEDS_VERSION = '2.1.6'   # (the first version with the big-model memory: one place to change it)
 
 
 def pages(n):
     return (n + PAGE - 1) // PAGE
+
+
+def needs(path):
+    """NEEDS_VERSION when an attire of the ch.pac at path takes more than the old window (OLD_LIMIT pages), else None"""
+    try:
+        worst = max((t for _, t, _ in model_pages(path)), default=0)
+    except Exception:   # noqa: BLE001
+        return None
+    return NEEDS_VERSION if worst > OLD_LIMIT else None
 
 
 def mesh_pages(s):
@@ -78,7 +92,7 @@ def main(argv):
     res = []
     for f in files:
         for n, t, parts in model_pages(f):
-            state = 'over' if t > LIMIT else 'near' if t > WARN else 'ok'
+            state = 'over' if t > LIMIT else 'near' if t > WARN else 'needs ' + NEEDS_VERSION if t > OLD_LIMIT else 'ok'
             res.append(dict(file=f, entry=n, pages=t, limit=LIMIT, state=state, parts=parts))
             if not as_json:
                 print('%s %s: %d of %d pages (%s) %s' % (os.path.basename(f), n, t, LIMIT, state, parts))

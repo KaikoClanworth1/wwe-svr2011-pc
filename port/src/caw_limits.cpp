@@ -163,6 +163,19 @@ uint32_t FallbackBlock(uint32_t size) {
   return ptr;
 }
 
+bool BigModelMemory() {
+  static const bool on = std::getenv("SVR2011_TEST_BIGMEM_OFF") == nullptr;
+  return on;
+}
+
+uint32_t ModelPageLimit() {
+  static const uint32_t pages = [] {
+    if (const char* v = std::getenv("SVR2011_TEST_PAGE_LIMIT"); v && *v) return uint32_t(std::strtoul(v, nullptr, 10));
+    return BigModelMemory() ? 1024u : 192u;
+  }();
+  return pages;
+}
+
 bool CawHeapFree(uint32_t ptr) {
   if (!ptr || !g_fallback_blocks.load(std::memory_order_relaxed)) return false;
   std::lock_guard lock(g_fallback_mutex);
@@ -172,6 +185,10 @@ bool CawHeapFree(uint32_t ptr) {
   g_fallback.erase(it);
   g_fallback_blocks = uint32_t(g_fallback.size());
   g_memory->SystemHeapFree(ptr);
+  if (g_fallback.empty()) {  // (a game that takes fallback memory gives it all back: logged a few times)
+    static int told = 0;
+    if (told++ < 5) REXLOG_INFO("[svr2011] fallback memory: every block given back");
+  }
   return true;
 }
 

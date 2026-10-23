@@ -194,7 +194,10 @@ bool SetPortrait(Bytes& pac, const Image& bust) {
 }
 
 // Everything the build needs, copied off the UI thread.
+constexpr int kReduceMax = 32000;  // (Reduce detail's top: the big-model memory, tools/model_budget.py LIMIT)
+
 struct Job {
+  std::string needs;    // (kNeedsVersion for a model over the old 192 pages, written into the manifest)
   std::string project;  // (ModProjectText: the page's project keys, into the mod)
   std::map<int, int> moveset;
   std::string id, manifest;
@@ -1108,9 +1111,16 @@ bool PrepareJob(Job& j) {
   }
   j.id = StarId();
   j.project = ModProjectText(PageId::kStar);
+  {  // (a model over the old 192 pages: newer games only)
+    int worst = 0;
+    if (!g_star.model.empty())
+      for (const auto& p : ModelBudget(g_star.model)) worst = std::max(worst, p.pages);
+    j.needs = worst > kModelPagesOld ? kNeedsVersion : "";
+  }
   j.manifest = "type=superstar\nid=" + j.id + "\nname=" + g_star.name + "\nshort=" +
                (g_star.short_name[0] ? g_star.short_name : g_star.name) + "\nbase=" + std::to_string(st.template_id) +
                "\nstyle=" + st.name + "\nauthor=" + g_star.author + "\nversion=" + g_star.version + "\n" + MadeWith();
+  if (!j.needs.empty()) j.manifest += "needs=" + j.needs + "\n";
   j.manifest += "ratings=";
   for (int k = 0; k < 7; ++k) j.manifest += std::to_string(g_star.ratings[k]) + (k < 6 ? "," : "\n");
   if (g_star.call >= 0) j.manifest += "call=" + std::to_string(g_star.call) + "\n";
@@ -1578,9 +1588,9 @@ void MakeFromFbx() {
         }
         if (parsed) {
           for (const auto& a : j["attires"].items) {
-            Log("FBX model: " + a["pages"].Str() + " of 192 memory pages" +
+            Log("FBX model: " + a["pages"].Str() + " of " + std::to_string(kModelPages) + " memory pages" +
                 (a["dropped"].items.empty() ? std::string() : ", " + std::to_string(a["dropped"].items.size()) + " blood layers left out to fit"));
-            g_fbx_after.push_back({a["dropped"].items.empty() ? 0 : 1, "Uses " + a["pages"].Str() + " of the 192 memory pages a wrestler gets" +
+            g_fbx_after.push_back({a["dropped"].items.empty() ? 0 : 1, "Uses " + a["pages"].Str() + " of the " + std::to_string(kModelPages) + " memory pages a wrestler gets" +
                                    (a["dropped"].items.empty() ? std::string(".") : "; its blood layers were left out to fit (no blood on it in matches)."), ""});
           }
           for (const auto& w : j["warnings"].items) g_fbx_after.push_back({0, w.Str(), ""});
@@ -2136,7 +2146,7 @@ void FbxRows(bool simple) {
         }
         ImGui::EndTable();
       }
-      ImGui::TextDisabled("%d of %d parts, %d triangles (the game takes about 10,500 vertices - step 5 checks it)", on, int(r.meshes.size()), tris);
+      ImGui::TextDisabled("%d of %d parts, %d triangles (the game takes up to about 32,000 vertices - step 5 checks it)", on, int(r.meshes.size()), tris);
       break;
     }
     default: {
@@ -2155,13 +2165,13 @@ void FbxRows(bool simple) {
         bool reduce = g_star.fbx_reduce > 0;
         if (ImGui::Checkbox("Reduce detail", &reduce)) g_star.fbx_reduce = reduce ? 10000 : 0, Touch();
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Fewer vertices so it fits the game (about 10,500 for a wrestler). Off: the model as it is - Make says\n"
+          ImGui::SetTooltip("Fewer vertices so it fits the game (up to about 32,000 for a wrestler). Off: the model as it is - Make says\n"
                             "when it's too big. For full control reduce it in Blender instead (Decimate modifier).");
         if (reduce) {
           ImGui::SameLine();
           ImGui::SetNextItemWidth(200 * g_scale);
           int v = g_star.fbx_reduce;
-          if (ImGui::SliderInt("vertices##reduce", &v, 4000, 10500, "to about %d")) g_star.fbx_reduce = std::clamp(v, 4000, 10500), Touch();
+          if (ImGui::SliderInt("vertices##reduce", &v, 4000, kReduceMax, "to about %d")) g_star.fbx_reduce = std::clamp(v, 4000, kReduceMax), Touch();
           ImGui::SameLine();
           if (ImGui::Checkbox("Keep the face", &g_star.fbx_keep_face)) Touch();
           if (ImGui::IsItemHovered()) ImGui::SetTooltip("The head and its hair left as they are: only the rest of the model is reduced.");
@@ -2378,7 +2388,7 @@ void GearTransplantFrom(const std::wstring& target, int attire, const std::wstri
     for (const char* list : {"notes", "warnings"})
       for (const auto& w : j[list].items) Log("  gear: " + w.Str());
     Status(name + "'s entrance gear fitted: " + j["gear_meshes"].Str() + " pieces, " + j["extra_bones"].Str() + " extra bones, " + j["pages"].Str() +
-           " of 192 memory pages.");
+           " of " + std::to_string(kModelPages) + " memory pages.");
     done(out);
   });
   if (!started) Status("Fitting gear needs the Mod Maker tools (Python): see the log.");
@@ -2428,7 +2438,7 @@ void GearFromFbx(const std::wstring& target, int attire, const std::wstring& fbx
         }
         for (const char* list : {"notes", "warnings"})
           for (const auto& w : j[list].items) Log("  gear: " + w.Str());
-        Status("The gear is fitted: " + j["gear_meshes"].Str() + " pieces, " + j["pages"].Str() + " of 192 memory pages.");
+        Status("The gear is fitted: " + j["gear_meshes"].Str() + " pieces, " + j["pages"].Str() + " of " + std::to_string(kModelPages) + " memory pages.");
         done(out);
       });
       if (!started) Status("Fitting gear needs the Mod Maker tools (Python): see the log.");
@@ -3731,7 +3741,7 @@ bool Read(const ProjectIn& in, bool mod) {
   ParsePairs(in.Get("fbx_pic"), g_star.fbx_pic);
   {  // (Reduce detail: "<vertices>[,all]"; none: off)
     const std::string t = in.Get("fbx_reduce");
-    g_star.fbx_reduce = t.empty() ? 0 : std::clamp(std::atoi(t.c_str()), 0, 10500);
+    g_star.fbx_reduce = t.empty() ? 0 : std::clamp(std::atoi(t.c_str()), 0, kReduceMax);
     g_star.fbx_keep_face = t.find(",all") == std::string::npos;
   }
   g_star.fbx_hair = in.Get("fbx_hair").empty() ? -1 : std::clamp(std::atoi(in.Get("fbx_hair").c_str()), -1, 1);

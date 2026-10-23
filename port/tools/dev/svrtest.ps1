@@ -193,6 +193,10 @@ $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"; $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED 
 $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
 foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_NATIVE_SHADERS") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
 $steps = @()
+if ($Command -eq "script" -and $o.p[1]) {  # (a script's "route match" with these people: test_match.cpp)
+    $env:SVR2011_TEST_MATCH = "people=" + (@(1..6 | Where-Object { $o.p[$_] } | ForEach-Object { $o.p[$_] }) -join ",") + " arena=1"
+    if ($o.rule) { $env:SVR2011_TEST_RULE = $o.rule -replace '^0x', '' }
+}
 if ($Command -in "match", "entrance") {
     $people = @(1..6 | Where-Object { $o.p[$_] } | ForEach-Object { $o.p[$_] })
     if ($people.Count -lt 2 -and $Command -eq "match") { throw "svrtest match: --p1 and --p2 at least" }

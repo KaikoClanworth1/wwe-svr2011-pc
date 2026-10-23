@@ -511,7 +511,10 @@ namespace help_page { void Draw(); }
 void ExportModelFbx(const std::wstring& pac, int attire, const std::string& name);
 // A character model pac's match memory (D12): per wrestler attire entry (EMD ...2) the 4 KB pages its meshes'
 // vertex and index buffers take - the game gives each wrestler 192; over that the match load crashes.
-constexpr int kModelPages = 192, kModelPagesWarn = 180;
+// A wrestler's vertex memory (tools/model_budget.py): 1024 pages since 2.1.6 (the game's big-model memory), 192 before
+// - a model over that needs kNeedsVersion (its manifest says so; older games leave it out).
+constexpr int kModelPages = 1024, kModelPagesWarn = 980, kModelPagesOld = 192;
+constexpr const char* kNeedsVersion = "2.1.6";
 struct ModelPages {
   std::string entry;  // the EMD entry ("00013902": attire 1)
   int pages = 0;

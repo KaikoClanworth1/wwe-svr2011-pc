@@ -25,6 +25,8 @@
 // The select screen shows them in the EXTRA list (managers.cpp, the M tile).
 #include "cae_mod_motions.h"
 #include "no_mods.h"
+#include "caw_limits.h"
+#include "mem_trace.h"
 #include "superstar_mods.h"
 #include "superstar_threads.h"
 #include "universe_mods.h"
@@ -654,8 +656,8 @@ uint32_t AttireMask(const fs::path& pac, uint32_t id) {
 // gets nothing and the match load crashes (an unchecked null). The largest
 // stock models fill it exactly. A mod's model over it: its blood overlays
 // (children 0x7532, 0x7531, 0x7530; stock ch164 has none) are left out of the
-// overlay copy until it fits, else the mod is left out - with a log line.
-constexpr uint32_t kModelPageLimit = 192;
+// overlay copy until it fits, else the mod is left out - with a log line. With the big-model memory (model_mem.cpp:
+// a full window takes fallback memory) the limit is ModelPageLimit() pages (caw_limits.h), not 192.
 
 uint32_t JboyPages(const svrfmt::Bytes& d) {
   if (d.size() < 0x48 || std::memcmp(d.data(), "JBOY", 4)) return 0;
@@ -700,7 +702,7 @@ bool FitModelBudget(svrfmt::Bytes& pac, std::string& notes) {
       uint32_t pages = EntryPages(en.data, &kids);
       const uint32_t before = pages;
       for (uint32_t drop : {0x7532u, 0x7531u, 0x7530u}) {
-        if (pages <= kModelPageLimit) break;
+        if (pages <= svr2011::ModelPageLimit()) break;
         const auto it = std::find_if(kids.begin(), kids.end(), [&](const svrfmt::PachEntry& c) { return c.id == drop; });
         if (it == kids.end()) continue;
         pages -= JboyPages(svrfmt::Unpack(it->data));
@@ -711,7 +713,7 @@ bool FitModelBudget(svrfmt::Bytes& pac, std::string& notes) {
       if (pages != before)
         notes += " attire " + std::to_string((en.name[6] - '0') + 1) + ": " + std::to_string(before) + " -> " +
                  std::to_string(pages) + " pages (blood overlays left out);";
-      if (pages > kModelPageLimit) {
+      if (pages > svr2011::ModelPageLimit()) {
         fits = false;
         notes += " attire " + std::to_string((en.name[6] - '0') + 1) + ": " + std::to_string(pages) + " pages;";
       }
@@ -898,7 +900,7 @@ void LoadMods() {
       if (!FitModelBudget(ch, notes)) {
         REXLOG_WARN("[svr2011] superstar mods: {}: model over the match's 768 KB per-wrestler budget ({} pages "
                     "at most):{} - left out, it would crash the match load (tools/model_budget.py)",
-                    m.folder, kModelPageLimit, notes);
+                    m.folder, svr2011::ModelPageLimit(), notes);
         left_out.push_back(m.folder);
         continue;
       }
@@ -3265,7 +3267,22 @@ REX_HOOK_RAW(sub_8269BBA0) {
     return;
   }
   __imp__sub_8269BBA0(ctx, base);
+  // Big models: a wrestler's model heap full copying its blood overlays (sub_826B6BA8; 2K17 Asuka crashed there) -
+  // the block from the fallback memory, given back by the delete hook (CawHeapFree, frame_rate.cpp)
+  if (!ctx.r3.u32 && size && lr == 0x826B6C4C && svr2011::BigModelMemory())
+    if (const uint32_t p = svr2011::FallbackBlock(size)) {
+      ctx.r3.u64 = p;
+      static int told = 0;
+      if (told++ < 3) REXLOG_INFO("[svr2011] model memory: a model heap full - {} bytes from the fallback memory", size);
+    }
   if (!MoveLogIds().empty() && !ctx.r3.u32) REXLOG_WARN("[svr2011] move log: alloc {} bytes failed (lr {:08X})", size, lr);
+  if (svr2011::MemTraceOn() && ctx.r3.u32) {  // (test aid: mem_trace.h - which heap gave it)
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    svr2011::MemTraceNew(ctx.r3.u32, size, heap, lr);
+  }
 }
 REX_EXTERN(__imp__sub_8258EB90);
 REX_HOOK_RAW(sub_8258EB90) {
