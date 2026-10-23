@@ -664,6 +664,7 @@ td.acts { text-align: right; white-space: nowrap; }
     var rows = mods.filter(function (m) { return !f || (m.name + ' ' + m.author + ' ' + m.tags.join(' ')).toLowerCase().indexOf(f) >= 0; });
     el('mods').innerHTML = rows.length ? rows.map(function (m) {
       return '<tr><td>' + esc(m.name) + (m.hidden ? ' <span class="tag bad">hidden</span>' : '') +
+        (m.updated ? ' <span class="tag on" title="file updated by its owner">updated ' + ago(m.updated) + '</span>' : '') +
         '</td><td>' + esc(m.types.join(', ')) + '</td><td>' + esc(m.author) + '</td><td>' + esc(m.version) +
         '</td><td class="num">' + bytes(m.size) + '</td><td class="num">' + m.downloads + '</td><td>' + ago(m.created) +
         '</td><td class="acts"><button class="btn" data-modview="' + m.id + '">View</button>' +
