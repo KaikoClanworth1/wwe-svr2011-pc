@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <cstdio>
 #include <filesystem>
 
 namespace svr2011 {
@@ -18,6 +19,8 @@ void InstallCrashReporter(const std::filesystem::path& dir);
 // Called (once) when a crash is reported, before the log is flushed: lets a
 // subsystem log what it knows (the native renderer logs GPU fault details).
 void SetCrashHook(void (*hook)());
+// Writes more into the crash report's text, after the stack and registers (the match's black box: match_box.h).
+void SetCrashTextHook(void (*hook)(FILE* f));
 
 #if !defined(_WIN32)
 // The crash reporter takes the fatal signals again (the SDK's own handler

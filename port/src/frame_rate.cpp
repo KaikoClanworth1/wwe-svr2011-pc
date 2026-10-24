@@ -24,6 +24,7 @@
 // extra ones repeat the controller reading and leave the characters' job to
 // the frame's last update (below). Online lockstep: one update a frame.
 #include "frame_rate.h"
+#include "match_box.h"
 #include "match_diag.h"
 #include "free_cam.h"
 #include "thread_cpu.h"
@@ -620,7 +621,7 @@ REX_HOOK_RAW(sub_8269C728) {
             dumped_for = g_dbg_since.load();
             DumpGuestThreads(g_base);
             DumpJobEvents();
-            if (g_in_match.load()) svr2011::LogMatchState(g_base, "world update stuck");
+            if (g_in_match.load()) svr2011::LogMatchState(g_base, "world update stuck"), svr2011::MatchBoxLog("world update stuck");
           }
         }
       }

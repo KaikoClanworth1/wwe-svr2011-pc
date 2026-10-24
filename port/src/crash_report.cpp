@@ -26,6 +26,7 @@ namespace {
 std::filesystem::path g_dir;
 std::atomic<bool> g_reported{false};
 void (*g_hook)() = nullptr;
+void (*g_text_hook)(FILE*) = nullptr;
 
 std::wstring Stamp() {
   wchar_t buf[64];
@@ -138,6 +139,7 @@ void Report(const char* reason, EXCEPTION_POINTERS* info) {
     }
     WriteStack(f, info ? info->ContextRecord : nullptr);
     WriteGuestContext(f);
+    if (g_text_hook) g_text_hook(f);
     std::fclose(f);
   }
   // The same lines in the log (players send the log; the report beside it
@@ -183,6 +185,7 @@ LONG WINAPI OnUnhandled(EXCEPTION_POINTERS* info) {
 }  // namespace
 
 void SetCrashHook(void (*hook)()) { g_hook = hook; }
+void SetCrashTextHook(void (*hook)(FILE*)) { g_text_hook = hook; }
 
 void InstallCrashReporter(const std::filesystem::path& dir) {
   g_dir = dir;

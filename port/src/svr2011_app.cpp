@@ -59,6 +59,7 @@
 #include "guest_faults.h"
 #include "perf_hooks.h"
 #include "crash_report.h"
+#include "match_box.h"
 #include "dlc.h"
 #include "fps_overlay.h"
 #include "perf_stats.h"
@@ -294,6 +295,7 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
   g_saves = (Env("SVR2011_USER_DATA").empty() ? exe_dir : g_user_data) / "Saves";
   paths.cache_root = exe_dir / "UserData" / "cache";
   svr2011::InstallCrashReporter(exe_dir / "UserData" / "crashes");
+  svr2011::SetCrashTextHook(&svr2011::MatchBoxCrashText);  // (the match's black box in the report: match_box.h)
   // Online: where the game files checked against the launcher's list are (online_files.h; the check starts with online).
   svr2011::SetGameFilesPaths(paths.game_data_root, g_user_data);
 

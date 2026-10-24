@@ -55,6 +55,7 @@ final class ProblemReport {
             if (description != null && !description.isEmpty()) info = description + "\n" + info;
             put(zip, "report.txt", info.getBytes(StandardCharsets.UTF_8));
             r.logs = addLogs(zip, new File(gameFolder, "logs"), 16 << 20);
+            addNewest(zip, new File(gameFolder, "logs"), "matchbox_", ".txt", 3, "logs/", 1 << 20);  // (the last matches' black boxes)
             r.crashes = addNewest(zip, new File(gameFolder, "UserData/crashes"), "crash_", ".txt", 3, "crashes/", 1 << 20);
             File toml = new File(gameFolder, "svr2011.toml");
             if (toml.isFile()) {

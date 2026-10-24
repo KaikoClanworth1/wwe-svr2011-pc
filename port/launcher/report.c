@@ -708,6 +708,7 @@ int report_make_ex(const WCHAR *game_dir, const WCHAR *version, const char *desc
     }
     swprintf_s(sub, MAX_PATH, L"%s\\logs", game_dir);
     *logs = add_logs(&z, sub, 16u << 20);
+    add_newest(&z, sub, L"matchbox_*.txt", 3, "logs", 1u << 20);  /* (the last matches' black boxes: match_box.h) */
     swprintf_s(sub, MAX_PATH, L"%s\\UserData\\crashes", game_dir);
     *crashes = add_newest(&z, sub, L"crash_*.txt", 3, "crashes", 1u << 20);
     add_settings(&z, game_dir);

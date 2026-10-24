@@ -28,6 +28,7 @@
 #include "caw_limits.h"
 #include "mem_trace.h"
 #include "superstar_mods.h"
+#include "match_box.h"
 #include "superstar_threads.h"
 #include "universe_mods.h"
 #include "universe_welcome.h"
@@ -3257,6 +3258,7 @@ REX_HOOK_RAW(sub_823941F8) {
     static const bool off = std::getenv("SVR2011_TEST_YMBS_SEARCH_OFF") != nullptr;  // (test aid: the game's search only)
     if (!off) ctx.r3.u64 = FindInUnsortedBanks(base, banks, id << 16 | x << 8 | y, out);
   }
+  if (banks && y <= 1) svr2011::MatchBoxMotionLooked(id, ctx.r3.u32 != 0);  // (a body track found or not: match_box.h)
   // Test aid: SVR2011_TEST_BANK_DUMP=<id>[,<id>] - at a lookup of that id (x 0, y 0), once per id and bank
   // list: each bank in the list (its slot, magic, count, first / last key, whether the key is in its directory)
   static const std::vector<uint32_t> dump_ids = [] {
