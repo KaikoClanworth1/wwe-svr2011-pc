@@ -115,6 +115,17 @@ svrfmt::Bytes AddRecords(const svrfmt::Bytes& table, std::vector<svr2011::Weapon
     svrfmt::Bytes r = *like;
     const int model = m.id * 10;
     r[0] = uint8_t(model), r[1] = uint8_t(model >> 8);
+    // break_hits= (+4, u16: hits before it breaks) and sounds= (+0x5C, 12 bytes: another weapon's hit / break sound
+    // ids - the beer bottle 110's glass) over like='s: a light tube holds and swings as the kendo stick and breaks
+    // as a bottle.
+    if (m.break_hits >= 0) r[4] = uint8_t(m.break_hits), r[5] = uint8_t(m.break_hits >> 8);
+    if (m.sounds > 0) {
+      const svrfmt::Bytes* from = nullptr;
+      for (const auto& o : records)
+        if (int(o[0] | o[1] << 8) == m.sounds * 10) from = &o;
+      if (from) std::copy(from->begin() + 0x5C, from->begin() + 0x68, r.begin() + 0x5C);
+      else REXLOG_WARN("[svr2011] weapon mods: {} - sounds={} is no weapon of the game: like='s sounds", m.folder, m.sounds);
+    }
     records.push_back(r);
   }
   std::sort(records.begin(), records.end(), [](const svrfmt::Bytes& a, const svrfmt::Bytes& b) {
@@ -289,6 +300,8 @@ void LoadWeaponMods() {
     for (const auto& l : Lines(f / "manifest.txt")) {
       if (l.rfind("name=", 0) == 0) m.name = l.substr(5);
       if (l.rfind("like=", 0) == 0) m.like = std::atoi(l.c_str() + 5);
+      if (l.rfind("break_hits=", 0) == 0) m.break_hits = std::clamp(std::atoi(l.c_str() + 11), 0, 99);
+      if (l.rfind("sounds=", 0) == 0) m.sounds = std::atoi(l.c_str() + 7);
       if (l.rfind("pool=", 0) == 0) {
         m.extreme = l.find("extreme") != std::string::npos;
         m.backstage = l.find("backstage") != std::string::npos;
