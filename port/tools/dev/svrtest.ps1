@@ -13,6 +13,8 @@
 #   svrtest.ps1 script <file> [--shot ..] [--quit ..]                        (script_input.h steps, one a line)
 # common: --exe release|dbg|<path>  --backend d3d12|vulkan|d3d11  --mods none|<folder>[,<folder>...]
 #         --userdata <dir>  --perf 0|1|2  --log-level info|debug  --name <run name>  --keep (leave it running)
+#         --fresh (the user data may have no save: a first-start test - else svrtest refuses one without
+#         Saves\SaveData.dat, the game would sit in its first-time screens)
 #         --arg "<game option>" (more of the game's --options, repeatable)
 #
 # Each run: refuses when the player's game runs or 4 test games already do (any chat); refreshes the private
@@ -53,7 +55,7 @@ public static class SvrTestWin {
 
 # ---- options
 $o = @{ p = @{}; exe = "release"; backend = ""; mods = "none"; perf = ""; loglevel = "info"; name = ""; keep = $false; args = @()
-        attire = ""; arena = ""; rule = ""; entrances = $false; shot = @(); every = ""; until = ""; quit = ""; userdata = ""; target = ""; state = @(); fast = ""; boot = $false; cpu = "" }
+        attire = ""; arena = ""; rule = ""; entrances = $false; shot = @(); every = ""; until = ""; quit = ""; userdata = ""; target = ""; state = @(); fast = ""; boot = $false; cpu = ""; fresh = $false }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
@@ -69,6 +71,7 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         '^--state$' { $o.state += $v; $i++; continue }
         '^--fast$' { $o.fast = $v; $i++; continue }
         '^--boot$' { $o.boot = $true; continue }
+        '^--fresh$' { $o.fresh = $true; continue }
         '^--cpu$' { $o.cpu = $v; $i++; continue }
         '^--exe$' { $o.exe = $v; $i++; continue }
         '^--backend$' { $o.backend = $v; $i++; continue }
@@ -173,6 +176,13 @@ $udFull = [IO.Path]::GetFullPath($userdata).TrimEnd('\')
 if ($udFull.StartsWith([IO.Path]::GetFullPath($gameFiles).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) { throw "svrtest: --userdata is inside Game Files - use a private copy" }
 $dlc = Join-Path $userdata "0000000000000000"
 if ((Test-Path $dlc) -and (Get-Item -LiteralPath $dlc -Force).LinkType) { throw "svrtest: $dlc is a link - give the test user data a private DLC copy" }
+# a user data with no save starts the game's first-time screens: no route gets past them ("fast start: gave up
+# skipping") - a worktree's own runs\univ_userdata is empty until one is copied in
+if (-not $o.fresh -and -not (Test-Path (Join-Path $userdata "Saves\SaveData.dat"))) {
+    throw ("svrtest: $userdata has no Saves\SaveData.dat - the game would stop at its first-time screens. Copy a test " +
+           "save in (real copies, not links): e.g. robocopy <main>\port\runs\test_userdata_thd\Saves and its " +
+           "0000000000000000 (the DLC) into it, or pass --userdata <a test user data>; --fresh for a first-start test")
+}
 # a tripwire: what the game patches at start, in Game Files, before the run (compared in result.json)
 $watched = @("pac\string.pac", "pac\menu\menu.pac") | ForEach-Object { Join-Path $gameFiles $_ } | Where-Object { Test-Path $_ }
 $watchedTimes = @{}; foreach ($w in $watched) { $watchedTimes[$w] = (Get-Item $w).LastWriteTimeUtc }
