@@ -3,7 +3,8 @@
 //
 //   SVR2011_TEST_MATCH="people=JOHN CENA,RANDY ORTON arena=11 cpu=all"
 //
-// attires=2,1: each person's attire (1-4, in person order; default 1).
+// attires=2,1: each person's attire (1-4, in person order; default 1). min=2: only a match with 2 or more
+// picks (a Road to WrestleMania story's match, not its walk); an empty name keeps that person.
 // people: roster names (as the log's "match:" lines print them), ids, or
 // CAW<N> (the Created Superstar in save slot N - enough for the entrances
 // and the ring announcer; the match itself crashed once: the select screen's
@@ -57,6 +58,7 @@ struct TestMatch {
   std::vector<int> attires;          // attires=<n>,... (1-4) per person, in person order (default 1)
   int arena = -1;
   bool all_cpu = false;  // cpu=all: every person a CPU (the picks too)
+  int min_people = 0;    // min=N: only a match whose picks are N or more (min=2: a story's match, not its walk)
 };
 
 const TestMatch& Config() {
@@ -88,7 +90,7 @@ const TestMatch& Config() {
         while (std::getline(list, name, ',') && m.people.size() < kMaxPeople) {
           while (!name.empty() && name.front() == ' ') name.erase(0, 1);
           while (!name.empty() && name.back() == ' ') name.pop_back();
-          if (!name.empty()) m.people.push_back(name);
+          m.people.push_back(name);  // (an empty one keeps that person)
         }
       } else if (key == "attires") {
         std::stringstream list(value);
@@ -98,6 +100,8 @@ const TestMatch& Config() {
         m.arena = std::atoi(value.c_str());
       } else if (key == "cpu") {
         m.all_cpu = value == "all";
+      } else if (key == "min") {
+        m.min_people = std::atoi(value.c_str());
       } else {
         REXLOG_WARN("test match: unknown setting '{}'", key);
       }
@@ -192,13 +196,17 @@ REX_EXTERN(__imp__sub_828BC5E8);
 REX_HOOK_RAW(sub_828BC5E8) {
   if (ctx.r3.u32) svr2011::RtwmStreakPeople(base, ctx.r3.u32);  // (the Streak story played as a mod)
   const TestMatch& m = Config();
-  if (Applies() && ctx.r3.u32) {
+  int picked_count = 0;
+  if (ctx.r3.u32)
+    for (uint32_t i = 0; i < kMaxPeople; ++i) picked_count += Rd32(base + ctx.r3.u32 + kSlots + i * kSlotSize + 8) != kNoPick;
+  if (Applies() && ctx.r3.u32 && picked_count >= m.min_people) {
     const uint32_t match = ctx.r3.u32;
     std::string done;
     for (uint32_t i = 0; i < m.people.size(); ++i) {
       // (CAW<N>: the Created Superstar in save slot N, character id N - not
       // in the roster's record table)
       const std::string& who = m.people[i];
+      if (who.empty()) continue;
       const bool caw = who.size() > 3 && Upper(who.substr(0, 3)) == "CAW" && std::isdigit(uint8_t(who[3]));
       const uint32_t caw_id = caw ? uint32_t(std::atoi(who.c_str() + 3)) : 0;
       if (caw && caw_id >= 50) {
