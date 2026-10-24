@@ -195,7 +195,8 @@ Info Inspect(const fs::path& pack, int id) {
     if (tr.y > 1) continue;  // (cameras, props: not checked here)
     xs.insert(tr.x);
     Bytes d;
-    if (tr.file_ok && ReadFile(PathStr(pack / fs::u8path(tr.file)), d)) {
+    // (x 90+: reversal branches, the template's as they are - stock ones list 0 / 1 frames too, e.g. AA 5010)
+    if (tr.x < 90 && tr.file_ok && ReadFile(PathStr(pack / fs::u8path(tr.file)), d)) {
       const int sf = StreamFrames(d);
       if (sf != tr.frames && std::abs(sf - tr.frames) > 1)
         info.findings.push_back({false, "Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + ": pack.txt says " +
@@ -283,6 +284,7 @@ Info Inspect(const fs::path& pack, int id) {
   // timing
   for (const Track& tr : info.tracks) {
     if (tr.y > 1) continue;
+    if (tr.x >= 90) continue;  // (reversal branches: the template's shape, see above)
     if (tr.frames <= 0) err("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " is 0 frames long.", "Port it again.");
     else if (tr.frames > 1800)
       warn("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " is " + std::to_string(tr.frames) +
