@@ -57,6 +57,14 @@ bool ToolCancelled();
 // Any process the same way (a full command line).
 bool RunCommand(const std::wstring& cmdline, std::function<void(int)> done, const std::wstring& cwd = L"");
 
+// A full command line run hidden and waited for (a worker thread: it blocks), stdout and stderr into `out`;
+// its exit code (-1: it didn't start). Not a converter job: CancelTool doesn't stop it.
+int RunWait(const std::wstring& cmdline, std::string& out);
+// An entrance / titantron movie (.bik, .bk2, any video ffmpeg reads) as an .mp4 at `out`: port/tools/movie_shrink.py
+// when it is there (its CLI: <in> <out.mp4> --ffmpeg <exe>, the last stdout line its JSON), else ffmpeg itself
+// (H.264 CRF 20, yuv420p, AAC, +faststart, the size and rate kept). Blocks; "" when made, else why in plain words.
+std::string ShrinkMovie(const std::wstring& in, const std::wstring& out);
+
 // Quotes one argument for a command line.
 std::wstring Quote(const std::wstring& arg);
 

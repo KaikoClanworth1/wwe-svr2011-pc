@@ -159,7 +159,15 @@ bool BuildFiles(const Job& j, std::vector<ZipEntry>& files) {
   };
   for (const auto& s : j.stars) {
     const std::string i = std::to_string(s.id);
-    if (!s.video.empty() && !add_file("video." + i, s.video, "video_" + i)) return false;
+    if (!s.video.empty()) {  // (as an mp4: a Bink is shrunk to one; the Bink beside it with "Keep the Bink too")
+      std::string why;
+      const std::string name = ModMovieFiles(s.video, "video_" + i, files, &why);
+      if (name.empty()) {
+        Status("The entrance video can't go in the pack: " + why + ".");
+        return false;
+      }
+      man += "video." + i + "=" + name + "\n";
+    }
     if (!s.theme.empty() && !add_file("theme." + i, s.theme, "theme_" + i)) return false;
     if (s.render.w) {
       files.push_back({"render_" + i + ".dds", DdsEncode(s.render, DxtFormat::kDxt5, false)});
@@ -264,7 +272,7 @@ void Problems(std::vector<Problem>& p) {
 }
 
 void VideosTab() {
-  ImGui::TextWrapped("Superstars' entrance videos (320 x 320 Bink, the launcher's Movies tab makes them) and the "
+  ImGui::TextWrapped("Superstars' entrance videos (320 x 320; mp4, or Bink - the packs carry them as mp4) and the "
                      "arena screens' pictures between entrances.");
   ImGui::Spacing();
   if (StarPicker()) {
@@ -272,6 +280,7 @@ void VideosTab() {
     if (FileRow("Entrance video...", s.video, "the game's", kBinkFilter, 1)) Touch();
     ImGui::SameLine();
     BinkFromVideoButton("From a video...", s.video, Stars()[g_star].name);
+    MovieSizeRow(s.video);
   }
   ImGui::Separator();
   ImGui::TextUnformatted("Arena screens");
@@ -287,7 +296,8 @@ void VideosTab() {
   }
   const int num = g_arenas[g_arena].number;
   if (ImGui::Button("From a video (.bik)...", ImVec2(220 * g_scale, 0))) {
-    const std::wstring f = PickFile(false, L"Screen video", kBinkFilter, 1);
+    static const COMDLG_FILTERSPEC kBik[1] = {{L"Bink movie (*.bik)", L"*.bik"}};  // (the frames are read with the Bink reader)
+    const std::wstring f = PickFile(false, L"Screen video", kBik, 1);
     if (!f.empty()) {
       auto frames = FramesFromVideo(f);
       if (!frames.empty()) SetArenaFrames(num, std::move(frames));
@@ -447,7 +457,7 @@ void WriteProject(ProjectOut& out) {
   out.Key("version", g_media.version);
   for (const auto& [id, s] : g_media.stars) {
     const std::string i = std::to_string(id);
-    out.File("video." + i, s.video, "media/video_" + i);
+    out.File("video." + i, ProjectMovie(s.video), "media/video_" + i);
     out.File("theme." + i, s.theme, "media/theme_" + i);
     out.Png("render." + i, s.render.image, "media/render_" + i);
   }

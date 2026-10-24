@@ -12,6 +12,7 @@
 #include <sstream>
 
 #include "svrfmt/arena.h"
+#include "tool_run.h"
 #include "svrfmt/pac.h"
 #include "svrfmt/texture.h"
 #include "svrfmt/wwe13.h"
@@ -262,7 +263,46 @@ void SongCheck(const fs::path& dir, const std::string& key, const std::string& r
     p.push_back(Warning(Thing(key) + " is a " + e + " file, which the game can't play: it would be silent.", "Use an MP3 instead.").With(kOpen, OpenIt(dir)));
 }
 
-// A movie key's file: .bik (320 x 320 for a titantron), or .mp4 with a .bik of the same name beside it.
+// A Bink movie's likely size as an .mp4 (H.264 CRF 20 + AAC: about 0.04 bits a pixel, 128 kb/s sound); 0 unknown.
+uint64_t Mp4Guess(const fs::path& f) {
+  FILE* fp = _wfopen(f.c_str(), L"rb");
+  if (!fp) return 0;
+  uint8_t h[0x24] = {};
+  const bool ok = std::fread(h, 1, sizeof h, fp) == sizeof h;
+  std::fclose(fp);
+  if (!ok || std::memcmp(h, "BIK", 3)) return 0;
+  auto u32 = [&](int o) { return uint32_t(h[o] | h[o + 1] << 8 | h[o + 2] << 16 | uint32_t(h[o + 3]) << 24); };
+  const double frames = u32(8), w = u32(0x14), hh = u32(0x18), num = u32(0x1C), den = u32(0x20);
+  if (!frames || !w || !hh || !num || !den) return 0;
+  const double fps = num / den, seconds = frames / fps;
+  return uint64_t(seconds * (w * hh * fps * 0.04 + 128000) / 8);
+}
+
+// The "Shrink it" fix: the mod's Bink movie as an .mp4 beside it, the key pointed at it, the Bink kept only with
+// the Mod Maker's "Keep the Bink too" (the game's fallback where MP4 can't play). In the background.
+std::function<void()> ShrinkIt(const fs::path& dir, const std::string& key, const std::string& file) {
+  return [dir, key, file] {
+    RunInBackground([dir, key, file] {
+      const fs::path bik = dir / fs::u8path(file), mp4 = fs::path(bik).replace_extension(L".mp4");
+      std::error_code ec;
+      const uint64_t before = fs::file_size(bik, ec);
+      Progress("Making " + file + " an mp4 ...");
+      const std::string why = ShrinkMovie(bik.wstring(), mp4.wstring());
+      OnUiThread([dir, key, file, bik, mp4, before, why] {
+        std::error_code ec2;
+        if (!why.empty()) {
+          Status("The movie couldn't be shrunk: " + why + ".");
+          return;
+        }
+        Set(dir, key, PathStr(mp4.filename()))();
+        if (!g_settings.keep_bik) fs::remove(bik, ec2);
+        Status(file + " is an mp4 now: " + SizeText(before) + " -> " + SizeText(fs::file_size(mp4, ec2)) + ".");
+      });
+    });
+  };
+}
+
+// A movie key's file: .bik (320 x 320 for a titantron), or .mp4 (a .bik of the same name beside it: the fallback).
 void MovieCheck(const fs::path& dir, const std::string& key, const std::string& raw, bool titantron, std::vector<Problem>& p) {
   const std::string f = Trim(raw);
   if (f.empty()) return;
@@ -277,8 +317,8 @@ void MovieCheck(const fs::path& dir, const std::string& key, const std::string& 
     fs::path bik = path;
     bik.replace_extension(".bik");
     if (!Exists(bik))
-      p.push_back(Warning(Thing(key) + " is an MP4 that hasn't been prepared for the game yet: install the mod through the launcher "
-                          "(or the Mod Maker) and it's done for you."));
+      p.push_back(Warning(Thing(key) + " is an mp4: it plays where Windows plays mp4. On Steam Deck (Proton) or Windows N the "
+                       "usual video plays instead, unless a Bink of the same name is beside it.").Note());
     return;
   }
   if (e != ".bik") {
@@ -290,6 +330,12 @@ void MovieCheck(const fs::path& dir, const std::string& key, const std::string& 
     p.push_back(Error(Thing(key) + " is damaged or not a video the game can play.").With("Leave it out", Set(dir, key, "")).With(kOpen, OpenIt(dir)));
   else if (titantron && (w != 320 || h != 320))
     p.push_back(Warning(Thing(key) + " isn't square: the big screen is square, so it plays stretched."));
+  // a Bink is big: as an mp4 the mod gets much smaller
+  std::error_code ec;
+  const uint64_t size = fs::file_size(path, ec), guess = Mp4Guess(path);
+  if (!ec && guess && guess * 10 < size * 8 && size > (2u << 20))
+    p.push_back(Warning(Thing(key) + " is a Bink movie (" + SizeText(size) + "): as an mp4 it would be about " + SizeText(guess) +
+                     ", a much smaller mod.").With("Shrink it", ShrinkIt(dir, key, f)));
 }
 
 // Keys whose value is a file name: a trailing space makes the game miss the file (superstar / arena / media
