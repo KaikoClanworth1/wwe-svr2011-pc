@@ -1029,15 +1029,17 @@ def convert(a, rep):
             return ((k0[0][0][0] - k1[0][0][0]) ** 2 + (k0[0][0][2] - k1[0][0][2]) ** 2) ** 0.5
         gap = gap_of(None)
         if a['game'] in FACING_GAP and a.get('turn') != 'off':
-            # turned about the victim, then down -z by the game's gap or not: the closer start wins (a pair
-            # starts within reach). 2K15's standing grapples need the shift (AA 2: 142 units with it, 1641
-            # without), its ground holds don't (Patriot Lock: 1456 without, 2954 with - the attacker stands at
-            # the lying victim's feet).
-            cands = [(gap_of(WR.facing_frame(sh)), sh) for sh in (FACING_GAP[a['game']], 0)]
-            gap, sh = min(cands)
-            face = WR.facing_frame(sh)
-            rep['notes'].append("attacker turned into the victim's frame (%s stores it turned%s)" %
-                                (a['game'], ', %d units off' % sh if sh else ''))
+            # turned (and down -z by the game's gap) or as stored: the closer start wins - a pair starts within
+            # reach. 2K15's standing grapples are stored turned (AA 2: 142 units turned, 1641 as stored); its
+            # ground holds aren't (Patriot Lock: 1455 as stored, 2954 turned - the attacker already at the lying
+            # victim's feet; turned without the shift, its YMBs attacker held one pose in-game)
+            turned = gap_of(WR.facing_frame(FACING_GAP[a['game']]))
+            if turned < gap:
+                gap, face = turned, WR.facing_frame(FACING_GAP[a['game']])
+                rep['notes'].append("attacker turned into the victim's frame (%s stores it turned, %d units off)" %
+                                    (a['game'], FACING_GAP[a['game']]))
+            else:
+                rep['notes'].append('attacker as stored (the turn would start the pair %.0f units apart)' % turned)
         rep['notes'].append('source start gap %.0f units' % gap)
     tid = int(a['template']) if a.get('template') else None
     if tid and not usable11(g11.waze, tid):
@@ -1109,6 +1111,7 @@ def convert(a, rep):
     offset = None
     nmot = 0
     ymb_ns, ymb_solved, ymb_built = None, {}, {}
+    ymb_shift = None   # (YMBs: the source moved so its attacker starts where the template's does - as the YMKs path)
     for path, kind, ks in g11.banks_of(tid):
         if kind == 'YMBs':   # (taunts, submissions: ADPCM channels with limb IK - ymbs_retarget)
             import ymbs
@@ -1128,7 +1131,23 @@ def convert(a, rep):
                 if blk is not None:
                     ymb_ns = ymb_ns or YR.nodes11()
                     try:
-                        sample = YR.w13_sampler(R, blk, face if y == 0 else None)
+                        if ymb_shift is None:   # (the template attacker's first root vs the source's, x / z)
+                            ymb_shift = (0.0, 0.0)
+                            k0 = bank.find(tid, 0, 0)
+                            if k0 is not None:
+                                try:
+                                    t0 = YR.frame_values(bank.decode(k0)[0], 0)['root_t']
+                                    s0 = YR.w13_sampler(R, att, face)(0.0)['root'][:3, 3]
+                                    ymb_shift = (float(t0[0] - s0[0]), float(t0[2] - s0[2]))
+                                    rep['notes'].append("YMBs tracks moved %.0f / %.0f to the template attacker's start"
+                                                        % ymb_shift)
+                                except (KeyError, IndexError, TypeError, ValueError):
+                                    pass
+                        import numpy as np
+                        Msh = np.eye(4)   # (applied to the source's world pose in its own units: 10 x the targets')
+                        Msh[0, 3], Msh[2, 3] = 10.0 * ymb_shift[0], 10.0 * ymb_shift[1]
+                        Mf = (Msh @ face) if (face is not None and y == 0) else Msh
+                        sample = YR.w13_sampler(R, blk, Mf)
                         sk = (x if x in phase_blocks else 0, y)
                         if sk not in ymb_solved:   # (the same motion in every bank: solved once)
                             ymb_solved[sk] = YR.solve(ymb_ns, sample, pn)
