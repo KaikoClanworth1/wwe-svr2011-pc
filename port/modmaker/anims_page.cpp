@@ -685,6 +685,7 @@ std::shared_ptr<const Bytes> PackBank(const std::filesystem::path& pack, int id)
   struct Part {
     int x, y, frames;
     std::string file;
+    Bytes hdr;  // (YMBs banks: the motion's 20-byte header, pack.txt's last field)
   };
   std::vector<Part> parts;
   std::string pac, where;
@@ -693,12 +694,15 @@ std::shared_ptr<const Bytes> PackBank(const std::filesystem::path& pack, int id)
     if (nl == std::string::npos) nl = text.size();
     const std::string line = text.substr(at, nl - at);
     at = nl + 1;
-    char word[16] = "", p[64] = "", w[96] = "", file[260] = "";
+    char word[16] = "", p[64] = "", w[96] = "", file[260] = "", hex[64] = "";
     int mid = 0, x = 0, y = 0, frames = 0;
-    if (std::sscanf(line.c_str(), "%15s %63s %95s %d %d %d %d %259s", word, p, w, &mid, &x, &y, &frames, file) == 8 &&
+    if (std::sscanf(line.c_str(), "%15s %63s %95s %d %d %d %d %259s %63s", word, p, w, &mid, &x, &y, &frames, file, hex) >= 8 &&
         !std::strcmp(word, "motion") && mid == id) {
       if (pac.empty()) pac = p, where = w;
-      parts.push_back({x, y, frames, file});
+      if (w != where) continue;  // (one bank's tracks: a YMKs and a YMBs bank can't share one test bank)
+      Bytes hdr;
+      for (size_t i = 0; hex[i] && hex[i + 1]; i += 2) hdr.push_back(uint8_t(std::strtoul(std::string(hex + i, 2).c_str(), nullptr, 16)));
+      parts.push_back({x, y, frames, file, hdr});
     }
   }
   if (parts.empty()) return nullptr;
@@ -717,6 +721,35 @@ std::shared_ptr<const Bytes> PackBank(const std::filesystem::path& pack, int id)
   if (head.size() < 0x114) return nullptr;
   auto bank = std::make_shared<Bytes>(head.begin(), head.begin() + 0x110);
   const uint32_t n = uint32_t(parts.size());
+  // A YMBs bank (taunts, submissions): the directory, then a database - u32 (the bank's high half, the count low),
+  // a 20-byte header per motion, the data - its offsets counted from the database (move_packs.cpp YmbsInsert). Built
+  // as a YMKs bank, every ported YMBs taunt read as "a layout this game doesn't read" (Mankind '13's 9018: it plays).
+  if (!std::memcmp(head.data(), "YMBs", 4)) {
+    const uint32_t n0 = Le32(&head[0x110]);
+    const size_t db0 = 0x114 + 16 * size_t(n0);
+    if (head.size() < db0 + 4) return nullptr;
+    bank->resize(0x114 + 16 * size_t(n));
+    PutLe32(&(*bank)[0x110], n);
+    Bytes hdrs, data;
+    const uint32_t start = 4 + 20 * n;
+    for (uint32_t i = 0; i < n; ++i) {
+      Bytes d;
+      if (parts[i].hdr.size() != 20 || !ReadFile(PathStr(pack / std::filesystem::u8path(parts[i].file)), d)) return nullptr;
+      uint8_t* e = &(*bank)[0x114 + 16 * i];
+      e[0] = uint8_t(parts[i].y), e[1] = uint8_t(parts[i].x), e[2] = uint8_t(id), e[3] = uint8_t(id >> 8);
+      PutLe32(e + 4, start + uint32_t(data.size()));
+      PutLe32(e + 8, uint32_t(parts[i].frames));
+      PutLe32(e + 12, 0);
+      hdrs.insert(hdrs.end(), parts[i].hdr.begin(), parts[i].hdr.end());
+      data.insert(data.end(), d.begin(), d.end());
+    }
+    const size_t at = bank->size();
+    bank->resize(at + 4);
+    PutLe32(&(*bank)[at], (Le32(&head[db0]) & 0xFFFF0000u) | (n & 0xFFFF));
+    bank->insert(bank->end(), hdrs.begin(), hdrs.end());
+    bank->insert(bank->end(), data.begin(), data.end());
+    return bank;
+  }
   bank->resize(0x114 + 16 * size_t(n));
   PutLe32(&(*bank)[0x110], n);
   Bytes data;
