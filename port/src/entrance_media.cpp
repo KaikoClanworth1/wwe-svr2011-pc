@@ -300,8 +300,12 @@ void SendEntrance(int fileid, int slot, std::u16string song_name, std::filesyste
     const auto cache = UserMoviesFolder() / ".cc";
     std::filesystem::create_directories(cache, ec);
     const auto stamp = std::filesystem::last_write_time(movie, ec).time_since_epoch().count();
-    const auto mp4 = cache / fmt::format("{}.{}.{}.mp4", U8(movie.stem()),
-                                         std::filesystem::file_size(movie, ec), stamp);
+    auto mp4 = cache / fmt::format("{}.{}.{}.mp4", U8(movie.stem()),
+                                   std::filesystem::file_size(movie, ec), stamp);
+    // (an HD user movie: its .mp4 as it is - the .bik is its stub or a fallback; user_movies.cpp)
+    if (const auto hd = std::filesystem::path(movie).replace_extension(".mp4");
+        std::filesystem::is_regular_file(hd, ec) && std::filesystem::file_size(hd, ec) <= kMaxMovie)
+      mp4 = hd;
     if (!std::filesystem::exists(mp4, ec) && !BikToMp4(movie, mp4, kMaxMovie)) {
       REXLOG_WARN("online: entrance movie {} not sent (couldn't shrink it)", U8(movie.filename()));
     } else if (auto data = ReadFile(mp4, kMaxMovie)) {

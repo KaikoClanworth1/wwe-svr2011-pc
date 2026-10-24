@@ -692,11 +692,125 @@ int movie_preview(const WCHAR *video, const WCHAR *bottom, int fit, double secon
     return ok;
 }
 
+/* ── the .mp4 writer: H.264 through Media Foundation's sink writer (the game plays it as an HD movie,
+ * src/hd_movies.cpp; a tenth of the .bik's size). NULL where Windows can't encode H.264 (a "N"
+ * edition without the Media Feature Pack): the .bik then. ── */
+
+typedef struct { IMFSinkWriter *w; DWORD stream; int W; } Mp4Writer;
+
+static Mp4Writer *mp4_open(const WCHAR *path, int W)
+{
+    Mp4Writer *m;
+    IMFAttributes *attrs = NULL;
+    IMFMediaType *out = NULL, *in = NULL;
+    HRESULT hr;
+    /* (bits per second: about what libx264 -crf 20 gives these movies - tools/movie_shrink.py) */
+    const UINT32 bitrate = W <= 320 ? 1500000 : W <= 640 ? 4000000 : 8000000;
+    const UINT64 size = ((UINT64)W << 32) | (UINT32)W, rate = ((UINT64)FPS << 32) | 1, par = ((UINT64)1 << 32) | 1;
+    if (!mf_start() || !(m = (Mp4Writer *)calloc(1, sizeof *m))) return NULL;
+    m->W = W;
+    MFCreateAttributes(&attrs, 1);
+    if (attrs) IMFAttributes_SetUINT32(attrs, &MF_SINK_WRITER_DISABLE_THROTTLING, TRUE);
+    hr = MFCreateSinkWriterFromURL(path, NULL, attrs, &m->w);
+    if (attrs) IMFAttributes_Release(attrs);
+    if (FAILED(hr)) { free(m); return NULL; }
+    MFCreateMediaType(&out);
+    MFCreateMediaType(&in);
+    hr = out && in ? S_OK : E_OUTOFMEMORY;
+    if (SUCCEEDED(hr)) {
+        IMFMediaType_SetGUID(out, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
+        IMFMediaType_SetGUID(out, &MF_MT_SUBTYPE, &MFVideoFormat_H264);
+        IMFMediaType_SetUINT32(out, &MF_MT_AVG_BITRATE, bitrate);
+        IMFMediaType_SetUINT32(out, &MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+        IMFMediaType_SetUINT64(out, &MF_MT_FRAME_SIZE, size);
+        IMFMediaType_SetUINT64(out, &MF_MT_FRAME_RATE, rate);
+        IMFMediaType_SetUINT64(out, &MF_MT_PIXEL_ASPECT_RATIO, par);
+        hr = IMFSinkWriter_AddStream(m->w, out, &m->stream);
+    }
+    if (SUCCEEDED(hr)) {
+        IMFMediaType_SetGUID(in, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
+        IMFMediaType_SetGUID(in, &MF_MT_SUBTYPE, &MFVideoFormat_NV12);
+        IMFMediaType_SetUINT32(in, &MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+        IMFMediaType_SetUINT64(in, &MF_MT_FRAME_SIZE, size);
+        IMFMediaType_SetUINT64(in, &MF_MT_FRAME_RATE, rate);
+        IMFMediaType_SetUINT64(in, &MF_MT_PIXEL_ASPECT_RATIO, par);
+        hr = IMFSinkWriter_SetInputMediaType(m->w, m->stream, in, NULL);
+    }
+    if (SUCCEEDED(hr)) hr = IMFSinkWriter_BeginWriting(m->w);
+    if (out) IMFMediaType_Release(out);
+    if (in) IMFMediaType_Release(in);
+    if (FAILED(hr)) {
+        IMFSinkWriter_Release(m->w);
+        free(m);
+        DeleteFileW(path);
+        return NULL;
+    }
+    return m;
+}
+
+/* One BGRA frame (W x W) -> NV12 (BT.601 studio range, as src/movie_transcode.cpp) -> the writer; 0 on failure. */
+static int mp4_frame(Mp4Writer *m, const uint8_t *bgra, int i)
+{
+    const int W = m->W;
+    const DWORD n = (DWORD)W * W * 3 / 2;
+    const LONGLONG dt = 10000000LL / FPS;
+    IMFMediaBuffer *buf = NULL;
+    IMFSample *s = NULL;
+    BYTE *d = NULL;
+    int x, y, ok = 0;
+    if (FAILED(MFCreateMemoryBuffer(n, &buf)) || FAILED(IMFMediaBuffer_Lock(buf, &d, NULL, NULL))) goto out;
+    for (y = 0; y < W; y++)
+        for (x = 0; x < W; x++) {
+            const uint8_t *p = bgra + ((size_t)y * W + x) * 4;
+            d[(size_t)y * W + x] = clamp8(((66 * p[2] + 129 * p[1] + 25 * p[0] + 128) >> 8) + 16);
+        }
+    for (y = 0; y < W; y += 2)
+        for (x = 0; x < W; x += 2) {
+            int r = 0, g = 0, b = 0, k;
+            BYTE *o = d + (size_t)W * W + (size_t)(y / 2) * W + x;
+            for (k = 0; k < 4; k++) {
+                const uint8_t *p = bgra + ((size_t)(y + k / 2) * W + x + k % 2) * 4;
+                b += p[0], g += p[1], r += p[2];
+            }
+            r /= 4, g /= 4, b /= 4;
+            o[0] = clamp8(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
+            o[1] = clamp8(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
+        }
+    IMFMediaBuffer_Unlock(buf);
+    IMFMediaBuffer_SetCurrentLength(buf, n);
+    if (FAILED(MFCreateSample(&s))) goto out;
+    IMFSample_AddBuffer(s, buf);
+    IMFSample_SetSampleTime(s, (LONGLONG)i * dt);
+    IMFSample_SetSampleDuration(s, dt);
+    ok = SUCCEEDED(IMFSinkWriter_WriteSample(m->w, m->stream, s));
+out:
+    if (s) IMFSample_Release(s);
+    if (buf) IMFMediaBuffer_Release(buf);
+    return ok;
+}
+
+/* finish (1: the file is whole) or, with ok 0, drop it */
+static int mp4_close(Mp4Writer *m, int ok)
+{
+    if (!m) return 0;
+    if (ok) ok = SUCCEEDED(IMFSinkWriter_Finalize(m->w));
+    IMFSinkWriter_Release(m->w);
+    free(m);
+    return ok;
+}
+
+static int ends_with(const WCHAR *s, const WCHAR *tail)
+{
+    const size_t a = wcslen(s), b = wcslen(tail);
+    return a >= b && !_wcsicmp(s + a - b, tail);
+}
+
 int movie_make(MovieJob *job)
 {
     Pic top, bot;
     FILE *f = NULL;
     BinkWriter *w = NULL;
+    Mp4Writer *mp4 = NULL;
     uint8_t *frame = NULL;
     LONGLONG length;
     int n, i, ok = 0;
@@ -714,6 +828,40 @@ int movie_make(MovieJob *job)
     n = (int)((length * FPS + 9999999) / 10000000);
     if (n < 1) n = 1;
     frame = (uint8_t *)malloc((size_t)W * W * 4);
+    job->wrote_bik = 0;
+    if (ends_with(job->out, L".mp4")) {
+        /* (".part.mp4": the sink writer picks the container by the extension) */
+        swprintf_s(tmp, sizeof tmp / sizeof *tmp, L"%.*s.part.mp4", (int)(wcslen(job->out) - 4), job->out);
+        if (frame && (mp4 = mp4_open(tmp, W)) != NULL) {
+            for (i = 0; i < n; i++) {
+                if (job->cancel) { wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Stopped."); break; }
+                compose(&top, &bot, job->fit, (LONGLONG)i * 10000000LL / FPS, frame, W);
+                if (!mp4_frame(mp4, frame, i)) {
+                    wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Could not write the movie (disk full?).");
+                    break;
+                }
+                if (job->notify) PostMessageW(job->notify, job->msg, (WPARAM)((i + 1) * 100 / n), 0);
+            }
+            if (!mp4_close(mp4, i == n)) {
+                DeleteFileW(tmp);
+                if (!job->err[0]) wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Could not finish the movie file.");
+                goto done;
+            }
+            pic_close(&top);
+            pic_close(&bot);
+            if (!MoveFileExW(tmp, job->out, MOVEFILE_REPLACE_EXISTING)) {
+                DeleteFileW(tmp);
+                wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Could not save the movie file (is the game using it?).");
+                goto done;
+            }
+            job->frames = n;
+            ok = 1;
+            goto done;
+        }
+        /* (no H.264 encoder here: the game's own .bik - it plays everywhere) */
+        wcscpy_s(job->out + wcslen(job->out) - 4, 5, L".bik");
+        job->wrote_bik = 1;
+    }
     swprintf_s(tmp, sizeof tmp / sizeof *tmp, L"%s.part", job->out);
     if (!frame || _wfopen_s(&f, tmp, L"wb") || !f || !(w = bink_writer_open_size(f, n, W, W))) {
         wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Could not create the movie file.");

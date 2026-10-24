@@ -6728,13 +6728,19 @@ static void mv_refresh(void)
     WIN32_FIND_DATAW fd;
     HANDLE h;
     SendMessageW(list, LB_RESETCONTENT, 0, 0);
-    if (!mv_folder(dir) || !join(pat, dir, L"*.bik"))
+    if (!mv_folder(dir) || !join(pat, dir, L"*.*"))
         return;
     h = FindFirstFileW(pat, &fd);
     if (h == INVALID_HANDLE_VALUE)
         return;
     do {
-        WCHAR size[32], *dot;
+        WCHAR size[32], *dot, mp4[MAX_PATH];
+        const WCHAR *ext = wcsrchr(fd.cFileName, L'.');
+        /* (a movie is <name>.mp4 or <name>.bik; a .bik beside an .mp4 is its stub or fallback: one row) */
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !ext || (_wcsicmp(ext, L".bik") && _wcsicmp(ext, L".mp4")))
+            continue;
+        if (!_wcsicmp(ext, L".bik") && join(mp4, dir, fd.cFileName) && (wcscpy_s(wcsrchr(mp4, L'.'), 5, L".mp4"), file_exists(mp4)))
+            continue;
         fmt_size(size, 32, ((uint64_t)fd.nFileSizeHigh << 32) | fd.nFileSizeLow);
         wcscpy_s(line, MAX_PATH + 32, fd.cFileName);
         dot = wcsrchr(line, L'.');
@@ -7006,14 +7012,20 @@ static void mv_create(void)
     if (!video[0] || !file_exists(video)) { mv_status(L"Choose the video first."); return; }
     if (!mv_name(name, 40)) { mv_status(L"Give the movie a name (letters and digits); the game lists it by that name."); return; }
     if (!mv_folder(dir)) { mv_status(L"The game folder does not exist; choose it on the Play tab first."); return; }
+    /* (an .mp4: the game plays it as an HD movie, a tenth of a .bik's size; movie_make writes the
+     * .bik where Windows can't encode H.264) */
     swprintf_s(file, 64, L"%s.bik", name);
     memset(&s_mv_job, 0, sizeof s_mv_job);
     if (!join(s_mv_job.out, dir, file)) return;
-    if (file_exists(s_mv_job.out)) {
+    {
+        const int had_bik = file_exists(s_mv_job.out);
+        wcscpy_s(wcsrchr(s_mv_job.out, L'.'), 5, L".mp4");
+        if (had_bik || file_exists(s_mv_job.out)) {
         WCHAR q[200];
         swprintf_s(q, 200, L"A movie named %s already exists. Replace it?", name);
         if (MessageBoxW(s_wnd, q, WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES)
             return;
+        }
     }
     wcscpy_s(s_mv_job.video, MAX_PATH, video);
     mv_bottom_path(s_mv_job.bottom);
@@ -7037,6 +7049,12 @@ static void mv_done(int ok)
     EnableWindow(ctl(ID_MV_STOP), FALSE);
     if (ok) {
         const WCHAR *slash = wcsrchr(s_mv_job.out, L'\\');
+        WCHAR other[MAX_PATH];
+        /* (the replaced movie's other half: an older <name>.bik beside the new .mp4 would be taken as
+         * its fallback - or it is the game's stub, made again; an older .mp4 beside a new .bik would win) */
+        wcscpy_s(other, MAX_PATH, s_mv_job.out);
+        wcscpy_s(wcsrchr(other, L'.'), 5, s_mv_job.wrote_bik ? L".mp4" : L".bik");
+        DeleteFileW(other);
         SendMessageW(ctl(ID_MV_PROGRESS), PBM_SETPOS, 100, 0);
         mv_status(L"Made %s (%d s). In the game: CREATE AN ENTRANCE \x2192 FINALIZE \x2192 MOVIE, after NONE.",
                   slash ? slash + 1 : s_mv_job.out, (s_mv_job.frames + 29) / 30);
@@ -7058,11 +7076,22 @@ static void mv_delete(void)
     swprintf_s(q, 300, L"Delete the movie %s? Entrances that use it show no movie.", line);
     if (!mv_folder(dir) || MessageBoxW(s_wnd, q, WINDOW_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES)
         return;
-    wcscat_s(line, MAX_PATH + 32, L".bik");
-    if (join(path, dir, line) && shell_op(FO_DELETE, path, NULL, FOF_ALLOWUNDO))
-        mv_status(L"Deleted %s (it is in the Recycle Bin).", line);
-    else
-        mv_status(L"Could not delete %s (is the game using it?).", line);
+    {
+        /* (<name>.mp4 and / or <name>.bik - the .bik beside an .mp4 is its stub or fallback) */
+        int gone = 0, failed = 0;
+        static const WCHAR *const exts[] = { L".mp4", L".bik" };
+        int e;
+        for (e = 0; e < 2; e++) {
+            WCHAR f[MAX_PATH + 32];
+            swprintf_s(f, MAX_PATH + 32, L"%s%s", line, exts[e]);
+            if (!join(path, dir, f) || !file_exists(path)) continue;
+            if (shell_op(FO_DELETE, path, NULL, FOF_ALLOWUNDO)) gone++; else failed++;
+        }
+        if (gone && !failed)
+            mv_status(L"Deleted %s (it is in the Recycle Bin).", line);
+        else
+            mv_status(L"Could not delete %s (is the game using it?).", line);
+    }
     mv_refresh();
 }
 

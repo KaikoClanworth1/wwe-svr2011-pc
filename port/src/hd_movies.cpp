@@ -15,7 +15,8 @@
 // An HD movie is an .mp4: the game opens a stub .bik of its size and length
 // (every frame "all skip": nearly free to decode) and after each step the
 // decoder's frame for that time is written over the set Bink just decoded.
-// Size: the mod's .bik fallback's (320 / 640 / 1024), else 1024 - the
+// Size: the mod's .bik fallback's (320 / 640 / 1024), else a square .mp4's
+// (the first of those it fits), else 1024 - the
 // game's own movie layout at that size (the big screen the top size*220/320
 // rows, shown at 16:9, the stage strip below): a square .mp4 is taken as
 // laid out so, any other fills the big screen (stretched to it) over a black
@@ -638,8 +639,10 @@ bool PrepareHdMovie(const fs::path& movies, const std::string& file, const fs::p
   HdMovie m;
   m.mp4 = mp4;
   const int fallback = BinkSize(movies / file);
-  m.size = fallback ? fallback : 1024;
   m.square = sw * 10 / sh >= 9 && sw * 10 / sh <= 11;
+  // (no .bik: a square .mp4 - a shrunk 320 x 320 entrance .bik, movie_shrink.py - at the
+  // first of the game's sizes it fits, not 1024: ten times the pixels to decode for nothing)
+  m.size = fallback ? fallback : !m.square ? 1024 : sw <= 320 ? 320 : sw <= 640 ? 640 : 1024;
   const int frames = std::max(1, int(seconds * kFps + 0.5));
   const fs::path stub = movies / kHdFolder / file;
   // (made again when the mp4 or the size changed: the stub's own size and
