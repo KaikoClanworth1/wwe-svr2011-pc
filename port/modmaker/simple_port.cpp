@@ -802,64 +802,6 @@ struct PlayJob {
 };
 PlayJob g_play;
 
-// A pack's motions for one move as a bank the 3D view plays: the target bank's header (pack.txt `motion` lines name
-// it: <pac> <GROUP/ENTRY/child>), then the pack's entries and data.
-std::shared_ptr<const Bytes> PackBank(const fs::path& pack, int id) {
-  Bytes t;
-  if (!svrfmt::ReadFile(PathStr(pack / L"pack.txt"), t)) return nullptr;
-  const std::string text(t.begin(), t.end());
-  struct Part {
-    int x, y, frames;
-    std::string file;
-  };
-  std::vector<Part> parts;
-  std::string pac, where;
-  for (size_t at = 0; at < text.size();) {
-    size_t nl = text.find('\n', at);
-    if (nl == std::string::npos) nl = text.size();
-    const std::string line = text.substr(at, nl - at);
-    at = nl + 1;
-    char word[16] = "", p[64] = "", w[96] = "", file[260] = "";
-    int mid = 0, x = 0, y = 0, frames = 0;
-    if (std::sscanf(line.c_str(), "%15s %63s %95s %d %d %d %d %259s", word, p, w, &mid, &x, &y, &frames, file) == 8 &&
-        !std::strcmp(word, "motion") && mid == id) {
-      if (pac.empty()) pac = p, where = w;
-      parts.push_back({x, y, frames, file});
-    }
-  }
-  if (parts.empty()) return nullptr;
-  const size_t s1 = where.find('/'), s2 = s1 == std::string::npos ? s1 : where.find('/', s1 + 1);
-  if (s2 == std::string::npos) return nullptr;
-  std::string group = where.substr(0, s1);
-  const std::string entry = where.substr(s1 + 1, s2 - s1 - 1);
-  const int child = std::atoi(where.c_str() + s2 + 1);
-  while (group.size() < 4) group += ' ';
-  Bytes raw, head;
-  if (!ReadPacEntry(fs::path(g_game) / L"pac" / fs::u8path(pac), entry.c_str(), raw, group.c_str())) return nullptr;
-  std::vector<svrfmt::PachEntry> kids;
-  if (svrfmt::PachRead(svrfmt::Unpack(raw), kids))
-    for (const auto& kid : kids)
-      if (int(kid.id) == child) head = svrfmt::Unpack(kid.data);
-  if (head.size() < 0x114) return nullptr;
-  auto bank = std::make_shared<Bytes>(head.begin(), head.begin() + 0x110);
-  const uint32_t n = uint32_t(parts.size());
-  bank->resize(0x114 + 16 * size_t(n));
-  svrfmt::PutLe32(&(*bank)[0x110], n);
-  Bytes data;
-  for (uint32_t i = 0; i < n; ++i) {
-    Bytes d;
-    if (!svrfmt::ReadFile(PathStr(pack / fs::u8path(parts[i].file)), d)) return nullptr;
-    uint8_t* e = &(*bank)[0x114 + 16 * i];
-    e[0] = uint8_t(parts[i].y), e[1] = uint8_t(parts[i].x), e[2] = uint8_t(id), e[3] = uint8_t(id >> 8);
-    svrfmt::PutLe32(e + 4, uint32_t(data.size()));
-    svrfmt::PutLe32(e + 8, uint32_t(parts[i].frames));
-    svrfmt::PutLe32(e + 12, 0);
-    data.insert(data.end(), d.begin(), d.end());
-  }
-  bank->insert(bank->end(), data.begin(), data.end());
-  return bank;
-}
-
 void PlayRow(Kind k, State& s, const Json& r) {
   const std::string st = r["status"].Str();
   const int id11 = r["id11"].Int(0);
@@ -888,9 +830,9 @@ void PlayRow(Kind k, State& s, const Json& r) {
     const int id = j["id"].Int(0);
     fs::path pack = fs::u8path(j["folder"].Str().empty() ? j["out"].Str() : j["folder"].Str());
     if (!pack.is_absolute()) pack = out / pack;
-    const auto bank = PackBank(pack, id);
+    const auto bank = anims_page::PackBank(pack, id);
     std::string err;
-    if (!bank || !char_preview::SetMotion(bank, id, 0, &err))
+    if (!bank || !anims_page::PlayMove(bank, id, -1, &err))
       Status("That move can't be shown: " + (bank ? err : std::string("its motions didn't read")) + ".");
     else
       Status("Playing " + j["name"].Str() + ".");

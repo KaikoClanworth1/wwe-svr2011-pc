@@ -517,7 +517,15 @@ void Close();
 void Draw();
 void TestEdit(const std::wstring& spec);
 }
-namespace anims_page { bool AnyMotion(int id); void TestKey(int key); void TestCompare(const std::wstring& spec); bool MovesIndexed(); bool HasMotion(int id); void WatchMove(int id); void TestWatch(int star_id, int dummy_id, int move); void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
+namespace anims_page {
+// A pack's motions for one move as a bank the 3D view plays (pack.txt `motion` lines: every phase and track of it,
+// under the target bank's header) - nullptr when they don't read.
+std::shared_ptr<const std::vector<uint8_t>> PackBank(const std::filesystem::path& pack, int id);
+// Move `id` from `bank` played in the 3D view as the game plays it (char_preview::SetMove: its phases, both people,
+// the follow-ups read from m.pac); alt >= 0: that other ending too.
+bool PlayMove(std::shared_ptr<const std::vector<uint8_t>> bank, int id, int alt, std::string* err = nullptr);
+void TestStrip(const std::wstring& spec);  // (--watch-strip <png>,<frames>)
+bool AnyMotion(int id); void TestKey(int key); void TestCompare(const std::wstring& spec); bool MovesIndexed(); bool HasMotion(int id); void WatchMove(int id); void TestWatch(int star_id, int dummy_id, int move); void Draw(); void TestStart(int star_id, int bank, int motion, int dummy_id); void TestPlay(int star_id, int dummy_id, int move); }
 namespace icons_page { void Draw(); void TestTab(int tab); }
 namespace installed_page { void Draw(); void TestSelect(const std::string& spec); void RestoreView(); }
 namespace help_page { void Draw(); }

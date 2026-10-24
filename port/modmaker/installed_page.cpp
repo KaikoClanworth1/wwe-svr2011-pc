@@ -312,7 +312,7 @@ void PlayMove(int id) {
   if (g_view.motions.count(id)) {  // (the mod's own pack)
     const auto bank = PackBank(id);
     std::string err;
-    if (!bank || !char_preview::SetMotion(bank, id, 0, &err))
+    if (!bank || !anims_page::PlayMove(bank, id, -1, &err))
       Status("That move's motions can't be shown: " + (bank ? err : std::string("its bank or files didn't read")) + ".");
     else
       Status("Playing move " + std::to_string(id) + " from the pack.");
