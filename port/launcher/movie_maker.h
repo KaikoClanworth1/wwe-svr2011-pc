@@ -1,5 +1,6 @@
 /* USER MOVIES maker (movie_maker.c): entrance movies for the game's Custom
- * Movies folder, as Bink files laid out like the game's titantron movies. */
+ * Movies folder, laid out like the game's titantron movies: an .mp4 (the game
+ * plays it as an HD movie) or a Bink file. */
 #pragma once
 #include <windows.h>
 #include <stdint.h>
@@ -18,7 +19,9 @@ typedef struct MovieJob {
     int max_seconds;           /* 0 = the whole video */
     int size;                  /* the movie's size: 0 / 320 (the game's own), 640 or 1024 (HD: the same
                                   layout, the big screen the top size*220/320 rows) */
-    WCHAR out[MAX_PATH];       /* the .bik to write */
+    WCHAR out[MAX_PATH];       /* the .bik to write, or an .mp4 (H.264; where Windows can't encode it,
+                                  the .bik of that name instead: out is changed and wrote_bik set) */
+    int wrote_bik;             /* out: an .mp4 was asked for, the .bik made */
     volatile LONG cancel;
     HWND notify;               /* gets `msg` with the percentage done */
     UINT msg;

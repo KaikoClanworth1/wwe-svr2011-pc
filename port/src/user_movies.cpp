@@ -85,6 +85,17 @@ void Refresh() {
   }
   std::vector<std::string> files;
   std::error_code ec;
+  // (an .mp4 - the launcher's movie maker, movie_shrink.py: an HD movie under "<name>.bik", its
+  // stub - or a real .bik of that name, the fallback where it doesn't decode; hd_movies.h)
+  for (const auto& e : std::filesystem::directory_iterator(g_folder, ec)) {
+    std::wstring ext = e.path().extension().wstring();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+    if (ext != L".mp4" || !e.is_regular_file(ec) || !Ascii(e.path().filename().wstring())) continue;
+    const std::string bik = e.path().stem().string() + ".bik";
+    static std::set<std::string> no_decoder;  // (probed once per run)
+    if (no_decoder.count(bik)) continue;
+    if (!svr2011::PrepareHdMovie(g_folder, bik, e.path())) no_decoder.insert(bik);
+  }
   for (const auto& e : std::filesystem::directory_iterator(g_folder, ec)) {
     if (!e.is_regular_file(ec)) continue;
     const auto p = e.path();
