@@ -419,9 +419,10 @@ void StepEntranceOwn() {
   GearRows(true);  // (each attire's entrance gear; "Entrance gear" under the 3D view shows or hides it)
   ImGui::Separator();
   ImGui::TextUnformatted("Big screen video (optional)");
-  FileRow("Pick a video file...", g_star.movie, "the style's", kBinkFilter, 1, "A video made for the game's big screen (.bik).");
+  FileRow("Pick a video file...", g_star.movie, "the style's", kBinkFilter, 1, "A video made for the game's big screen (.mp4 or .bik).");
   ImGui::SameLine();
   BinkFromVideoButton("Make one from any video...", g_star.movie, g_star.name);
+  MovieSizeRow(g_star.movie);
 }
 
 // A move-set slot as a row: its move (yours or the style's), Change..., Watch it, the style's again.

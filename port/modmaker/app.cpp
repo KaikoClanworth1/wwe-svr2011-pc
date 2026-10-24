@@ -226,7 +226,7 @@ std::vector<std::string> Values(const std::string& text, const char* key) {
 
 const COMDLG_FILTERSPEC kPictureFilter[1] = {{L"Pictures (*.png, *.jpg, *.tga, *.bmp, *.dds)", L"*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.dds"}};
 const COMDLG_FILTERSPEC kSoundFilter[1] = {{L"Sounds (*.mp3, *.m4a, *.wav, *.flac, *.wma, *.ogg)", L"*.mp3;*.m4a;*.aac;*.wav;*.flac;*.wma;*.ogg"}};
-const COMDLG_FILTERSPEC kBinkFilter[1] = {{L"Bink movie (*.bik)", L"*.bik"}};
+const COMDLG_FILTERSPEC kBinkFilter[1] = {{L"Movies for the game (*.mp4, *.bik)", L"*.mp4;*.bik"}};
 const COMDLG_FILTERSPEC kPacFilter[1] = {{L"Character model pac (*.pac)", L"*.pac"}};
 const COMDLG_FILTERSPEC kModFilter[1] = {{L"SvR2011 mod (*.svrmod)", L"*.svrmod"}};
 const COMDLG_FILTERSPEC kProjectFilter[1] = {{L"Mod Maker project (*.svrproj)", L"*.svrproj"}};
@@ -1637,12 +1637,150 @@ void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int s
     CoUninitialize();
     const std::wstring err = job.err;
     const int frames = job.frames;
-    OnUiThread([ok, out, err, frames, done] {
-      if (ok) Status("Bink movie made: " + FileName(out) + " (" + std::to_string(frames) + " frames).");
+    // then an .mp4 of it (the size mods carry; the .bik stays beside it as the game's fallback)
+    std::wstring mp4;
+    std::string why;
+    if (ok) {
+      Progress("Making the mp4 (" + FileName(out) + ") ...");
+      mp4 = fs::path(out).replace_extension(L".mp4").wstring();
+      why = ShrinkMovie(out, mp4);
+      if (!why.empty()) mp4.clear();
+    }
+    OnUiThread([ok, out, mp4, why, err, frames, done] {
+      std::error_code ec;
+      if (ok && !mp4.empty())
+        Status("Movie made: " + FileName(mp4) + " (" + std::to_string(frames) + " frames, " + SizeText(fs::file_size(mp4, ec)) + "; as a Bink it's " +
+               SizeText(fs::file_size(out, ec)) + ").");
+      else if (ok) Status("Bink movie made: " + FileName(out) + " (" + std::to_string(frames) + " frames); no mp4: " + why + ".");
       else Status("The movie could not be made: " + Utf8(err));
-      if (done) done(ok ? out : L"");
+      if (done) done(!ok ? L"" : !mp4.empty() ? mp4 : out);
     });
   });
+}
+
+std::string SizeText(uint64_t bytes) {
+  char b[32];
+  if (bytes >= 1024 * 1024) std::snprintf(b, sizeof b, "%.1f MB", bytes / 1048576.0);
+  else std::snprintf(b, sizeof b, "%llu KB", (unsigned long long)((bytes + 1023) / 1024));
+  return b;
+}
+
+namespace {
+std::mutex g_shrink_mutex;  // (one shrink at a time: the slot's background one and a save's wait for the same file)
+fs::path Mp4Path(const std::wstring& bik) {
+  std::error_code ec;
+  const auto size = fs::file_size(bik, ec);
+  const auto when = fs::last_write_time(bik, ec).time_since_epoch().count();
+  uint32_t h = 2166136261u;
+  for (wchar_t c : Lower(Utf8(bik)) + "|" + std::to_string(size) + "|" + std::to_string(when)) h = (h ^ uint32_t(uint8_t(c))) * 16777619u;
+  char hex[16];
+  std::snprintf(hex, sizeof hex, "%08x", h);
+  return fs::path(g_game) / L"Mods" / L".convert" / L"movies" / (fs::path(bik).stem().wstring() + L"_" + Wide(hex) + L".mp4");
+}
+}  // namespace
+
+std::wstring CachedMp4(const std::wstring& bik) {
+  std::error_code ec;
+  const fs::path p = Mp4Path(bik);
+  return fs::exists(p, ec) ? p.wstring() : std::wstring();
+}
+
+std::wstring ShrunkMovie(const std::wstring& bik, std::string* why) {
+  std::lock_guard lock(g_shrink_mutex);
+  if (std::wstring have = CachedMp4(bik); !have.empty()) return have;
+  const fs::path p = Mp4Path(bik);
+  const std::string err = ShrinkMovie(bik, p.wstring());
+  if (why) *why = err;
+  return err.empty() ? p.wstring() : std::wstring();
+}
+
+std::string ModMovieFiles(const std::wstring& src, const std::string& stem, std::vector<ZipEntry>& files, std::string* why) {
+  std::error_code ec;
+  const std::string ext = Lower(Utf8(fs::path(src).extension().wstring()));
+  auto is_bik = [](const std::wstring& f) {
+    if (FILE* fp = _wfopen(f.c_str(), L"rb")) {
+      char h[3] = {};
+      const bool b = std::fread(h, 1, 3, fp) == 3 && !std::memcmp(h, "BIK", 3);
+      std::fclose(fp);
+      return b;
+    }
+    return false;
+  };
+  std::wstring bik, mp4;
+  if (ext == ".mp4") {
+    mp4 = src;
+    const std::wstring beside = fs::path(src).replace_extension(L".bik").wstring();  // (a movie made here: its Bink beside it)
+    if (fs::exists(beside, ec) && is_bik(beside)) bik = beside;
+  } else {
+    if (is_bik(src)) bik = src;
+    Progress("Making the entrance movie an mp4 (" + FileName(src) + ") ...");
+    std::string err;
+    mp4 = ShrunkMovie(src, &err);
+    if (mp4.empty()) Log("movie: kept as it is (" + err + ")");
+  }
+  Bytes d;
+  if (!mp4.empty() && ReadFile(Utf8(mp4), d)) {
+    files.push_back({stem + ".mp4", std::move(d)});
+    Log("movie: " + stem + ".mp4 " + SizeText(files.back().data.size()) + (bik.empty() ? "" : ", the Bink " + SizeText(fs::file_size(bik, ec))) +
+        (g_settings.keep_bik && !bik.empty() ? " (kept beside it)" : ""));
+    if (g_settings.keep_bik && !bik.empty() && ReadFile(Utf8(bik), d)) files.push_back({stem + ".bik", std::move(d)});
+    return stem + ".mp4";
+  }
+  if (!bik.empty() && ReadFile(Utf8(bik), d)) {  // (no mp4 could be made: the Bink as before)
+    files.push_back({stem + ".bik", std::move(d)});
+    return stem + ".bik";
+  }
+  if (why) *why = ext == ".bk2" || ext == ".bik2" ? "a Bink 2 movie that couldn't be converted" : "not a movie the game can play (a .bik or an .mp4)";
+  return {};
+}
+
+std::wstring ProjectMovie(const std::wstring& movie) {
+  if (movie.empty() || Lower(Utf8(fs::path(movie).extension().wstring())) == ".mp4") return movie;
+  const std::wstring mp4 = CachedMp4(movie);
+  return mp4.empty() ? movie : mp4;
+}
+
+void MovieSizeRow(const std::wstring& movie) {
+  if (movie.empty()) return;
+  static std::atomic<bool> running{false};
+  static std::wstring failed_for;
+  static std::string failed_why;
+  std::error_code ec;
+  const uint64_t size = fs::file_size(movie, ec);
+  if (ec) return;
+  const std::string ext = Lower(Utf8(fs::path(movie).extension().wstring()));
+  ImGui::Indent();
+  if (ext == ".mp4") {
+    const std::wstring beside = fs::path(movie).replace_extension(L".bik").wstring();
+    if (fs::exists(beside, ec))
+      ImGui::TextDisabled("%s as an mp4 (as a Bink: %s)", SizeText(size).c_str(), SizeText(fs::file_size(beside, ec)).c_str());
+    else
+      ImGui::TextDisabled("%s (an mp4)", SizeText(size).c_str());
+  } else {
+    const std::wstring mp4 = CachedMp4(movie);
+    if (!mp4.empty()) {
+      ImGui::TextDisabled("%s as a Bink -> %s as an mp4 (the mod carries the mp4)", SizeText(size).c_str(), SizeText(fs::file_size(mp4, ec)).c_str());
+    } else if (failed_for == movie) {
+      ImGui::TextDisabled("%s as a Bink; no mp4: %s (the mod carries the Bink)", SizeText(size).c_str(), failed_why.c_str());
+    } else {
+      ImGui::TextDisabled("%s as a Bink -> making the mp4 ...", SizeText(size).c_str());
+      if (!running.exchange(true))
+        std::thread([movie] {
+          std::string why;
+          const std::wstring made = ShrunkMovie(movie, &why);
+          OnUiThread([movie, made, why] {
+            if (made.empty()) failed_for = movie, failed_why = why;
+            running = false;
+          });
+        }).detach();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Checkbox("Keep the Bink too", &g_settings.keep_bik)) SaveSettings();
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Mods carry the movie as an mp4 (much smaller). Ticked, they carry the Bink (.bik) beside it too: the game plays\n"
+                      "the Bink where Windows can't play mp4 (Steam Deck / Proton, Windows N). Bigger mods; for advanced users.");
+  ImGui::Unindent();
 }
 
 int ArenaPacNumber(const std::string& name) {  // (the last "bg" followed by exactly two digits)
@@ -1810,6 +1948,7 @@ void LoadSettings() {
     g_settings.my_discs.push_back({d.substr(0, a), d.substr(a + 1, b - a - 1), Wide(d.substr(b + 1))});
   }
   g_settings.discs_seeded = Value(t, "discs_seeded") == "1";
+  g_settings.keep_bik = Value(t, "keep_bik") == "1";
 }
 
 }  // namespace
@@ -1825,6 +1964,7 @@ void SaveSettings() {
   if (!g_settings.bink2_tool.empty()) t += "bink2_tool=" + Utf8(g_settings.bink2_tool) + "\n";
   for (const auto& d : g_settings.my_discs) t += "my_disc=" + d.key + "|" + d.id + "|" + Utf8(d.path) + "\n";
   if (g_settings.discs_seeded) t += "discs_seeded=1\n";
+  if (g_settings.keep_bik) t += "keep_bik=1\n";
   WriteFile(PathStr(SettingsDir() / L"settings.txt"), Bytes(t.begin(), t.end()));
 }
 

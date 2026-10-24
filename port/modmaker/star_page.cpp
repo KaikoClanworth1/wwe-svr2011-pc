@@ -149,6 +149,8 @@ const FileCheck& Check(const std::wstring& path, const char* kind) {
         c.ok = n >= 4 && !std::memcmp(head, "EPK8", 4) && c.size >= 0x4000;
         if (!c.ok) c.note = n >= 4 && !std::memcmp(head, "EPAC", 4) ? "an EPAC (an arena or menu pac), not a character model pac (EPK8)"
                                                                       : "not a character model pac (EPK8)";
+      } else if (!std::strcmp(kind, "bik") && n >= 8 && !std::memcmp(head + 4, "ftyp", 4)) {
+        c.ok = true;  // (an .mp4: the game plays it in HD)
       } else if (!std::strcmp(kind, "bik")) {
         c.ok = n >= 28 && !std::memcmp(head, "BIK", 3);
         if (c.ok) c.w = int(Le32(head + 20)), c.h = int(Le32(head + 24));
@@ -1248,14 +1250,14 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
     if (!j.attire_names[a].empty()) man += "attire" + std::to_string(a + 1) + "_name=" + j.attire_names[a] + "\n";
   }
   if (!add(j.voice, "voice", "voice", "name recording")) return false;
-  if (!j.movie.empty()) {
-    Bytes m;
-    if (!ReadFile(Utf8(j.movie), m) || m.size() < 4 || std::memcmp(m.data(), "BIK", 3)) {
-      Status("The entrance movie must be a Bink file (.bik): the launcher's Movies tab makes them.");
+  if (!j.movie.empty()) {  // (an .mp4: a Bink is shrunk to one; the Bink beside it with "Keep the Bink too")
+    std::string why;
+    const std::string name = ModMovieFiles(j.movie, "movie", files, &why);
+    if (name.empty()) {
+      Status("The entrance movie can't go in the mod: " + why + ".");
       return false;
     }
-    files.push_back({"movie.bik", std::move(m)});
-    man += "movie=movie.bik\n";
+    man += "movie=" + name + "\n";
   }
   if (!j.threads.empty()) files.push_back({"threads.txt", Bytes(j.threads.begin(), j.threads.end())});  // (Threads parts tab)
   if (!j.cae.empty()) {  // (a created entrance: the game's block as it wrote it - superstar_mods.cpp cae=)
@@ -2868,7 +2870,7 @@ void Problems(std::vector<Problem>& p) {
     else if (!c.ok)
       p.push_back(Error("The big screen video isn't a video the game can play (" + c.note + ").")
                       .With("Pick another video...", [] { GoStep(kStepEntrance); }).With("Play no video of my own", drop, "the video is left out"));
-    else if (c.w != 320 || c.h != 320)
+    else if (c.w && (c.w != 320 || c.h != 320))
       p.push_back(Warning("The big screen video is " + std::to_string(c.w) + " x " + std::to_string(c.h) +
                           ": the big screen is square, so it plays stretched.").Note());
   }
@@ -3364,9 +3366,10 @@ void Draw() {
   ThemeGainRow();
   CallGainRow();
   FileRow("Entrance movie (optional)...", g_star.movie, "the style's", kBinkFilter, 1,
-          "A 320 x 320 Bink movie: From a video... makes one here, the launcher's Movies tab too.");
+          "A 320 x 320 movie (.mp4, or a Bink .bik): From a video... makes one here, the launcher's Movies tab too. Mods carry it as an mp4.");
   ImGui::SameLine();
   BinkFromVideoButton("From a video...", g_star.movie, g_star.name);
+  MovieSizeRow(g_star.movie);
   const std::vector<int> own = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
   auto in_model = [&](int n) {  // (the game counts them contiguous from 1)
     for (int k = 1; k <= n; ++k)
@@ -3670,7 +3673,12 @@ void WriteProject(ProjectOut& out) {
   out.File("song", g_star.song, "star/theme");
   if (g_star.music > 0) out.Key("music", std::to_string(g_star.music));
   if (const std::string g = GainText(); !g.empty()) out.Key("theme_gain", g);
-  out.File("movie", g_star.movie, "star/movie");
+  out.File("movie", ProjectMovie(g_star.movie), "star/movie");
+  if (g_settings.keep_bik && !g_star.movie.empty()) {  // (the Bink kept beside the mp4)
+    const fs::path m = g_star.movie, b = Lower(PathStr(m.extension())) == ".bik" ? m : fs::path(m).replace_extension(L".bik");
+    std::error_code ec;
+    if (fs::exists(b, ec)) out.File("movie_bik", b.wstring(), "star/movie_bik");
+  }
   out.File("cae", g_star.cae, "star/cae");
   if (!g_star.threads.empty() && !out.keys_only) {
     out.Key("threads", "star/threads.txt");
@@ -3848,6 +3856,18 @@ bool Read(const ProjectIn& in, bool mod) {
   if (const int m = std::atoi(in.Get("music").c_str()); m >= 1 && m <= 253) g_star.music = m;
   if (const std::string g = in.Get("theme_gain"); !g.empty()) g_star.theme_gain = std::clamp(float(std::atof(g.c_str())), -20.0f, 6.0f);
   g_star.movie = file("movie", nullptr);
+  if (Lower(PathStr(fs::path(g_star.movie).extension())) == ".mp4") {  // (its Bink: put back beside it, same name)
+    std::wstring b;
+    if (mod) {
+      const std::string inner = PathStr(fs::path(in.Get("movie")).replace_extension(".bik"));
+      if (in.Find(inner)) b = in.Extract(inner);
+    } else {
+      b = file("movie_bik", nullptr);
+    }
+    const fs::path to = fs::path(g_star.movie).replace_extension(L".bik");
+    std::error_code ec;
+    if (!b.empty() && fs::path(b) != to) fs::copy_file(b, to, fs::copy_options::overwrite_existing, ec);
+  }
   g_star.cae = file("cae", nullptr);
   {  // (threads.txt: the project's own, or a mod's)
     const std::string tf = mod ? std::string("threads.txt") : in.Get("threads");

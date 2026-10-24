@@ -326,6 +326,82 @@ int RunCaptureJson(const std::wstring& cmdline, const std::wstring& cwd, std::st
 
 }  // namespace
 
+int RunWait(const std::wstring& cmdline, std::string& out) {
+  SECURITY_ATTRIBUTES sa = {sizeof sa, nullptr, TRUE};
+  HANDLE rd = nullptr, wr = nullptr;
+  if (!CreatePipe(&rd, &wr, &sa, 0)) return -1;
+  SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+  STARTUPINFOW si = {sizeof si};
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdOutput = wr, si.hStdError = wr, si.hStdInput = nullptr;
+  PROCESS_INFORMATION pi = {};
+  std::wstring cmd = cmdline;
+  const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, nullptr,
+                                 nullptr, &si, &pi);
+  CloseHandle(wr);
+  if (!ok) {
+    CloseHandle(rd);
+    Log("Could not start: " + Utf8(cmdline));
+    return -1;
+  }
+  char buf[4096];
+  DWORD n = 0;
+  while (ReadFile(rd, buf, sizeof buf, &n, nullptr) && n) out.append(buf, n);
+  CloseHandle(rd);
+  WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD code = DWORD(-1);
+  GetExitCodeProcess(pi.hProcess, &code);
+  CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
+  return int(code);
+}
+
+std::string ShrinkMovie(const std::wstring& in, const std::wstring& out) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const std::wstring ff = FfmpegExe(), part = out + L".part.mp4";
+  fs::create_directories(fs::path(out).parent_path(), ec);
+  fs::remove(part, ec);
+  const fs::path script = ToolsDir().empty() ? fs::path() : fs::path(ToolsDir()) / L"movie_shrink.py";
+  const bool use_script = !script.empty() && fs::exists(script, ec) && !PythonExe().empty();
+  std::wstring cmd;
+  if (use_script) {
+    cmd = Quote(PythonExe()) + L" -X utf8 " + Quote(script.wstring()) + L" " + Quote(in) + L" " + Quote(part);
+    if (!ff.empty()) cmd += L" --ffmpeg " + Quote(ff);
+  } else {
+    if (ff.empty()) return "ffmpeg is missing (Mod Maker tools: Install what's missing)";
+    if (FILE* f = _wfopen(in.c_str(), L"rb")) {  // (Bink 2: the ffmpeg builds don't read it)
+      char head[4] = {};
+      const size_t got = std::fread(head, 1, 4, f);
+      std::fclose(f);
+      if (got == 4 && head[0] == 'K' && head[1] == 'B' && head[2] == '2') return "a Bink 2 movie, which ffmpeg can't read";
+    }
+    cmd = Quote(ff) + L" -hide_banner -loglevel error -nostdin -y -i " + Quote(in) +
+          L" -vf scale=trunc(iw/2)*2:trunc(ih/2)*2 -c:v libx264 -crf 20 -pix_fmt yuv420p -c:a aac -movflags +faststart " + Quote(part);
+  }
+  Log("movie: " + Utf8(fs::path(in).filename().wstring()) + " -> mp4 (" + (use_script ? "movie_shrink.py" : "ffmpeg") + ")");
+  std::string text;
+  const int code = RunWait(cmd, text);
+  if (code == 0 && fs::exists(part, ec) && fs::file_size(part, ec) > 0) {
+    fs::remove(out, ec);
+    fs::rename(part, out, ec);
+    if (!ec) return {};
+  }
+  fs::remove(part, ec);
+  // why: the script's JSON "error", else the last line it printed
+  std::string why;
+  if (const size_t e = text.rfind("\"error\""); e != std::string::npos) {
+    const size_t q1 = text.find('"', text.find(':', e) + 1), q2 = q1 == std::string::npos ? q1 : text.find('"', q1 + 1);
+    if (q2 != std::string::npos) why = text.substr(q1 + 1, q2 - q1 - 1);
+  }
+  if (why.empty()) {
+    std::string t = text;
+    while (!t.empty() && (t.back() == '\n' || t.back() == '\r')) t.pop_back();
+    why = t.substr(t.find_last_of('\n') == std::string::npos ? 0 : t.find_last_of('\n') + 1);
+  }
+  Log("movie: the mp4 wasn't made (exit " + std::to_string(code) + "): " + text.substr(text.size() > 2000 ? text.size() - 2000 : 0));
+  return why.empty() ? "the conversion stopped (exit " + std::to_string(code) + ")" : why;
+}
+
 void CancelTool() {
   std::lock_guard lock(g_job_mutex);
   if (!g_job) return;

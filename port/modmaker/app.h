@@ -376,6 +376,7 @@ struct Settings {
   };
   std::vector<MyDisc> my_discs;
   bool discs_seeded = false;  // the old disc folders were searched once to fill My game discs
+  bool keep_bik = false;      // mods keep a movie's Bink beside its .mp4 (the game's fallback where MP4 can't play)
 };
 extern Settings g_settings;
 void SaveSettings();
@@ -572,7 +573,23 @@ Image GameLook(const Image& src);
 // A video or picture -> a 320 x 320 Bink entrance movie (the launcher's movie
 // maker), in the background; done(out or "" on failure) on the UI thread.
 // fit: 0 whole picture with bars, 1 fill, 2 stretch; seconds: 0 = all.
+// The movie made from `video` (movie_make: the titantron layout) as `out` (a .bik), then that as an .mp4 beside it (same
+// name): done() gets the .mp4 ("" failed; the .bik when no .mp4 could be made). Both stay in the work folder.
 void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int seconds, std::function<void(std::wstring)> done);
+// A Bink movie's .mp4 in the work folder (<game>\Mods\.convert\movies, one per file: path + size + time), made now when
+// missing (blocks: a worker thread); "" + why when it can't be. CachedMp4: the same without making it ("" not yet).
+std::wstring ShrunkMovie(const std::wstring& bik, std::string* why = nullptr);
+std::wstring CachedMp4(const std::wstring& bik);
+// The movie files a mod carries for `src` (.bik / .bk2 / .mp4) as <stem>.mp4 (a Bink shrunk to one) and, with
+// g_settings.keep_bik, the Bink as <stem>.bik (the game's fallback); a Bink that can't be shrunk goes as it is.
+// Returns the manifest's movie value ("" + why: nothing usable).
+std::string ModMovieFiles(const std::wstring& src, const std::string& stem, std::vector<ZipEntry>& files, std::string* why);
+// "12.3 MB"
+std::string SizeText(uint64_t bytes);
+// What a project keeps for a movie slot: its .mp4 (a Bink's, once made) else the file as it is.
+std::wstring ProjectMovie(const std::wstring& movie);
+// The movie slot's line: its size, and as an .mp4 (made in the background when it is a Bink), plus the keep-Bink option.
+void MovieSizeRow(const std::wstring& movie);
 // A "From a video..." button that makes the Bink into <game>\Mods\.convert and sets `movie`.
 bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::string& stem);
 // The footer under every superstar 3D view: Reset view, Blood (off by default) and its Damage level (the game's
