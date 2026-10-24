@@ -285,7 +285,7 @@ def build_motion(bank, ns, sample, frames, typ=0, solved=None):
     return ymbs.encode_motion(bank, typ, K, chans), frames
 
 
-def w13_sampler(R, m):
+def w13_sampler(R, m, M=None):
     """a w13_retarget.Retarget and a YANM block (60 Hz) -> sample(t seconds) -> {2011 name: 4x4}: the
     same targets the YMKs path solves for (rotation delta from the A-pose binds, 0.1 x position)"""
     names = {j: n['name'] for j, n in enumerate(R.s11.nodes)}
@@ -293,6 +293,8 @@ def w13_sampler(R, m):
 
     def sample(t):
         W13 = R.p13.world(m, min(int(round(t * 60.0)), last))
+        if M is not None:   # (the pose moved first - w13_retarget.facing_frame)
+            W13 = [M @ w for w in W13]
         return {names[j]: _mat(Rm, pos) for j, (Rm, pos) in R.targets(W13).items()}
     return sample
 

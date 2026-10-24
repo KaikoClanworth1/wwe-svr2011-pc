@@ -29,7 +29,8 @@ page (`port/docs/MOVE_MODDING.md`).
 
 ### 2.2 Time
 
-- 2011 plays a motion frame a game frame (60 a second). **2K14/2K15 YANM blocks have twice 2011's frames**:
+- **2011 plays a motion key every 2 match frames** (30 keys a second: the forced Last Ride, 265 keys, ran 526 match
+  frames; the person's motion frame at +24 counts match frames). **2K14/2K15 YANM blocks have twice 2011's keys**:
   2K15's Attitude Adjustment 2 is 532 source frames, 2011's 265 - the converter samples every second one.
 
 ### 2.3 Where the two people are (2K15)
@@ -61,6 +62,10 @@ page (`port/docs/MOVE_MODDING.md`).
 
 - Op 68 (`[68, n, frames]`) picks face n-1 from an 18-entry table; anything past 17 read wild memory and killed
   the match thread - the "frozen pair" (report 001255). The game skips such events since 2.1.6.
+
+- **In-game each person's root plays in its own placed frame**: the bases (+288) stay where the paired start put
+  them (the F-5: 1.5 m apart, unmoved), and a shared-frame viewer has to place the attacker's root turned to face
+  the victim to match what the game draws.
 
 ## 3. Testing a ported move
 

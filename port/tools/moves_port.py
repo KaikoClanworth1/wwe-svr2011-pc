@@ -1020,13 +1020,24 @@ def convert(a, rep):
             rep['notes'].append("category: the moveset slot's (%s)" % '/'.join(sc))
     gap = None
     # (2K15 keeps the attacker in its own frame: turned into the victim's - w13_retarget.facing_frame)
-    face = WR.facing_frame(FACING_GAP[a['game']]) if a['game'] in FACING_GAP and vic is not None else None
-    if face is not None:
-        rep['notes'].append("attacker turned into the victim's frame (%s stores it turned, %d units off)" %
-                            (a['game'], FACING_GAP[a['game']]))
+    face = None
     if vic is not None:
-        k0, k1 = R0.keys(att, 2, face), R0.keys(vic, 2)
-        gap = ((k0[0][0][0] - k1[0][0][0]) ** 2 + (k0[0][0][2] - k1[0][0][2]) ** 2) ** 0.5
+        k1 = R0.keys(vic, 2)
+
+        def gap_of(M):
+            k0 = R0.keys(att, 2, M)
+            return ((k0[0][0][0] - k1[0][0][0]) ** 2 + (k0[0][0][2] - k1[0][0][2]) ** 2) ** 0.5
+        gap = gap_of(None)
+        if a['game'] in FACING_GAP and a.get('turn') != 'off':
+            # turned about the victim, then down -z by the game's gap or not: the closer start wins (a pair
+            # starts within reach). 2K15's standing grapples need the shift (AA 2: 142 units with it, 1641
+            # without), its ground holds don't (Patriot Lock: 1456 without, 2954 with - the attacker stands at
+            # the lying victim's feet).
+            cands = [(gap_of(WR.facing_frame(sh)), sh) for sh in (FACING_GAP[a['game']], 0)]
+            gap, sh = min(cands)
+            face = WR.facing_frame(sh)
+            rep['notes'].append("attacker turned into the victim's frame (%s stores it turned%s)" %
+                                (a['game'], ', %d units off' % sh if sh else ''))
         rep['notes'].append('source start gap %.0f units' % gap)
     tid = int(a['template']) if a.get('template') else None
     if tid and not usable11(g11.waze, tid):
@@ -1073,6 +1084,26 @@ def convert(a, rep):
     R = WR.Retarget(bind='rest', twist=True, ik=a['game'] != 'wwe12')
     keys_of = {0: [R.keys(att, nf, face), R.keys(vic, nf) if vic is not None else None]}
     xs = [0]
+    # A multi-phase source move (a submission: hold, struggle loops, escape, tap) has a block pair per phase, and
+    # phase n is 2011's x n: 2K15's Patriot Lock 0000 / 0001 / 0002 / 0004 / 0006 / 0007 against Ankle Lock 3's
+    # x 0 / 1 / 2 / 4 / 6 / 7, of like lengths. Each template x takes its own phase (before, every x got phase 0's
+    # motion: the hold never turned into the struggle).
+    phase_blocks = {}
+    if vic is not None:
+        for ph, d in by.items():
+            if not ph.isdigit():   # (decimal: 2K15's 0090 / 0091 / 0092 are 2011's reversal x 90-92)
+                continue
+            px = int(ph)
+            if 0 < px < 90 and 0 in d and 1 in d and d[0]['frames'] > 2:
+                phase_blocks[px] = (d[0], d[1], max(1, (d[0]['frames'] - 1) // 2))
+    if phase_blocks:
+        rep['notes'].append('source phases %s = 2011 x of the same number' % ', '.join(str(x) for x in sorted(phase_blocks)))
+
+    def phase_keys(x):
+        if x not in keys_of and x in phase_blocks:
+            ax, vx, nx = phase_blocks[x]
+            keys_of[x] = [R.keys(ax, nx, face), R.keys(vx, nx)]
+        return keys_of.get(x, keys_of[0])
     lines = ['wazecopy %d %d' % (new_id, tid), 'wazename %d %s' % (new_id, name)]
     progress(60, 'tracks')
     offset = None
@@ -1091,19 +1122,21 @@ def convert(a, rep):
                 if k is None:
                     continue
                 typ, nseg, itv, pad, f0, f1, f2, f3 = bank.hdr[k]
-                blk = (att if y == 0 else vic) if x < 90 and y in (0, 1) else None
+                pa, pv, pn = phase_blocks.get(x, (att, vic, nf))
+                blk = (pa if y == 0 else pv) if x < 90 and y in (0, 1) else None
                 data = None
                 if blk is not None:
                     ymb_ns = ymb_ns or YR.nodes11()
                     try:
-                        sample = YR.w13_sampler(R, blk)
-                        if y not in ymb_solved:   # (the same motion in every bank: solved once)
-                            ymb_solved[y] = YR.solve(ymb_ns, sample, nf)
+                        sample = YR.w13_sampler(R, blk, face if y == 0 else None)
+                        sk = (x if x in phase_blocks else 0, y)
+                        if sk not in ymb_solved:   # (the same motion in every bank: solved once)
+                            ymb_solved[sk] = YR.solve(ymb_ns, sample, pn)
                         off = bank.dir[k][3]
-                        ck = (y, typ, raw[bank.base + off: bank.base + next(e for e in ends if e > off)])
+                        ck = (sk, typ, raw[bank.base + off: bank.base + next(e for e in ends if e > off)])
                         if ck not in ymb_built:   # (banks with the same template motion: encoded once)
                             progress(60 + min(30, 8 * len(ymb_built)), 'tracks: %s x%d y%d' % (path, x, y))
-                            d_, f_ = YR.build_motion(bank, ymb_ns, sample, nf, typ, ymb_solved[y])
+                            d_, f_ = YR.build_motion(bank, ymb_ns, sample, pn, typ, ymb_solved[sk])
                             ymb_built[ck] = (d_, f_, YR.check(bank, d_, f_, typ, sample, ymb_ns))
                         data, frames, worst = ymb_built[ck]
                         rep['notes'].append('%s x%d y%d: YMBs motion, %d keys, worst joint %.2f units' %
@@ -1131,8 +1164,7 @@ def convert(a, rep):
             e = bank.find(tid, x, y)
             if e is None:
                 continue
-            sx = x if x in keys_of else xs[0]
-            src_keys = keys_of[sx][y] if y in (0, 1) and x < 90 else None
+            src_keys = phase_keys(x)[y] if y in (0, 1) and x < 90 else None
             if src_keys:
                 tk = ymks.body_keys(e['data'], bank.T, packed)
                 if offset is None and y == 0:   # (anchor: the template attacker's start, x / z)
