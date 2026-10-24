@@ -4945,20 +4945,41 @@ void OnPresent(uint32_t front_buffer) {
   static const bool frame_shot_on_2d = EnvInt("SVR2011_TEST_FRAME_SHOT_ON_2D", 0) != 0;
   static const uint32_t frame_shot_every = uint32_t(std::max(0, EnvInt("SVR2011_TEST_FRAME_SHOT_EVERY", 0)));
   static int frame_shots_taken = 0;
-  const bool test_shot = !frame_shot.empty() && frame_shots_taken < frame_shots && !r->hidden_frame &&
-                         g_match_scene.load() &&
-                         Be32(Virtual(0x82E3CD0C)) > frame_shot_at + frame_shot_every * uint32_t(frame_shots_taken) &&
-                         (!frame_shot_on_2d || g_flat_frame_seen);
+  bool test_shot = !frame_shot.empty() && frame_shots_taken < frame_shots && !r->hidden_frame &&
+                   g_match_scene.load() &&
+                   Be32(Virtual(0x82E3CD0C)) > frame_shot_at + frame_shot_every * uint32_t(frame_shots_taken) &&
+                   (!frame_shot_on_2d || g_flat_frame_seen);
   if (frame_shot_on_2d && g_match_scene.load() && Be32(Virtual(0x82E3CD0C)) <= frame_shot_at) g_flat_frame_seen = false;
+  // Test aid: SVR2011_TEST_SHOT_REQUEST=<file> - whenever that file appears (anywhere: menus, story walks), the next
+  // frame is shot to the .ppm named in it and the file is removed (a hidden test game has no window to capture).
+  static const std::string shot_request = [] {
+    char* v = nullptr;
+    size_t n = 0;
+    std::string s;
+    if (_dupenv_s(&v, &n, "SVR2011_TEST_SHOT_REQUEST") == 0 && v) s = v, free(v);
+    return s;
+  }();
+  static uint32_t shot_request_poll = 0;
+  std::string requested_file;
+  if (!test_shot && !shot_request.empty() && !r->hidden_frame && ++shot_request_poll % 15 == 0)
+    if (FILE* f = std::fopen(shot_request.c_str(), "rb")) {
+      char name[512] = {};
+      const size_t got = std::fread(name, 1, sizeof name - 1, f);
+      std::fclose(f);
+      std::remove(shot_request.c_str());
+      requested_file.assign(name, got);
+      while (!requested_file.empty() && std::isspace(uint8_t(requested_file.back()))) requested_file.pop_back();
+    }
   std::shared_ptr<plume::RenderBuffer> shot;
   const uint32_t shot_row = (g_out_w + 63) & ~63u;  // (256-byte rows)
-  std::string shot_file = frame_shot;
+  std::string shot_file = requested_file.empty() ? frame_shot : requested_file;
+  if (!requested_file.empty()) test_shot = true;
   if (test_shot) {
-    if (frame_shots > 1) {
+    if (frame_shots > 1 && requested_file.empty()) {
       const size_t dot = shot_file.rfind('.');
       shot_file.insert(dot == std::string::npos ? shot_file.size() : dot, "_" + std::to_string(frame_shots_taken));
     }
-    ++frame_shots_taken;
+    if (requested_file.empty()) ++frame_shots_taken;
     shot = r->device->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(uint64_t(shot_row) * g_out_h * 4));
     if (shot) {
       Barrier(r, back, RenderTextureLayout::COPY_SOURCE);
