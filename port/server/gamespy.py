@@ -207,6 +207,15 @@ class LocalBlobs:
                 pass
         return None
 
+    def open(self, sha):
+        """-> (a file of the bytes as stored, packed) or None: a big blob read as it is sent."""
+        for packed in (False, True):
+            try:
+                return open(self.path(sha, packed), "rb"), packed
+            except OSError:
+                pass
+        return None
+
     def delete(self, sha):
         for packed in (True, False):
             try:
@@ -292,6 +301,14 @@ class RemoteBlobs:
                 return f.read(), f.headers.get("X-Packed") == "1"
         except Exception:
             return None
+
+    def open(self, sha):
+        """-> (the node's answer, read as it comes, packed) or None."""
+        try:
+            f = self._req("GET", sha)
+        except Exception:
+            return None
+        return f, f.headers.get("X-Packed") == "1"
 
     def delete(self, sha):
         try:
@@ -562,6 +579,52 @@ class Store:
                 while self.cache_bytes > self.cache_max and self.cache:
                     self.cache_bytes -= len(self.cache.popitem(last=False)[1])
         return data
+
+    def blob_size(self, sha):
+        """The content's size (as sent, unpacked), or None."""
+        with self.lock:
+            row = self.db.execute("SELECT size FROM blobs WHERE sha = ?", (sha,)).fetchone()
+        return row[0] if row else None
+
+    def blob_chunks(self, sha, chunk=1 << 20):
+        """The content in pieces as it is read (from the disk or the storage node) and unpacked: an iterator,
+        or None when it isn't there. A big download starts at once instead of after the whole file (a 217 MB
+        mod: 40 s+ before its first byte); a broken stream raises OSError / LZMAError part way."""
+        with self.lock:
+            data = self.cache.get(sha)
+        if data is not None:
+            return iter([data[i:i + chunk] for i in range(0, len(data), chunk)] or [b""])
+        src = self.blobs.open(sha)
+        if src is None:
+            return None
+        f, packed = src
+
+        def pieces():
+            try:
+                d = lzma.LZMADecompressor() if packed else None
+                while True:
+                    raw = f.read(chunk)
+                    if not d:
+                        if not raw:
+                            return
+                        yield raw
+                        continue
+                    if not raw and d.needs_input:
+                        if not d.eof:
+                            raise lzma.LZMAError("the packed blob %s ends early" % sha[:12])
+                        return
+                    out = d.decompress(raw, max_length=chunk)
+                    if out:
+                        yield out
+                    while not d.needs_input and not d.eof:  # (more out of what came in)
+                        out = d.decompress(b"", max_length=chunk)
+                        if out:
+                            yield out
+                    if d.eof:
+                        return
+            finally:
+                f.close()
+        return pieces()
 
     def owner_bytes(self, ownerid):
         with self.lock:

@@ -735,6 +735,8 @@ class Service:
                     bytes_out = len(response.body)
                 except TypeError:
                     bytes_out = response.content_length or 0
+            elif isinstance(response, web.StreamResponse):
+                bytes_out = response.content_length or 0
             return response
         finally:
             self.stats.end(bytes_in, bytes_out)
@@ -1107,6 +1109,40 @@ class Service:
                                                                    len(out), what))
         return web.json_response({"ok": True, "sha": sha, "processed": what})
 
+    STREAM_FROM = 4 << 20  # (smaller: read whole, through the cache)
+
+    async def send_blob(self, request, sha, headers=None, content_type="application/octet-stream"):
+        """A stored file to the client: a small one whole; a big one passed on in pieces as they are read
+        (and unpacked) here or on the storage node. None when it isn't there (the caller's 404)."""
+        loop = asyncio.get_running_loop()
+        size = self.store.blob_size(sha)
+        if size is None or size <= self.STREAM_FROM:
+            data = await loop.run_in_executor(None, self.store._get_blob, sha)
+            return None if data is None else web.Response(body=data, content_type=content_type, headers=headers)
+        pieces = await loop.run_in_executor(None, self.store.blob_chunks, sha)
+        first = await loop.run_in_executor(None, next, pieces, None) if pieces is not None else None
+        if first is None:
+            return None
+        response = web.StreamResponse(headers=dict(headers or {}, **{"Content-Type": content_type}))
+        response.content_length = size
+        await response.prepare(request)
+        sent = 0
+        try:
+            piece = first
+            while piece is not None:
+                await response.write(piece)
+                sent += len(piece)
+                piece = await loop.run_in_executor(None, next, pieces, None)
+        except (ConnectionError, asyncio.CancelledError):  # (the client went away)
+            await loop.run_in_executor(None, pieces.close)
+            raise
+        except Exception as e:  # (the node or the file broke part way: the client sees a short download)
+            gs.log("download: %s broke after %d of %d bytes: %s" % (sha[:12], sent, size, e))
+            await loop.run_in_executor(None, pieces.close)
+            raise
+        await response.write_eof()
+        return response
+
     async def api_media_get(self, request):
         if not self.account(request):
             return web.Response(status=401)
@@ -1116,11 +1152,11 @@ class Service:
         if request.method == "HEAD":
             return web.Response(status=200 if self.store.stored_media(sha) else 404)
         sha = self.store.stored_media(sha) or sha
-        data = await asyncio.get_running_loop().run_in_executor(None, self.store.get_media, sha)
-        if data is None:
+        response = await self.send_blob(request, sha) if self.store.has_media(sha) else None
+        if response is None:
             return web.Response(status=404)
         self.stats.count("downloads")
-        return web.Response(body=data, content_type="application/octet-stream")
+        return response
 
     async def api_entrance(self, request):
         account = self.account(request)
@@ -1472,14 +1508,15 @@ class Service:
         info, blobs = discovery.get(self.store, mid) if mid is not None else (None, None)
         if not info:
             return web.Response(status=404)
-        data = await asyncio.get_running_loop().run_in_executor(None, self.store._get_blob, blobs["sha"])
-        if data is None:
+        name = re.sub(r'[^A-Za-z0-9 ._()-]', "_", blobs["file_name"] or "mod.svrmod")
+        # (counted before it is sent: a streamed download's handler returns only at its end)
+        if self.store.blob_size(blobs["sha"]) is None:
             return web.Response(status=404)
         discovery.counted(self.store, mid)
         self.stats.count("downloads")
-        name = re.sub(r'[^A-Za-z0-9 ._()-]', "_", blobs["file_name"] or "mod.svrmod")
-        return web.Response(body=data, content_type="application/octet-stream",
-                            headers={"Content-Disposition": 'attachment; filename="%s"' % name})
+        response = await self.send_blob(request, blobs["sha"],
+                                        headers={"Content-Disposition": 'attachment; filename="%s"' % name})
+        return response if response is not None else web.Response(status=404)
 
     async def api_mod_image(self, request):
         mid = self._mod_id(request)
@@ -2364,11 +2401,12 @@ def storage_app(args):
             return web.Response(text="ok")
         if request.method == "HEAD":
             return web.Response(status=200 if blobs.exists(sha) else 404)
-        got = await loop.run_in_executor(None, blobs.get, sha)
-        if got is None:
-            return web.Response(status=404)
-        return web.Response(body=got[0], headers={"X-Packed": "1" if got[1] else "0"},
-                            content_type="application/octet-stream")
+        for packed in (False, True):  # (sent from the disk as it is read: a big mod starts at once)
+            path = blobs.path(sha, packed)
+            if os.path.exists(path):
+                return web.FileResponse(path, chunk_size=1 << 18, headers={
+                    "X-Packed": "1" if packed else "0", "Content-Type": "application/octet-stream"})
+        return web.Response(status=404)
 
     async def health(request):
         return web.json_response({"ok": True, "role": "storage"})
