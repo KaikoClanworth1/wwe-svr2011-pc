@@ -4,6 +4,7 @@
 // signs_page.cpp, backgrounds_page.cpp, media_page.cpp, moves_page.cpp, assets_page.cpp,
 // anims_page.cpp, icons_page.cpp, help_page.cpp; the 3D editor is editor.cpp.
 #include "app.h"
+#include "move_check.h"
 #include "mod_check.h"
 
 #include <shellapi.h>
@@ -2932,6 +2933,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--test-report") && more) session::TestReport(Utf8(argv[++i]));
     else if (!wcscmp(argv[i], L"--test-report-send") && more) session::TestReportSend(Utf8(argv[++i]));  // <answers file>  // <what happened>: Report a problem, no window, then quit
     else if (!wcscmp(argv[i], L"--watch-strip") && more) anims_page::TestStrip(argv[++i]);
+    else if (!wcscmp(argv[i], L"--move-check") && more) move_check::Test(argv[++i]), g_page = PageId::kMoves;
     else if (!wcscmp(argv[i], L"--watch") && more) {  // <star id>,<dummy id>,<move id>: a match move watched here
       int a[3] = {0, 0, 0};
       swscanf_s(argv[++i], L"%d,%d,%d", &a[0], &a[1], &a[2]);

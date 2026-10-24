@@ -11,6 +11,7 @@
 #include <sstream>
 
 #include "app.h"
+#include "move_check.h"
 #include "mod_check.h"
 
 namespace mm {
@@ -462,6 +463,7 @@ void TestPut(const std::wstring& spec) { g_put_test = spec; }
 namespace {
 
 void Draw() {
+  move_check::Tick();
   if (!g_put_test.empty()) RunPutTest();
   Heading("Move pack", "Moves the game doesn't have, in a move pack: motions for the attacker, the victim and the "
                    "cameras, plus the move's table records. Packs install on their own or ride inside a superstar mod.");
@@ -494,6 +496,7 @@ void Draw() {
     ImGui::BeginChild("list", ImVec2(0, -(problems.empty() ? 0 : 30 * g_scale * float(std::min<size_t>(problems.size(), 4)))), false);
     MoveList();
     PutPanel();
+    if (g_sel >= 0 && !g_pack.folder.empty()) move_check::DrawPanel(g_pack.folder, g_sel);
     ImGui::EndChild();
   }
   DrawProblems(problems);

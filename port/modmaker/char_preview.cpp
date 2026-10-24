@@ -426,6 +426,7 @@ struct Motion {
   // the motion its person goes on to (the last event op 49 - u16 motion id; docs/MOVE_PACKS.md "The victim's end"):
   // -1 none said, 0 none (the game: back to the stance / the get-up)
   int next = -1;
+  std::map<int, int> ops;  // event op -> how many (the move inspector)
   // an entrance's finger tracks (the entrant's y3 = left, y2 = right: one library-style record a frame, docs/HAND_POSES.md),
   // used instead of the op 21 hand poses when there (full_preview.cpp)
   std::array<std::shared_ptr<const HandPose>, 2> fingers;
@@ -586,6 +587,7 @@ bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& er
         if ((op == 40 || op == 87) && n >= 2) m.attack.push_back({frame, r[e + 1]});
         if (op == 41 || op == 94) m.attack.push_back({frame, 0});
         if (op == 49 && n >= 3) m.next = int(Le16(r + e + 1));
+        ++m.ops[op];
         e += n;
       }
     }
@@ -639,7 +641,9 @@ bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& er
   auto hands = std::move(m.hands);
   auto attack = std::move(m.attack);
   const int next = m.next;
+  auto ops = std::move(m.ops);
   m = Motion();
+  m.ops = std::move(ops);
   m.hands = std::move(hands);
   m.attack = std::move(attack);
   m.next = next;
@@ -3034,6 +3038,15 @@ bool SetMove(std::shared_ptr<const Bytes> bank, int id, int alt, const MotionLoa
   g_play.x = phases.front();
   g_frame = true;
   return true;
+}
+
+TrackFacts InspectTrack(const std::vector<uint8_t>& bank, int id, int x, int y) {
+  TrackFacts f;
+  Motion m;
+  f.ok = DecodeMotion(bank, id, x, y, m, f.err);
+  if (!f.ok) return f;
+  f.keys = m.keys, f.next = m.next, f.attack = m.attack, f.ops = m.ops;
+  return f;
 }
 
 std::string MoveSteps() {
