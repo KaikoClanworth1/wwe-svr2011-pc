@@ -11,6 +11,7 @@
 #include "frame_rate.h"
 #include "free_cam.h"
 #include "graphics_page.h"
+#include "cpu_difficulty.h"
 #include "display_modes.h"
 #include "arena_lights.h"
 #include "port_map.h"
@@ -122,12 +123,13 @@ enum Row {
   kMatchCamera,                                                  // DISPLAY (free_cam.h)
   kMatFix,                                                       // GRAPHICS (after ARENA BRIGHTNESS)
   kVsStyle,                                                      // GRAPHICS (after RING MAT: vs_styles.h)
+  kCpuPreset, kCpuReversal, kCpuRates, kCpuDamage, kCpuPin, kCpuMomentum,  // CPU (cpu_difficulty.h)
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
 constexpr int kNumFrameRates = 2;
-enum Tab { kDisplayTab, kGraphicsTab, kAdvancedTab, kTabs };
-const char* kTabNames[kTabs] = {"DISPLAY", "GRAPHICS", "ADV. GRAPHICS"};
+enum Tab { kDisplayTab, kGraphicsTab, kAdvancedTab, kCpuTab, kTabs };
+const char* kTabNames[kTabs] = {"DISPLAY", "GRAPHICS", "ADV. GRAPHICS", "CPU"};
 #if defined(__ANDROID__)
 // (the phone: the window is the screen - no window size or mode)
 // (no RENDERER row: the phone draws natively on Vulkan, its only graphics API)
@@ -137,7 +139,8 @@ const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate,
                                               kReplays, kCpuPriority, kFastStart, kCawLimits},
 #endif
                                              {kRenderScale, kAntiAliasing, kUpscaling, kTextureQuality, kArenaBrightness, kMatFix, kVsStyle, kWide, kCutsceneFps},
-                                             {kCrowd, kShadows, kEffects, kDof, kMotionBlur, kSoft, kPrepare}};
+                                             {kCrowd, kShadows, kEffects, kDof, kMotionBlur, kSoft, kPrepare},
+                                             {kCpuPreset, kCpuReversal, kCpuRates, kCpuDamage, kCpuPin, kCpuMomentum}};
 // SHADOWS: only with the renderer's native_shadows setting.
 bool HasShadows() {
   static const bool has = !rex::cvar::GetFlagByName("native_shadows").empty();
@@ -419,6 +422,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int upscale_ = 0;
   bool ping_ = true;
   bool router_port_ = true;
+  svr2011::CpuTuning cpu_;  // (the CPU tab)
   int perf_ = 1, corner_ = 0;  // (PERFORMANCE: 0 off, 1 the frame rate, 2 everything; its corner)
   bool vsync_ = true, native_ = true, full_speed_ = true;
   bool high_priority_ = false;  // (process_priority 1: above normal, perf_hooks.cpp)
@@ -525,6 +529,7 @@ void GraphicsPage::Load() {
   corner_ = PerfOverlayCorner();
   ping_ = rex::cvar::Query<bool>("show_ping");
   router_port_ = rex::cvar::Query<bool>("p2p_port_mapping");
+  cpu_ = svr2011::LocalCpuTuning();
   touch_ = rex::cvar::Query<bool>("touch_controls");
   wide_ = rex::cvar::Query<bool>("native_widescreen");
   dof_ = rex::cvar::Query<bool>("depth_of_field");
@@ -725,6 +730,28 @@ void GraphicsPage::Change(int row, int dir) {
       rex::cvar::SetFlagByName("show_ping", ping_ ? "true" : "false");
       SaveSetting("show_ping", ping_ ? "true" : "false");
       break;
+    case kCpuPreset:  // (AUTO <-> LEGEND+; a hand-made set goes to LEGEND+ first)
+      cpu_ = cpu_ == svr2011::kLegendPlus ? svr2011::CpuTuning{} : svr2011::kLegendPlus;
+      svr2011::SetCpuTuning(cpu_);
+      break;
+    case kCpuReversal:  // (AUTO, 0-200 % in 10s)
+      cpu_.reversal = cpu_.reversal < 0 ? (dir < 0 ? 200 : 0) : cpu_.reversal + 10 * (dir ? dir : 1);
+      if (cpu_.reversal > 200 || cpu_.reversal < 0) cpu_.reversal = -1;
+      svr2011::SetCpuTuning(cpu_);
+      break;
+    case kCpuRates:  // (AUTO, 0-10)
+      cpu_.rates = cpu_.rates < 0 ? (dir < 0 ? 10 : 0) : cpu_.rates + (dir ? dir : 1);
+      if (cpu_.rates > 10 || cpu_.rates < 0) cpu_.rates = -1;
+      svr2011::SetCpuTuning(cpu_);
+      break;
+    case kCpuDamage:
+    case kCpuPin:
+    case kCpuMomentum: {  // (AUTO, EASY - LEGEND)
+      int& v = row == kCpuDamage ? cpu_.damage : row == kCpuPin ? cpu_.pin : cpu_.momentum;
+      v = (v + 1 + (dir ? dir : 1) + 5) % 5 - 1;
+      svr2011::SetCpuTuning(cpu_);
+      break;
+    }
     case kRouterPort:
       router_port_ = !router_port_;
       rex::cvar::SetFlagByName("p2p_port_mapping", router_port_ ? "true" : "false");
@@ -1186,6 +1213,27 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       }
       case kPing: return ping_ ? "ON" : "OFF";
       case kRouterPort: return router_port_ ? "ON" : "OFF";
+      case kCpuPreset:
+        return cpu_ == svr2011::CpuTuning{} ? "AUTO" : cpu_ == svr2011::kLegendPlus ? "LEGEND+" : "CUSTOM";
+      case kCpuReversal: {
+        static char b[16];
+        if (cpu_.reversal < 0) return "AUTO";
+        std::snprintf(b, sizeof b, "%d%%", cpu_.reversal);
+        return b;
+      }
+      case kCpuRates: {
+        static char b[16];
+        if (cpu_.rates < 0) return "AUTO";
+        std::snprintf(b, sizeof b, "%d", cpu_.rates * 10);
+        return b;
+      }
+      case kCpuDamage:
+      case kCpuPin:
+      case kCpuMomentum: {
+        static const char* const kLevels[] = {"EASY", "NORMAL", "HARD", "LEGEND"};
+        const int v = id == kCpuDamage ? cpu_.damage : id == kCpuPin ? cpu_.pin : cpu_.momentum;
+        return v < 0 || v > 3 ? "AUTO" : kLevels[v];
+      }
       case kFullSpeed: return full_speed_ ? "ON" : "OFF (AS THE XBOX 360)";
       case kTouch: return touch_ ? "ON" : "OFF";
       case kWide: return wide_ ? "FULL WIDTH" : "16:9";
@@ -1252,6 +1300,12 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kMatchCamera: return "MATCH CAMERA";
       case kPing: return "ONLINE PING";
       case kRouterPort: return "ROUTER PORT (UPNP)";
+      case kCpuPreset: return "PRESET";
+      case kCpuReversal: return "CPU REVERSAL CHANCE";
+      case kCpuRates: return "CPU REVERSAL RATES";
+      case kCpuDamage: return "DAMAGE";
+      case kCpuPin: return "PIN KICK-OUT";
+      case kCpuMomentum: return "MOMENTUM";
       case kFullSpeed: return "FULL SPEED";
       case kTouch: return "TOUCH CONTROLS";
       case kWide: return "WIDE SCREENS";
@@ -1294,6 +1348,21 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         return "The camera in ring matches: NORMAL, FAR, CLOSE, HIGH, LOW or RAMP (the Royal Rumble's view). In a "
                "match BACK + R3 (F4) changes it.";
       case kRouterPort: return "Online: your router opens the game's port while you play (UPnP), so far-off players connect directly. OFF: never touched.";
+      case kCpuPreset:
+        return "AUTO: the CPU as the DIFFICULTY you pick in the game. LEGEND+: harder than LEGEND - every row below "
+               "at its hard end. Online the host's settings count.";
+      case kCpuReversal:
+        return "How often the CPU takes a chance to reverse. AUTO: the difficulty's (EASY 30%, NORMAL 55%, HARD 80%, "
+               "LEGEND 100%). Over 100%: more than LEGEND.";
+      case kCpuRates:
+        return "The game's A.I. REVERSAL BALANCING sliders for every kind of move (its default 50, most 100). AUTO: "
+               "your own settings there.";
+      case kCpuDamage:
+        return "Damage as on that difficulty (EASY less, LEGEND more). AUTO: the match's difficulty.";
+      case kCpuPin:
+        return "The pin kick-out as on that difficulty (LEGEND: the shortest window). AUTO: the match's difficulty.";
+      case kCpuMomentum:
+        return "Momentum and stamina rates as on that difficulty. AUTO: the match's difficulty.";
       case kPing: return "Online matches: the delay to the other players at the top right (bars: green under 150 ms, yellow under 250, red above).";
       case kFullSpeed:
         return full_speed_ ? "The game keeps its normal speed when the frame rate drops (and at 30 FPS)."

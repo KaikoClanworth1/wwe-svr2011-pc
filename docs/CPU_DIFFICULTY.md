@@ -35,8 +35,8 @@ Values are EASY / NORMAL / HARD / LEGEND.
 
 | What (2011 code -> '12 code) | SvR 2011 | WWE '12 | Notes |
 |---|---|---|---|
-| CPU action probability `PROB_EASY..PROB_LEGEND`, per CPU (AI object +8) (`sub_82835150` -> `sub_82990948`) | 30 / 55 / 80 / 100 | 30 / 55 / 80 / 100 | the same. The CPU's chance to take an opening (attack, reverse) in % |
-| CPU reaction delay `FRAME_EASY..FRAME_LEGEND` (frames) | 7 / 5 / 2 / 1 | not found as a row in '12 (its parameter table was rebalanced; no 7/5/2/1 sequence) | 2011 text file |
+| CPU reversal chance `PROB_EASY..PROB_LEGEND` (`sub_82835150` -> `sub_82990948`) | 30 / 55 / 80 / 100 | 30 / 55 / 80 / 100 | the same. Each CPU's reversal roll (`sub_82835200`, reached only from the reversal code `sub_828162C8`): a 0-99 roll from a fixed table must be under PROB x the move's value / 100 |
+| `FRAME_EASY..FRAME_LEGEND` (7 / 5 / 2 / 1) | in the text file, **never read** | - | dead data in 2011: no reaction-delay setting exists |
 | Damage scale with difficulty (`sub_821F32C8` -> `sub_82248730`) | 0.75 / 1.0 / 1.0 / 1.2 | 1.00 / 0.90 / 0.80 / 0.70 (`0x831740E0..D4` x 0.01) | **opposite trend** in '12; which side it applies to is to be confirmed in a match (proof runs) |
 | Gain scale (momentum/stamina; option +10407 / '12 +12451) (`sub_821F4D90` -> `sub_8224A818`) | 1.0 / 0.9 / 0.8 / 0.7 | 1.0 / 0.9 / 0.8 / 0.7 | the same |
 | Rate scale (option +10406) (`sub_821F4FA0` -> `sub_8224AA70`) | 0.2 / 0.3 / 0.4 / 0.4 | 0.2 / 0.3 / 0.4 / 0.4 | the same |
@@ -68,3 +68,23 @@ table after it is read), never in the game's files.
 
 `xex_image.py` (XEX2 -> image; checked: 3951/3952 pages equal to 2011's dumped image), `asm_index.py` (function
 -> asm index of a codegen), `consts.py` (a function's constant loads resolved against an image), `live_reads.py`.
+
+## The port's CPU tab (built: OPTIONS -> GRAPHICS -> CPU)
+
+`src/cpu_difficulty.cpp`, settings in svr2011.toml (`-1` = AUTO):
+
+| Row | Setting | What it changes |
+|---|---|---|
+| PRESET | - | AUTO (all rows AUTO) or LEGEND+ (every row at its hard end) |
+| CPU REVERSAL CHANCE | `cpu_reversal_chance` 0-200 | PROB, set on each CPU's roll after it is made (`sub_82835150`) |
+| CPU REVERSAL RATES | `cpu_reversal_rates` 0-10 | the game's six A.I. REVERSAL BALANCING sliders (x 10), in the charge getters' results (`sub_82815738`..`sub_82815990`); the saved options are not touched |
+| DAMAGE | `cpu_damage_level` 0-3 | `sub_821F32C8` runs with the DIFFICULTY byte at that level |
+| PIN KICK-OUT | `cpu_pin_level` 0-3 | `sub_8221DD88` the same |
+| MOMENTUM | `cpu_momentum_level` 0-3 | `sub_821F4D90`, `sub_821F4FA0`, `sub_821F5FC0` the same |
+
+LEGEND+ = reversal chance 200, rates 10 (the sliders' maximum), damage / pin / momentum LEGEND. 2011's own
+LEGEND is unchanged. Online the host's values count for everyone: session property `0x1000F005` (reversal chance
+in the top byte, then 4 bits each for rates, damage, pin, momentum, 0xC5 marker).
+
+Test aids: `SVR2011_TEST_DIFFICULTY=<0-3>` (the match's difficulty), `SVR2011_TEST_CPU_LOG=1` (every 10 s: each
+CPU's reversal rolls taken / made, its PROB, and the damage fields' total).
