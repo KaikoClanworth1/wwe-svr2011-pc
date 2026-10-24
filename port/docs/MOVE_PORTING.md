@@ -93,6 +93,13 @@ page (`port/docs/MOVE_MODDING.md`).
   logs each person's motion changes; `SVR2011_TEST_FRAME_SHOT=<f.ppm>` with `_SHOTS=<n>`, `_SHOT_AT=<match frame>`
   and `_SHOT_EVERY=<k>` saves n frames k apart (contact sheets); `SVR2011_TEST_STATE_LOG=212,24` logs a person's
   motion and its frame (+24, a float) as they change.
+- **CPU use (e) and reversals (d)**: no forced move - a CPU vs CPU match with the ported moves in the CPU
+  superstar's slots, `SVR2011_TEST_MOTION_LOG=1` and `SVR2011_TEST_CPU_LOG=1` (reversal rolls). In
+  `SVR2011_TEST_MATCH` only person 1 is a CPU when person 0 is the first named: put the test superstar second.
+  Put front grapples in the front grapple groups C/D/E (move block 0x98-0xB2, not the fixed 0xB4-0xBA); the
+  rear slots 0xBC-0xC2 are rarely picked. Damage per CPU hit is in the CPU log's `damage n in k hits`.
+- **Hidden test games**: `SVR2011_WINDOW_HIDDEN=1` (tools/test_guard.ps1 sets it) - the window is never shown;
+  use frame shots, window screenshots of a hidden window are black.
 
 ## 4. Per game
 
