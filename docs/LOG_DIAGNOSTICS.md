@@ -28,13 +28,17 @@ world update.
   - `weapon slot N made (model M)`, `... picked up by person P`, `... dropped by person P`, `weapon slot N gone`
     (broken or removed). Models are `bgEtc` STG/WPON pack ids.
   - `motion N missed by every bank (person P)`: a person is in a motion no bank has (see detectors).
-- The **clock** is the match clock: 60 a second, from the bell.
+- The **clock** is the match clock: 60 a second, from the bell. The box starts at the bell; the menu's attract match
+  (no referee) isn't written.
+
+**Size:** a match without an anomaly adds about 300 bytes to the log (three short lines). Each anomaly adds one compact
+box, about 3-4 KB, and there are at most 3 a match (about 10 KB).
 
 ## Where it goes
 
 | When | Where | How much |
 | --- | --- | --- |
-| Every match end (also QUIT MATCH) | `logs\matchbox_1.txt` (newest; `_2`, `_3` older) | The whole box |
+| Every match end: a win, QUIT MATCH (the match's end task starting) | `logs\matchbox_1.txt` (newest; `_2`, `_3` older), plus one log line saying where | The whole box (about 2-3 KB) |
 | A detector fires, the world update gets stuck, two wrestlers are held 10 s, no move asked for 30 s | The game log, lines `[svr2011] box: ...` | Compact: 8 motions each, 12 events; at most 3 boxes a match, each reason once |
 | The game crashes | `UserData\crashes\crash_*.txt`, after the stack and registers (and so in the log's `crash:` lines) | The whole box |
 
@@ -48,7 +52,7 @@ Each one logs the box with its reason as the first line: `[svr2011] box: match b
 | Reason | Meaning | Limit |
 | --- | --- | --- |
 | `person P stood up from lying L with no get-up` | Lying (430-448) went straight to standing 20500: the "falls, then pops up standing" reports | 2 per person per match |
-| `the referee's motions repeat A / B four times` | The referee's last 8 motion changes are one pair four times over: the "count repeats 2" reports | 2 per match |
+| `the referee repeats motion M N times within 6 s` | One referee motion (not standing) 4+ times in 6 s: the "count repeats 2" reports. His idle 191 / 192 come every 4-9 s; a count's steps come under a second apart. | 2 per match |
 | `person P is in motion M, which no bank has` | A body-track look-up of M missed every bank, and a person is now in M (T-pose / freeze) | 1 per person |
 | `person P at a NaN / far position (x, y, z)` | Not finite, or beyond 2000 / 1000 from the ring | 1 per person |
 | `two wrestlers held in one motion frame for 10 s` | A frozen grapple pair (`match_diag.cpp`; also its own `match state` lines) | 1 per match |
@@ -64,8 +68,8 @@ Each one logs the box with its reason as the first line: `[svr2011] box: match b
 
 ## Test aids (hidden test runs only)
 
-- `SVR2011_TEST_BOX=<what>[,<clock>]`: once a match, at that match clock (default 600), fakes one detector's case for
-  person 0 and logs the box:
+- `SVR2011_TEST_BOX=<what>[+<what>...][,<clock>]`: once a match, from that match clock (default 600), 2 s apart, fakes
+  detector cases for person 0 and logs the box (the 3-a-match cap applies):
   - `teleport`: lying 440, then standing;
   - `refloop`: the referee's count step repeating;
   - `nan`: a NaN position;

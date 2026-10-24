@@ -137,7 +137,7 @@ REX_HOOK_RAW(sub_82322DA0) {
   const uint32_t state = Rd32(base + task + 16);
   if (task != last_task || state != last_state) {
     REXLOG_INFO("[svr2011] match end: step {} (task {:08X}, +20 {})", state, task, Rd32(base + task + 20));
-    if (state == 0 && task != last_task) svr2011::MatchBoxMatchEnded();  // (the match's black box: match_box.h)
+    if (task != last_task) svr2011::MatchBoxMatchEnded();  // (a new end task - its first step 0, or 1 after a win: the box)
     last_task = task, last_state = state, since = Clock::now(), told = false;
     return;
   }

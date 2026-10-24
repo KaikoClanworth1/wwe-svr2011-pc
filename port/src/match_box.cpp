@@ -85,7 +85,12 @@ uint32_t g_told_refloop = 0, g_logged = 0;
 std::vector<std::string> g_logged_why;
 std::array<std::atomic<uint32_t>, 16> g_missed{};  // motion ids a bank list missed (look-ups: any thread)
 std::array<std::atomic<uint32_t>, 65536 / 32> g_found{};  // motion ids some bank list had, this match (a bit each)
-bool Found(uint32_t id) { return g_found[(id & 0xFFFF) / 32].load(std::memory_order_relaxed) >> (id % 32) & 1; }
+bool g_test_crash = false;  // (SVR2011_TEST_BOX=crash: a fault once the update is done)
+std::atomic<uint32_t> g_test_missing{0};  // (SVR2011_TEST_BOX=missing: this id counts as never found)
+bool Found(uint32_t id) {
+  return id != g_test_missing.load(std::memory_order_relaxed) &&
+         (g_found[(id & 0xFFFF) / 32].load(std::memory_order_relaxed) >> (id % 32) & 1);
+}
 bool g_restart = false;
 bool g_referee = false;  // (a referee was seen this match: not the menu's attract match)  // (the match clock went back to 0: the bell after the entrances - the box starts again)
 uint32_t g_match_number = 0;
@@ -109,6 +114,7 @@ void StartMatch(uint8_t* base) {
   g_told_teleport.fill(0), g_told_nan.fill(0), g_told_missing.fill(0), g_told_refloop = 0, g_logged = 0, g_logged_why.clear();
   for (auto& m : g_missed) m = 0;
   for (auto& f : g_found) f.store(0, std::memory_order_relaxed);
+  g_test_missing = 0;
   g_pack_of.clear();
   g_referee = false;
   for (const auto& [kind, folder] : MovePacks())  // (once a match: which pack each pack move comes from)
@@ -127,15 +133,20 @@ void Detect(const std::string& why) { g_pending.push_back(why); }
 // refloop: the referee's count step repeating) or a crash (crash: a fault on the world update's thread).
 void TestBox(uint32_t clock, Person*& p0, bool& nan_test) {
   static const char* v = std::getenv("SVR2011_TEST_BOX");
-  static bool done = false;
+  static size_t done = 0;
   if (!v) return;
-  if (clock < 60) done = false;
-  char what[16] = {};
+  if (clock < 60) done = 0;
+  char list[64] = {};
   int at = 600;
-  std::sscanf(v, "%15[a-z],%d", what, &at);
-  if (done || clock < uint32_t(at) || !p0 || !p0->ch) return;
-  done = true;
-  const std::string w = what;
+  std::sscanf(v, "%63[a-z+],%d", list, &at);
+  std::vector<std::string> cases;
+  for (const char* q = list; *q;) {
+    const char* e = std::strchr(q, '+');
+    cases.emplace_back(q, e ? size_t(e - q) : std::strlen(q));
+    q = e ? e + 1 : q + std::strlen(q);
+  }
+  if (done >= cases.size() || clock < uint32_t(at) + uint32_t(done) * 120 || !p0 || !p0->ch) return;
+  const std::string w = cases[done++];
   AddEvent(clock, "test: " + w);
   if (w == "teleport") {
     p0->ring[p0->n % kMotions] = {clock, 440, 0, 0xFFFF, 0}, ++p0->n;
@@ -145,13 +156,11 @@ void TestBox(uint32_t clock, Person*& p0, bool& nan_test) {
     nan_test = true;
   } else if (w == "missing") {
     MatchBoxMotionLooked(p0->motion | 0x10000, false);  // (test: missed, and never found)
-  } else if (w == "refloop") {
-    for (int k = 0; k < 4; ++k) AddEvent(clock, "referee motion 23003 (test)"), AddEvent(clock, "referee motion 23004 (test)");
-    Detect("the referee's motions repeat 23003 -> 23004 4 times (test)");
+  } else if (w == "refloop") {  // (his motion 23004 four times now: the detector below sees it)
+    for (int k = 0; k < 4; ++k) AddEvent(clock, "referee motion 23004"), AddEvent(clock, "referee motion 20500");
+    AddEvent(clock, "referee motion 23004");
   } else if (w == "crash") {
-    REXLOG_WARN("[svr2011] box: test - a fault on the world update's thread");
-    rex::FlushLogging();
-    *static_cast<volatile int*>(nullptr) = 1;
+    g_test_crash = true;  // (after the update lets the box go: the crash report reads it)
   }
 }
 
@@ -166,7 +175,7 @@ void MatchBoxMotionLooked(uint32_t id, bool found) {
     if (!(w.load(std::memory_order_relaxed) >> (id % 32) & 1)) w.fetch_or(1u << (id % 32), std::memory_order_relaxed);
     return;
   }
-  if (test) g_found[id / 32].fetch_and(~(1u << (id % 32)), std::memory_order_relaxed);
+  if (test) g_test_missing = id;
   for (auto& m : g_missed) {
     uint32_t was = 0;
     if (m.compare_exchange_strong(was, id) || was == id) return;
@@ -249,18 +258,21 @@ void MatchBoxUpdate(PPCContext& ctx, uint8_t* base) {
         }
       }
     }
-    // The referee's motions repeating a step (the "count goes 1, 2, 2, 2 ..." reports): the last 8 referee events
-    // are one pair of motions four times over
-    if (g_told_refloop < 2 && g_event_n >= 8) {
-      std::vector<std::string> ref;
-      for (uint32_t k = g_event_n; k-- > 0 && ref.size() < 8 && g_event_n - k <= kEvents;)
-        if (g_events[k % kEvents].text.rfind("referee motion", 0) == 0) ref.push_back(g_events[k % kEvents].text);
-      if (ref.size() == 8 && ref[0] != ref[1]) {
-        bool loop = true;
-        for (size_t k = 2; k < 8; ++k) loop &= ref[k] == ref[k % 2];
-        if (loop && ref[0].find("(test)") == std::string::npos) {
+    // The referee's motions repeating a step (the "count goes 1, 2, 2, 2 ..." reports): one motion (not standing) four
+    // times within 6 s - his idle 191 / 192 come 4-9 s apart, a count's steps under a second
+    if (g_told_refloop < 2) {
+      std::vector<std::pair<uint32_t, uint32_t>> ref;  // (motion, clock), newest first
+      for (uint32_t k = g_event_n; k-- > 0 && g_event_n - k <= kEvents && ref.size() < 16;) {
+        const Event& e = g_events[k % kEvents];
+        if (e.text.rfind("referee motion ", 0) == 0) ref.emplace_back(uint32_t(std::atoi(e.text.c_str() + 15)), e.clock);
+      }
+      if (!ref.empty() && ref[0].first != kStanding && ref[0].second == clock) {
+        int same = 0;
+        for (const auto& [m, c] : ref)
+          if (m == ref[0].first && clock - c <= 360) ++same;
+        if (same >= 4) {
           ++g_told_refloop;
-          Detect(fmt::format("the referee's motions repeat {} / {} four times", ref[1].substr(15), ref[0].substr(15)));
+          Detect(fmt::format("the referee repeats motion {} {} times within 6 s", ref[0].first, same));
         }
       }
     }
@@ -287,6 +299,11 @@ void MatchBoxUpdate(PPCContext& ctx, uint8_t* base) {
   std::vector<std::string> pending;
   pending.swap(g_pending);
   for (const auto& why : pending) MatchBoxLog(why.c_str());
+  if (g_test_crash) {
+    REXLOG_WARN("[svr2011] box: test - a fault on the world update's thread");
+    rex::FlushLogging();
+    *static_cast<volatile int*>(nullptr) = 1;
+  }
 }
 
 std::string MatchBoxText(const char* why, bool full) {
@@ -319,8 +336,10 @@ std::string MatchBoxText(const char* why, bool full) {
     for (uint32_t k = p.n > show ? p.n - show : 0; k < p.n; ++k) {
       const MotionNote& m = p.at(k);
       seq += fmt::format("{}{}@{}", seq.empty() ? "" : " ", m.motion, m.clock);
-      const std::string mv = MoveText(m.move, m.slot);
-      if (mv != "-" && (moves.empty() || moves.back() != mv)) moves.push_back(mv);
+      const std::string mv = m.move ? MoveText(m.move, m.slot) : std::string("-");
+      if (mv == "-") continue;
+      moves.erase(std::remove(moves.begin(), moves.end(), mv), moves.end());
+      moves.push_back(mv);
     }
     s += "    motions (motion@clock): " + seq + "\n";
     if (moves.size() > 8) moves.erase(moves.begin(), moves.end() - 8);
@@ -358,6 +377,8 @@ void MatchBoxLog(const char* why) {
 void MatchBoxMatchEnded() {
   {
     std::lock_guard lock(g_box);  // (the menu's attract match - no referee - isn't written)
+    REXLOG_INFO("[svr2011] box: the match's end (match {}, {}{})", g_match_number, g_on ? "noted" : "not noted",
+                g_referee ? "" : ", no referee: not written");
     if (!g_on || !g_referee) return;
   }
   const std::string text = MatchBoxText("the match's end", true);
