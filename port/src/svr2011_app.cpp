@@ -56,6 +56,7 @@
 #include "media_mods.h"
 #include "vs_styles.h"
 #include "frame_rate.h"
+#include "guest_faults.h"
 #include "perf_hooks.h"
 #include "crash_report.h"
 #include "dlc.h"
@@ -757,6 +758,8 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallCrowdSigns(runtime()->memory());  // (after the superstar mods: their signs)
   svr2011::KeepWindowAlive();
   // The frame rate: 30 / 60 / 120 / 144 / 240 at the game's speed (frame_rate.h).
+  // (after the runtime's memory fault handler: faults it doesn't take are placed in the log, never retried forever)
+  svr2011::InstallGuestFaultLog();
   svr2011::InstallFrameRate(runtime()->memory());
   svr2011::InstallPerfSettings();  // (perf_hooks.h)
   if (imgui_drawer()) {

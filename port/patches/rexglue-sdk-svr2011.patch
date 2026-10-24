@@ -9362,3 +9362,40 @@ index a1b4dad..7a449ec 100644
    // TODO(gibbed): should 'is_directory' remain as a bool or should it be
    // flipped to a generic FileAttributeFlags?
  
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+index 76cc877..1932a1f 100644
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <cstring>
++#include <string>
+ #include <utility>
+ 
+ #if REX_PLATFORM_MAC
+@@ -543,10 +544,20 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glob
+   uint32_t virtual_address = HostToGuestVirtual(host_address);
+   BaseHeap* heap = LookupHeap(virtual_address);
+   if (!heap || heap->heap_type() != memory::HeapType::kGuestPhysical) {
+-    REXSYS_ERROR(
+-        "Unhandled guest access violation: {} of guest 0x{:08X} (host 0x{:016X}) on thread 0x{:X}",
+-        is_write ? "write" : "read", virtual_address, reinterpret_cast<uintptr_t>(host_address),
+-        rex::thread::current_thread_id());
++    // [svr2011] Once per address and thread, then at 10x steps with the count: an unhandled fault retries the same
++    // instruction (Android: forever - tens of thousands of lines buried the rest of the log).
++    static thread_local uint32_t last_address = 0xFFFFFFFFu;
++    static thread_local uint64_t repeats = 0;
++    if (virtual_address != last_address) last_address = virtual_address, repeats = 0;
++    ++repeats;
++    bool power_of_ten = repeats == 1;
++    for (uint64_t n = 10; n <= repeats && !power_of_ten; n *= 10) power_of_ten = n == repeats;
++    if (power_of_ten) {
++      REXSYS_ERROR(
++          "Unhandled guest access violation: {} of guest 0x{:08X} (host 0x{:016X}) on thread 0x{:X}{}",
++          is_write ? "write" : "read", virtual_address, reinterpret_cast<uintptr_t>(host_address),
++          rex::thread::current_thread_id(), repeats > 1 ? " (" + std::to_string(repeats) + " times)" : std::string());
++    }
+     return false;
+   }
+ 

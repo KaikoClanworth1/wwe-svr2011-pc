@@ -147,6 +147,7 @@ void LogFighter(uint8_t* base, uint32_t f) {
 // *0x82EC5F48, 36 bytes each: start, end) once, and every failed allocation
 // (sub_8269A8D8(size, align) for the thread's heap, sub_8269A478).
 bool g_heap_log = false;
+int g_heap_watch = -1;  // (SVR2011_TEST_HEAP_LOG=<heap 2-53>: every allocation in that heap too)
 
 REX_EXTERN(__imp__sub_8269A8D8);
 REX_HOOK_RAW(sub_8269A8D8) {
@@ -162,14 +163,15 @@ REX_HOOK_RAW(sub_8269A8D8) {
         ctx.r3.u64 = p;
         return;
       }
-    // (the stage's heap full - an arena with more 3D detail than the game's own: caw_limits.h kStageHeap)
-    if (heap == svr2011::kStageHeap && svr2011::BigModelMemory())
+    // (the stage's heap full - an arena with more 3D detail than the game's own: caw_limits.h kStageHeap; the
+    // match's weapons' heap - OPTIONS -> WEAPONS picks: kWeaponHeap)
+    if ((heap == svr2011::kStageHeap || heap == svr2011::kWeaponHeap) && svr2011::BigModelMemory())
       if (const uint32_t p = svr2011::FallbackBlock(size, true)) {
         ctx.r3.u64 = p;
         static int told = 0;
         if (told++ < 5 || told % 200 == 0)
-          REXLOG_INFO("[svr2011] model memory: the stage's heap ({}) full - {} bytes from the fallback memory ({} so)",
-                      heap, size, told);
+          REXLOG_INFO("[svr2011] model memory: the {} heap ({}) full - {} bytes from the fallback memory ({} so)",
+                      heap == svr2011::kStageHeap ? "stage's" : "weapons'", heap, size, told);
         return;
       }
   }
@@ -206,13 +208,24 @@ REX_HOOK_RAW(sub_8269BA30) {
         ctx.r3.u64 = p;
         return;
       }
+    // (the match's weapons' heap full - OPTIONS -> WEAPONS picks: caw_limits.h kWeaponHeap)
+    if (heap == svr2011::kWeaponHeap && svr2011::BigModelMemory())
+      if (const uint32_t p = svr2011::FallbackBlock(units * 16, true)) {
+        ctx.r3.u64 = p;
+        static int told = 0;
+        if (told++ < 5 || told % 200 == 0)
+          REXLOG_INFO("[svr2011] model memory: the weapons' heap ({}) full - {} bytes from the fallback memory ({} so)",
+                      heap, units * 16, told);
+        return;
+      }
   }
-  if (g_heap_log && ctx.r3.u32 && units * 16 >= 256 * 1024) {
+  if (g_heap_log && ctx.r3.u32 && (units * 16 >= 256 * 1024 || g_heap_watch >= 0)) {
     const auto saved = ctx;
     sub_8269A478(ctx, base);
     const uint32_t heap = ctx.r3.u32;
     ctx = saved;
-    REXLOG_INFO("[svr2011] heap {}: {} bytes at {:08X} (lr {:08X})", heap, units * 16, ctx.r3.u32, uint32_t(ctx.lr));
+    if (units * 16 >= 256 * 1024 || int(heap) == g_heap_watch)
+      REXLOG_INFO("[svr2011] heap {}: {} bytes at {:08X} (lr {:08X})", heap, units * 16, ctx.r3.u32, uint32_t(ctx.lr));
   }
   if (g_heap_log && ctx.r3.u32 == 0 && units) {
     const auto saved = ctx;
@@ -336,6 +349,7 @@ void InstallRingRules(rex::memory::Memory* memory) {
   g_memory = memory;
   g_test_run = std::getenv("SVR2011_TEST_RUN") != nullptr;
   g_heap_log = std::getenv("SVR2011_TEST_HEAP_LOG") != nullptr;
+  if (const char* v = std::getenv("SVR2011_TEST_HEAP_LOG"); v && std::atoi(v) > 1) g_heap_watch = std::atoi(v);  // (1: on)
   if (const char* v = std::getenv("SVR2011_TEST_STATE_LOG"); v && *v) {
     g_log_scan = std::string(v) == "scan";
     if (g_log_scan) g_log_fields.push_back(0);
