@@ -423,6 +423,9 @@ struct Motion {
   };
   std::vector<HandEvent> hands;
   std::vector<std::pair<int, int>> attack;  // (frame, group mask): op 40 sets the attack spheres' groups, op 41 clears (0)
+  // the motion its person goes on to (the last event op 49 - u16 motion id; docs/MOVE_PACKS.md "The victim's end"):
+  // -1 none said, 0 none (the game: back to the stance / the get-up)
+  int next = -1;
   // an entrance's finger tracks (the entrant's y3 = left, y2 = right: one library-style record a frame, docs/HAND_POSES.md),
   // used instead of the op 21 hand poses when there (full_preview.cpp)
   std::array<std::shared_ptr<const HandPose>, 2> fingers;
@@ -582,6 +585,7 @@ bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& er
         // attack spheres' group mask; a window left open runs to the motion's end
         if ((op == 40 || op == 87) && n >= 2) m.attack.push_back({frame, r[e + 1]});
         if (op == 41 || op == 94) m.attack.push_back({frame, 0});
+        if (op == 49 && n >= 3) m.next = int(Le16(r + e + 1));
         e += n;
       }
     }
@@ -634,9 +638,11 @@ bool DecodeYmks(const Bytes& b, int id, int x, int y, Motion& m, std::string& er
   // per frame: keys between records blended in a straight line (angles the short way round)
   auto hands = std::move(m.hands);
   auto attack = std::move(m.attack);
+  const int next = m.next;
   m = Motion();
   m.hands = std::move(hands);
   m.attack = std::move(attack);
+  m.next = next;
   if (!m.attack.empty()) {
     std::string w;
     for (const auto& [f, mask] : m.attack) w += " " + std::to_string(mask) + "@" + std::to_string(f);
@@ -1280,6 +1286,7 @@ ID3D11ShaderResourceView* g_rt_srv = nullptr;
 ID3D11DepthStencilView* g_dsv = nullptr;
 int g_rt_w = 0, g_rt_h = 0;
 bool g_capturing = false;  // (Capture: a clear background, no floor, the model alone)
+bool g_capture_both = false;  // (... and the dummy too: a move's frames)
 
 struct GpuMesh {
   ID3D11Buffer* vb = nullptr;
@@ -1335,6 +1342,34 @@ std::shared_ptr<Motion> g_idle;
 std::string g_status, g_motion_status;
 Playback g_play;
 std::shared_ptr<const Bytes> g_bank;
+// A move as the game plays it (SetMove): its phases (x) in turn, each person on its own track - played to its own
+// end, then held - and then each person's follow-up (op 49). Not set: the single motion (SetMotion) as before.
+struct ChainSeg {
+  std::shared_ptr<Motion> m;  // nullptr: no track for this person in this phase - the last pose held
+  float start = 0, len = 0;   // keys (30 a second)
+  int id = 0, x = 0;
+};
+struct Chain {
+  std::vector<ChainSeg> segs[2];
+  float total = 0;
+  std::string steps;  // (what plays, for the status line / the move inspector)
+};
+std::shared_ptr<const Chain> g_chain;
+// person s's motion and key at chain time t (nullptr: none yet - the idle)
+const Motion* ChainAt(const Chain& c, int s, float t, float& key) {
+  const ChainSeg* hold = nullptr;
+  for (const ChainSeg& g : c.segs[s]) {
+    if (t < g.start) break;
+    if (g.m) hold = &g;
+    if (t < g.start + g.len && g.m) {
+      key = std::min(t - g.start, float(std::max(1, g.m->keys) - 1));
+      return g.m.get();
+    }
+  }
+  if (!hold) return nullptr;
+  key = float(std::max(1, hold->m->keys) - 1);
+  return hold->m.get();
+}
 float g_yaw = 0.35f, g_pitch = 0.22f, g_zoom = 1;
 V3 g_center{0, 0, 0}, g_pan{0, 0, 0};
 float g_height = 20;
@@ -2096,7 +2131,7 @@ void Render(int w, int h) {
   if (!g_slots[0].ch || !g_vs) return;
   // the clock: the chosen motion's keys (track 0's length), else the idle's
   const Motion* clock = g_slots[0].motion ? g_slots[0].motion.get() : g_slots[1].motion ? g_slots[1].motion.get() : g_idle.get();
-  g_play.keys = clock ? clock->keys : 0;
+  g_play.keys = g_chain ? int(std::ceil(g_chain->total)) : clock ? clock->keys : 0;
   if (g_play.playing && g_play.keys > 0) {
     g_play.key += ImGui::GetIO().DeltaTime * 30.0f * g_play.speed;
     if (g_play.key >= float(g_play.keys)) g_play.key = g_play.loop ? std::fmod(g_play.key, float(g_play.keys)) : float(g_play.keys - 1);
@@ -2105,14 +2140,19 @@ void Render(int w, int h) {
   g_feet_next = 1e30f, g_top_next = -1e30f;
   for (Slot& sl : g_slots) {
     if (!sl.ch) continue;
-    sl.hidden = &sl == &g_slots[1] && g_bank && !sl.motion;  // (a one-person motion: no dummy standing in the way)
+    sl.hidden = &sl == &g_slots[1] && g_bank && !sl.motion && !g_chain;  // (a one-person motion: no dummy in the way)
     if (sl.hidden) {
       sl.world.clear(), sl.shown = nullptr;
       continue;
     }
     const Motion* m = sl.motion ? sl.motion.get() : (&sl == &g_slots[0] || !g_bank) ? g_idle.get() : nullptr;
+    float chain_key = 0;
+    if (g_chain) {  // (a move: this person's place in its chain - the idle before its first track)
+      m = ChainAt(*g_chain, int(&sl - g_slots), g_play.key, chain_key);
+      if (!m) m = g_idle.get(), chain_key = std::fmod(g_play.key, float(std::max(1, g_idle ? g_idle->keys : 1)));
+    }
     if (m) {
-      const float key = m == clock ? g_play.key : std::fmod(g_play.key, float(std::max(1, m->keys)));
+      const float key = g_chain ? chain_key : m == clock ? g_play.key : std::fmod(g_play.key, float(std::max(1, m->keys)));
       std::vector<Xf> locals;
       sl.world = Pose(*sl.ch, *m, key, &locals);
       sl.shown = m, sl.key = key;
@@ -2285,7 +2325,7 @@ void Render(int w, int h) {
     }
   }
   for (const Slot& sl : g_slots)
-  if (!g_capturing || &sl == &g_slots[0])
+  if (!g_capturing || g_capture_both || &sl == &g_slots[0])
   for (const GpuMesh& g0 : sl.gpu) {
     if (sl.hidden) break;
     const GpuMesh g = &sl == &g_slots[0] && (!g_mat_preview.empty() || g_highlight.second >= 0) ? Previewed(g0) : g0;
@@ -2313,8 +2353,9 @@ void Render(int w, int h) {
 
 }  // namespace
 
-bool Capture(int size, std::vector<uint8_t>& rgba) {
+bool Capture(int size, std::vector<uint8_t>& rgba, bool both) {
   if (!g_slots[0].ch || !g_dev) return false;
+  g_capture_both = both;
   const bool playing = g_play.playing;
   g_play.playing = false;  // (the pose as it is now)
   g_capturing = true;
@@ -2894,6 +2935,7 @@ bool HasGear() { return g_gear_have.load(); }
 
 bool SetMotion(std::shared_ptr<const Bytes> bank, int id, int x, std::string* err) {
   std::lock_guard lock(g_mutex);
+  g_chain.reset();
   g_bank = bank;
   g_slots[0].motion.reset();
   g_slots[1].motion.reset();
@@ -2917,6 +2959,87 @@ bool SetMotion(std::shared_ptr<const Bytes> bank, int id, int x, std::string* er
 }
 
 void ClearMotion() { SetMotion(nullptr, -1, 0); }
+
+std::vector<int> MovePhases(const Bytes& bank, int id) {
+  std::vector<int> xs;
+  if (bank.size() < 0x114 || (std::memcmp(bank.data(), "YMKs", 4) && std::memcmp(bank.data(), "YMBs", 4))) return xs;
+  const uint32_t n = Le32(&bank[0x110]);
+  for (uint32_t i = 0; i < n && 0x114 + 16 * size_t(i + 1) <= bank.size(); ++i) {
+    const uint8_t* e = &bank[0x114 + 16 * i];
+    if (Le16(e + 2) == id && e[0] <= 1 && std::find(xs.begin(), xs.end(), int(e[1])) == xs.end()) xs.push_back(e[1]);
+  }
+  std::sort(xs.begin(), xs.end());
+  return xs;
+}
+
+bool SetMove(std::shared_ptr<const Bytes> bank, int id, int alt, const MotionLoader& load, std::string* err) {
+  if (!bank) return SetMotion(nullptr, -1, 0, err);
+  auto c = std::make_shared<Chain>();
+  std::vector<int> phases;
+  for (int x : MovePhases(*bank, id))
+    if (x < 100) phases.push_back(x);  // (x 100 and up: other endings - a miss, a reversal - played when picked)
+  if (phases.empty()) phases = MovePhases(*bank, id);
+  if (alt >= 0 && std::find(phases.begin(), phases.end(), alt) == phases.end()) phases.push_back(alt);
+  if (phases.empty()) {
+    if (err) *err = "the move has no motions in that bank";
+    return false;
+  }
+  std::string first_err;
+  float t = 0;
+  for (int x : phases) {
+    std::shared_ptr<Motion> m[2];
+    float len = 0;
+    for (int s = 0; s < 2; ++s) {
+      auto mm = std::make_shared<Motion>();
+      std::string e;
+      if (DecodeMotion(*bank, id, x, s, *mm, e)) m[s] = mm, len = std::max(len, float(mm->keys));
+      else if (first_err.empty()) first_err = e;
+    }
+    if (len <= 0) continue;
+    for (int s = 0; s < 2; ++s) c->segs[s].push_back({m[s], t, len, id, x});
+    c->steps += (c->steps.empty() ? "" : " > ") + std::string("x ") + std::to_string(x) + (m[1] ? " (both)" : " (one)");
+    t += len;
+  }
+  if (t <= 0) {
+    if (err) *err = first_err.empty() ? std::string("the move's tracks didn't read") : first_err;
+    return false;
+  }
+  // each person's follow-up: the motion its last track names (op 49), from this bank or the loader's
+  float total = t;
+  for (int s = 0; s < 2; ++s) {
+    const ChainSeg* last = nullptr;
+    for (const ChainSeg& g : c->segs[s])
+      if (g.m) last = &g;
+    if (!last || last->m->next <= 0) continue;
+    const int nid = last->m->next;
+    std::shared_ptr<const Bytes> nb = MovePhases(*bank, nid).empty() && load ? load(nid) : bank;
+    if (!nb) continue;
+    const std::vector<int> nx = MovePhases(*nb, nid);
+    auto mm = std::make_shared<Motion>();
+    std::string e;
+    if (nx.empty() || !DecodeMotion(*nb, nid, nx.front(), 0, *mm, e)) continue;
+    const float start = last->start + float(last->m->keys);
+    c->segs[s].push_back({mm, start, float(mm->keys), nid, nx.front()});
+    total = std::max(total, start + float(mm->keys));
+    c->steps += std::string(s ? "; the partner" : "; the superstar") + " then " + std::to_string(nid);
+  }
+  c->total = total + 15;  // (half a second held at the end before it plays again)
+  std::lock_guard lock(g_mutex);
+  g_bank = bank;
+  g_slots[0].motion = c->segs[0].empty() ? nullptr : c->segs[0].front().m;
+  g_slots[1].motion = c->segs[1].empty() ? nullptr : c->segs[1].front().m;
+  g_chain = c;
+  g_play.key = 0;
+  g_play.id = id;
+  g_play.x = phases.front();
+  g_frame = true;
+  return true;
+}
+
+std::string MoveSteps() {
+  std::lock_guard lock(g_mutex);
+  return g_chain ? g_chain->steps : std::string();
+}
 
 void SetBlood(bool on) { g_blood = on; }
 bool Blood() { return g_blood; }

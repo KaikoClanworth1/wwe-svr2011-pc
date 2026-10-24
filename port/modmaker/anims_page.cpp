@@ -15,6 +15,7 @@
 #include "app.h"
 #include "char_preview.h"
 #include "svrfmt/pac.h"
+#include "svrfmt/png.h"
 
 namespace mm {
 namespace anims_page {
@@ -144,11 +145,69 @@ bool IndexReady() {
   return g_kindex_state == 2;
 }
 
-// The move's bank read in the background, then played here (track 0 the superstar, 1 the dummy).
+// A move's bank in m.pac (the index's place for it), read now; nullptr when not indexed (yet) or unread.
+std::shared_ptr<const Bytes> GameBank(int id) {
+  if (g_kindex_state != 2) return nullptr;
+  const auto it = g_kindex.find(id);
+  if (it == g_kindex.end()) return nullptr;
+  Bytes raw;
+  bool ok = ReadPacEntry(fs::path(g_game) / L"pac" / L"m.pac", it->second.entry, raw);
+  Bytes cur = ok ? Unpack(raw) : Bytes();
+  for (uint32_t kid : it->second.kids) {
+    std::vector<PachEntry> kids;
+    ok = ok && PachRead(cur, kids);
+    Bytes next;
+    bool hit = false;
+    for (auto& k : kids)
+      if (ok && k.id == kid) next = Unpack(k.data), hit = true;
+    ok = ok && hit;
+    cur = std::move(next);
+  }
+  return ok ? std::make_shared<const Bytes>(std::move(cur)) : nullptr;
+}
+
+// An installed move pack that has motions for move `id` (Mods\Moves\<pack>, a superstar mod's moves\), or "".
+fs::path FindPack(int id) {
+  std::error_code ec;
+  const std::string want = " " + std::to_string(id) + " ";
+  for (const fs::path root : {fs::path(g_game) / L"Mods" / L"Moves", fs::path(g_game) / L"Mods" / L"Superstars"})
+    for (const auto& e : fs::directory_iterator(root, ec)) {
+      const fs::path dir = root.filename() == L"Superstars" ? e.path() / L"moves" : e.path();
+      Bytes t;
+      if (!ReadFile(PathStr(dir / L"pack.txt"), t)) continue;
+      const std::string text(t.begin(), t.end());
+      for (size_t at = text.find("motion "); at != std::string::npos; at = text.find("\nmotion ", at + 1)) {
+        // motion <pac> <where> <id> ...: the id is the fourth word
+        const size_t l = text[at] == '\n' ? at + 1 : at;
+        const size_t e2 = text.find('\n', l);
+        const std::string line = text.substr(l, e2 == std::string::npos ? std::string::npos : e2 - l);
+        char w0[16], w1[64], w2[96];
+        int mid = 0;
+        if (std::sscanf(line.c_str(), "%15s %63s %95s %d", w0, w1, w2, &mid) == 4 && mid == id) return dir;
+      }
+    }
+  return {};
+}
+
+// The move's bank read in the background, then played here as the game plays it (PlayMove): from m.pac, else from
+// an installed move pack (a ported move).
 void Watch(int id) {
   const auto it = g_kindex.find(id);
   if (it == g_kindex.end()) {
-    Status("Move " + std::to_string(id) + " has no motion in m.pac (a move pack's, or one only the game builds): use Play in game.");
+    const fs::path pack = FindPack(id);
+    std::string err;
+    const auto bank = pack.empty() ? nullptr : PackBank(pack, id);
+    if (!bank) {
+      Status("Move " + std::to_string(id) + " has no motion in m.pac or an installed move pack (one only the game builds): "
+             "use Play in game.");
+      return;
+    }
+    if (!PlayMove(bank, id, -1, &err)) return Status("That move's motions can't be shown here: " + err + ".");
+    g_sel_id = -1;
+    Status("Watching move " + std::to_string(id) + " from " + Utf8(pack.parent_path().filename().wstring() == L"Moves"
+                                                                         ? pack.filename().wstring()
+                                                                         : pack.parent_path().filename().wstring()) +
+           ": " + char_preview::MoveSteps() + ".");
     return;
   }
   const BankPath where = it->second;
@@ -170,12 +229,13 @@ void Watch(int id) {
     auto bank = std::make_shared<const Bytes>(std::move(cur));
     OnUiThread([id, ok, bank, x = where.x] {
       std::string err;
-      if (!ok || !char_preview::SetMotion(bank, id, x, &err)) {
+      (void)x;
+      if (!ok || !PlayMove(bank, id, -1, &err)) {
         Status("That move's motion can't be shown here: " + (err.empty() ? std::string("the bank didn't read") : err) + ".");
         return;
       }
       g_sel_id = -1;
-      Status("Watching " + MoveName(id) + " (move " + std::to_string(id) + ").");
+      Status("Watching " + MoveName(id) + " (move " + std::to_string(id) + "): " + char_preview::MoveSteps() + ".");
     });
   });
 }
@@ -528,6 +588,41 @@ void TestWatch(int star_id, int dummy_id, int move) {
   g_test_star = star_id, g_test_dummy = dummy_id, g_watch_pending = move;
 }
 
+// Test aid --watch-strip <png>,<frames>: once a move plays (SetMove), that many evenly spaced frames of its whole chain
+// captured off-screen (char_preview::Capture, 256 px each, 6 a row) into one picture - the preview's side of a
+// contact sheet, next to the game's frames of the same move.
+std::string g_strip_file;
+int g_strip_frames = 0;
+void TestStrip(const std::wstring& spec) {
+  const size_t c = spec.rfind(L',');
+  g_strip_file = Utf8(spec.substr(0, c));
+  g_strip_frames = c == std::wstring::npos ? 12 : std::clamp(_wtoi(spec.c_str() + c + 1), 1, 60);
+}
+void RunStrip() {
+  auto& play = char_preview::Play();
+  if (play.keys <= 1) return;
+  constexpr int kSize = 256, kCols = 6;
+  const int n = g_strip_frames, rows = (n + kCols - 1) / kCols;
+  Image sheet;
+  sheet.w = kSize * std::min(n, kCols), sheet.h = kSize * rows;
+  sheet.rgba.assign(size_t(sheet.w) * sheet.h * 4, 0);
+  std::string keys;
+  const bool was = play.playing;
+  for (int i = 0; i < n; ++i) {
+    play.key = float(play.keys - 1) * float(i) / float(std::max(1, n - 1));
+    std::vector<uint8_t> px;
+    if (!char_preview::Capture(kSize, px, true)) continue;
+    const int ox = (i % kCols) * kSize, oy = (i / kCols) * kSize;
+    for (int y = 0; y < kSize; ++y)
+      std::memcpy(&sheet.rgba[(size_t(oy + y) * sheet.w + ox) * 4], &px[size_t(y) * kSize * 4], size_t(kSize) * 4);
+    keys += " " + std::to_string(int(play.key));
+  }
+  play.playing = was;
+  Log("anims: strip " + g_strip_file + " (" + std::to_string(n) + " frames at keys" + keys + " of " + std::to_string(play.keys) +
+      "; " + char_preview::MoveSteps() + ") " + (SavePng(g_strip_file, sheet) ? "written" : "NOT written"));
+  g_strip_file.clear();
+}
+
 int g_test_play_move = 0;
 void TestPlay(int star_id, int dummy_id, int move) {
   g_test_star = star_id, g_test_dummy = dummy_id, g_test_play_move = move;
@@ -536,6 +631,8 @@ void TestPlay(int star_id, int dummy_id, int move) {
 void Draw() {
   if (!g_cmp.dump.empty()) RunCompare();
   if (g_watch_pending && IndexReady() && !Busy()) Watch(g_watch_pending), g_move_id = g_watch_pending, g_watch_pending = 0;
+  static int strip_wait = 0;  // (a few frames for the models and the framing to settle first)
+  if (!g_strip_file.empty() && !char_preview::MoveSteps().empty() && ++strip_wait > 90) RunStrip();
   if (g_test_star > 0 && !g_game.empty()) {  // the test aid, once
     const auto& stars = Stars();
     for (int i = 0; i < int(stars.size()); ++i) {
@@ -574,6 +671,69 @@ void Draw() {
   ViewFooter();
   Controls();
   ImGui::EndChild();
+}
+
+// A pack's motions for one move as a bank the 3D view plays: the target bank's header (pack.txt `motion` lines name
+// it: <pac> <GROUP/ENTRY/child>), then the pack's entries and data.
+std::shared_ptr<const Bytes> PackBank(const std::filesystem::path& pack, int id) {
+  Bytes t;
+  if (!ReadFile(PathStr(pack / L"pack.txt"), t)) return nullptr;
+  const std::string text(t.begin(), t.end());
+  struct Part {
+    int x, y, frames;
+    std::string file;
+  };
+  std::vector<Part> parts;
+  std::string pac, where;
+  for (size_t at = 0; at < text.size();) {
+    size_t nl = text.find('\n', at);
+    if (nl == std::string::npos) nl = text.size();
+    const std::string line = text.substr(at, nl - at);
+    at = nl + 1;
+    char word[16] = "", p[64] = "", w[96] = "", file[260] = "";
+    int mid = 0, x = 0, y = 0, frames = 0;
+    if (std::sscanf(line.c_str(), "%15s %63s %95s %d %d %d %d %259s", word, p, w, &mid, &x, &y, &frames, file) == 8 &&
+        !std::strcmp(word, "motion") && mid == id) {
+      if (pac.empty()) pac = p, where = w;
+      parts.push_back({x, y, frames, file});
+    }
+  }
+  if (parts.empty()) return nullptr;
+  const size_t s1 = where.find('/'), s2 = s1 == std::string::npos ? s1 : where.find('/', s1 + 1);
+  if (s2 == std::string::npos) return nullptr;
+  std::string group = where.substr(0, s1);
+  const std::string entry = where.substr(s1 + 1, s2 - s1 - 1);
+  const int child = std::atoi(where.c_str() + s2 + 1);
+  while (group.size() < 4) group += ' ';
+  Bytes raw, head;
+  if (!ReadPacEntry(std::filesystem::path(g_game) / L"pac" / std::filesystem::u8path(pac), entry.c_str(), raw, group.c_str())) return nullptr;
+  std::vector<PachEntry> kids;
+  if (PachRead(Unpack(raw), kids))
+    for (const auto& kid : kids)
+      if (int(kid.id) == child) head = Unpack(kid.data);
+  if (head.size() < 0x114) return nullptr;
+  auto bank = std::make_shared<Bytes>(head.begin(), head.begin() + 0x110);
+  const uint32_t n = uint32_t(parts.size());
+  bank->resize(0x114 + 16 * size_t(n));
+  PutLe32(&(*bank)[0x110], n);
+  Bytes data;
+  for (uint32_t i = 0; i < n; ++i) {
+    Bytes d;
+    if (!ReadFile(PathStr(pack / std::filesystem::u8path(parts[i].file)), d)) return nullptr;
+    uint8_t* e = &(*bank)[0x114 + 16 * i];
+    e[0] = uint8_t(parts[i].y), e[1] = uint8_t(parts[i].x), e[2] = uint8_t(id), e[3] = uint8_t(id >> 8);
+    PutLe32(e + 4, uint32_t(data.size()));
+    PutLe32(e + 8, uint32_t(parts[i].frames));
+    PutLe32(e + 12, 0);
+    data.insert(data.end(), d.begin(), d.end());
+  }
+  bank->insert(bank->end(), data.begin(), data.end());
+  return bank;
+}
+
+
+bool PlayMove(std::shared_ptr<const Bytes> bank, int id, int alt, std::string* err) {
+  return char_preview::SetMove(bank, id, alt, [](int nid) { return GameBank(nid); }, err);
 }
 
 }  // namespace anims_page
