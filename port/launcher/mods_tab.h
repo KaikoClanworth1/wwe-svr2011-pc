@@ -28,6 +28,9 @@ int mods_print_attires(const WCHAR *game);
 /* Installs a .svrmod into <game_dir>/Mods (the + button without its dialog;
    tests: --mods-add <file>). 1 on success; the tab's status says why not. */
 int mods_install(const WCHAR *game_dir, const WCHAR *zip);
+/* The Shrink movies button without its window (tests: --mods-shrink <game folder>): every superstar / media
+   mod's .bik movie (not the bundled mods') and Custom Movies' .bik -> .mp4; the result on the status line. */
+int mods_shrink(const WCHAR *game_dir);
 
 /* A main menu background made from a picture (backgrounds.h; tests:
    --bg-add <game folder> <picture> [logo]). 1 on success; prints the folder. */

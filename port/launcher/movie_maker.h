@@ -36,3 +36,10 @@ int movie_make(MovieJob *job);
  * job looks the same, sharper). */
 int movie_preview(const WCHAR *video, const WCHAR *bottom, int fit, double seconds, uint8_t *bgra,
                   WCHAR *err, size_t errn);
+
+/* A mod's Bink 1 movie (no sound) -> an .mp4 the game plays as an HD movie, about half the size;
+ * written to <mp4 minus .mp4>.part.mp4 first and checked (Media Foundation reads it back at the movie's
+ * length). 0: not made (err says why; Bink 2, sound, damaged frames, no H.264 encoder) - the .bik stays.
+ * COM initialised on the calling thread. */
+int movie_shrink(const WCHAR *bik, const WCHAR *mp4, volatile LONG *cancel, void (*progress)(void *, int), void *ctx,
+                 WCHAR *err, size_t errn);

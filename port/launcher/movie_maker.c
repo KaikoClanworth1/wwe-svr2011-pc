@@ -696,19 +696,21 @@ int movie_preview(const WCHAR *video, const WCHAR *bottom, int fit, double secon
  * src/hd_movies.cpp; a tenth of the .bik's size). NULL where Windows can't encode H.264 (a "N"
  * edition without the Media Feature Pack): the .bik then. ── */
 
-typedef struct { IMFSinkWriter *w; DWORD stream; int W; } Mp4Writer;
+typedef struct { IMFSinkWriter *w; DWORD stream; int W, H; LONGLONG dt; } Mp4Writer;
 
-static Mp4Writer *mp4_open(const WCHAR *path, int W)
+/* W x H (even), a frame every dt (100 ns) */
+static Mp4Writer *mp4_open(const WCHAR *path, int W, int H, LONGLONG dt)
 {
     Mp4Writer *m;
     IMFAttributes *attrs = NULL;
     IMFMediaType *out = NULL, *in = NULL;
     HRESULT hr;
     /* (bits per second: about what libx264 -crf 20 gives these movies - tools/movie_shrink.py) */
-    const UINT32 bitrate = W <= 320 ? 1500000 : W <= 640 ? 4000000 : 8000000;
-    const UINT64 size = ((UINT64)W << 32) | (UINT32)W, rate = ((UINT64)FPS << 32) | 1, par = ((UINT64)1 << 32) | 1;
-    if (!mf_start() || !(m = (Mp4Writer *)calloc(1, sizeof *m))) return NULL;
-    m->W = W;
+    const UINT32 bitrate = W * H <= 320 * 320 ? 1500000 : W * H <= 640 * 640 ? 4000000 : 8000000;
+    const UINT64 size = ((UINT64)W << 32) | (UINT32)H, rate = ((UINT64)10000000 << 32) | (UINT32)dt,
+                 par = ((UINT64)1 << 32) | 1;
+    if ((W | H) & 1 || dt <= 0 || !mf_start() || !(m = (Mp4Writer *)calloc(1, sizeof *m))) return NULL;
+    m->W = W, m->H = H, m->dt = dt;
     MFCreateAttributes(&attrs, 1);
     if (attrs) IMFAttributes_SetUINT32(attrs, &MF_SINK_WRITER_DISABLE_THROTTLING, TRUE);
     hr = MFCreateSinkWriterFromURL(path, NULL, attrs, &m->w);
@@ -748,26 +750,26 @@ static Mp4Writer *mp4_open(const WCHAR *path, int W)
     return m;
 }
 
-/* One BGRA frame (W x W) -> NV12 (BT.601 studio range, as src/movie_transcode.cpp) -> the writer; 0 on failure. */
+/* One BGRA frame (W x H) -> NV12 (BT.601 studio range, as src/movie_transcode.cpp) -> the writer; 0 on failure. */
 static int mp4_frame(Mp4Writer *m, const uint8_t *bgra, int i)
 {
-    const int W = m->W;
-    const DWORD n = (DWORD)W * W * 3 / 2;
-    const LONGLONG dt = 10000000LL / FPS;
+    const int W = m->W, H = m->H;
+    const DWORD n = (DWORD)W * H * 3 / 2;
+    const LONGLONG dt = m->dt;
     IMFMediaBuffer *buf = NULL;
     IMFSample *s = NULL;
     BYTE *d = NULL;
     int x, y, ok = 0;
     if (FAILED(MFCreateMemoryBuffer(n, &buf)) || FAILED(IMFMediaBuffer_Lock(buf, &d, NULL, NULL))) goto out;
-    for (y = 0; y < W; y++)
+    for (y = 0; y < H; y++)
         for (x = 0; x < W; x++) {
             const uint8_t *p = bgra + ((size_t)y * W + x) * 4;
             d[(size_t)y * W + x] = clamp8(((66 * p[2] + 129 * p[1] + 25 * p[0] + 128) >> 8) + 16);
         }
-    for (y = 0; y < W; y += 2)
+    for (y = 0; y < H; y += 2)
         for (x = 0; x < W; x += 2) {
             int r = 0, g = 0, b = 0, k;
-            BYTE *o = d + (size_t)W * W + (size_t)(y / 2) * W + x;
+            BYTE *o = d + (size_t)W * H + (size_t)(y / 2) * W + x;
             for (k = 0; k < 4; k++) {
                 const uint8_t *p = bgra + ((size_t)(y + k / 2) * W + x + k % 2) * 4;
                 b += p[0], g += p[1], r += p[2];
@@ -832,7 +834,7 @@ int movie_make(MovieJob *job)
     if (ends_with(job->out, L".mp4")) {
         /* (".part.mp4": the sink writer picks the container by the extension) */
         swprintf_s(tmp, sizeof tmp / sizeof *tmp, L"%.*s.part.mp4", (int)(wcslen(job->out) - 4), job->out);
-        if (frame && (mp4 = mp4_open(tmp, W)) != NULL) {
+        if (frame && (mp4 = mp4_open(tmp, W, W, 10000000LL / FPS)) != NULL) {
             for (i = 0; i < n; i++) {
                 if (job->cancel) { wcscpy_s(job->err, sizeof job->err / sizeof *job->err, L"Stopped."); break; }
                 compose(&top, &bot, job->fit, (LONGLONG)i * 10000000LL / FPS, frame, W);
@@ -895,5 +897,75 @@ done:
     free(frame);
     pic_close(&top);
     pic_close(&bot);
+    return ok;
+}
+
+/* ── a mod's Bink 1 movie -> .mp4 (the launcher's own movie_shrink: install-time and the Shrink movies
+ * button, mods_tab.c; tools/movie_shrink.py is the same with ffmpeg) ── */
+
+/* The length (100 ns) Media Foundation reads in an .mp4; 0: it can't read it. */
+static LONGLONG mp4_length(const WCHAR *path)
+{
+    IMFSourceReader *rd = NULL;
+    PROPVARIANT v;
+    LONGLONG len = 0;
+    if (!mf_start() || FAILED(MFCreateSourceReaderFromURL(path, NULL, &rd))) return 0;
+    PropVariantInit(&v);
+    if (SUCCEEDED(IMFSourceReader_GetPresentationAttribute(rd, (DWORD)MF_SOURCE_READER_MEDIASOURCE, &MF_PD_DURATION, &v)) &&
+        v.vt == VT_UI8)
+        len = (LONGLONG)v.uhVal.QuadPart;
+    PropVariantClear(&v);
+    IMFSourceReader_Release(rd);
+    return len;
+}
+
+int movie_shrink(const WCHAR *bik, const WCHAR *mp4, volatile LONG *cancel, void (*progress)(void *, int), void *ctx,
+                 WCHAR *err, size_t errn)
+{
+    WCHAR tmp[MAX_PATH + 16];
+    BinkReader *r;
+    Mp4Writer *m;
+    uint8_t *frame;
+    int n, i, ok = 1;
+    LONGLONG dt, want, got;
+    FILE *f = NULL;
+    uint8_t head[44];
+    err[0] = 0;
+    /* (a movie with sound: left as it is - the launcher's Bink reader has no audio) */
+    if (_wfopen_s(&f, bik, L"rb") || !f) { wcscpy_s(err, errn, L"Can't open the movie."); return 0; }
+    n = (int)fread(head, 1, sizeof head, f);
+    fclose(f);
+    if (n < 44 || memcmp(head, "BIK", 3)) { wcscpy_s(err, errn, L"Not a Bink 1 movie (left as it is)."); return 0; }
+    if (head[40] | head[41] | head[42] | head[43]) { wcscpy_s(err, errn, L"The movie has sound (left as it is)."); return 0; }
+    if (!(r = bink_open(bik, err, errn))) return 0;
+    n = bink_frames(r);
+    dt = bink_frame_time(r) > 0 ? bink_frame_time(r) : 333333;
+    swprintf_s(tmp, MAX_PATH + 16, L"%.*s.part.mp4", (int)(wcslen(mp4) - 4), mp4);
+    frame = (uint8_t *)malloc((size_t)bink_width(r) * bink_height(r) * 4);
+    if (!frame || !(m = mp4_open(tmp, bink_width(r), bink_height(r), dt))) {
+        wcscpy_s(err, errn, L"Windows can't make .mp4 movies here (no H.264 encoder: a Windows \"N\" edition?).");
+        free(frame);
+        bink_close(r);
+        return 0;
+    }
+    for (i = 0; i < n && ok; i++) {
+        if (cancel && *cancel) { wcscpy_s(err, errn, L"Stopped."); ok = 0; break; }
+        if (!bink_next(r)) { swprintf_s(err, errn, L"Frame %d of %d is damaged (left as it is).", i + 1, n); ok = 0; break; }
+        bink_bgra(r, frame);
+        if (!mp4_frame(m, frame, i)) { wcscpy_s(err, errn, L"Could not write the movie (disk full?)."); ok = 0; }
+        if (progress && i % 15 == 0) progress(ctx, (i + 1) * 100 / n);
+    }
+    ok = mp4_close(m, ok) && ok;
+    free(frame);
+    bink_close(r);
+    /* verified: Media Foundation reads it back at the movie's length (within 0.3 s or 2 %) */
+    want = (LONGLONG)n * dt;
+    got = ok ? mp4_length(tmp) : 0;
+    if (ok && (got <= 0 || _abs64(got - want) > max(3000000LL, want / 50))) {
+        swprintf_s(err, errn, L"The .mp4 didn't come out whole (%.1f s of %.1f s).", got / 1e7, want / 1e7);
+        ok = 0;
+    }
+    if (ok && !MoveFileExW(tmp, mp4, MOVEFILE_REPLACE_EXISTING)) { wcscpy_s(err, errn, L"Could not save the .mp4."); ok = 0; }
+    if (!ok) DeleteFileW(tmp);
     return ok;
 }
