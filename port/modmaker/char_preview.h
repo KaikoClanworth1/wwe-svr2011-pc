@@ -57,6 +57,16 @@ bool SetMove(std::shared_ptr<const std::vector<uint8_t>> bank, int id, int alt, 
 std::vector<int> MovePhases(const std::vector<uint8_t>& bank, int id);
 // What the move set by SetMove plays ("x 0 (one) > x 10 (both); the partner then 476"; "" for none).
 std::string MoveSteps();
+// One track of a move as the preview reads it (the move inspector): its length in keys, its op 49 follow-up (-1 none
+// said, 0 none), hit windows (key, group mask), event ops counted; ok false with why when it doesn't decode.
+struct TrackFacts {
+  bool ok = false;
+  std::string err;
+  int keys = 0, next = -1;
+  std::vector<std::pair<int, int>> attack;
+  std::map<int, int> ops;
+};
+TrackFacts InspectTrack(const std::vector<uint8_t>& bank, int id, int x, int y);
 // What plays: the id / x set (-1: the idle), its length in keys (30 a second).
 struct Playback {
   bool playing = true;

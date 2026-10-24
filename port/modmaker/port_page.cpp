@@ -16,6 +16,7 @@
 #include "disc_list.h"
 #include "full_preview.h"
 #include "json.h"
+#include "move_check.h"
 #include "simple_port.h"
 #include "svrfmt/disc.h"
 #include "tool_run.h"
@@ -1334,6 +1335,13 @@ void KindBody(int k) {
       for (const auto& w : v.items)
         ImGui::TextColored(std::string(list) == "warnings" ? kWarn : ImVec4(0.65f, 0.65f, 0.7f, 1), "%s%s",
                            std::string(list) == "dropped" ? "left out: " : "", w.Str().c_str());
+    }
+    // a ported move: the inspector and "Will it work in-game?" before it goes in a moveset (move_check.h)
+    if (g_result["opens"].Str() == "moves" && std::wstring(kKinds[k].script) == L"moves_port.py") {
+      const int id = std::atoi(g_result["id"].Str().c_str());
+      const fs::path pack = Wide(g_result["out"].Str());
+      std::error_code ec;
+      if (id > 0 && fs::exists(pack / L"pack.txt", ec)) move_check::DrawPanel(pack, id);
     }
   }
 }
