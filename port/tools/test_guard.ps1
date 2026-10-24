@@ -7,6 +7,11 @@
 # before the window is ever shown) on the second screen (--monitor=2): the player
 # watching something never sees one pop up.
 $env:SVR2011_WINDOW_BEHIND = "1"
+# One screen (the player's TV): no test window at all - the SDK never shows the
+# window (SVR2011_WINDOW_HIDDEN); the game still draws, frame shots
+# (SVR2011_TEST_FRAME_SHOT) read its back buffer. Window screenshots (PrintWindow)
+# of a hidden window come out black: use frame shots.
+$env:SVR2011_WINDOW_HIDDEN = "1"
 
 # Where a test window is parked: the second screen if there is one (x 1920 +),
 # else it stays where it opened on the only screen - behind every window
