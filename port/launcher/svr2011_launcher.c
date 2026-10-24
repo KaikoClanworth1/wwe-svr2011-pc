@@ -131,7 +131,7 @@ enum {
     ID_FULLSCREEN_EX, ID_RENDER_RES, ID_RES_HINT,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
-    ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL, ID_ON_PEERS,
+    ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL, ID_ON_PEERS, ID_ON_ROUTE,
     ID_FR_LIST, ID_FR_NAME, ID_FR_ADD, ID_FR_REMOVE, ID_FR_STATUS,
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
@@ -1410,6 +1410,73 @@ static int toml_read(const WCHAR *path, Lines *l)
 
 /* "key = value" at the top level: the key (lowercase-sensitive, as TOML) and value text. */
 static int toml_get(const char *key, char *out, size_t n);
+
+/* The last online match's connection, from the game's log (p2p.cpp: "p2p: session <id> plays direct" / "plays
+   through the relay (direct failed)" / "(set so)", once a session): the newest such line in the newest logs
+   (<game>\logs\svr2011_*.log, newest first). s_route_kind: 1 direct, 2 relay - direct failed, 3 relay - the
+   server's choice, 0 none (no line shown). */
+static int s_route_kind;
+static void online_route_show(void)
+{
+    typedef struct { WCHAR name[MAX_PATH]; ULONGLONG t; } Log;
+    static Log logs[64];
+    WCHAR pat[MAX_PATH], path[MAX_PATH], t[400];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int n = 0, i, k;
+    s_route_kind = 0;
+    swprintf_s(pat, MAX_PATH, L"%s\\logs\\svr2011_*.log", s_game_dir);
+    h = s_game_dir[0] ? FindFirstFileW(pat, &fd) : INVALID_HANDLE_VALUE;
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (n < 64 && !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                wcscpy_s(logs[n].name, MAX_PATH, fd.cFileName);
+                logs[n].t = (ULONGLONG)fd.ftLastWriteTime.dwHighDateTime << 32 | fd.ftLastWriteTime.dwLowDateTime;
+                n++;
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    for (i = 0; i < n; i++)   /* (newest first) */
+        for (k = i + 1; k < n; k++)
+            if (logs[k].t > logs[i].t) { Log x = logs[i]; logs[i] = logs[k]; logs[k] = x; }
+    for (i = 0; i < n && i < 6 && !s_route_kind; i++) {
+        FILE *f = NULL;
+        char *buf;
+        long size;
+        swprintf_s(path, MAX_PATH, L"%s\\logs\\%s", s_game_dir, logs[i].name);
+        if (_wfopen_s(&f, path, L"rb") || !f) continue;
+        fseek(f, 0, SEEK_END);
+        size = ftell(f);
+        if (size > (8l << 20)) { fseek(f, size - (8l << 20), SEEK_SET); size = 8l << 20; } else fseek(f, 0, SEEK_SET);
+        if ((buf = (char *)malloc((size_t)size + 1)) != NULL) {
+            const char *p, *last = NULL;
+            size = (long)fread(buf, 1, (size_t)size, f);
+            buf[size] = 0;
+            for (p = buf; (p = strstr(p, "p2p: session ")) != NULL; p++) {
+                const char *e = strchr(p, '\n'), *pl = strstr(p, " plays ");
+                if (pl && (!e || pl < e)) last = pl + 7;
+            }
+            if (last)
+                s_route_kind = !strncmp(last, "direct", 6) ? 1 : strstr(last, "(set so)") && (!strchr(last, '\n') ||
+                               strstr(last, "(set so)") < strchr(last, '\n')) ? 3 : 2;
+            free(buf);
+        }
+        fclose(f);
+    }
+    if (s_route_kind == 1)
+        wcscpy_s(t, 400, L"Last online match: direct connection");
+    else if (s_route_kind == 2) {
+        char port[16] = "";
+        if (!toml_get("p2p_port", port, sizeof port) || !port[0]) strcpy_s(port, sizeof port, "36000");
+        swprintf_s(t, 400, L"Last online match: through the relay - a direct connection failed (open UDP %S on your "
+                           L"router or turn on ROUTER PORT (UPNP) in the game's OPTIONS > GRAPHICS)", port);
+    } else if (s_route_kind == 3)
+        wcscpy_s(t, 400, L"Last online match: through the relay (the server's choice)");
+    else
+        t[0] = 0;
+    set_text(ID_ON_ROUTE, t);
+}
 static int toml_set(const char *key, const char *value);
 
 static int toml_kv(const char *line, char *key, size_t kn, char *val, size_t vn)
@@ -2991,6 +3058,7 @@ static void show_tab(int t)
             ShowWindow(s_ctl[k][i], k == t ? SW_SHOW : SW_HIDE);
     s_tab_visible_online = t == TAB_ONLINE;
     if (t == TAB_ONLINE) {  /* (the controls the account/server state hides) */
+        online_route_show();
         online_account_show();
         online_server_show();
         friends_enable();
@@ -3676,6 +3744,8 @@ static void build_ui(void)
     add(TAB_SETTINGS, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 568, 560, 32, ID_SETTINGS_STATUS);
 
     /* Online */
+    /* the last online match's connection (online_route_show: the game's log) */
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 16, 560, 34, ID_ON_ROUTE);
     add(TAB_ONLINE, L"Static", L"Community Creations and online matches (Player Match, Royal Rumble) through a "
                                L"Community Creations server - the original servers closed in 2014.",
         SS_LEFT, X0, 54, 560, 36, 0);
@@ -8518,7 +8588,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     case WM_CTLCOLORBTN: {
         /* (text on a card: its colour; on the page: the page's) */
         const int on_card = card_at((HWND)lp), id = GetDlgCtrlID((HWND)lp);
-        SetTextColor((HDC)wp, id == ID_PLAY_STATUS && s_play_ready ? C_GOOD : id == ID_UP_STATUS ? C_MUTED : C_TEXT);
+        SetTextColor((HDC)wp, id == ID_PLAY_STATUS && s_play_ready ? C_GOOD : id == ID_UP_STATUS ? C_MUTED :
+                              id == ID_ON_ROUTE ? (s_route_kind == 1 ? C_GOOD : s_route_kind == 2 ? C_WARN : C_MUTED) : C_TEXT);
         if ((GetWindowLongW((HWND)lp, GWL_STYLE) & ES_READONLY) && m == WM_CTLCOLORSTATIC) {
             WCHAR cn[16];
             if (GetClassNameW((HWND)lp, cn, 16) && !_wcsicmp(cn, L"Edit")) {   /* (read-only fields) */
