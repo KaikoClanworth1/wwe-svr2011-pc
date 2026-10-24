@@ -98,6 +98,8 @@ h2 .note, h2 .filter, h2 .btn { text-transform: none; letter-spacing: 0; font-we
        color: var(--dim); font: inherit; font-size: 13px; cursor: pointer; margin-left: 4px; }
 .btn:hover { background: var(--panel-2); color: var(--text); }
 .btn:disabled { opacity: .5; cursor: default; }
+#reports h3 { font-size: 14px; margin: 20px 0 6px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#reports code { white-space: pre-wrap; word-break: break-all; }
 .btn.danger { border-color: var(--bad-line); color: var(--bad); }
 .btn.danger:hover { background: var(--bad-bg); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -185,6 +187,7 @@ td.acts { text-align: right; white-space: nowrap; }
     <button role="tab" id="tab-matches" aria-controls="p-matches">Matches <span class="count live" id="n-matches"></span></button>
     <button role="tab" id="tab-cc" aria-controls="p-cc">Community Creations <span class="count" id="n-cc"></span></button>
     <button role="tab" id="tab-discovery" aria-controls="p-discovery">Discovery <span class="count" id="n-discovery"></span></button>
+    <button role="tab" id="tab-reports" aria-controls="p-reports">Reports <span class="count" id="n-reports"></span></button>
     <button role="tab" id="tab-settings" aria-controls="p-settings">Settings</button>
     <button role="tab" id="tab-logs" aria-controls="p-logs">Logs</button>
   </nav>
@@ -291,6 +294,14 @@ td.acts { text-align: right; white-space: nowrap; }
       <button class="btn" id="audit-run">Run audit</button></h2>
     <p class="intro">Compares the files where the uploads' bytes live (the storage node) with what the database refers to. An orphan is a file nothing refers to (e.g. a delete while the node was down): it goes only with its Delete. Hidden mods are listed so they aren't mistaken for orphans.</p>
     <div id="audit"></div>
+  </section>
+
+  <section role="tabpanel" id="p-reports" aria-labelledby="tab-reports" tabindex="0" hidden>
+    <h2>Problem reports <span class="spacer"></span>
+      <label class="note"><input type="checkbox" id="rp-open" checked> Hide done / duplicates</label>
+      <input class="filter" id="f-rp" placeholder="Filter" aria-label="Filter reports"></h2>
+    <p class="intro">Sent from Report a problem (launcher, Mod Maker, game, Android). Grouped by signature: the app, version, problem and the first crash / error line in the logs. The files are in the storage node's reports folder.</p>
+    <div id="reports"><span class="empty">Loading&hellip;</span></div>
   </section>
 
   <section role="tabpanel" id="p-settings" aria-labelledby="tab-settings" tabindex="0" hidden>
@@ -412,6 +423,7 @@ td.acts { text-align: right; white-space: nowrap; }
     else if (name === 'matches') { live(); leaderboard(); }
     else if (name === 'cc') loadUploads();
     else if (name === 'discovery') loadMods();
+    else if (name === 'reports') loadReports();
     else if (name === 'settings') { if (!settingsList.length) settings(); }
     else if (name === 'logs') log();
   }
@@ -693,6 +705,62 @@ td.acts { text-align: right; white-space: nowrap; }
     }).catch(function () {});
   }
 
+  // ---- problem reports, grouped by signature (newest group first)
+  var reportRows = [], reportError = '';
+  function reportFile(r, name) { return 'api/admin/report/' + encodeURIComponent(r.id) + '/' + encodeURIComponent(name); }
+  function renderReports() {
+    var f = el('f-rp').value.toLowerCase(), open = el('rp-open').checked;
+    var rows = reportRows.filter(function (r) {
+      return (!open || !r.status) && (!f || [r.app, r.version, r.problem, r.what, r.signature, r.signature_line, r.platform]
+        .join(' ').toLowerCase().indexOf(f) >= 0);
+    });
+    var groups = [], by = {};
+    rows.forEach(function (r) {
+      var g = by[r.signature];
+      if (!g) { g = by[r.signature] = {sig: r.signature, rows: []}; groups.push(g); }
+      g.rows.push(r);
+    });
+    if (reportError) { el('reports').innerHTML = '<p class="empty">' + esc(reportError) + '</p>'; return; }
+    el('reports').innerHTML = groups.length ? groups.map(function (g) {
+      var a = g.rows[0];
+      return '<h3>' + esc(a.problem) + ' <span class="tag">' + esc(a.app) + ' ' + esc(a.version) + '</span> <span class="tag' +
+        (a.count > 1 ? ' bad' : '') + '">' + a.count + ' report' + (a.count === 1 ? '' : 's') + '</span> <span class="id" title="signature">' +
+        esc(g.sig) + '</span></h3>' + (a.signature_line ? '<p class="note"><code>' + esc(a.signature_line) + '</code></p>' : '') +
+        '<div class="scroll"><table><thead><tr><th>Received</th><th>Platform</th><th>Happens</th><th>What happened</th><th>Pictures</th><th></th></tr></thead><tbody>' +
+        g.rows.map(function (r) {
+          var pics = (r.images || []).map(function (n) {
+            return '<a href="' + reportFile(r, n) + '" target="_blank" rel="noopener"><img class="thumb" loading="lazy" alt="' + esc(n) +
+              '" src="' + reportFile(r, n) + '" style="height:48px;max-width:96px;object-fit:cover;margin-right:4px;border-radius:3px"></a>';
+          }).join('');
+          return '<tr><td title="' + esc(r.received) + '">' + ago(r.received_at) + (r.status ? ' <span class="tag on">' + esc(r.status) + '</span>' : '') +
+            '</td><td>' + esc(r.platform || '') + '</td><td>' + esc(r.happens || '') + '</td><td>' + esc(r.what || '') +
+            (r.account ? ' <span class="note">(' + esc(r.account) + ')</span>' : '') + '</td><td>' + pics + '</td><td class="acts">' +
+            '<a class="btn" href="' + reportFile(r, 'report.json') + '" target="_blank" rel="noopener">Details</a>' +
+            (r.zip_size ? '<a class="btn" href="' + reportFile(r, 'report.zip') + '">Zip ' + bytes(r.zip_size) + '</a>' : '') +
+            (r.status ? '<button class="btn" data-rp="' + esc(r.id) + '" data-s="">Reopen</button>' :
+              '<button class="btn" data-rp="' + esc(r.id) + '" data-s="done">Done</button>' +
+              '<button class="btn" data-rp="' + esc(r.id) + '" data-s="duplicate">Duplicate</button>') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }).join('') : '<p class="empty">No reports' + (open && reportRows.length ? ' left open' : '') + '.</p>';
+  }
+  function loadReports() {
+    return api('api/admin/reports').then(function (d) {
+      reportRows = d.reports || []; reportError = '';
+      el('n-reports').textContent = reportRows.filter(function (r) { return !r.status; }).length || '';
+      if (current === 'reports') renderReports();
+    }).catch(function (e) { reportError = 'The reports could not be loaded (' + e.message + ').'; if (current === 'reports') renderReports(); });
+  }
+  el('reports').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-rp]');
+    if (!b) return;
+    b.disabled = true;
+    api('api/admin/report/' + encodeURIComponent(b.getAttribute('data-rp')) + '/mark', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status: b.getAttribute('data-s')})
+    }).then(loadReports).catch(function () { b.disabled = false; });
+  });
+  el('f-rp').addEventListener('input', renderReports);
+  el('rp-open').addEventListener('change', renderReports);
+
   // ---- the storage audit (Discovery tab): orphans on the node, hidden mods, missing files
   function auditRow(f, act) {
     return '<tr><td><span class="id" title="' + esc(f.sha) + '">' + esc(f.sha.slice(0, 16)) + '</span></td><td>' +
@@ -839,6 +907,7 @@ td.acts { text-align: right; white-space: nowrap; }
   if (current !== 'overview' && current !== 'matches') live();
   if (current !== 'overview') stats();
   if (current !== 'discovery') loadMods();
+  if (current !== 'reports') loadReports();
   setInterval(function () { if (current === 'overview') stats(); }, 5000);
   setInterval(function () { if (current === 'overview' || current === 'matches') live(); }, 5000);
   setInterval(function () { if (current === 'ping') pings(); }, 10000);
@@ -849,6 +918,7 @@ td.acts { text-align: right; white-space: nowrap; }
     else if (current === 'matches') leaderboard();
     else if (current === 'cc') loadUploads();
     else if (current === 'discovery') loadMods();
+    else if (current === 'reports') loadReports();
   }, 30000);
 })();
 </script>
