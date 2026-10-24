@@ -470,11 +470,25 @@ std::string ModsOnlineMessage() {
   if (!blocked) return "";
   if (server == 0)
     return "Checking the online server.\nOnline will be ready in a moment - please try again.";
-  // (the launcher's button: its own English label in every language)
+  // (the launcher's button / the app's tab: their own English names in every language)
   struct Text {
     uint32_t language;
     const char* text;
   };
+#ifdef __ANDROID__  // (the phone has no Start Without Mods: the SvR 2011 app's Mods tab switches them off)
+  static const Text kTexts[] = {
+      {1, "You have mods enabled.\nPlease turn your mods off in the Mods tab of the SvR 2011 app, then restart the "
+          "game to play online matches."},
+      {4, "Vous avez des mods activ\xC3\xA9s.\nD\xC3\xA9sactivez vos mods dans l'onglet Mods de l'app SvR 2011, "
+          "puis relancez le jeu pour jouer des matchs en ligne."},
+      {3, "Du hast Mods aktiviert.\nSchalte deine Mods im Tab Mods der SvR 2011 App aus und starte das Spiel neu, um "
+          "Online-Matches zu spielen."},
+      {5, "Tienes mods activados.\nDesactiva tus mods en la pesta\xC3\xB1" "a Mods de la app SvR 2011 y vuelve a "
+          "iniciar el juego para jugar partidas en l\xC3\xADnea."},
+      {6, "Hai delle mod attive.\nDisattiva le mod nella scheda Mods dell'app SvR 2011, poi riavvia il gioco per "
+          "giocare partite online."},
+  };
+#else
   static const Text kTexts[] = {
       {1, "You have mods enabled.\nPlease relaunch the game with Start Without Mods in the launcher to play online "
           "matches."},
@@ -486,6 +500,7 @@ std::string ModsOnlineMessage() {
           "partidas en l\xC3\xADnea."},
       {6, "Hai delle mod attive.\nRiavvia il gioco con Start Without Mods nel launcher per giocare partite online."},
   };
+#endif
   const uint32_t language = rex::cvar::Query<uint32_t>("user_language");
   for (const Text& t : kTexts)
     if (t.language == language) return t.text;

@@ -301,7 +301,11 @@ void Accept(const Invite& invite) {
   if (info.size() != 60) return Say("THAT INVITE IS BROKEN");
   // (mods on while the server has them off online: not into a session - the invite stays on the list)
   if (!ModsOnlineMessage().empty())
+#ifdef __ANDROID__
+    return Say("YOU HAVE MODS ENABLED - TURN THEM OFF IN THE APP'S MODS TAB TO PLAY ONLINE");
+#else
     return Say("YOU HAVE MODS ENABLED - RELAUNCH WITH START WITHOUT MODS TO PLAY ONLINE");
+#endif
   Decline(invite.from);  // (taken: off the list)
   if (!REXCVAR_GET(online_invite_native)) {
     // (the session first in the game's search, its private slots open to this
