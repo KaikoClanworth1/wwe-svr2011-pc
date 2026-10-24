@@ -2849,8 +2849,17 @@ int32_t NearWeapon(PPCContext& ctx, uint8_t* base, uint32_t ai) {
 }
 }  // namespace
 
+bool CondCharacterMissing1xx(uint8_t* base, uint32_t object, uint32_t id);  // (below, with the other tables)
+static void EventAnswer(uint32_t id, PPCContext& ctx);
+
 REX_EXTERN(__imp__sub_828578E8);
 REX_HOOK_RAW(sub_828578E8) {
+  const uint32_t cond = ctx.r4.u32;
+  // (the event scripts' conditions 100-199: a missing character - see CharacterMissing below)
+  if (CondCharacterMissing1xx(base, ctx.r3.u32, cond)) {
+    ctx.r3.u64 = 0;
+    return;
+  }
   // (a CPU in its weapon cooldown: "a usable weapon lies somewhere" (157) is no - it wrestles)
   static const bool no_cooldown = std::getenv("SVR2011_TEST_WE_NO_COOLDOWN") != nullptr;
   if (ctx.r4.u32 == 157 && ctx.r3.u32 && g_weapons && !no_cooldown && WeaponsRule(base[0x82E3DE00]) &&
@@ -2863,6 +2872,7 @@ REX_HOOK_RAW(sub_828578E8) {
     return;
   }
   __imp__sub_828578E8(ctx, base);
+  EventAnswer(cond, ctx);
 }
 
 REX_EXTERN(__imp__sub_82812838);
@@ -3456,6 +3466,49 @@ REX_HOOK_RAW(sub_82858B08) {
     }
   }
   __imp__sub_82858B08(ctx, base);
+  EventAnswer(id, ctx);
+}
+
+// ...and its conditions 100-199 (sub_828578E8) and 200-299 (sub_82853E38), the same kind again. Road to WrestleMania,
+// John Cena's week 2 (2.1.5, PC crash lr 82859424 / ctr 82857DEC, Android a freeze - two reports, 24 Oct): the
+// backstage brawl with Ted and Cody, when MVP opens the door - id 119 reads the object's character's +20 (the one it
+// handles) and that one's +1828; MVP, just in, handles no one: a read of 0x724. 174 hands +20 on (sub_821B59A8) and
+// 284 reads its +446 the same way. With nothing there these answer false, as the console's read near address 0 did;
+// so do the ids whose case starts with the object's character when there is none (kReads*: every case that loads
+// it, found by reading the cases - scratchpad tool cond_scan.py).
+namespace {
+bool CharacterMissing(uint8_t* base, uint32_t object, uint32_t id, uint32_t first, const uint64_t (&reads)[2],
+                      std::initializer_list<uint32_t> plus20) {
+  const uint32_t k = id - first;
+  if (!object || k >= 100 || !(reads[k / 64] >> (k % 64) & 1)) return false;
+  const uint32_t ch = Rd32(base + object);
+  if (!ch) return true;
+  for (const uint32_t v : plus20)
+    if (v == id && !Rd32(base + ch + 20)) return true;
+  return false;
+}
+}  // namespace
+
+// (sub_828578E8's hook is above, with the weapon cooldown answers)
+bool CondCharacterMissing1xx(uint8_t* base, uint32_t object, uint32_t id) {
+  constexpr uint64_t kReads1xx[2] = {0xFBFFFFFAEF7CBFFFull, 0x0000000FFF3FFEBFull};  // (bit = id - 100)
+  if (!CharacterMissing(base, object, id, 100, kReads1xx, {119, 174})) return false;
+  static int logged = 0;
+  if (logged++ < 3) REXLOG_INFO("[svr2011] event condition {} with no character to check - false (as on the console)", id);
+  return true;
+}
+
+REX_EXTERN(__imp__sub_82853E38);
+REX_HOOK_RAW(sub_82853E38) {
+  constexpr uint64_t kReads2xx[2] = {0xEF1DFF7FFFFFFEFEull, 0x0000000FDFFFFFFFull};  // (bit = id - 200)
+  const uint32_t id = ctx.r4.u32;
+  if (CharacterMissing(base, ctx.r3.u32, id, 200, kReads2xx, {284})) {
+    static int logged = 0;
+    if (logged++ < 3) REXLOG_INFO("[svr2011] event condition {} with no character to check - false (as on the console)", id);
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_82853E38(ctx, base);
   EventAnswer(id, ctx);
 }
 
