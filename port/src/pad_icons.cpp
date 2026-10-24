@@ -341,10 +341,29 @@ struct Sprite {
 };
 std::unordered_map<uint64_t, Sprite> g_sprites;  // by the 360 picture's FNV-1a 64
 std::set<std::pair<uint32_t, uint32_t>> g_sprite_sizes;
-// What the renderer saw: physical base address -> the sprite there.
+// What the renderer saw: physical base address -> the sprite there, and a print of the guest bytes it saw
+// there. The game frees pictures and puts others in their place: CREATE A MOVE-SET's move-list buttons (a
+// 1024 x 512 sheet) landed where the boot's legal screen (MENU/LEGL, 1024 x 512, a known picture) had been, and
+// were swapped for the PlayStation legal text ("THQ Inc", "Ltd" slices, black squares). The swap is made before
+// the new picture is ever bound - so before the renderer could report it - hence the print, checked at each swap.
+struct Seen {
+  const Sprite* sprite = nullptr;
+  uint64_t print = 0;
+};
 std::mutex g_seen_mutex;
-std::unordered_map<uint32_t, const Sprite*> g_seen;
+std::unordered_map<uint32_t, Seen> g_seen;
 std::atomic<size_t> g_seen_count{0};
+
+// A print of a picture's guest bytes (FNV-1a 64 of 2 KB at its start and 2 KB at its middle).
+uint64_t Print(uint32_t physical, const Sprite& sp) {
+  const size_t size = size_t(sp.width) * sp.height / (sp.dxt1 ? 2 : 1);
+  const uint8_t* d = g_memory->TranslatePhysical<const uint8_t*>(physical);
+  if (!d) return 0;
+  uint64_t h = 0xCBF29CE484222325ull;
+  for (const size_t at : {size_t(0), size / 2})
+    for (size_t i = at; i < at + 2048 && i < size; ++i) h = (h ^ d[i]) * 0x100000001B3ull;
+  return h;
+}
 // Copies of texture objects for the other versions: (object, kind) -> copy.
 struct Copy {
   uint32_t object = 0, fetch1 = 0, data = 0;
@@ -408,7 +427,21 @@ bool Load() {
       g_sprites[std::stoull(hash, nullptr, 16)].boxes.push_back(b);
     }
   }
-  return !g_atlases.empty();
+  // (fail safe: an icon page whose taller picture is missing or short is left out - its glyphs are never
+  // rewritten, the game's own icons stay; rewritten glyphs with no taller picture sample whatever is there)
+  for (auto it = g_atlases.begin(); it != g_atlases.end();) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size((*it)->file, ec);
+    const uint64_t want = 128 + uint64_t((*it)->width) * (*it)->total * 4;
+    if (!ec && size >= want) {
+      ++it;
+      continue;
+    }
+    REXLOG_WARN("[svr2011] pad icons: {} is {} - its icon page ({}x{}) keeps the game's own pictures", (*it)->file,
+                ec ? "missing" : fmt::format("short ({} of {} bytes)", size, want), (*it)->width, (*it)->height);
+    it = g_atlases.erase(it);
+  }
+  return !g_atlases.empty() || !g_sprites.empty();
 }
 
 // A copy of a texture object with its data replaced by `data` (the DDS's
@@ -501,7 +534,7 @@ void PadIconsTextureUploaded(uint32_t physical_base, uint32_t width, uint32_t he
                 sp ? " - a known picture" : "");
   std::lock_guard lock(g_seen_mutex);
   if (sp) {
-    g_seen[physical_base] = sp;
+    g_seen[physical_base] = Seen{sp, Print(physical_base, *sp)};
   } else {
     g_seen.erase(physical_base);
   }
@@ -750,7 +783,18 @@ uint32_t VersionOf(uint32_t object, Kind kind) {
   const Sprite* sp = nullptr;
   {
     std::lock_guard lock(g_seen_mutex);
-    if (auto it = g_seen.find(physical); it != g_seen.end()) sp = it->second;
+    if (auto it = g_seen.find(physical); it != g_seen.end()) {
+      // (another picture there now: not the one seen - no swap, until the renderer sees it again)
+      if (Print(physical, *it->second.sprite) == it->second.print) {
+        sp = it->second.sprite;
+      } else {
+        static const bool debug = std::getenv("SVR2011_PAD_ICONS_LOG") != nullptr;
+        if (debug)
+          REXLOG_INFO("[svr2011] pad icons: {}x{} at {:08X} is another picture now - not swapped", w, h, physical);
+        g_seen.erase(it);
+        g_seen_count = g_seen.size();
+      }
+    }
   }
   if (!sp) return 0;
   std::lock_guard lock(g_copies_mutex);
