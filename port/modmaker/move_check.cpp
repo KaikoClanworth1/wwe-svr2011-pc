@@ -195,7 +195,8 @@ Info Inspect(const fs::path& pack, int id) {
     if (tr.y > 1) continue;  // (cameras, props: not checked here)
     xs.insert(tr.x);
     Bytes d;
-    if (tr.file_ok && ReadFile(PathStr(pack / fs::u8path(tr.file)), d)) {
+    // (x 90+: reversal branches, the template's as they are - stock ones list 0 / 1 frames too, e.g. AA 5010)
+    if (tr.x < 90 && tr.file_ok && ReadFile(PathStr(pack / fs::u8path(tr.file)), d)) {
       const int sf = StreamFrames(d);
       if (sf != tr.frames && std::abs(sf - tr.frames) > 1)
         info.findings.push_back({false, "Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + ": pack.txt says " +
@@ -283,10 +284,8 @@ Info Inspect(const fs::path& pack, int id) {
   // timing
   for (const Track& tr : info.tracks) {
     if (tr.y > 1) continue;
-    if (tr.frames <= 0 && tr.x >= 90)  // (x 90-92: the reversal branches - the move itself still plays)
-      warn("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " (a reversal branch) is 0 frames long.",
-           "The move plays, but reversing it may freeze or snap: port it again with a template whose reversal fits.");
-    else if (tr.frames <= 0) err("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " is 0 frames long.", "Port it again.");
+    if (tr.x >= 90) continue;  // (reversal branches: the template's shape, see above)
+    if (tr.frames <= 0) err("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " is 0 frames long.", "Port it again.");
     else if (tr.frames > 1800)
       warn("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " is " + std::to_string(tr.frames) +
                " frames (over a minute in a match).", "Likely the wrong motion: check it in the preview, or port it again.");
