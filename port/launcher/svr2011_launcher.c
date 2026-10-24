@@ -22,6 +22,7 @@
  *                        --install <image> <folder>   (no window; exit code)
  *                        --apk-package <game folder> <out folder>   (Create APK Package, no window)
  *                        --report <game folder> [description]   (Report a problem: the zip, no window)
+ *                        --report-send <game folder> <answers file>   (Report a problem: zip + send to the server, no window)
  *                        --import-360 <360 save folder> <saves folder>   (Xbox 360 saves -> port saves)
  *                        --import-caw <saves folder> <file.cas>...   (Created Superstars + their logos)
  *                        --adb-install <game folder>   (Install to phone over USB, no window)
@@ -66,6 +67,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 #include "roster_tab.h"
 #include "ui_theme.h"
 #include "report.h"
+#include "report_send.h"
 #include "movie_maker.h"
 #include "ascii_fold.h"
 #include "unzip.h"
@@ -3057,7 +3059,13 @@ static void up_setup(void);
    Discord's bug-svr11 forum (the description is copied, ready to paste). */
 #define DISCORD_INVITE L"https://discord.com/invite/QhGSuDKHwk"
 #define DISCORD_FORUM L"bug-svr11"
-enum { REP_KIND = 300, REP_AGAIN, REP_WHAT, REP_BEFORE, REP_STATUS, REP_CREATE, REP_DISCORD, REP_SHOW, REP_COPY };
+enum { REP_KIND = 300, REP_AGAIN, REP_WHAT, REP_BEFORE, REP_STATUS, REP_CREATE, REP_DISCORD, REP_SHOW, REP_COPY,
+       REP_CONTACT, REP_ADDPIC, REP_SUMMARY, REP_SEND, REP_COPYID, REP_PIC0 = 340, REP_DEL0 = 350 };
+#define WM_APP_REP_SENT (WM_APP + 70)   /* the report window's own: the send finished (s_rep_result) */
+static WCHAR s_rep_pics[REPORT_MAX_IMAGES][MAX_PATH];  /* the pictures to send */
+static int s_rep_npics;
+static ReportResult s_rep_result;
+static char s_rep_problem[120], s_rep_happens[40], s_rep_what[4096], s_rep_before[4096], s_rep_contact[200];
 static const WCHAR *const k_rep_kinds[] = { L"The game crashed (closed by itself)", L"The game froze or hung",
                                             L"Graphics look wrong", L"Sound or music", L"Controller or keyboard",
                                             L"Online", L"Mods", L"Saves or created content", L"The launcher",
@@ -3102,6 +3110,70 @@ static void rep_clear(HWND w)
         DestroyWindow(c);
 }
 
+/* Page 1's picture rows (a name and Remove per picture) and the line saying what Send sends. */
+static void rep_pics_show(HWND w)
+{
+    ReportUpload u;
+    WCHAR line[300];
+    int i;
+    for (i = 0; i < REPORT_MAX_IMAGES; i++) {
+        const WCHAR *name = i < s_rep_npics ? wcsrchr(s_rep_pics[i], L'\\') : NULL;
+        SetDlgItemTextW(w, REP_PIC0 + i, i < s_rep_npics ? (name ? name + 1 : s_rep_pics[i]) : L"");
+        ShowWindow(GetDlgItem(w, REP_DEL0 + i), i < s_rep_npics ? SW_SHOW : SW_HIDE);
+    }
+    EnableWindow(GetDlgItem(w, REP_ADDPIC), s_rep_npics < REPORT_MAX_IMAGES);
+    ZeroMemory(&u, sizeof u);
+    u.zip = L"report.zip";
+    u.n_images = s_rep_npics;
+    report_send_summary(&u, line, 300);
+    SetDlgItemTextW(w, REP_SUMMARY, line);
+}
+
+/* Adds a picture (checked: png / jpeg / webp, 5 MB at most). 0 with the reason on the status line if not. */
+static int rep_pic_add(HWND w, const WCHAR *path)
+{
+    WCHAR why[300];
+    int i;
+    if (s_rep_npics >= REPORT_MAX_IMAGES) return 0;
+    for (i = 0; i < s_rep_npics; i++)
+        if (!_wcsicmp(s_rep_pics[i], path)) return 1;
+    if (!report_image_ok(path, why, 300)) {
+        if (w) SetDlgItemTextW(w, REP_STATUS, why);
+        return 0;
+    }
+    wcscpy_s(s_rep_pics[s_rep_npics++], MAX_PATH, path);
+    return 1;
+}
+
+/* "Add pictures...": a file dialog, several at once. */
+static void rep_pics_pick(HWND w)
+{
+    static WCHAR files[8192];
+    OPENFILENAMEW of;
+    ZeroMemory(&of, sizeof of);
+    files[0] = 0;
+    of.lStructSize = sizeof of;
+    of.hwndOwner = w;
+    of.lpstrFilter = L"Pictures (PNG, JPEG, WebP)\0*.png;*.jpg;*.jpeg;*.webp\0";
+    of.lpstrFile = files;
+    of.nMaxFile = 8192;
+    of.lpstrTitle = L"Pictures for the report";
+    of.Flags = OFN_FILEMUSTEXIST | OFN_EXPLORER | OFN_ALLOWMULTISELECT | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&of)) return;
+    SetDlgItemTextW(w, REP_STATUS, L"");
+    if (files[wcslen(files) + 1] == 0) {   /* (one file: its full path) */
+        rep_pic_add(w, files);
+    } else {                               /* (several: the folder, then the names) */
+        const WCHAR *p = files + wcslen(files) + 1;
+        for (; *p; p += wcslen(p) + 1) {
+            WCHAR full[MAX_PATH];
+            swprintf_s(full, MAX_PATH, L"%s\\%s", files, p);
+            if (!rep_pic_add(w, full) && s_rep_npics >= REPORT_MAX_IMAGES) break;
+        }
+    }
+    rep_pics_show(w);
+}
+
 /* Page 1: the questions. */
 static void rep_page1(HWND w)
 {
@@ -3133,9 +3205,22 @@ static void rep_page1(HWND w)
     c = rep_add(w, L"Edit", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_TABSTOP, 20, 316, 480,
                 70, REP_BEFORE, NULL);
     SendMessageW(c, EM_LIMITTEXT, 1500, 0);
-    rep_add(w, L"Static", L"", SS_LEFT, 20, 404, 250, 36, REP_STATUS, NULL);
-    rep_add(w, L"Button", L"Create report", BS_DEFPUSHBUTTON | WS_TABSTOP, 280, 400, 130, 32, REP_CREATE, NULL);
-    rep_add(w, L"Button", L"Cancel", WS_TABSTOP, 420, 400, 80, 32, IDCANCEL, NULL);
+    rep_add(w, L"Static", L"Your Discord name (optional - so we can ask you):", SS_NOPREFIX, 20, 398, 290, 20, 0, NULL);
+    c = rep_add(w, L"Edit", L"", ES_AUTOHSCROLL | WS_TABSTOP, 310, 394, 190, 24, REP_CONTACT, NULL);
+    SendMessageW(c, EM_LIMITTEXT, 60, 0);
+    rep_add(w, L"Static", L"Pictures (up to 5): screenshots of the problem help a lot.", SS_NOPREFIX, 20, 432, 360, 20, 0,
+            NULL);
+    rep_add(w, L"Button", L"Add pictures\x2026", WS_TABSTOP, 390, 428, 110, 26, REP_ADDPIC, NULL);
+    for (i = 0; i < REPORT_MAX_IMAGES; i++) {
+        rep_add(w, L"Static", L"", SS_NOPREFIX | SS_PATHELLIPSIS, 20, 462 + i * 26, 380, 20, REP_PIC0 + i, NULL);
+        rep_add(w, L"Button", L"Remove", WS_TABSTOP, 410, 458 + i * 26, 90, 24, REP_DEL0 + i, NULL);
+    }
+    rep_add(w, L"Static", L"", SS_LEFT | SS_NOPREFIX, 20, 594, 480, 34, REP_SUMMARY, NULL);
+    rep_add(w, L"Static", L"", SS_LEFT, 20, 640, 180, 36, REP_STATUS, NULL);
+    rep_add(w, L"Button", L"Send report", BS_DEFPUSHBUTTON | WS_TABSTOP, 200, 636, 110, 32, REP_SEND, NULL);
+    rep_add(w, L"Button", L"Save zip", WS_TABSTOP, 318, 636, 92, 32, REP_CREATE, NULL);
+    rep_add(w, L"Button", L"Cancel", WS_TABSTOP, 420, 636, 80, 32, IDCANCEL, NULL);
+    rep_pics_show(w);
     SetFocus(GetDlgItem(w, REP_WHAT));
 }
 
@@ -3186,7 +3271,72 @@ static int rep_describe(HWND w, char *utf8, int n)
                L"Just before:\r\n%s\r\n",
                PORT_VERSION, k_rep_kinds[k], k_rep_again[a], what, before[0] ? before : L"(not said)");
     WideCharToMultiByte(CP_UTF8, 0, s_rep_text, -1, utf8, n, NULL, NULL);
+    {   /* (the fields for the server's report.json) */
+        WCHAR contact[64];
+        GetDlgItemTextW(w, REP_CONTACT, contact, 64);
+        WideCharToMultiByte(CP_UTF8, 0, k_rep_kinds[k], -1, s_rep_problem, sizeof s_rep_problem, NULL, NULL);
+        WideCharToMultiByte(CP_UTF8, 0, k_rep_again[a], -1, s_rep_happens, sizeof s_rep_happens, NULL, NULL);
+        WideCharToMultiByte(CP_UTF8, 0, what, -1, s_rep_what, sizeof s_rep_what, NULL, NULL);
+        WideCharToMultiByte(CP_UTF8, 0, before, -1, s_rep_before, sizeof s_rep_before, NULL, NULL);
+        WideCharToMultiByte(CP_UTF8, 0, contact, -1, s_rep_contact, sizeof s_rep_contact, NULL, NULL);
+    }
     return 1;
+}
+
+/* The send (a worker: it can take a while on a slow line): report.json from the answers, the zip, the pictures,
+   to the configured online server. The window gets WM_APP_REP_SENT. */
+static WCHAR s_rep_server[260];
+static DWORD WINAPI rep_send_thread(LPVOID p)
+{
+    HWND w = (HWND)p;
+    ReportUpload u;
+    char sig[400], ver[40];
+    char *json;
+    int i;
+    WideCharToMultiByte(CP_UTF8, 0, PORT_VERSION, -1, ver, sizeof ver, NULL, NULL);
+    report_signature(s_game_dir, sig, sizeof sig);
+    json = report_json("launcher", ver, s_rep_problem, s_rep_happens, s_rep_what, s_rep_before,
+                       s_rep_contact, sig);
+    ZeroMemory(&u, sizeof u);
+    u.json = json;
+    u.zip = s_rep_zip;
+    for (i = 0; i < s_rep_npics; i++) u.images[i] = s_rep_pics[i];
+    u.n_images = s_rep_npics;
+    report_send(s_rep_server, &u, &s_rep_result);
+    free(json);
+    PostMessageW(w, WM_APP_REP_SENT, 0, 0);
+    return 0;
+}
+
+/* Page 3: sent (the id, how often seen before), or not (why, and the zip kept for Discord). */
+static void rep_page3(HWND w)
+{
+    WCHAR t[MAX_PATH + 1200], id[64];
+    const int ok = s_rep_result.id[0] != 0;
+    s_rep_page = ok ? 3 : 2;
+    rep_clear(w);
+    MultiByteToWideChar(CP_UTF8, 0, s_rep_result.id, -1, id, 64);
+    if (ok) {
+        WCHAR seen[160] = L"";
+        if (s_rep_result.seen_before > 0)
+            swprintf_s(seen, 160, L"\n\nThis problem was already reported %d time%s - yours adds to it, thank you.",
+                       s_rep_result.seen_before, s_rep_result.seen_before == 1 ? L"" : L"s");
+        swprintf_s(t, MAX_PATH + 1200,
+                   L"Your report reached us.\n\nReport id:  %s%s\n\nIf you post about it on our Discord (" DISCORD_FORUM
+                   L" forum), give this id. A copy of the report is also kept here:\n%s",
+                   id, seen, s_rep_zip);
+        rep_add(w, L"Static", L"Report sent", 0, 20, 14, 480, 30, 0, s_big);
+        rep_add(w, L"Static", t, SS_LEFT | SS_NOPREFIX, 20, 52, 480, 290, 0, NULL);
+        rep_add(w, L"Button", L"Copy the id", BS_DEFPUSHBUTTON | WS_TABSTOP, 20, 360, 120, 32, REP_COPYID, NULL);
+        rep_add(w, L"Button", L"Show the file", WS_TABSTOP, 148, 360, 120, 32, REP_SHOW, NULL);
+        rep_add(w, L"Button", L"Close", WS_TABSTOP, 420, 360, 80, 32, IDCANCEL, NULL);
+        rep_add(w, L"Static", L"", SS_LEFT, 20, 404, 480, 20, REP_STATUS, NULL);
+        SetFocus(GetDlgItem(w, IDCANCEL));
+        return;
+    }
+    rep_page2(w);   /* (where to post it, the zip saved) */
+    swprintf_s(t, MAX_PATH + 1200, L"Not sent: %s Your report is saved - post it on Discord instead:", s_rep_result.why);
+    SetDlgItemTextW(w, REP_STATUS, t);
 }
 
 static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
@@ -3209,6 +3359,41 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             rep_page2(w);
             return 0;
         }
+        case REP_SEND: {
+            static char utf8[8192];
+            int logs = 0, crashes = 0;
+            if (!rep_describe(w, utf8, sizeof utf8)) {
+                SetDlgItemTextW(w, REP_STATUS, L"Please say what happened first.");
+                SetFocus(GetDlgItem(w, REP_WHAT));
+                return 0;
+            }
+            if (!report_make_ex(s_game_dir, PORT_VERSION, utf8, s_rep_zip, MAX_PATH, &logs, &crashes)) {
+                SetDlgItemTextW(w, REP_STATUS, L"The report could not be written (is the game folder read-only?).");
+                return 0;
+            }
+            rep_copy(w);
+            online_server_text(s_rep_server, 260);
+            SetDlgItemTextW(w, REP_STATUS, L"Sending\x2026");
+            EnableWindow(GetDlgItem(w, REP_SEND), FALSE);
+            EnableWindow(GetDlgItem(w, REP_CREATE), FALSE);
+            {
+                HANDLE t = CreateThread(NULL, 0, rep_send_thread, w, 0, NULL);
+                if (t) CloseHandle(t);
+                else { ZeroMemory(&s_rep_result, sizeof s_rep_result); wcscpy_s(s_rep_result.why, 300, L"No thread."); rep_page3(w); }
+            }
+            return 0;
+        }
+        case REP_ADDPIC:
+            rep_pics_pick(w);
+            return 0;
+        case REP_COPYID: {
+            WCHAR id[64];
+            MultiByteToWideChar(CP_UTF8, 0, s_rep_result.id, -1, id, 64);
+            wcscpy_s(s_rep_text, 4096, id);
+            rep_copy(w);
+            SetDlgItemTextW(w, REP_STATUS, L"Report id copied.");
+            return 0;
+        }
         case REP_DISCORD:
             ShellExecuteW(w, L"open", DISCORD_INVITE, NULL, NULL, SW_SHOWNORMAL);
             return 0;
@@ -3227,9 +3412,23 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             DestroyWindow(w);
             return 0;
         }
+        if (LOWORD(wp) >= REP_DEL0 && LOWORD(wp) < REP_DEL0 + REPORT_MAX_IMAGES) {   /* (Remove a picture) */
+            int k = LOWORD(wp) - REP_DEL0;
+            if (k < s_rep_npics) {
+                memmove(s_rep_pics[k], s_rep_pics[k + 1], (size_t)(s_rep_npics - k - 1) * sizeof s_rep_pics[0]);
+                s_rep_npics--;
+                rep_pics_show(w);
+            }
+            return 0;
+        }
+    }
+    if (m == WM_APP_REP_SENT) {
+        rep_page3(w);
+        return 0;
     }
     if (m == WM_CTLCOLORSTATIC && GetDlgCtrlID((HWND)lp) == REP_STATUS) {
-        SetTextColor((HDC)wp, s_rep_page == 1 ? RGB(190, 30, 45) : RGB(30, 120, 60));
+        SetTextColor((HDC)wp, s_rep_page == 1 || (s_rep_page == 2 && s_rep_result.why[0]) ? RGB(190, 30, 45)
+                                                                                 : RGB(30, 120, 60));
         SetBkMode((HDC)wp, TRANSPARENT);
         return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
     }
@@ -3264,7 +3463,7 @@ static void report_window(int page, const WCHAR *capture_file)
         registered = 1;
     }
     r.right = S(520);
-    r.bottom = S(452);
+    r.bottom = S(684);
     AdjustWindowRectEx(&r, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
     GetWindowRect(s_wnd, &pr);
     w = CreateWindowExW(WS_EX_DLGMODALFRAME, L"SvR2011Report", L"Report a problem", WS_POPUP | WS_CAPTION | WS_SYSMENU,
@@ -3327,6 +3526,8 @@ static void report_problem(void)
     }
     s_rep_zip[0] = 0;
     s_rep_text[0] = 0;
+    s_rep_npics = 0;
+    ZeroMemory(&s_rep_result, sizeof s_rep_result);
     report_window(1, NULL);
 }
 
@@ -8711,6 +8912,59 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         if (ok) wprintf(L"ok %s (%d logs, %d crash reports)\n", zip, logs, crashes);
         else wprintf(L"failed\n");
         return ok ? 0 : 1;
+    }
+    /* --report-send <game folder> <answers file>: Report a problem's Send, no window (tests). The file: UTF-8 lines
+       server= problem= happens= what= before= contact= image=<path> (up to 5). Prints "sent <id> seen_before <n>"
+       or "not sent: <why>", and the zip. */
+    if (argv && argc >= 4 && !wcscmp(argv[1], L"--report-send")) {
+        static char what[4096], line[4096], problem[120] = "Something else", happens[40] = "Every time", before[4096],
+                    contact[200], server[300], sig[400], ver[40], desc[16384];
+        WCHAR zip[MAX_PATH], wserver[300], pics[REPORT_MAX_IMAGES][MAX_PATH], summary[300];
+        ReportUpload u;
+        ReportResult r;
+        FILE *f = NULL;
+        int logs = 0, crashes = 0, npics = 0, i;
+        char *json;
+        console_setup();
+        if (_wfopen_s(&f, argv[3], L"rb") || !f) { wprintf(L"not sent: can't read %s\n", argv[3]); return 1; }
+        while (fgets(line, sizeof line, f)) {
+            char *v = strchr(line, '=');
+            size_t n = strlen(line);
+            while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+            if (!v) continue;
+            *v++ = 0;
+            if (!strcmp(line, "server")) strcpy_s(server, sizeof server, v);
+            else if (!strcmp(line, "problem")) strcpy_s(problem, sizeof problem, v);
+            else if (!strcmp(line, "happens")) strcpy_s(happens, sizeof happens, v);
+            else if (!strcmp(line, "what")) strcpy_s(what, sizeof what, v);
+            else if (!strcmp(line, "before")) strcpy_s(before, sizeof before, v);
+            else if (!strcmp(line, "contact")) strcpy_s(contact, sizeof contact, v);
+            else if (!strcmp(line, "image") && npics < REPORT_MAX_IMAGES)
+                MultiByteToWideChar(CP_UTF8, 0, v, -1, pics[npics++], MAX_PATH);
+        }
+        fclose(f);
+        snprintf(desc, sizeof desc, "Problem: %s\r\nHappens: %s\r\n\r\nWhat happened:\r\n%s\r\n\r\nJust before:\r\n%s\r\n",
+                 problem, happens, what, before[0] ? before : "(not said)");
+        if (!report_make_ex(argv[2], PORT_VERSION, desc, zip, MAX_PATH, &logs, &crashes)) {
+            wprintf(L"not sent: the zip could not be written\n");
+            return 1;
+        }
+        WideCharToMultiByte(CP_UTF8, 0, PORT_VERSION, -1, ver, sizeof ver, NULL, NULL);
+        report_signature(argv[2], sig, sizeof sig);
+        json = report_json("launcher", ver, problem, happens, what, before, contact, sig);
+        ZeroMemory(&u, sizeof u);
+        u.json = json;
+        u.zip = zip;
+        for (i = 0; i < npics; i++) u.images[i] = pics[i];
+        u.n_images = npics;
+        MultiByteToWideChar(CP_UTF8, 0, server[0] ? server : "https://sho-ti.me/svr", -1, wserver, 300);
+        report_send_summary(&u, summary, 300);
+        wprintf(L"%s\n", summary);
+        i = report_send(wserver, &u, &r);
+        free(json);
+        if (i) wprintf(L"sent %S seen_before %d (zip %s)\n", r.id, r.seen_before, zip);
+        else wprintf(L"not sent: %s (HTTP %d; the zip is kept: %s)\n", r.why, r.status, zip);
+        return i ? 0 : 1;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--import-360")) {   /* <360 save folder> <saves folder> */
         int skipped = 0, n;

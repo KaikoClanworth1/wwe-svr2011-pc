@@ -4,6 +4,9 @@
 
 #include <share.h>
 #include <shlobj.h>
+#include <commdlg.h>
+#include <wincodec.h>
+#include <wrl/client.h>
 
 #include <algorithm>
 #include <atomic>
@@ -17,6 +20,7 @@
 #include "app.h"
 #include "mod_check.h"
 #include "tool_run.h"
+#include "../launcher/report_send.h"
 
 #ifndef PORT_VERSION
 #define PORT_VERSION "dev"
@@ -286,6 +290,15 @@ std::string g_description;
 std::string g_test;       // --test-report
 bool g_test_pending = false;
 int g_test_frames = 0;
+// Send report (launcher/report_send.h: the online server's /api/reports): the contact, the pictures, the answer.
+char g_contact[64] = "";
+std::vector<std::wstring> g_pics;   // up to REPORT_MAX_IMAGES
+std::string g_pic_why;              // why the last picture wasn't added
+std::atomic<bool> g_sending{false};
+bool g_sent_done = false;           // a send finished (g_sent: its answer)
+ReportResult g_sent{};
+std::string g_send_file;            // --test-report-send <answers file>
+bool g_send_test = false;
 
 // What the report needs from the UI thread, taken before the worker starts.
 struct Snapshot {
@@ -425,7 +438,8 @@ std::wstring BuildReport(const Snapshot& s) {
 std::atomic<bool> g_gathering{false};  // a report being made (its worker runs)
 
 // The UI thread's part, then the worker (the mod doctor reads every installed mod: a big Mods folder takes a while).
-void StartReport(const std::string& description, bool test) {
+void SendReport(const std::wstring& zip, bool test);
+void StartReport(const std::string& description, bool test, bool send = false) {
   if (g_gathering) return;
   Snapshot s;
   s.description = description;
@@ -440,11 +454,15 @@ void StartReport(const std::string& description, bool test) {
   if (!g_game.empty()) MoveInfos(), EntrancesReady();
   Line("report: making a report");
   g_gathering = true;
-  std::thread([s] {
+  std::thread([s, send] {
     const std::wstring zip = BuildReport(s);
-    OnUiThread([zip, test = s.test] {
+    OnUiThread([zip, test = s.test, send] {
       g_gathering = false;
       g_made = zip;
+      if (send && !zip.empty()) {
+        SendReport(zip, test);
+        return;
+      }
       if (test) {
         Log("report test: " + Utf8(zip));
         PostMessageW(g_wnd, WM_CLOSE, 0, 0);
@@ -458,11 +476,147 @@ std::string Describe() {
          "\n\nWhat happened:\n" + g_what + "\n\nJust before:\n" + (g_before[0] ? g_before : "(not said)") + "\n";
 }
 
+// The online server the game uses (<game>\svr2011.toml online_server), else the default one.
+std::wstring ReportServer() {
+  if (const char* e = std::getenv("SVR2011_REPORT_SERVER")) return Wide(e);  // (tests: a private server)
+  std::wstring server = L"https://sho-ti.me/svr";
+  if (FILE* f = g_game.empty() ? nullptr : _wfsopen((fs::path(g_game) / L"svr2011.toml").c_str(), L"rb", _SH_DENYNO)) {
+    char line[512];
+    while (std::fgets(line, sizeof line, f)) {
+      const char* p = line;
+      while (*p == ' ') ++p;
+      if (std::strncmp(p, "online_server", 13)) continue;
+      const char* q = std::strchr(p, '"');
+      const char* e = q ? std::strchr(q + 1, '"') : nullptr;
+      if (q && e && e > q + 1) server = Wide(std::string(q + 1, e));
+    }
+    std::fclose(f);
+  }
+  return server;
+}
+
+// Sends the made zip with the answers and pictures (a worker); the window shows the answer (g_sent).
+void SendReport(const std::wstring& zip, bool test) {
+  g_sending = true;
+  g_sent_done = false;
+  const std::wstring server = ReportServer();
+  const std::string problem = kKinds[g_kind], happens = kAgain[g_again], what = g_what, before = g_before,
+                    contact = g_contact;
+  const std::vector<std::wstring> pics = g_pics;
+  Line("report: sending to " + Utf8(server) + " (" + std::to_string(pics.size()) + " picture(s))");
+  std::thread([=] {
+    // (the hint for the server's duplicate check: the newest session log's last error line)
+    std::string sig;
+    for (const auto& p : Logs(fs::path(g_game.empty() ? SettingsDir() : fs::path(g_game)) / L"logs")) {
+      const std::string text = ReadTail(p, 1u << 20);
+      size_t at = text.rfind("error");
+      if (at == std::string::npos) at = text.rfind("failed");
+      if (at != std::string::npos) {
+        size_t b = text.rfind('\n', at), e = text.find('\n', at);
+        sig = text.substr(b == std::string::npos ? 0 : b + 1, (e == std::string::npos ? text.size() : e) - (b == std::string::npos ? 0 : b + 1));
+      }
+      break;
+    }
+    char* json = report_json("modmaker", PORT_VERSION, problem.c_str(), happens.c_str(), what.c_str(), before.c_str(),
+                             contact.c_str(), sig.c_str());
+    ReportUpload u{};
+    u.json = json;
+    u.zip = zip.c_str();
+    for (size_t i = 0; i < pics.size() && i < REPORT_MAX_IMAGES; ++i) u.images[i] = pics[i].c_str();
+    u.n_images = int(std::min<size_t>(pics.size(), REPORT_MAX_IMAGES));
+    ReportResult r{};
+    report_send(server.c_str(), &u, &r);
+    std::free(json);
+    OnUiThread([r, test] {
+      g_sent = r;
+      g_sent_done = true;
+      g_sending = false;
+      if (r.id[0]) Line(std::string("report: sent, id ") + r.id + ", seen before " + std::to_string(r.seen_before));
+      else Line("report: not sent - " + Utf8(std::wstring(r.why)) + " (HTTP " + std::to_string(r.status) + ")");
+      if (test) {
+        Log(r.id[0] ? std::string("report test: sent ") + r.id + " seen_before " + std::to_string(r.seen_before)
+                    : "report test: not sent - " + Utf8(std::wstring(r.why)));
+        PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+      }
+    });
+  }).detach();
+}
+
+void AddPicture(const std::wstring& path) {
+  if (g_pics.size() >= REPORT_MAX_IMAGES) return;
+  for (const auto& p : g_pics)
+    if (!_wcsicmp(p.c_str(), path.c_str())) return;
+  WCHAR why[300];
+  if (!report_image_ok(path.c_str(), why, 300)) {
+    g_pic_why = Utf8(why);
+    return;
+  }
+  g_pic_why.clear();
+  g_pics.push_back(path);
+}
+
+void PickPictures() {
+  static WCHAR files[8192];
+  OPENFILENAMEW of{};
+  files[0] = 0;
+  of.lStructSize = sizeof of;
+  of.hwndOwner = g_wnd;
+  of.lpstrFilter = L"Pictures (PNG, JPEG, WebP)\0*.png;*.jpg;*.jpeg;*.webp\0";
+  of.lpstrFile = files;
+  of.nMaxFile = 8192;
+  of.lpstrTitle = L"Pictures for the report";
+  of.Flags = OFN_FILEMUSTEXIST | OFN_EXPLORER | OFN_ALLOWMULTISELECT | OFN_HIDEREADONLY;
+  if (!GetOpenFileNameW(&of)) return;
+  if (files[wcslen(files) + 1] == 0) {
+    AddPicture(files);
+  } else {
+    for (const WCHAR* p = files + wcslen(files) + 1; *p; p += wcslen(p) + 1) AddPicture(std::wstring(files) + L"\\" + p);
+  }
+}
+
+// "Paste picture": the clipboard's bitmap saved as a PNG under <game>\Reports (WIC), then added.
+void PastePicture() {
+  using Microsoft::WRL::ComPtr;
+  if (!OpenClipboard(g_wnd)) return;
+  HBITMAP bmp = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP));
+  if (!bmp) {
+    CloseClipboard();
+    g_pic_why = "The clipboard has no picture (copy a screenshot first: Print Screen, or Win+Shift+S).";
+    return;
+  }
+  ComPtr<IWICImagingFactory> wic;
+  ComPtr<IWICBitmap> src;
+  bool ok = SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
+            SUCCEEDED(wic->CreateBitmapFromHBITMAP(bmp, nullptr, WICBitmapIgnoreAlpha, &src));
+  CloseClipboard();
+  const fs::path dir = (g_game.empty() ? SettingsDir() : fs::path(g_game)) / L"Reports";
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  const fs::path out = dir / Wide("pasted-" + Stamp("%Y%m%d-%H%M%S") + "-" + std::to_string(g_pics.size()) + ".png");
+  ComPtr<IWICStream> stream;
+  ComPtr<IWICBitmapEncoder> enc;
+  ComPtr<IWICBitmapFrameEncode> frame;
+  ok = ok && SUCCEEDED(wic->CreateStream(&stream)) && SUCCEEDED(stream->InitializeFromFilename(out.c_str(), GENERIC_WRITE)) &&
+       SUCCEEDED(wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc)) &&
+       SUCCEEDED(enc->Initialize(stream.Get(), WICBitmapEncoderNoCache)) && SUCCEEDED(enc->CreateNewFrame(&frame, nullptr)) &&
+       SUCCEEDED(frame->Initialize(nullptr)) && SUCCEEDED(frame->WriteSource(src.Get(), nullptr)) &&
+       SUCCEEDED(frame->Commit()) && SUCCEEDED(enc->Commit());
+  if (!ok) {
+    g_pic_why = "The picture couldn't be saved.";
+    return;
+  }
+  stream.Reset();
+  AddPicture(out.wstring());
+}
+
 void Window() {
   if (g_open) ImGui::OpenPopup("Report a problem"), g_open = false;
   ImGui::SetNextWindowSize(ImVec2(620 * g_scale, 0), ImGuiCond_Always);  // (the height fits each page)
   if (!ImGui::BeginPopupModal("Report a problem", nullptr, ImGuiWindowFlags_NoSavedSettings)) return;
-  if (g_gathering) {
+  if (g_sending) {
+    const char spin[] = "|/-\\";
+    ImGui::Text("%c  Sending the report ...", spin[int(ImGui::GetTime() * 8) & 3]);
+  } else if (g_gathering) {
     const char spin[] = "|/-\\";
     ImGui::Text("%c  Gathering the report ...", spin[int(ImGui::GetTime() * 8) & 3]);
     ImGui::PushTextWrapPos(0);
@@ -482,18 +636,74 @@ void Window() {
     ImGui::InputTextMultiline("##what", g_what, sizeof g_what, ImVec2(-1, 110 * g_scale));
     ImGui::TextUnformatted("What were you doing just before? (optional)");
     ImGui::InputTextMultiline("##before", g_before, sizeof g_before, ImVec2(-1, 70 * g_scale));
+    ImGui::TextUnformatted("Your Discord name (optional - so we can ask you):");
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputText("##contact", g_contact, sizeof g_contact);
+    ImGui::TextUnformatted("Pictures (up to 5): screenshots of the problem help a lot.");
+    for (size_t i = 0; i < g_pics.size(); ++i) {
+      ImGui::PushID(int(i));
+      if (ImGui::SmallButton("Remove")) {
+        g_pics.erase(g_pics.begin() + long(i));
+        ImGui::PopID();
+        break;
+      }
+      ImGui::SameLine();
+      ImGui::TextUnformatted(Utf8(fs::path(g_pics[i]).filename().wstring()).c_str());
+      ImGui::PopID();
+    }
+    ImGui::BeginDisabled(g_pics.size() >= REPORT_MAX_IMAGES);
+    if (ImGui::Button("Add pictures...")) PickPictures();
+    ImGui::SameLine();
+    if (ImGui::Button("Paste picture")) PastePicture();
+    ImGui::EndDisabled();
+    if (!g_pic_why.empty()) ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.3f, 1), "%s", g_pic_why.c_str());
+    {
+      ReportUpload u{};
+      u.zip = L"report.zip";
+      u.n_images = int(g_pics.size());
+      WCHAR line[300];
+      report_send_summary(&u, line, 300);
+      ImGui::PushTextWrapPos(0);
+      ImGui::TextDisabled("%s", Utf8(line).c_str());
+      ImGui::PopTextWrapPos();
+    }
     ImGui::Spacing();
     const bool said = g_what[0] != 0;
     ImGui::BeginDisabled(!said);
-    if (ImGui::Button("Make the report")) {
+    if (ImGui::Button("Send report")) {
       g_description = Describe();
+      g_sent_done = false;
+      StartReport(g_description, false, true);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Save zip")) {
+      g_description = Describe();
+      g_sent_done = false;
       StartReport(g_description, false);
     }
     ImGui::EndDisabled();
     if (!said && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Say what happened first.");
     ImGui::SameLine();
     if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  } else if (g_sent_done && g_sent.id[0]) {
+    ImGui::TextWrapped("Your report reached us. Report id:  %s", g_sent.id);
+    if (g_sent.seen_before > 0)
+      ImGui::TextWrapped("This problem was already reported %d time%s - yours adds to it, thank you.", g_sent.seen_before,
+                         g_sent.seen_before == 1 ? "" : "s");
+    ImGui::TextWrapped("If you post about it on our Discord (bug-svr11 forum), give this id. A copy is kept here:");
+    ImGui::TextWrapped("%s", Utf8(g_made).c_str());
+    ImGui::Spacing();
+    if (ImGui::Button("Copy the id")) ImGui::SetClipboardText(g_sent.id);
+    ImGui::SameLine();
+    if (ImGui::Button("Open the folder")) ShellOpen(fs::path(g_made).parent_path().wstring());
+    ImGui::SameLine();
+    if (ImGui::Button("Close")) {
+      g_made.clear(), g_what[0] = g_before[0] = 0, g_pics.clear(), g_sent_done = false;
+      ImGui::CloseCurrentPopup();
+    }
   } else {
+    if (g_sent_done)
+      ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.3f, 1), "Not sent: %s", Utf8(std::wstring(g_sent.why)).c_str());
     ImGui::TextWrapped("The report is ready:");
     ImGui::TextWrapped("%s", Utf8(g_made).c_str());
     ImGui::Spacing();
@@ -507,7 +717,7 @@ void Window() {
     if (ImGui::Button("Open Discord")) ShellOpen(L"https://discord.com/invite/QhGSuDKHwk");
     ImGui::SameLine();
     if (ImGui::Button("Close")) {
-      g_made.clear(), g_what[0] = g_before[0] = 0;
+      g_made.clear(), g_what[0] = g_before[0] = 0, g_pics.clear(), g_sent_done = false;
       ImGui::CloseCurrentPopup();
     }
   }
@@ -542,8 +752,29 @@ void Tick() {
   }
   if (g_test_pending && ++g_test_frames > 30) {
     g_test_pending = false;
-    std::strncpy(g_what, g_test.c_str(), sizeof g_what - 1);
-    StartReport(Describe(), true);  // (logs the zip and closes the Mod Maker when it's done)
+    if (g_send_test) {  // (--test-report-send: the answers file - what= before= contact= problem=<n> image=<path>)
+      if (FILE* f = _wfsopen(Wide(g_send_file).c_str(), L"rb", _SH_DENYNO)) {
+        char line[4096];
+        while (std::fgets(line, sizeof line, f)) {
+          std::string l = line;
+          while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+          const size_t eq = l.find('=');
+          if (eq == std::string::npos) continue;
+          const std::string k = l.substr(0, eq), v = l.substr(eq + 1);
+          if (k == "what") std::strncpy(g_what, v.c_str(), sizeof g_what - 1);
+          else if (k == "before") std::strncpy(g_before, v.c_str(), sizeof g_before - 1);
+          else if (k == "contact") std::strncpy(g_contact, v.c_str(), sizeof g_contact - 1);
+          else if (k == "problem") g_kind = std::clamp(std::atoi(v.c_str()), 0, int(IM_ARRAYSIZE(kKinds)) - 1);
+          else if (k == "image") AddPicture(Wide(v));
+        }
+        std::fclose(f);
+      }
+      if (!g_pic_why.empty()) Log("report test: picture refused - " + g_pic_why);
+      StartReport(Describe(), true, true);  // (sends, logs the answer and closes)
+    } else {
+      std::strncpy(g_what, g_test.c_str(), sizeof g_what - 1);
+      StartReport(Describe(), true);  // (logs the zip and closes the Mod Maker when it's done)
+    }
   }
   Window();
 }
@@ -557,6 +788,12 @@ void OpenReport(std::function<std::string()> project_state) {
 
 void TestReport(const std::string& what) {
   g_test = what;
+  g_test_pending = true;
+}
+
+void TestReportSend(const std::string& answers_file) {
+  g_send_file = answers_file;
+  g_send_test = true;
   g_test_pending = true;
 }
 

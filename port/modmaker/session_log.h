@@ -31,5 +31,8 @@ void Tick();
 void OpenReport(std::function<std::string()> project_state);
 // Test aid (--test-report <what happened>): the report made without the window, its path logged, then the Mod Maker closes.
 void TestReport(const std::string& what);
+// Test aid: --test-report-send <answers file> - Send report with the file's answers (what= before= contact= problem=<n>
+// image=<path>; the server: the game's online_server, or SVR2011_REPORT_SERVER), logs the answer, then quits.
+void TestReportSend(const std::string& answers_file);
 
 }  // namespace mm::session
