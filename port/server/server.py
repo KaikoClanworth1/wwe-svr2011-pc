@@ -54,6 +54,7 @@ import leaderboards
 import match_names
 import media
 import relay
+import reports
 import thumbs
 
 HERE = Path(__file__).resolve().parent
@@ -629,6 +630,10 @@ class Service:
         if getattr(args, "role", "all") == "core":  # (the blob bytes on the storage node: the user's PC)
             blobs = gs.RemoteBlobs(args.storage_url, read_key(args.storage_key))
         self.store = gs.Store(args.data, max_file=args.max_file_mb << 20, quota=args.quota_mb << 20, blobs=blobs)
+        # (problem reports: where the blobs are - the storage node's reports folder, readable on the PC)
+        self.reports = (reports.RemoteReports(args.storage_url, read_key(args.storage_key)) if blobs is not None
+                        else reports.LocalReports(args.data))
+        self.report_times = collections.defaultdict(collections.deque)  # ip / account -> report times (memory only)
         self.sake = gs.Sake(self.store)
         discovery.init(self.store)
         self.mod_upload = asyncio.Lock()  # (one .svrmod stored at a time: they are up to 250 MB, held in memory)
@@ -1557,6 +1562,123 @@ class Service:
                 mid, fields["name"], fields["version"], len(data), manifest.get("type", "?"), account["name"]))
             return web.json_response(dict({"ok": True, "id": mid, "size": len(data)}, **self.mod_size_warning(len(data))))
 
+    # Problem reports (reports.py, docs/REPORTS_API.md): anyone may send one (a Bearer account is noted);
+    # 5 in 10 minutes and 20 a day per address, and per account.
+    REPORT_LIMITS = ((600, 5), (86400, 20))
+
+    def report_throttled(self, keys):
+        t = now()
+        for key in keys:
+            q = self.report_times[key]
+            while q and q[0] < t - self.REPORT_LIMITS[-1][0]:
+                q.popleft()
+            if any(sum(1 for x in q if x >= t - span) >= most for span, most in self.REPORT_LIMITS):
+                return True
+        for key in keys:
+            self.report_times[key].append(t)
+        return False
+
+    async def api_report(self, request):
+        """multipart: report (JSON), zip (optional), image0-image4 (optional png / jpg / webp)
+        -> {ok, id, signature, seen_before}"""
+        def no(status, why):
+            return web.json_response({"ok": False, "error": why}, status=status)
+        length = request.content_length
+        if length and length > reports.MAX_ZIP + reports.MAX_IMAGES * reports.MAX_IMAGE + (1 << 20):
+            return no(413, "The report is too large (the zip: %d MB at most, pictures: %d MB each)." % (
+                reports.MAX_ZIP >> 20, reports.MAX_IMAGE >> 20))
+        ip = self.client_ip(request)
+        account = self.token_account(request)
+        meta, zip_bytes, images = None, b"", {}
+        try:
+            reader = await request.multipart()
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                name = part.name or ""
+                cap = (64 << 10 if name in ("report", "report.json") else reports.MAX_ZIP if name == "zip"
+                       else reports.MAX_IMAGE if re.fullmatch(r"image\d+", name) else 0)
+                if not cap:
+                    await part.release()
+                    continue
+                data = bytearray()
+                while True:
+                    chunk = await part.read_chunk(1 << 16)
+                    if not chunk:
+                        break
+                    data += chunk
+                    if len(data) > cap:
+                        return no(413, "%s is too large (%d MB at most)." % (name, max(1, cap >> 20)))
+                if name in ("report", "report.json"):
+                    try:
+                        meta = json.loads(bytes(data).decode("utf-8-sig"))
+                    except ValueError:
+                        return no(400, "report: not valid JSON")
+                elif name == "zip":
+                    zip_bytes = bytes(data)
+                else:
+                    n = int(name[5:])
+                    if n >= reports.MAX_IMAGES:
+                        return no(400, "%d pictures at most." % reports.MAX_IMAGES)
+                    images[n] = bytes(data)
+        except (ValueError, AssertionError, KeyError):
+            return no(400, "Send it as multipart/form-data.")
+        meta, why = reports.clean_meta(meta)
+        if why:
+            return no(400, why)
+        if zip_bytes and zip_bytes[:2] != b"PK":
+            return no(400, "zip: not a zip file")
+        for n, img in sorted(images.items()):
+            if not reports.image_ext(img):
+                return no(400, "image%d: only PNG, JPEG or WebP pictures." % n)
+        if self.report_throttled(["ip:" + ip] + (["acc:%d" % account["id"]] if account else [])):
+            return no(429, "Too many reports from here - try again later.")
+        if account:
+            meta["account"] = account["name"]
+        try:
+            got = await asyncio.get_running_loop().run_in_executor(
+                None, self.reports.add, meta, zip_bytes, [images[n] for n in sorted(images)])
+        except Exception as e:
+            gs.log("reports: storing one failed: %s" % e)
+            return no(503, "The report couldn't be stored right now - try again later.")
+        gs.log("reports: %s from %s %s (%s, %d KB zip, %d pictures): %s, seen %d before" % (
+            got["id"], meta["app"], meta["version"], meta["problem"], len(zip_bytes) >> 10, len(images),
+            got["signature"], got["seen_before"]))
+        return web.json_response({"ok": True, "id": got["id"], "signature": got["signature"],
+                                  "seen_before": got["seen_before"]})
+
+    @admin_only
+    async def admin_reports(self, request):
+        try:
+            rows = await asyncio.get_running_loop().run_in_executor(None, self.reports.list, 1000)
+        except Exception as e:
+            return web.json_response({"ok": False, "error": "The storage node didn't answer (%s)." % e}, status=503)
+        return web.json_response({"ok": True, "reports": rows}, headers=ADMIN_HEADERS)
+
+    @admin_only
+    async def admin_report_file(self, request):
+        rid, name = request.match_info["id"], request.match_info["name"]
+        data = await asyncio.get_running_loop().run_in_executor(None, self.reports.file, rid, name)
+        if data is None:
+            return web.Response(status=404)
+        ext = name.rsplit(".", 1)[-1]
+        ctype = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp", "json": "application/json",
+                 "zip": "application/zip"}.get(ext, "application/octet-stream")
+        headers = dict(ADMIN_HEADERS)
+        if ext == "zip":
+            headers["Content-Disposition"] = 'attachment; filename="%s.zip"' % rid
+        return web.Response(body=data, content_type=ctype, headers=headers)
+
+    @admin_only
+    async def admin_report_mark(self, request):
+        try:
+            status = str((await request.json()).get("status", ""))
+        except ValueError:
+            return web.json_response({"ok": False}, status=400)
+        done = await asyncio.get_running_loop().run_in_executor(None, self.reports.mark, request.match_info["id"], status)
+        return web.json_response({"ok": done}, status=200 if done else 404)
+
     # The blob audit: the files where the bytes live (here, or the storage node) against the blobs the
     # database refers to. Orphans (a file nothing refers to: a delete while the node was down) are listed;
     # one goes only with the dashboard's Delete on it.
@@ -2173,6 +2295,7 @@ class Service:
         app.router.add_put(b + "/api/mods/{id}/file", self.api_mod_update_file)  # (its owner: an update)
         app.router.add_put(b + "/api/mods/{id}/pictures/{n}", self.api_mod_update_picture)  # (its owner)
         app.router.add_get(b + "/api/mods/{id}/img/{n}", self.api_mod_image)
+        app.router.add_post(b + "/api/reports", self.api_report)
         self.relay.routes(app, b)
         app.router.add_get("/__health", self.health)
         # the dashboard: at / (the portal, --local-admin) and again under /svr-admin/ (its own
@@ -2195,6 +2318,9 @@ class Service:
             app.router.add_get(p + "/api/admin/mod/{id}/image.jpg", self.admin_mod_image)
             app.router.add_post(p + "/api/admin/mod/{id}/{action}", self.admin_mod_action)
             app.router.add_get(p + "/api/admin/users", self.admin_users)
+            app.router.add_get(p + "/api/admin/reports", self.admin_reports)
+            app.router.add_get(p + "/api/admin/report/{id}/{name}", self.admin_report_file)
+            app.router.add_post(p + "/api/admin/report/{id}/mark", self.admin_report_mark)
             app.router.add_get(p + "/api/admin/live", self.admin_live)
             app.router.add_get(p + "/api/admin/pings", self.admin_pings)
             app.router.add_get(p + "/api/admin/player", self.admin_player)
@@ -2256,6 +2382,7 @@ def storage_app(args):
     app.router.add_route("*", "/blob/{sha}", blob)
     app.router.add_get("/__health", health)
     app.router.add_get("/blobs", blob_list)
+    reports.node_routes(app, args.data, ok)  # (problem reports: <data>/reports)
     return app
 
 
