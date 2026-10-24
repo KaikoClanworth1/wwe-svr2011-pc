@@ -8,8 +8,9 @@
 // "removed" (the player removed its folder: it stays removed), "kept <version>"
 // (the player kept their edited copy over that version), "retired"; and per
 // installed file its size, time and hash (FNV-1a 64). A check, per bundle:
-// - not installed, and never: installed (switched off - "disabled" in its
-//   folder - except a match type);
+// - not installed, and never: installed switched off ("disabled" in its
+//   folder) - match types too (a mod that's on keeps the player out of online
+//   matches while the server doesn't allow mods);
 // - its folder gone: recorded as removed, never installed again;
 // - a newer version shipped: an unedited copy is updated (its on / off kept);
 //   an edited one is asked about (update - the player's copy to Mods/.backup -
@@ -436,7 +437,7 @@ final class BundledRules {
         return null;
     }
 
-    // Installs the bundle into dir (kept off when it was; a fresh one off unless a match type), recorded in r.
+    // Installs the bundle into dir (kept off when it was; a fresh one off, match types too), recorded in r.
     boolean install(String file, File svrmod, File dir, Rec r, String type, String version, boolean fresh, boolean off) {
         File got;
         try {
@@ -449,7 +450,7 @@ final class BundledRules {
             log("bundled " + file + ": the installed copy is newer than " + version + " - left alone");
             return false;
         }
-        if ((fresh && !type.equals("matchtype")) || off) touch(new File(dir, "disabled"));
+        if (fresh || off) touch(new File(dir, "disabled"));
         r.version = version;
         r.state = "on";
         setFiles(r, dir);
@@ -508,7 +509,7 @@ final class BundledRules {
     // What this pass did, for the status line.
     String summary(boolean stopped) {
         StringBuilder s = new StringBuilder(stopped ? "Stopped: " : "Bundled mods: ");
-        s.append(added).append(" new (switched off - match types on), ").append(updated).append(" updated");
+        s.append(added).append(" new (switched off), ").append(updated).append(" updated");
         if (fixed > 0) s.append(", ").append(fixed).append(" fixed");
         if (kept > 0) s.append(", ").append(kept).append(" of yours kept");
         if (asked > 0) s.append(", ").append(asked).append(" waiting for an answer");

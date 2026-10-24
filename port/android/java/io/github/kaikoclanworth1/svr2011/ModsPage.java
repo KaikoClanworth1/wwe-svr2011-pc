@@ -5,7 +5,7 @@
 // "disabled" file turns one off. A switch for each, Remove, and Add a .svrmod
 // (a zip) picked from the phone. Mods are made on the PC with the SvR2011 Mod
 // Maker. Match types the port adds are mods too (type=matchtype, a manifest
-// only, in Mods/MatchTypes/<id>) so they can be switched off; they come on.
+// only, in Mods/MatchTypes/<id>) so they can be switched off; bundled ones come off.
 // Main menu backgrounds are mods too (Mods/Backgrounds/<id>: picture.dds +
 // manifest); "Add a background picture" makes one from a photo (Backgrounds.java).
 
