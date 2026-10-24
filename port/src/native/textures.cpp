@@ -869,6 +869,30 @@ bool Upload(const Context& ctx, const xenos::xe_gpu_texture_fetch_t& fetch, uint
                                                  &mip_min, &mip_max);
   const uint32_t width = w1 + 1, height = h1 + 1, depth_or_array = d1 + 1;
   if (!base_page && !mip_page) return false;
+  // Debugging: SVR2011_NATIVE_DUMP_BASE=<hex physical address> writes the guest bytes of the texture based
+  // there (endian-swapped as the GPU reads them; its pitch x height in blocks) to tex_<base>.raw beside the log,
+  // each time it is uploaded - the game's own data, for telling it from a conversion.
+  static const uint32_t dump_base = [] {
+    const char* v = std::getenv("SVR2011_NATIVE_DUMP_BASE");
+    return v ? uint32_t(std::strtoul(v, nullptr, 16)) : 0u;
+  }();
+  if (dump_base && (base_page << 12) == dump_base) {
+    const FormatInfo* fi = FormatInfo::Get(format);
+    const uint32_t bw = fi ? fi->block_width : 1, bh = fi ? fi->block_height : 1, bytes_pb = fi ? fi->bytes_per_block() : 4;
+    const uint32_t pitch_blocks = (fetch.pitch * 32 + bw - 1) / bw, rows = (height + bh - 1) / bh;
+    std::vector<uint8_t> raw(size_t(pitch_blocks) * bytes_pb * rows);
+    const uint32_t mask = fetch.endianness == xenos::Endian::k8in16 ? 1 : fetch.endianness == xenos::Endian::k8in32 ? 3
+                          : fetch.endianness == xenos::Endian::k16in32 ? 2 : 0;
+    ReadGuest(raw.data(), base_page << 12, uint32_t(raw.size()), mask);
+    const std::string path = fmt::format("tex_{:08X}.raw", base_page << 12);
+    if (FILE* f = std::fopen(path.c_str(), "wb")) {
+      std::fwrite(raw.data(), 1, raw.size(), f);
+      std::fclose(f);
+    }
+    REXLOG_INFO("native texture dump: {:08X} format {} {}x{} pitch {} blocks, tiled {}, endian {} -> {} ({} bytes)",
+                base_page << 12, uint32_t(format), width, height, pitch_blocks, uint32_t(fetch.tiled),
+                uint32_t(fetch.endianness), path, raw.size());
+  }
   const texture_util::TextureGuestLayout layout = texture_util::GetGuestTextureLayout(
       dim, fetch.pitch, width, height, depth_or_array, fetch.tiled, format, fetch.packed_mips,
       base_page != 0, mip_max);
