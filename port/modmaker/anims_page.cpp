@@ -592,11 +592,13 @@ void TestWatch(int star_id, int dummy_id, int move) {
 // captured off-screen (char_preview::Capture, 256 px each, 6 a row) into one picture - the preview's side of a
 // contact sheet, next to the game's frames of the same move.
 std::string g_strip_file;
-int g_strip_frames = 0;
+int g_strip_frames = 0, g_strip_step = 0;
+// <png>,<frames>[,<step>]: step = match frames between shots (an in-game contact sheet's), else spread over the move
 void TestStrip(const std::wstring& spec) {
-  const size_t c = spec.rfind(L',');
+  const size_t c = spec.find(L','), c2 = c == std::wstring::npos ? c : spec.find(L',', c + 1);
   g_strip_file = Utf8(spec.substr(0, c));
   g_strip_frames = c == std::wstring::npos ? 12 : std::clamp(_wtoi(spec.c_str() + c + 1), 1, 60);
+  g_strip_step = c2 == std::wstring::npos ? 0 : std::max(0, _wtoi(spec.c_str() + c2 + 1));
 }
 void RunStrip() {
   auto& play = char_preview::Play();
@@ -609,7 +611,8 @@ void RunStrip() {
   std::string keys;
   const bool was = play.playing;
   for (int i = 0; i < n; ++i) {
-    play.key = float(play.keys - 1) * float(i) / float(std::max(1, n - 1));
+    play.key = g_strip_step > 0 ? std::min(float(play.keys - 1), 0.5f * float(i * g_strip_step))  // (keys: 30/s, match 60/s)
+                                : float(play.keys - 1) * float(i) / float(std::max(1, n - 1));
     std::vector<uint8_t> px;
     if (!char_preview::Capture(kSize, px, true)) continue;
     const int ox = (i % kCols) * kSize, oy = (i / kCols) * kSize;

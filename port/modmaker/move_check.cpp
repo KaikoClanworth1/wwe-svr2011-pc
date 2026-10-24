@@ -283,7 +283,10 @@ Info Inspect(const fs::path& pack, int id) {
   // timing
   for (const Track& tr : info.tracks) {
     if (tr.y > 1) continue;
-    if (tr.frames <= 0) err("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " is 0 frames long.", "Port it again.");
+    if (tr.frames <= 0 && tr.x >= 90)  // (x 90-92: the reversal branches - the move itself still plays)
+      warn("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " (a reversal branch) is 0 frames long.",
+           "The move plays, but reversing it may freeze or snap: port it again with a template whose reversal fits.");
+    else if (tr.frames <= 0) err("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " is 0 frames long.", "Port it again.");
     else if (tr.frames > 1800)
       warn("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " is " + std::to_string(tr.frames) +
                " frames (over a minute in a match).", "Likely the wrong motion: check it in the preview, or port it again.");
