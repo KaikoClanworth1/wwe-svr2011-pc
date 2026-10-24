@@ -942,6 +942,45 @@ void SendMatchReport(const MatchReport& r) {
 // has a proxy): their round trips for the log and the ping indicator (net_sim.h).
 constexpr auto kPingAfterGame = std::chrono::seconds(15);  // (pings this long after the last game packet)
 
+// The relay warning (online_overlay.cpp: P2PRelayPath): this match session's way to the far-off players,
+// decided in its lobby - 8 s of game traffic with them, never during the match. Relayed because direct
+// failed (no direct round trip), or by the server / the test switch; not when the relay was only faster.
+// Once relayed it stays so for the session (the warning: once). Caller holds g_mutex.
+std::atomic<uint8_t> g_relay_path{0};  // (P2PRelayPathInfo::kind)
+std::atomic<uint64_t> g_relay_session{0};
+
+void RelayCheck(const std::set<Mac>& gamers, bool in_match) {
+  static uint64_t session = 0;
+  static Clock::time_point since{};
+  uint64_t sid = 0;
+  for (const auto& [obj, local] : g_sessions)
+    if (local.session.flags & 0x20) sid = local.session.id;
+  if (sid != session) session = sid, since = {}, g_relay_path = 0, g_relay_session = sid;
+  if (!sid || in_match || g_relay_path >= 2) return;
+  const auto now = Clock::now();
+  int remote = 0;
+  bool failed = false;
+  for (const Mac& mac : gamers) {
+    const auto it = g_peers.find(mac);
+    if (it == g_peers.end()) continue;
+    const Peer& p = it->second;
+    if (!p.tunnel || now - p.game_traffic > std::chrono::seconds(5)) continue;
+    ++remote;
+    if (p.relayed && (!p.data_v2 || now - p.direct_ok >= std::chrono::seconds(3))) failed = true;
+  }
+  if (!remote) {
+    since = {};
+    return;
+  }
+  if (since == Clock::time_point{}) since = now;
+  if (now - since < std::chrono::seconds(8)) return;
+  const uint8_t path = ForceRelay() ? 3 : failed ? 2 : 1;
+  if (g_relay_path.exchange(path) != path)
+    REXLOG_INFO("p2p: session {:016X} plays {} ({} far-off player{}, this router: {})", sid,
+                path == 3 ? "through the relay (set so)" : path == 2 ? "through the relay (direct failed)" : "direct",
+                remote, remote == 1 ? "" : "s", NatKind().first);
+}
+
 void PingLoop() {
   rex::thread::set_current_thread_name("p2p ping");
   for (int tick = 1;; ++tick) {
@@ -953,6 +992,7 @@ void PingLoop() {
       std::lock_guard lock(g_mutex);
       std::set<Mac> gamers;
       for (const auto& [key, proxy] : g_proxies) gamers.insert(proxy->mac);
+      RelayCheck(gamers, in_match);
       if (in_match) {  // (the match report: each peer's path this second)
         ++g_report.seconds;
         g_report.network = g_match_net;
@@ -1344,6 +1384,13 @@ void Receive() {
       OnRelay(buf.data(), size_t(n));
       continue;
     }
+    // Test aid: SVR2011_TEST_NET_NO_DIRECT=1 - nothing comes in directly (a router that blocks it): the relay
+    // only, as for a player whose direct connection fails (the relay warning's tests).
+    static const bool no_direct = [] {
+      const char* v = std::getenv("SVR2011_TEST_NET_NO_DIRECT");
+      return v && v[0] == '1';
+    }();
+    if (no_direct) continue;
     if (!OnStun(buf.data(), size_t(n))) {
       OnPacket(buf.data(), size_t(n), {ip, port, false});
     }
@@ -2078,6 +2125,18 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
 }  // namespace
 
 void SetP2PFileSource(P2PFileSource source) { g_file_source = source; }
+
+P2PRelayPathInfo P2PRelayPath() {
+  P2PRelayPathInfo info;
+  if (NetStatsNow().active) return info;  // (never in a match)
+  info.kind = P2PRelayPathInfo::Kind(g_relay_path.load());
+  info.session = g_relay_session.load();
+  info.forced_by_server = g_match_net == kNetRelay;
+  const std::string nat = NatKind().first;
+  info.side = nat == "mapped" || nat == "open" ? 2 : nat == "symmetric" ? 1 : 0;
+  info.port = g_me.base;
+  return info;
+}
 
 bool P2PSessionInfo(uint8_t* out, uint32_t* slots) {
   std::lock_guard lock(g_mutex);

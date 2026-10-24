@@ -93,6 +93,16 @@ struct P2PLobby {
   std::vector<uint64_t> members;
 };
 P2PLobby P2PMatchLobby();
+// The match session's way to the far-off players, decided in its lobby (the relay warning,
+// online_overlay.cpp): kUnknown until then, in a match, or with no session.
+struct P2PRelayPathInfo {
+  enum Kind : uint8_t { kUnknown, kDirect, kRelayed, kForced } kind = kUnknown;  // (kRelayed: direct failed)
+  uint64_t session = 0;
+  bool forced_by_server = false;  // (kForced: the server's match network; else p2p_force_relay)
+  int side = 0;                   // whose router: 0 can't tell, 1 this player's (symmetric), 2 the other's (open here)
+  uint16_t port = 0;              // this game's UDP port (p2p_port, or the next free one)
+};
+P2PRelayPathInfo P2PRelayPath();
 // The lobby's superstar mods (online_mods.cpp): a message to every peer this
 // game knows, and the handler of those that come (on the network thread).
 using P2PModHandler = void (*)(const uint8_t* data, size_t size);

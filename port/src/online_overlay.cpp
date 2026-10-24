@@ -53,6 +53,9 @@
 // restarted game says "a sign-in change has occurred" (see the notes below).
 REXCVAR_DEFINE_BOOL(online_invite_popups, true, "Online",
                     "A pop-up when a friend invites you (the online overlay's INVITE POP-UPS row)");
+REXCVAR_DEFINE_BOOL(online_relay_warning, true, "Online",
+                    "A note in the lobby when an online match will go through the relay (how to connect directly); "
+                    "off: never (its DON'T SHOW AGAIN)");
 REXCVAR_DEFINE_BOOL(online_invite_native, false, "Online",
                     "Invites accepted through the game's own Xbox LIVE path (restarts the game; experimental)");
 
@@ -140,6 +143,8 @@ bool g_poll_now = false;
 
 std::atomic<bool> g_toggle{false}, g_open{false}, g_wait_release{false};
 std::atomic<uint16_t> g_guest_pad{0};  // (OnlineOverlayPad)
+std::atomic<bool> g_relay_dialog{false};  // the relay warning is up (it holds the input)
+std::atomic<int> g_press_b{0};            // its BACK: the game reads B for these many more pad reads
 
 // Touches while it's open (a phone): taps, as fractions of the window, for the
 // next frame; every touch is the overlay's then (not the on-screen pad's).
@@ -360,6 +365,83 @@ ImVec2 TextSize(ImFont* font, float size, const char* text) {
   return (font ? font : ImGui::GetFont())->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
 }
 
+// -- The relay warning --------------------------------------------------------
+// A match session that plays through the relay (p2p.h P2PRelayPath: direct failed, or the server's match
+// network says relay) gets a note in its lobby - once per session, never in a match, never a block: CONTINUE,
+// DON'T SHOW AGAIN (online_relay_warning off) or BACK (the lobby's B: its own EXIT SESSION). A local dialog
+// only: nothing is sent, so the players stay in step.
+
+struct RelayTexts {
+  uint32_t language;
+  const char *title, *lead, *forced, *side0, *side1, *fix, *side2;
+  const char* buttons[3];
+};
+// (the relay warning's words, by user_language; ROUTER PORT (UPNP): the GRAPHICS page's row, in English there)
+const RelayTexts kRelayTexts[] = {
+    {1,
+     "CONNECTED THROUGH THE RELAY",
+     "You're connected through the relay server, so the match may lag.",
+     " The online server sends every match through the relay right now. You can still play now.",
+     " A direct connection didn't work for you or the other player.",
+     " Your router blocks direct connections.",
+     " For a direct connection, open UDP port {port} on your router (port forward) or turn on ROUTER PORT (UPNP) in OPTIONS > GRAPHICS, then rejoin. You can still play now.",
+     " Your port is open: the other player's router blocks direct connections. They can open the game's UDP port on their router or turn on ROUTER PORT (UPNP). You can still play now.",
+     {"CONTINUE", "DON'T SHOW AGAIN", "BACK"}},
+    {4,
+     "CONNEXION VIA LE RELAIS",
+     "Vous \xC3\xAAtes connect\xC3\xA9 via le serveur relais, le match peut donc ralentir.",
+     " Le serveur en ligne fait passer tous les matchs par le relais en ce moment. Vous pouvez quand m\xC3\xAAme jouer maintenant.",
+     " La connexion directe n'a pas march\xC3\xA9, chez vous ou chez l'autre joueur.",
+     " Votre routeur bloque les connexions directes.",
+     " Pour une connexion directe, ouvrez le port UDP {port} sur votre routeur (redirection de port) ou activez ROUTER PORT (UPNP) dans OPTIONS > GRAPHISMES, puis rejoignez la session. Vous pouvez quand m\xC3\xAAme jouer maintenant.",
+     " Votre port est ouvert : le routeur de l'autre joueur bloque les connexions directes. Il peut ouvrir le port UDP du jeu sur son routeur ou activer ROUTER PORT (UPNP). Vous pouvez quand m\xC3\xAAme jouer maintenant.",
+     {"CONTINUER", "NE PLUS AFFICHER", "RETOUR"}},
+    {3,
+     "\xC3\x9C" "BER DEN RELAY VERBUNDEN",
+     "Du bist \xC3\xBC" "ber den Relay-Server verbunden, daher kann das Match ruckeln.",
+     " Der Online-Server leitet gerade alle Matches \xC3\xBC" "ber den Relay. Du kannst trotzdem jetzt spielen.",
+     " Die direkte Verbindung hat bei dir oder beim anderen Spieler nicht geklappt.",
+     " Dein Router blockiert direkte Verbindungen.",
+     " F\xC3\xBCr eine direkte Verbindung \xC3\xB6" "ffne UDP-Port {port} an deinem Router (Portweiterleitung) oder schalte ROUTER PORT (UPNP) unter OPTIONEN > GRAFIK ein und tritt dann erneut bei. Du kannst trotzdem jetzt spielen.",
+     " Dein Port ist offen: Der Router des anderen Spielers blockiert direkte Verbindungen. Er kann den UDP-Port des Spiels an seinem Router \xC3\xB6" "ffnen oder ROUTER PORT (UPNP) einschalten. Du kannst trotzdem jetzt spielen.",
+     {"WEITER", "NICHT MEHR ZEIGEN", "ZUR\xC3\x9C" "CK"}},
+    {5,
+     "CONECTADO MEDIANTE EL REL\xC3\x89",
+     "Est\xC3\xA1s conectado mediante el servidor de rel\xC3\xA9, as\xC3\xAD que la partida puede ir con retraso.",
+     " El servidor en l\xC3\xADnea env\xC3\xAD" "a ahora todas las partidas por el rel\xC3\xA9. Puedes jugar igualmente.",
+     " La conexi\xC3\xB3n directa no ha funcionado para ti o para el otro jugador.",
+     " Tu router bloquea las conexiones directas.",
+     " Para una conexi\xC3\xB3n directa, abre el puerto UDP {port} en tu router (redirecci\xC3\xB3n de puertos) o activa ROUTER PORT (UPNP) en OPCIONES > GR\xC3\x81" "FICOS y vuelve a unirte. Puedes jugar igualmente.",
+     " Tu puerto est\xC3\xA1 abierto: el router del otro jugador bloquea las conexiones directas. Puede abrir el puerto UDP del juego en su router o activar ROUTER PORT (UPNP). Puedes jugar igualmente.",
+     {"CONTINUAR", "NO VOLVER A MOSTRAR", "ATR\xC3\x81S"}},
+    {6,
+     "CONNESSO TRAMITE IL RELAY",
+     "Sei connesso tramite il server relay, quindi la partita potrebbe avere lag.",
+     " Il server online fa passare ora tutte le partite dal relay. Puoi giocare comunque.",
+     " La connessione diretta non ha funzionato per te o per l'altro giocatore.",
+     " Il tuo router blocca le connessioni dirette.",
+     " Per una connessione diretta, apri la porta UDP {port} sul tuo router (port forwarding) o attiva ROUTER PORT (UPNP) in OPZIONI > GRAFICA, poi rientra. Puoi giocare comunque.",
+     " La tua porta \xC3\xA8 aperta: il router dell'altro giocatore blocca le connessioni dirette. Pu\xC3\xB2 aprire la porta UDP del gioco sul suo router o attivare ROUTER PORT (UPNP). Puoi giocare comunque.",
+     {"CONTINUA", "NON MOSTRARE PI\xC3\x99", "INDIETRO"}},
+};
+
+const RelayTexts& RelayWords() {
+  const uint32_t language = rex::cvar::Query<uint32_t>("user_language");
+  for (const RelayTexts& t : kRelayTexts)
+    if (t.language == language) return t;
+  return kRelayTexts[0];
+}
+
+std::string RelayBody(const P2PRelayPathInfo& info) {
+  const RelayTexts& t = RelayWords();
+  std::string s = t.lead;
+  if (info.kind == P2PRelayPathInfo::kForced) return s + t.forced;
+  if (info.side == 2) return s + t.side2;
+  std::string fix = t.fix;
+  if (const size_t at = fix.find("{port}"); at != std::string::npos) fix.replace(at, 6, std::to_string(info.port));
+  return s + (info.side == 1 ? t.side1 : t.side0) + fix;
+}
+
 uint16_t PadButtons() {
   using namespace rex::input;
   X_INPUT_STATE s = {};
@@ -386,6 +468,7 @@ class OnlineOverlay final : public rex::ui::ImGuiDialog {
   };
   void Close();
   void Toast(ImGuiIO& io);
+  bool RelayDialog(ImGuiIO& io);  // (true: up - nothing else this frame)
 
   int sel_ = 0, top_ = 0;
   std::string typed_;  // ADD FRIEND
@@ -399,6 +482,12 @@ class OnlineOverlay final : public rex::ui::ImGuiDialog {
   std::set<std::string> seen_invites_;  // (the notice: once each)
   std::string toast_, toast_line2_;
   Clock::time_point toast_until_{};
+  bool relay_open_ = false, relay_wait_ = false;
+  int relay_sel_ = 0;
+  uint16_t relay_prev_ = 0;
+  uint64_t relay_warned_ = 0;  // (the session it was shown for: once each)
+  std::string relay_body_;
+  Clock::time_point relay_opened_at_{};
 };
 
 void OnlineOverlay::Close() {
@@ -447,6 +536,95 @@ void OnlineOverlay::Toast(ImGuiIO& io) {
        toast_line2_.c_str());
 }
 
+bool OnlineOverlay::RelayDialog(ImGuiIO& io) {
+  using namespace rex::input;
+  if (!relay_open_) {
+    if (g_open || !REXCVAR_GET(online_relay_warning)) return false;
+    const P2PRelayPathInfo info = P2PRelayPath();
+    if ((info.kind != P2PRelayPathInfo::kRelayed && info.kind != P2PRelayPathInfo::kForced) || !info.session ||
+        info.session == relay_warned_)
+      return false;
+    relay_warned_ = info.session;
+    relay_body_ = RelayBody(info);
+    relay_sel_ = 0;
+    relay_open_ = true;
+    g_relay_dialog = true;
+    relay_wait_ = true;
+    relay_opened_at_ = Clock::now();
+    REXLOG_INFO("online overlay: relay warning shown (session {:016X}, {}, side {}, port {})", info.session,
+                info.kind == P2PRelayPathInfo::kForced ? (info.forced_by_server ? "the server's relay" : "forced")
+                                                       : "direct failed",
+                info.side, info.port);
+  }
+  const RelayTexts& t = RelayWords();
+  const float sc = std::min(io.DisplaySize.x / 1280.0f, io.DisplaySize.y / 720.0f);
+  const float title_size = 30 * sc, size = 21 * sc, pad = 28 * sc, w = 820 * sc;
+  ImFont* font = g_menu_font;
+  ImFont* tfont = g_title_font ? g_title_font : g_menu_font;
+  const float wrap = w - 2 * pad;
+  const ImVec2 body = (font ? font : ImGui::GetFont())->CalcTextSizeA(size, FLT_MAX, wrap, relay_body_.c_str());
+  const float button_h = 44 * sc, h = pad + title_size + 18 * sc + body.y + 26 * sc + button_h + pad;
+  const ImVec2 a((io.DisplaySize.x - w) * 0.5f, (io.DisplaySize.y - h) * 0.5f), b(a.x + w, a.y + h);
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 140));
+  dl->AddRectFilled(a, b, IM_COL32(10, 10, 14, 245), 8 * sc);
+  dl->AddRectFilled(a, ImVec2(a.x + 8 * sc, b.y), IM_COL32(230, 160, 30, 255), 8 * sc);
+  dl->AddRect(a, b, IM_COL32(235, 235, 240, 255), 8 * sc, 0, 2 * sc);
+  Text(dl, tfont, title_size, ImVec2(a.x + pad, a.y + pad), IM_COL32(255, 255, 255, 255), t.title);
+  dl->AddText(font ? font : ImGui::GetFont(), size, ImVec2(a.x + pad, a.y + pad + title_size + 18 * sc),
+              IM_COL32(225, 225, 230, 255), relay_body_.c_str(), nullptr, wrap);
+  // the buttons, in a row (CONTINUE first: the default)
+  float bw[3], total = 0;
+  for (int k = 0; k < 3; ++k) total += bw[k] = TextSize(font, size, t.buttons[k]).x + 40 * sc;
+  total += 2 * 16 * sc;
+  float x = b.x - pad - total;
+  const float y = b.y - pad - button_h;
+  int hovered = -1;
+  ImVec2 box[3][2];
+  for (int k = 0; k < 3; ++k) {
+    box[k][0] = ImVec2(x, y), box[k][1] = ImVec2(x + bw[k], y + button_h);
+    if (io.MousePos.x >= x && io.MousePos.x < x + bw[k] && io.MousePos.y >= y && io.MousePos.y < y + button_h) hovered = k;
+    x += bw[k] + 16 * sc;
+  }
+  // input: LEFT / RIGHT (or UP / DOWN) move, A chooses, B is BACK, START is CONTINUE; the mouse
+  const uint16_t buttons = PadButtons();
+  if (relay_wait_) {  // (a button still down from the lobby: not a choice)
+    if (buttons == 0 && Clock::now() - relay_opened_at_ > std::chrono::milliseconds(300)) relay_wait_ = false;
+    relay_prev_ = buttons;
+  }
+  const uint16_t pressed = relay_wait_ ? 0 : uint16_t(buttons & ~relay_prev_);
+  relay_prev_ = buttons;
+  if (pressed & (X_INPUT_GAMEPAD_DPAD_LEFT | X_INPUT_GAMEPAD_DPAD_UP)) relay_sel_ = (relay_sel_ + 2) % 3;
+  if (pressed & (X_INPUT_GAMEPAD_DPAD_RIGHT | X_INPUT_GAMEPAD_DPAD_DOWN)) relay_sel_ = (relay_sel_ + 1) % 3;
+  if (hovered >= 0 && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) relay_sel_ = hovered;
+  int chosen = -1;
+  if (pressed & X_INPUT_GAMEPAD_A) chosen = relay_sel_;
+  if (pressed & X_INPUT_GAMEPAD_START) chosen = 0;
+  if (pressed & X_INPUT_GAMEPAD_B) chosen = 2;
+  if (hovered >= 0 && io.MouseClicked[0] && !relay_wait_) chosen = hovered;
+  for (int k = 0; k < 3; ++k) {
+    const bool on = k == relay_sel_;
+    dl->AddRectFilled(box[k][0], box[k][1], on ? IM_COL32(200, 30, 32, 255) : IM_COL32(40, 40, 48, 255), 6 * sc);
+    dl->AddRect(box[k][0], box[k][1], IM_COL32(235, 235, 240, on ? 255 : 120), 6 * sc, 0, 1.5f * sc);
+    const ImVec2 ts = TextSize(font, size, t.buttons[k]);
+    Text(dl, font, size, ImVec2((box[k][0].x + box[k][1].x - ts.x) * 0.5f, (box[k][0].y + box[k][1].y - ts.y) * 0.5f),
+         IM_COL32(255, 255, 255, 255), t.buttons[k]);
+  }
+  if (chosen >= 0) {
+    static const char* const kNames[] = {"continue", "don't show again", "back"};
+    REXLOG_INFO("online overlay: relay warning - {}", kNames[chosen]);
+    if (chosen == 1) {
+      rex::cvar::SetFlagByName("online_relay_warning", "false");
+      SaveConfigSetting("online_relay_warning", "false");
+    }
+    if (chosen == 2) g_press_b = 8;  // (the lobby's B, a few frames: its EXIT SESSION question)
+    relay_open_ = false;
+    g_relay_dialog = false;
+    g_wait_release = true;  // (the choosing button: not to the game too)
+  }
+  return true;
+}
+
 void OnlineOverlay::OnDraw(ImGuiIO& io) {
   using namespace rex::input;
   // BACK + RB opens / closes it (from any screen; closed, the pad as the game
@@ -484,6 +662,7 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
     }
   }
   Toast(io);
+  if (RelayDialog(io)) return;
   if (!g_open) {
     if (g_wait_release && PadButtons() == 0) g_wait_release = false;
     return;
@@ -927,7 +1106,7 @@ void OnlineOverlaySayGoodbye() {
 
 void ToggleOnlineOverlay() { g_toggle = true; }
 
-bool OnlineOverlayHoldsInput() { return g_open.load() || g_wait_release.load(); }
+bool OnlineOverlayHoldsInput() { return g_open.load() || g_wait_release.load() || g_relay_dialog.load(); }
 
 uint16_t OnlineRawPad() { return g_guest_pad.load(); }
 
@@ -1257,6 +1436,10 @@ uint16_t OnlineOverlayPad(uint16_t buttons) {
   g_guest_pad = buttons;  // (the overlay's combo check: the real buttons)
   static const bool on = rex::cvar::Query<bool>("online_enabled");
   if (!on) return buttons;
+  if (g_press_b > 0) {  // (the relay warning's BACK: the lobby's own B)
+    if (--g_press_b == 0) return 0;
+    return g_press_b > 2 ? uint16_t(X_INPUT_GAMEPAD_B) : 0;
+  }
   // An accepted invite's walk: its presses instead of the pad's; BACK stops it.
   {
     std::optional<WalkRequest> req;
