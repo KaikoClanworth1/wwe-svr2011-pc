@@ -290,13 +290,27 @@ class Retarget:
             fk_from(i)
         return root, ang
 
-    def keys(self, m, nframes):
-        """YANM block -> [(root, ang)] for 2011 frames 0..nframes-1 (sampled at 60 Hz frame 2f)"""
+    def keys(self, m, nframes, M=None):
+        """YANM block -> [(root, ang)] for 2011 frames 0..nframes-1 (sampled at 60 Hz frame 2f). M: a 4x4 applied
+        to the whole pose first (world space - root, facing and IK together; facing_frame)"""
         out = []
         last = m['frames'] - 1
         for f in range(nframes):
-            out.append(self.solve(self.p13.world(m, min(2 * f, last))))
+            W = self.p13.world(m, min(2 * f, last))
+            if M is not None:
+                W = [M @ w for w in W]
+            out.append(self.solve(W))
         return out
+
+
+def facing_frame(gap_root):
+    """The 2K15 pair layout: the victim (person 1) starts at the origin, the attacker (person 0) is stored in its
+    own frame - turned 180 degrees about the vertical and `gap_root` root units (1500) down -z. -> the 4x4 that
+    puts the attacker in the victim's frame (root x -> -x, z -> -gap - z). Found on 2K15's Attitude Adjustment 2,
+    a copy of 2011's 5010: its victim matches 2011's to a few units, its attacker only after this."""
+    M = np.diag([-1.0, 1.0, -1.0, 1.0])
+    M[2, 3] = -gap_root * ymks.ROOT_UNIT / 0.1
+    return M
 
 
 def body_track(keys, events=None):

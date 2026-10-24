@@ -85,6 +85,12 @@ CATS = {'STAT': 'STAT', 'BASE': 'BASE', 'STN1': 'STN1', 'STN2': 'STN2', 'GRND': 
         'ABIL': 'ABIL', 'DIVI': 'CORN', 'APR2': 'APRO', 'ANA2': 'ANAS', 'WEAP': 'STAT', 'APR1': 'APRO', 'SPE0': 'STN1'}
 
 
+# Games whose two-person moves keep the attacker turned 180 degrees in its own frame, this many root units down -z
+# from the victim's (w13_retarget.facing_frame). 2K15: its Attitude Adjustment 2 (2011's 5010 reused) matched
+# 2011's attacker only turned; unturned, the victim played its part metres away (docs/MOVE_PORTING.md).
+FACING_GAP = {'wwe2k15': 1500}
+
+
 class BadInput(Exception):
     pass
 
@@ -555,7 +561,7 @@ def convert0789(a, rep, outdir, g):
     elif mid in g11.waze and mid not in g11.moved and mid > 1000:
         new_id, why = mid, 'the same id: a record 2011 keeps without a motion'
     else:
-        new_id, why = g11.free_record(name)
+        new_id, why = g11.free_record(name, limit=g11.id_limit(tid))
     if not new_id:
         raise RuntimeError('no free 2011 move record')
     rep['notes'].append('template %d %s (%s)' % (tid, g11.waze[tid][1], how))
@@ -768,13 +774,23 @@ class Game11:
                 self._in_pro.update(struct.unpack_from('<%dH' % (min(len(r), 0x1C0) // 2), r, 0))
         return self._in_pro
 
-    def free_record(self, name=None, near=None):
+    def id_limit(self, tid):
+        """the highest id a move on template `tid`'s banks can have: each bank's directory is sorted and ends at
+        its highest id, and the game's merge only inserts below it (move_packs.cpp BankInsert) - 2K15's ported AA
+        on record 17013 went into no bank (MOT/BM00/0 ends in the 5000s): the move never started"""
+        tops = [max(k[0] for k in self.idx[p][1]) for p, kind, xs in self.banks_of(tid) if self.idx[p][1]]
+        return min(tops) - 1 if tops else None
+
+    def free_record(self, name=None, near=None, limit=None):
         """a record 2011 keeps without motions (a cut move): the one named `name`, else the first. near: a
         template id - only records in its thousand (a taunt in 9000-9999: an in-match taunt on a record
-        elsewhere, 3894, wasn't found - Sabu's 9040 was)"""
-        free = [i for i in sorted(self.waze) if i not in self.moved and i > 1000 and i not in self.in_profiles()]
+        elsewhere, 3894, wasn't found - Sabu's 9040 was). limit: the highest id that fits (id_limit)"""
+        free = [i for i in sorted(self.waze) if i not in self.moved and i > 1000 and i not in self.in_profiles()
+                and (limit is None or i <= limit)]
         if near is not None and any(i // 1000 == near // 1000 for i in free):
             free = [i for i in free if i // 1000 == near // 1000]
+        elif near is None:   # (a keyframe move: not in 9000-9999 - the game's streamed (YMBs) motions are 9000-9779 by
+            free = [i for i in free if i // 1000 != 9]   # its flag table, and a YMKs move there played as one)
         if name:
             for i in free:
                 if norm(self.waze[i][1]) == norm(name):
@@ -845,6 +861,35 @@ def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True):
     if hasattr(g11, 'save_gaps'):
         g11.save_gaps()
     return best[1] if best else None
+
+
+def coded_category(g, g11, cat0):
+    """a coded source category (2K14+: C000, E125, ...) -> the 2011 MVMT categories its moves sit in, by the moves
+    both games name alike (a vote; the categories with at least a quarter of the top one's votes). Without it any
+    category was searched: 2K15's F-5 (E125) got a rope move (Throat Thrust 4) as its template - rope tracks,
+    events waiting on the ropes - and froze in-game."""
+    import collections
+    by11 = {}
+    for i, (bits, nm) in g11.waze.items():
+        by11.setdefault(norm(nm), i)
+    votes = collections.Counter()
+    idx = g.index()
+    for mid, xs in idx.items():
+        if idx[mid][min(xs)][0] != cat0 or not g.waze.get(mid):
+            continue
+        i11 = by11.get(norm(g.waze[mid]))
+        if i11 is None:
+            continue
+        for p, kd, ks in g11.banks_of(i11):
+            c = p.split('/')[1] if p.startswith('MVMT/') else None
+            if c in SINGLES or c in ('RUN ', 'TEAM'):
+                votes[c] += 1
+    if any(c != 'TEAM' for c in votes):   # (tag team moves only for a category of nothing else: 2K15's M090)
+        votes.pop('TEAM', None)
+    if not votes:
+        return []
+    top = votes.most_common(1)[0][1]
+    return [c for c, v in votes.most_common() if v * 4 >= top]
 
 
 def choose_template_by_length(g11, cat, frames):
@@ -966,14 +1011,28 @@ def convert(a, rep):
     R0 = WR.Retarget(bind='rest', twist=True, ik=a['game'] != 'wwe12')
     cat11 = CATS.get(cat0, '')   # ('': every category - 2K14's coded ones)
     gap = None
+    # (2K15 keeps the attacker in its own frame: turned into the victim's - w13_retarget.facing_frame)
+    face = WR.facing_frame(FACING_GAP[a['game']]) if a['game'] in FACING_GAP and vic is not None else None
+    if face is not None:
+        rep['notes'].append("attacker turned into the victim's frame (%s stores it turned, %d units off)" %
+                            (a['game'], FACING_GAP[a['game']]))
     if vic is not None:
-        k0, k1 = R0.keys(att, 2), R0.keys(vic, 2)
+        k0, k1 = R0.keys(att, 2, face), R0.keys(vic, 2)
         gap = ((k0[0][0][0] - k1[0][0][0]) ** 2 + (k0[0][0][2] - k1[0][0][2]) ** 2) ** 0.5
         rep['notes'].append('source start gap %.0f units' % gap)
     tid = int(a['template']) if a.get('template') else None
     if tid and not usable11(g11.waze, tid):
         rep['warnings'].append("template %d is a move the game can't play (no move record): picked another" % tid)
         tid, a = None, dict(a, template=None)
+    if not tid and not cat11:   # (a coded category, 2K14+: the 2011 move of the same name, else its category's)
+        same = {norm(nm): i for i, (bits, nm) in g11.waze.items() if usable11(g11.waze, i)}.get(norm(name))
+        if same and any(kd == 'YMKs' and p.startswith('MVMT/') for p, kd, xs in g11.banks_of(same)):
+            tid = same
+            rep['notes'].append('template: the 2011 move of the same name')
+        else:
+            cat11 = coded_category(g, g11, cat0)
+            if cat11:
+                rep['notes'].append('category %s = 2011 %s (by the moves both games name alike)' % (cat0.strip(), '/'.join(cat11)))
     tid = tid or choose_template(g11, cat11, nf, gap)
     if not tid and not a.get('template'):   # (no two-person move of that category in 2011: any category)
         tid = choose_template(g11, '', nf, gap)
@@ -984,18 +1043,18 @@ def convert(a, rep):
         new_id, why = int(a['id']), 'option'
     else:   # (a YMBs template - a taunt: a record in its thousand)
         ymb = any(kd == 'YMBs' for p, kd, ks in g11.banks_of(tid))
-        new_id, why = g11.free_record(name, tid if ymb else None)
+        new_id, why = g11.free_record(name, tid if ymb else None, g11.id_limit(tid))
     if not new_id:
         raise RuntimeError('no free 2011 move record')
     rep['notes'].append('template %d %s (%s)' % (tid, g11.waze[tid][1], 'option' if a.get('template') else
-                                                  'MVMT/%s, the closest start gap and length' % cat11.strip()))
+                                                  'MVMT/%s, the closest start gap and length' % ('/'.join(cat11) if isinstance(cat11, list) else cat11.strip())))
     rep['notes'].append('2011 id %d (%s)' % (new_id, why))
     pack = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')[:40] or 'move_%d' % mid
     pd = os.path.join(outdir, pack)
     os.makedirs(os.path.join(pd, 'motions'), exist_ok=True)
     progress(40, 'retargeting')
     R = WR.Retarget(bind='rest', twist=True, ik=a['game'] != 'wwe12')
-    keys_of = {0: [R.keys(att, nf), R.keys(vic, nf) if vic is not None else None]}
+    keys_of = {0: [R.keys(att, nf, face), R.keys(vic, nf) if vic is not None else None]}
     xs = [0]
     lines = ['wazecopy %d %d' % (new_id, tid), 'wazename %d %s' % (new_id, name)]
     progress(60, 'tracks')
@@ -1067,14 +1126,25 @@ def convert(a, rep):
                 n = len(src_keys) - 1
                 evs = retime([(k['frame'], k['events']) for k in tk if k.get('events')], n / float(max(1, e['frames'])),
                              n, tid, new_id, 0x20 if packed else 0x7f)
-                ks_ = []
-                for f, (root, ang) in enumerate(src_keys):
+                # A key at frame f with count c is the pose the body reaches at f + c + 1 (ymks.build_motion). The
+                # game's own copies: keyframe banks a key every frame (count 0: the next frame's pose), the packed
+                # match copies (MOTP) a key every 5 frames (count 4: the pose 5 frames on) - a packed copy keyed
+                # every frame (4x the stock size) froze both people in-game after ~60 frames while the motion's
+                # frame ran on past its end (F-5 1, 2K15). A directory's frames = the stream's frame count.
+                step = 5 if packed else 1
+
+                def pose(f):
+                    root, ang = src_keys[min(f, n)]
                     bones = {k: {ax: ang[k]['xyz'.index(ax)] for ax in ymks.axes_of(ymks.TYPES_M1[k])} for k in range(21)}
-                    ks_.append(dict(frame=f, count=0, root=(root[0] + off[0], root[1], root[2] + off[2]), bones=bones,
-                                    events=evs.pop(f, [])))
+                    return (root[0] + off[0], root[1], root[2] + off[2]), bones
+
+                ks_ = []
+                for f in range(0, n + 1, step):
+                    root, bones = pose(f + step)
+                    ks_.append(dict(frame=f, count=step - 1, root=root, bones=bones, events=evs.pop(f, [])))
                 for f, ev in sorted(evs.items()):
                     ks_.append(dict(frame=f, count=0, root=None, bones=None, events=ev))
-                data, frames = ymks.build_motion(ks_, n + 1, packed=packed), n
+                data, frames = ymks.build_motion(ks_, n + 1, packed=packed), n + 1
             else:
                 data, frames = e['data'], e['frames']   # (props, cameras, reversal branches: the template's)
             fn = 'motions/%d_%d_%d%s.ymk' % (new_id, x, y, '_p' if packed else '')
@@ -1093,6 +1163,11 @@ def convert(a, rep):
     if getattr(g, 'placeholders', None):
         rep['notes'].append('%s: DLC stand-ins on the disc (no moves; the DLC packages bring them)'
                             % ', '.join(os.path.basename(p) for p in g.placeholders))
+    # (the choices made, for the Mod Maker's move inspector)
+    rep['options'] = dict(template_how='option' if a.get('template') else next(
+        (n for n in rep['notes'] if n.startswith('template: ')), 'the closest start gap and length'),
+        category_map=cat11 if isinstance(cat11, list) else (cat11.strip() or None), attacker_turned=face is not None,
+        id_limit=g11.id_limit(tid))
     rep.update(ok=True, out=pd, folder=pd, id=new_id, name=name, template=tid)
     progress(100, 'done')
     return rep

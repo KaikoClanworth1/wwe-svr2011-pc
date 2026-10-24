@@ -390,7 +390,14 @@ bool BankInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
   for (const Motion* m : sorted) {
     const uint32_t k = Key(m->id, m->x, m->y);
     if (present.count(k)) continue;
-    if (m->id >= ents.back().id) return false;  // (above the bank's sentinel)
+    // (above the bank's sentinel: that motion is left out - before, the whole bank was, every pack's motions in it
+    // with it: one ported move on record 17013 in MOT/BM00/0, whose sentinel is 16000, took the bank's other
+    // packs' moves away too)
+    if (m->id >= ents.back().id) {
+      REXLOG_WARN("[svr2011] move packs: {}: motion {} x {} y {} - id past this bank's last ({}), left out", m->pack,
+                  m->id, m->x, m->y, ents.back().id);
+      continue;
+    }
     size_t pos = 0;
     while (pos < keys.size() && keys[pos] <= k) ++pos;
     if (pos && keys[pos - 1] > k) return false;
@@ -489,7 +496,14 @@ bool YmbsInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
   for (const Motion* m : sorted) {
     const uint32_t k = Key(m->id, m->x, m->y);
     if (present.count(k) || m->hdr.size() != 20) continue;
-    if (m->id >= ents.back().id) return false;  // (above the bank's sentinel)
+    // (above the bank's sentinel: that motion is left out - before, the whole bank was, every pack's motions in it
+    // with it: one ported move on record 17013 in MOT/BM00/0, whose sentinel is 16000, took the bank's other
+    // packs' moves away too)
+    if (m->id >= ents.back().id) {
+      REXLOG_WARN("[svr2011] move packs: {}: motion {} x {} y {} - id past this bank's last ({}), left out", m->pack,
+                  m->id, m->x, m->y, ents.back().id);
+      continue;
+    }
     // Appended after the stock entries (before the end mark), never between
     // them: the game keeps YMBs motions by their place in the bank, so one put
     // in front shifted every stock motion after it - any superstar's Camel

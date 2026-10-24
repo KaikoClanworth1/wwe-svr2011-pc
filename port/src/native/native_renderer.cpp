@@ -4932,6 +4932,7 @@ void OnPresent(uint32_t front_buffer) {
   // capture), once, 10 s into a match (upscaling comparisons); SVR2011_TEST_FRAME_SHOTS=<n>: n frames in a row
   // (<file>_<i>.ppm - motion bursts), SVR2011_TEST_FRAME_SHOT_AT=<match frames> instead of 600;
   // SVR2011_TEST_FRAME_SHOT_ON_2D=1: from the frame after the match's first frame without the scene after that.
+  // SVR2011_TEST_FRAME_SHOT_EVERY=<k>: the n shots k match frames apart (contact sheets across a move).
   static const std::string frame_shot = [] {
     char* v = nullptr;
     size_t n = 0;
@@ -4942,10 +4943,12 @@ void OnPresent(uint32_t front_buffer) {
   static const int frame_shots = std::max(1, EnvInt("SVR2011_TEST_FRAME_SHOTS", 1));
   static const uint32_t frame_shot_at = uint32_t(std::max(1, EnvInt("SVR2011_TEST_FRAME_SHOT_AT", 600)));
   static const bool frame_shot_on_2d = EnvInt("SVR2011_TEST_FRAME_SHOT_ON_2D", 0) != 0;
+  static const uint32_t frame_shot_every = uint32_t(std::max(0, EnvInt("SVR2011_TEST_FRAME_SHOT_EVERY", 0)));
   static int frame_shots_taken = 0;
   const bool test_shot = !frame_shot.empty() && frame_shots_taken < frame_shots && !r->hidden_frame &&
                          g_match_scene.load() &&
-                         Be32(Virtual(0x82E3CD0C)) > frame_shot_at && (!frame_shot_on_2d || g_flat_frame_seen);
+                         Be32(Virtual(0x82E3CD0C)) > frame_shot_at + frame_shot_every * uint32_t(frame_shots_taken) &&
+                         (!frame_shot_on_2d || g_flat_frame_seen);
   if (frame_shot_on_2d && g_match_scene.load() && Be32(Virtual(0x82E3CD0C)) <= frame_shot_at) g_flat_frame_seen = false;
   std::shared_ptr<plume::RenderBuffer> shot;
   const uint32_t shot_row = (g_out_w + 63) & ~63u;  // (256-byte rows)
