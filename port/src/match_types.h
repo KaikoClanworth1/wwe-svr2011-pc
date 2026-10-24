@@ -4,6 +4,8 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
+#include <string>
 
 struct PPCContext;
 
@@ -40,6 +42,8 @@ bool BackstageRule(uint32_t rule);
 // lockstep match play the host's pick the same whatever their switches (the
 // switches aren't in the online mod set: online_files.h).
 bool MatchTypeSwitchOn(const char* id);
+// Every restored type's switch (id -> on); all off with Start Without Mods.
+const std::map<std::string, bool>& MatchTypeSwitches();
 bool MatchTypeOn(const char* id);
 
 // Each world update (frame_rate.cpp): the Lumberjack match's lumberjacks

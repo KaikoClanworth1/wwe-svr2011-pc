@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace svr2011 {
 
@@ -64,6 +65,23 @@ uint64_t GameplayModSetHash();
 // and no mod superstar / arena can be picked online.
 void SetOnlineModsAllowed(bool on);
 bool OnlineModsAllowed();
+// The friends poll got no answer (no server, an error): as mods_online off
+// for ModsOnlineMessage until it answers again.
+void OnlineServerUnanswered();
+
+// The mods on in this run that change match data (Mods/<kind>/<folder>, not
+// "disabled"; the kinds: Superstars - their pack moves are merged into the
+// move tables -, Moves, Arenas, Backstage, Weapons, Attires, Media - an
+// entrance's length) and the restored match types switched on (Mods/MatchTypes:
+// on unless "disabled" - the user's call, 24 Oct). Cosmetic kinds (Backgrounds,
+// VsStyles, Signs, texture packs, music) don't count. None with Start Without
+// Mods (it turns the match types off too). Read once.
+const std::vector<std::string>& ActiveMatchMods();
+// Online matches with mods on while the server's mods_online is off (or
+// unknown: no answer) are off - the message for the player (their language),
+// "" when they may play. Asked where online is entered (GameFilesOnlineMessage:
+// the ONLINE menu's gate) and before an invite walks the game to a session.
+std::string ModsOnlineMessage();
 
 std::string ModSetDifference(const std::string& mine, const std::string& theirs, bool superstars = true);
 // A mod as the online checks know it (Mods/<kind>/<folder>, kind

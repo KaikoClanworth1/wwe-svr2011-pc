@@ -15,6 +15,7 @@
 #include "match_diag.h"
 #include "match_types.h"
 #include "mystery_opponent.h"
+#include "no_mods.h"
 #include "pad_types.h"
 
 #include <algorithm>
@@ -894,7 +895,7 @@ void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
 
 namespace svr2011 {
 
-bool MatchTypeSwitchOn(const char* id) {
+const std::map<std::string, bool>& MatchTypeSwitches() {
   static const std::map<std::string, bool> on = [] {
     std::map<std::string, bool> m;
     const std::filesystem::path dir = rex::filesystem::GetExecutableFolder() / "Mods" / "MatchTypes";
@@ -904,11 +905,17 @@ bool MatchTypeSwitchOn(const char* id) {
                           "three_stages_of_hell", "elimination", "mystery_opponent", "hiac_tables_ladders", "hiac_roof_start",
                           "three_stages_tables_ladders",
                           "gauntlet_eliminator", "cage_weapons", "inferno_weapons", "online_first_blood"}) {
-      m[k] = !std::filesystem::exists(dir / k / "disabled", ec);
-      if (!m[k]) REXLOG_INFO("match types: {} off (mod switched off)", k);
+      // (Start Without Mods: none - they count as mods for online, online_files.h ActiveMatchMods)
+      m[k] = !NoMods() && !std::filesystem::exists(dir / k / "disabled", ec);
+      if (!m[k]) REXLOG_INFO("match types: {} off ({})", k, NoMods() ? "started without mods" : "mod switched off");
     }
     return m;
   }();
+  return on;
+}
+
+bool MatchTypeSwitchOn(const char* id) {
+  const auto& on = MatchTypeSwitches();
   const auto it = on.find(id);
   return it == on.end() || it->second;
 }

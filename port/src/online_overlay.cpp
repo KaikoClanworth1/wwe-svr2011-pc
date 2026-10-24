@@ -227,6 +227,7 @@ void Poll() {
     if (const Json* a = j["invites"])
       for (const Json& v : a->items) s.invites.push_back({v.Str("from"), v.Str("xuid"), v.Str("session"), v.Str("kind")});
   } else {
+    OnlineServerUnanswered();  // (mods_online unknown: online matches with mods stay off - online_files.h)
     if (!r) P2PSetServerNetwork("auto");  // (no server: today's way - direct, the relay if it answers)
     s.error = !r ? "THE SERVER DIDN'T ANSWER" : r->status == 404 ? "THIS SERVER HAS NO FRIENDS LIST YET"
                                                                  : "THE SERVER REFUSED (" + std::to_string(r->status) + ")";
@@ -298,6 +299,9 @@ void RequestInviteWalk(bool rumble, const std::string& from);  // (below: the ga
 void Accept(const Invite& invite) {
   const auto info = Unbase64(invite.session);
   if (info.size() != 60) return Say("THAT INVITE IS BROKEN");
+  // (mods on while the server has them off online: not into a session - the invite stays on the list)
+  if (!ModsOnlineMessage().empty())
+    return Say("YOU HAVE MODS ENABLED - RELAUNCH WITH START WITHOUT MODS TO PLAY ONLINE");
   Decline(invite.from);  // (taken: off the list)
   if (!REXCVAR_GET(online_invite_native)) {
     // (the session first in the game's search, its private slots open to this
