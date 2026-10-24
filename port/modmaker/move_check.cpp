@@ -73,6 +73,43 @@ int StreamFrames(const Bytes& d) {
   return frames;
 }
 
+// The last directory id of a game bank (<pac> <GROUP/ENTRY/child...>, children in hex as pack.txt names them): the
+// game adds a pack's motion to a bank only below it (src/move_packs.cpp BankInsert). -1 when unread. Read once each.
+int BankLastId(const std::string& pac, const std::string& where) {
+  static std::map<std::string, int> last;
+  static std::wstring read_for;
+  if (read_for != g_game) read_for = g_game, last.clear();
+  const std::string key = pac + " " + where;
+  if (const auto it = last.find(key); it != last.end()) return it->second;
+  int& out = last[key] = -1;
+  std::vector<std::string> parts;
+  for (size_t a = 0; a <= where.size();) {
+    const size_t b = std::min(where.find('/', a), where.size());
+    parts.push_back(where.substr(a, b - a));
+    a = b + 1;
+  }
+  if (parts.size() < 2) return out;
+  parts[0].resize(4, ' '), parts[1].resize(4, ' ');  // (pac names are 4 characters: "MOT ")
+  Bytes raw;
+  if (!ReadPacEntry(fs::path(g_game) / L"pac" / fs::u8path(pac), parts[1].c_str(), raw, parts[0].c_str())) return out;
+  Bytes cur = Unpack(raw);
+  for (size_t k = 2; k < parts.size(); ++k) {
+    std::vector<PachEntry> kids;
+    if (!PachRead(cur, kids)) return out;
+    const uint32_t want = uint32_t(std::strtoul(parts[k].c_str(), nullptr, 16));
+    Bytes next;
+    for (auto& e : kids)
+      if (e.id == want) next = Unpack(e.data);
+    if (next.empty()) return out;
+    cur = std::move(next);
+  }
+  if (cur.size() < 0x114 || std::memcmp(cur.data(), "YMKs", 4)) return out;  // (the limit is YMKs banks')
+  const uint32_t n = uint32_t(cur[0x110]) | uint32_t(cur[0x111]) << 8 | uint32_t(cur[0x112]) << 16 | uint32_t(cur[0x113]) << 24;
+  if (n == 0 || 0x114 + 16 * size_t(n) > cur.size()) return out;
+  const uint8_t* e = &cur[0x114 + 16 * size_t(n - 1)];
+  return out = int(e[2] | e[3] << 8);
+}
+
 }  // namespace
 
 Info Inspect(const fs::path& pack, int id) {
@@ -100,7 +137,13 @@ Info Inspect(const fs::path& pack, int id) {
       int mid = 0;
       w >> pac >> where >> mid >> tr.x >> tr.y >> tr.frames >> tr.file;
       if (mid != id) continue;
-      tr.bank = pac + " " + where;
+      const int last = BankLastId(pac, where);
+      tr.bank = pac + " " + where + (last >= 0 ? " (ids below " + std::to_string(last) + ")" : "");
+      if (last >= 0 && id >= last)
+        info.findings.push_back({true, "Move id " + std::to_string(id) + " is not below " + pac + " " + where + "'s last id (" +
+                                           std::to_string(last) + "): the game leaves the motion out of that bank.",
+                                 "Port it again: the porter picks an id under every bank's limit (or give --id a free "
+                                 "number below " + std::to_string(last) + ", outside 9000-9999)."});
       std::error_code ec;
       tr.file_ok = fs::exists(pack / fs::u8path(tr.file), ec);
       info.tracks.push_back(tr);
@@ -243,7 +286,7 @@ Info Inspect(const fs::path& pack, int id) {
     if (tr.frames <= 0) err("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " is 0 frames long.", "Port it again.");
     else if (tr.frames > 1800)
       warn("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " is " + std::to_string(tr.frames) +
-               " frames (over a minute in a match).", "A timing scale too high, or the wrong motion: check it in the preview.");
+               " frames (over a minute in a match).", "Likely the wrong motion: check it in the preview, or port it again.");
   }
   for (int x : info.phases) {
     int a = 0, b = 0;  // (the attacker's and the partner's frames in this phase)

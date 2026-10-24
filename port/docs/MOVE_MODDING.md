@@ -60,8 +60,9 @@ falls back to the slot's stock move, and the CPU never picks it.
 | no body motion (no y 0 / y 1 track) | Nothing to play. | Port again. A move needs at least the attacker's track. |
 | phase x N has no partner motion after a paired phase | The opponent freezes or T-poses in the middle of the move. | Port again, or pick a template whose phases match the source move. |
 | goes on to motion N, which the game doesn't have | The opponent stands up at once, or freezes at the end. | Port again. For a victim (y 1) track, its last event op 49 should name a down motion: 443-448 or 473-478. |
+| move id is not below a bank's last id | The move doesn't animate. With an older game build, the other pack moves in that bank vanish too. | Port again; the porter picks an id under every bank's limit. Ids 9000-9999 are not free either. |
 | track is 0 frames | Nothing plays for that track. | Port again. |
-| over 1800 frames (warning) | The move runs very long. | Usually a wrong timing scale or the wrong motion: watch it. |
+| over 1800 frames (warning) | The move runs very long. | Usually the wrong motion: watch it. |
 | attacker and partner lengths far apart (warning) | One person holds a pose while the other keeps moving. | Watch it. If it looks wrong, port again with a different template. |
 | pack.txt frames differ from the motion's (warning) | Timing glitches, or a jump at the end of the move. | Port again so `pack.txt` and the files agree. |
 | a kind this game doesn't read | The track doesn't play. | Port again with a template in the same bank kind (match moves are YMKs). |
