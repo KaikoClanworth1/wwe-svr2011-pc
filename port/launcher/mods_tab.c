@@ -52,7 +52,7 @@ static HWND s_list, s_status, s_wnd;
 static WCHAR s_game[MAX_PATH];
 static int s_filling;              /* (checkbox notifications while filling the list) */
 
-enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS, M_BACKGROUND, M_ON, M_OFF };
+enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS, M_BACKGROUND, M_ON, M_OFF, M_SHRINK };
 
 static void status(const WCHAR *t)
 {
@@ -1398,40 +1398,207 @@ void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
     free(legacy);
 }
 
-/* A superstar / media mod's .mp4 entrance movies (movie= / video.<id>=) that
- * have no .bik of the same name beside them get one (1024 x 1024, the movie
- * on the big screen): the game plays the .bik where the platform can't decode
- * the .mp4 (Proton on the Steam Deck, Windows "N" editions). The Mod Maker
- * writes both; this covers mods made by hand. */
-static void make_movie_fallbacks(const WCHAR *dir)
+/* ── a mod's (and Custom Movies') Bink movies -> .mp4 (movie_maker.c movie_shrink; tools/movie_shrink.py
+ * with ffmpeg): about half the size, played by the game as HD movies (src/hd_movies.cpp). A mod's
+ * movie= / video.<id>= .bik becomes <name>.mp4 - the manifest line rewritten, the .bik deleted once the .mp4
+ * is checked. Where the PC can't play the .mp4 (Windows "N", Proton) the game shows the superstar's own movie
+ * (no .bik fallback is made: it would be the size saved). Not for the bundled mods (Mods\.bundled_state
+ * hashes their files: they come shrunk). After an install (a worker, a progress line) and the Shrink movies
+ * button (every mod and Custom Movies). ── */
+
+typedef struct { const WCHAR *what; unsigned long long before, after; int done, failed; WCHAR err[300]; } Shrink;
+
+static void shrink_progress(void *ctx, int pct)
 {
-    WCHAR man[MAX_PATH];
-    FILE *f;
+    WCHAR t[300];
+    if (!s_wnd) return;   /* (the console tests: the result only) */
+    swprintf_s(t, 300, L"Shrinking movies: %s %d%%\x2026", ((Shrink *)ctx)->what, pct);
+    status(t);
+}
+
+static unsigned long long file_size(const WCHAR *p)
+{
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    return GetFileAttributesExW(p, GetFileExInfoStandard, &a) ? (unsigned long long)a.nFileSizeHigh << 32 | a.nFileSizeLow : 0;
+}
+
+/* bik -> mp4 (same name), the .bik deleted (if the game holds it, kept: it is then the .mp4's fallback) */
+static int shrink_movie(const WCHAR *bik, Shrink *s)
+{
+    WCHAR mp4[MAX_PATH], err[300];
+    const unsigned long long before = file_size(bik);
+    wcscpy_s(mp4, MAX_PATH, bik);
+    wcscpy_s(mp4 + wcslen(mp4) - 4, 5, L".mp4");
+    if (!movie_shrink(bik, mp4, NULL, shrink_progress, s, err, 300)) {
+        s->failed++;
+        swprintf_s(s->err, 300, L"%s: %s", s->what, err);
+        return 0;
+    }
+    s->done++;
+    s->before += before;
+    s->after += file_size(mp4);
+    if (!DeleteFileW(bik)) s->after += before;
+    return 1;
+}
+
+static void shrink_mod(const WCHAR *dir, Shrink *s)
+{
+    WCHAR man[MAX_PATH], tmp[MAX_PATH];
+    FILE *f, *o;
     char line[1024];
+    int changed = 0;
     swprintf_s(man, MAX_PATH, L"%s\\manifest.txt", dir);
+    swprintf_s(tmp, MAX_PATH, L"%s\\manifest.new", dir);
     if (_wfopen_s(&f, man, L"rb") || !f) return;
+    if (_wfopen_s(&o, tmp, L"wb") || !o) { fclose(f); return; }
     while (fgets(line, sizeof line, f)) {
         char *v = strchr(line, '='), *e;
-        WCHAR file[MAX_PATH];
-        size_t n;
-        static MovieJob job;
-        if (!v || (strncmp(line, "movie=", 6) && strncmp(line, "video.", 6))) continue;
-        v++;
-        for (e = v + strlen(v); e > v && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' '); ) *--e = 0;
-        n = strlen(v);
-        if (n < 5 || _stricmp(v + n - 4, ".mp4")) continue;
-        if (!MultiByteToWideChar(CP_UTF8, 0, v, -1, file, MAX_PATH)) continue;
-        ZeroMemory(&job, sizeof job);
-        swprintf_s(job.video, MAX_PATH, L"%s\\%s", dir, file);
-        swprintf_s(job.out, MAX_PATH, L"%s\\%s", dir, file);
-        wcscpy_s(job.out + wcslen(job.out) - 4, 5, L".bik");
-        if (exists(job.out) || !exists(job.video)) continue;
-        job.fit = MOVIE_FIT;
-        job.size = 1024;
-        status(L"Making the mod's movie for PCs that can't play its MP4 (Steam Deck)...");
-        if (!movie_make(&job)) status(job.err);
+        WCHAR file[MAX_PATH], bik[MAX_PATH];
+        int n;
+        if (v && (!strncmp(line, "movie=", 6) || !strncmp(line, "video.", 6))) {
+            ++v;
+            for (e = v + strlen(v); e > v && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' '); ) --e;
+            if (e - v > 4 && !_strnicmp(e - 4, ".bik", 4) &&
+                (n = MultiByteToWideChar(CP_UTF8, 0, v, (int)(e - v), file, MAX_PATH - 1)) > 0) {
+                file[n] = 0;
+                swprintf_s(bik, MAX_PATH, L"%s\\%s", dir, file);
+                if (exists(bik) && shrink_movie(bik, s)) {
+                    memcpy(e - 4, ".mp4", 4);   /* (the rest of the line - its end - as it was) */
+                    changed = 1;
+                }
+            }
+        }
+        fputs(line, o);
     }
     fclose(f);
+    fclose(o);
+    if (changed) MoveFileExW(tmp, man, MOVEFILE_REPLACE_EXISTING);
+    else DeleteFileW(tmp);
+}
+
+/* Custom Movies\<name>.bik (the movie maker's older ones, downloads): <name>.mp4; the game lists it under the
+   same name, so entrances keep it (src/user_movies.cpp) */
+static void shrink_user_movies(const WCHAR *game, Shrink *s)
+{
+    WCHAR pat[MAX_PATH], bik[MAX_PATH], mp4[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    swprintf_s(pat, MAX_PATH, L"%s\\Custom Movies\\*.bik", game);
+    if ((h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE) return;
+    do {
+        const WCHAR *c;
+        int ascii = 1;
+        for (c = fd.cFileName; *c; ++c) ascii &= *c >= 32 && *c < 127;
+        swprintf_s(bik, MAX_PATH, L"%s\\Custom Movies\\%s", game, fd.cFileName);
+        wcscpy_s(mp4, MAX_PATH, bik);
+        wcscpy_s(mp4 + wcslen(mp4) - 4, 5, L".mp4");
+        if (!ascii || exists(mp4)) continue;   /* (an .mp4's .bik: its stub or fallback) */
+        s->what = fd.cFileName;
+        shrink_movie(bik, s);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+static int is_bundled(const WCHAR *game, const WCHAR *folder)
+{
+    WCHAR path[MAX_PATH], key[MAX_PATH + 4], *text;
+    const WCHAR *rel = wcsstr(folder, L"\\Mods\\");
+    int found;
+    if (!rel) return 0;
+    swprintf_s(path, MAX_PATH, L"%s\\Mods\\.bundled_state", game);
+    swprintf_s(key, MAX_PATH + 4, L"\t%s\t", rel + 6);
+    if (!(text = read_text(path))) return 0;
+    found = wcsstr(text, key) != NULL;   /* (both written by the launcher: same case) */
+    free(text);
+    return found;
+}
+
+static void shrink_report(const Shrink *s, int all)
+{
+    WCHAR t[600];
+    t[0] = 0;
+    if (s->done)
+        swprintf_s(t, 600, L"Movies shrunk: %d, %.1f MB -> %.1f MB (%.1f MB saved).%s%s", s->done, s->before / 1048576.0,
+                   s->after / 1048576.0, (s->before - s->after) / 1048576.0, s->failed ? L" Left as it was: " : L"",
+                   s->failed ? s->err : L"");
+    else if (s->failed)
+        swprintf_s(t, 600, L"No movie shrunk: %s", s->err);
+    else if (all)
+        wcscpy_s(t, 600, L"No movies to shrink: every mod and Custom Movies movie is an .mp4 already (bundled mods "
+                         L"come shrunk).");
+    if (t[0]) status(t);
+    if (s->done || s->failed) install_log(s_game, t);
+}
+
+/* the worker: one mod folder, or ("") every superstar / media mod and Custom Movies */
+static volatile LONG s_shrink_busy;
+static WCHAR s_shrink_dir[MAX_PATH];
+
+static void shrink_run(const WCHAR *dir)
+{
+    Shrink s;
+    ZeroMemory(&s, sizeof s);
+    if (dir[0]) {
+        s.what = wcsrchr(dir, L'\\') ? wcsrchr(dir, L'\\') + 1 : dir;
+        shrink_mod(dir, &s);
+    } else {
+        static const WCHAR *const kinds[] = { L"Superstars", L"Media" };
+        int k;
+        for (k = 0; k < 2; k++) {
+            WCHAR pat[MAX_PATH];
+            static WCHAR sub[MAX_PATH];
+            WIN32_FIND_DATAW fd;
+            HANDLE h;
+            swprintf_s(pat, MAX_PATH, L"%s\\Mods\\%s\\*", s_game, kinds[k]);
+            if ((h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE) continue;
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.') continue;
+                swprintf_s(sub, MAX_PATH, L"%s\\Mods\\%s\\%s", s_game, kinds[k], fd.cFileName);
+                if (is_bundled(s_game, sub)) continue;
+                s.what = fd.cFileName;
+                shrink_mod(sub, &s);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+        shrink_user_movies(s_game, &s);
+    }
+    shrink_report(&s, !dir[0]);
+}
+
+static DWORD WINAPI shrink_thread(LPVOID arg)
+{
+    (void)arg;
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    shrink_run(s_shrink_dir);
+    CoUninitialize();
+    InterlockedExchange(&s_shrink_busy, 0);
+    return 0;
+}
+
+/* dir: one mod ("" = all). With a window: on a worker (not a second one while one runs - the button does the
+   rest later); without (the --mods-add / --mods-shrink tests): here. */
+static void shrink_start(const WCHAR *dir)
+{
+    if (!s_wnd) {
+        CoInitializeEx(NULL, COINIT_MULTITHREADED);
+        shrink_run(dir);
+        return;
+    }
+    if (InterlockedCompareExchange(&s_shrink_busy, 1, 0)) {
+        if (!dir[0]) status(L"Movies are being shrunk already.");
+        return;
+    }
+    wcscpy_s(s_shrink_dir, MAX_PATH, dir);
+    if (!dir[0]) status(L"Shrinking movies\x2026");
+    CloseHandle(CreateThread(NULL, 0, shrink_thread, NULL, 0, NULL));
+}
+
+int mods_shrink(const WCHAR *game_dir)
+{
+    wcsncpy_s(s_game, MAX_PATH, game_dir ? game_dir : L"", _TRUNCATE);
+    if (!s_game[0]) return 0;
+    shrink_start(L"");
+    return 1;
 }
 
 /* A line in <game>\Mods\.install.log (UTF-8): what an install or the bundle
@@ -1558,6 +1725,7 @@ static int swap_in(const WCHAR *tmp, const WCHAR *dst, const WCHAR *kind, const 
 static int install_file(const WCHAR *zip)
 {
     WCHAR tmp[MAX_PATH], man[MAX_PATH], dst[MAX_PATH], parent[MAX_PATH], t[512], kind[32];
+    int shrink_now = 0;
     Mod m;
     swprintf_s(tmp, MAX_PATH, L"%s\\Mods\\.incoming", s_game);
     remove_tree(tmp, 0);
@@ -1673,7 +1841,8 @@ place:
         }
     }
     wcscpy_s(s_installed, MAX_PATH, dst);
-    if (!wcscmp(kind, L"Superstars") || !wcscmp(kind, L"Media")) make_movie_fallbacks(dst);
+    /* (its .bik movies -> .mp4, after the status below; not a bundled mod's - they come shrunk) */
+    shrink_now = !s_bundle_install && (!wcscmp(kind, L"Superstars") || !wcscmp(kind, L"Media"));
     scan();
     fill();
     swprintf_s(t, 512, !wcscmp(kind, L"Backstage") ? L"Installed \"%s\". It is played in that room's backstage brawls."
@@ -1708,6 +1877,7 @@ place:
         }
     }
     status(t);
+    if (shrink_now) shrink_start(dst);
     return 1;
 }
 
@@ -1871,15 +2041,17 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
     /* (the selected ones - several with Ctrl / Shift, all with Ctrl+A - on or off) */
     add(tab, L"Button", L"On", BS_PUSHBUTTON | WS_TABSTOP, 548, 214, 40, 34, id_base + M_ON);
     add(tab, L"Button", L"Off", BS_PUSHBUTTON | WS_TABSTOP, 548, 254, 40, 34, id_base + M_OFF);
+    /* (Shrink movies: the mods' and Custom Movies' .bik movies -> .mp4, shrink_start) */
     if (maker_present()) {
-        add(tab, L"Button", L"Open Mod Maker", BS_PUSHBUTTON | WS_TABSTOP, 28, 386, 170, 32, id_base + M_MAKER);
-        add(tab, L"Button", L"Open Mods folder", BS_PUSHBUTTON | WS_TABSTOP, 206, 386, 150, 32, id_base + M_FOLDER);
-        add(tab, L"Button", L"Add background picture\x2026", BS_PUSHBUTTON | WS_TABSTOP, 364, 386, 224, 32,
-            id_base + M_BACKGROUND);
+        add(tab, L"Button", L"Open Mod Maker", BS_PUSHBUTTON | WS_TABSTOP, 28, 386, 140, 32, id_base + M_MAKER);
+        add(tab, L"Button", L"Open Mods folder", BS_PUSHBUTTON | WS_TABSTOP, 174, 386, 136, 32, id_base + M_FOLDER);
+        add(tab, L"Button", L"Add background\x2026", BS_PUSHBUTTON | WS_TABSTOP, 316, 386, 136, 32, id_base + M_BACKGROUND);
+        add(tab, L"Button", L"Shrink movies", BS_PUSHBUTTON | WS_TABSTOP, 458, 386, 130, 32, id_base + M_SHRINK);
     } else {
         add(tab, L"Button", L"Open Mods folder", BS_PUSHBUTTON | WS_TABSTOP, 28, 386, 150, 32, id_base + M_FOLDER);
         add(tab, L"Button", L"Add background picture\x2026", BS_PUSHBUTTON | WS_TABSTOP, 186, 386, 224, 32,
             id_base + M_BACKGROUND);
+        add(tab, L"Button", L"Shrink movies", BS_PUSHBUTTON | WS_TABSTOP, 418, 386, 170, 32, id_base + M_SHRINK);
     }
     s_status = add(tab, L"Static", L"", SS_LEFT, 28, 428, 560, 40, id_base + M_STATUS);
 }
@@ -1893,6 +2065,7 @@ int mods_command(int id, int code)
     if (id == s_base + M_FOLDER) { open_folder(); return 1; }
     if (id == s_base + M_MAKER) { open_maker(); return 1; }
     if (id == s_base + M_BACKGROUND) { add_background(); return 1; }
+    if (id == s_base + M_SHRINK) { shrink_start(L""); return 1; }
     return 0;
 }
 
