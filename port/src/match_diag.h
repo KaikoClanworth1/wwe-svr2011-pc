@@ -11,6 +11,8 @@ namespace svr2011 {
 
 // A match's move getter answered `move` for `slot` of `fighter` (cam_mod_moves.cpp).
 void NoteMove(uint32_t fighter, uint32_t slot, uint32_t move);
+// The fighter's last answer (false: none noted) - match_box.cpp.
+bool LastMoveOf(uint32_t fighter, uint32_t& slot, uint32_t& move);
 
 // The match line's people (match_types.cpp LogMatch): cleared, then character index (0-9) -> its superstar id
 // (the roster record's +0x20) and name.

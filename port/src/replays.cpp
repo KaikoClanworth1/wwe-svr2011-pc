@@ -32,6 +32,8 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "match_box.h"
+
 #include "generated/default/svr2011_init.h"
 
 REXCVAR_DEFINE_BOOL(replays, true, "Gameplay", "Instant replays (after finishers and at the end of a match)");
@@ -135,6 +137,7 @@ REX_HOOK_RAW(sub_82322DA0) {
   const uint32_t state = Rd32(base + task + 16);
   if (task != last_task || state != last_state) {
     REXLOG_INFO("[svr2011] match end: step {} (task {:08X}, +20 {})", state, task, Rd32(base + task + 20));
+    if (state == 0 && task != last_task) svr2011::MatchBoxMatchEnded();  // (the match's black box: match_box.h)
     last_task = task, last_state = state, since = Clock::now(), told = false;
     return;
   }

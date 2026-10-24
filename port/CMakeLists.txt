@@ -59,6 +59,7 @@ set(SVR2011_SOURCES
     src/paint_pages.cpp
     src/match_types.cpp
     src/match_diag.cpp
+    src/match_box.cpp
     src/caw_check.cpp
     src/caw_limits.cpp
     src/match_hud.cpp

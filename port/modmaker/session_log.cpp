@@ -341,6 +341,8 @@ void GameFiles(const fs::path& game, const std::function<void(std::string, const
     return v;
   };
   for (const auto& [t, p] : newest(game / L"logs", L"svr2011", L".log", 3)) add("game/logs/" + PathStr(p.filename()), ReadTail(p, kTextCap));
+  for (const auto& [t, p] : newest(game / L"logs", L"matchbox_", L".txt", 3))  // (the last matches' black boxes)
+    add("game/logs/" + PathStr(p.filename()), ReadTail(p, kSmallCap));
   for (const auto& [t, p] : newest(game / L"UserData" / L"crashes", L"crash_", L".txt", 3))
     add("game/crashes/" + PathStr(p.filename()), ReadTail(p, kSmallCap));
   for (const char* kind : {"Superstars", "Attires", "Arenas", "Moves", "Backstage", "Signs", "Media", "Backgrounds", "MatchTypes"})
