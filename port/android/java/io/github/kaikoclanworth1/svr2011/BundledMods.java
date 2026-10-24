@@ -7,8 +7,8 @@
 // data said), and it can be stopped.
 //
 // The rules are the PC's (BundledRules: Mods/.bundled_state, the decisions in
-// Mods/.install.log): a bundle installs once, switched off ("disabled") except
-// a match type; one the player removed stays removed; a newer version updates
+// Mods/.install.log): a bundle installs once, switched off ("disabled"), match
+// types too; one the player removed stays removed; a newer version updates
 // an unedited copy (its on / off kept), and an edited one is asked about here
 // (update, the edited copy to Mods/.backup / keep mine); missing files are
 // asked about (fix / not now). Retired bundles are switched off once.
@@ -124,8 +124,9 @@ final class BundledMods {
     }
 
     static String rules() {
-        return "New ones come switched off (match types on): switch them on in the Mods tab. Mods you have keep "
-            + "their on / off, ones you removed stay removed, and you're asked before one you edited is updated.";
+        return "New ones come switched off: switch them on in the Mods tab (while the server doesn't allow mods "
+            + "online, a mod that's on keeps you out of online matches). Mods you have keep their on / off, ones you "
+            + "removed stay removed, and you're asked before one you edited is updated.";
     }
 
     static void ask(LauncherActivity a, String message, String action, boolean asked, Runnable onYes) {

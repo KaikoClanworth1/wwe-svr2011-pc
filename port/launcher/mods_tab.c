@@ -1147,7 +1147,7 @@ static int bundle_install(const WCHAR *game_dir, const WCHAR *zip, const WCHAR *
     ok = mods_install(game_dir, zip) && s_installed[0];
     s_bundle_install = 0;
     if (!ok) return 0;
-    if ((fresh && _wcsicmp(bm->type, L"matchtype")) || was_off) {
+    if (fresh || was_off) {   /* (match types too: any mod that's on keeps a player out of online matches) */
         WCHAR off[MAX_PATH];
         FILE *f;
         swprintf_s(off, MAX_PATH, L"%s\\disabled", dir);
@@ -1163,8 +1163,8 @@ static int bundle_install(const WCHAR *game_dir, const WCHAR *zip, const WCHAR *
 
 /* Mods shipped with the port (<bundle_dir>\*.svrmod, the release's "Bundled Mods"), checked at each start against
  * Mods\.bundled_state (above) - nothing is installed again unless it's needed:
- * - not installed, and never: installed (switched off - "disabled" in its folder - except a match type, which the
- *   game had on before it became a mod);
+ * - not installed, and never: installed switched off ("disabled" in its folder) - match types too (24 Oct: a mod
+ *   that's on keeps the player out of online matches while the server doesn't allow mods);
  * - its folder gone (the player removed it): recorded as removed, never installed again;
  * - a newer version shipped: an unedited copy is updated (its on / off kept); an edited one is asked about
  *   (mods_bundled_questions: update - the player's copy to Mods\.backup - or keep theirs, not asked again for that
@@ -1848,11 +1848,12 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
     dpi = GetDeviceCaps(dc, LOGPIXELSX);
     ReleaseDC(wnd, dc);
     s_base = id_base;
-    h = add(tab, L"Static", L"Mods", SS_LEFT, 28, 54, 300, 28, 0);
-    if (title_font) SendMessageW(h, WM_SETFONT, (WPARAM)title_font, TRUE);
+    (void)h; (void)title_font;   /* (the page's title is the window's: "Mods" above the tab bar) */
     add(tab, L"Static", L"Arenas, superstars and more. + adds .svrmod files, \x2212 removes the selected mods, "
-                        L"On / Off or the tick turns them on or off (Ctrl / Shift + click: several, Ctrl+A: all).",
-        SS_LEFT, 28, 86, 560, 36, 0);
+                        L"On / Off or the tick turns them on or off (Ctrl / Shift + click: several, Ctrl+A: all).\n"
+                        L"Bundled mods are off at first - turn them on here. While the server doesn't allow mods "
+                        L"online, any mod that's on keeps you out of online matches (use Start Without Mods).",
+        SS_LEFT, 28, 50, 560, 72, 0);
     s_list = add(tab, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_EDITLABELS | WS_BORDER | WS_TABSTOP,
                  28, 126, 512, 250, id_base + M_LIST);
     ListView_SetExtendedListViewStyle(s_list, LVS_EX_FULLROWSELECT | LVS_EX_CHECKBOXES | LVS_EX_DOUBLEBUFFER);
