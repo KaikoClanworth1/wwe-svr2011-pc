@@ -196,7 +196,9 @@ Info Inspect(const fs::path& pack, int id) {
     xs.insert(tr.x);
     Bytes d;
     // (x 90+: reversal branches, the template's as they are - stock ones list 0 / 1 frames too, e.g. AA 5010)
-    if (tr.x < 90 && tr.file_ok && ReadFile(PathStr(pack / fs::u8path(tr.file)), d)) {
+    // (a YMKs frame stream only: a YMBs track's .ymb is ADPCM channels, its keys from its bank header - the decoder below)
+    const bool ymb = tr.file.size() > 4 && tr.file.compare(tr.file.size() - 4, 4, ".ymb") == 0;
+    if (tr.x < 90 && !ymb && tr.file_ok && ReadFile(PathStr(pack / fs::u8path(tr.file)), d)) {
       const int sf = StreamFrames(d);
       if (sf != tr.frames && std::abs(sf - tr.frames) > 1)
         info.findings.push_back({false, "Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + ": pack.txt says " +
@@ -300,11 +302,12 @@ Info Inspect(const fs::path& pack, int id) {
       warn("Phase x " + std::to_string(x) + ": the attacker's track is " + std::to_string(a) + " frames, the partner's " +
                std::to_string(b) + ".", "One of them likely isn't the move's: watch it - the shorter one holds its last pose.");
   }
-  // kinds the game (and the preview) can't read
+  // layouts the preview can't read: a warning - the preview's reader, not the game's (YMBs layouts it doesn't know
+  // yet play in-game)
   for (const Track& tr : info.tracks)
     if (tr.y <= 1 && !tr.decode_err.empty() && tr.decode_err.find("layout") != std::string::npos)
-      err("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " is a kind this game doesn't read (" +
-              tr.decode_err + ").", "Port it again with a template in the same bank kind (a match move: YMKs).");
+      warn("Track x " + std::to_string(tr.x) + " y " + std::to_string(tr.y) + " couldn't be read here (" +
+               tr.decode_err + "): the preview and this check skip it.", "Watch it in a match to be sure it plays.");
   {  // (each finding once)
     std::vector<Finding> once;
     for (const Finding& f : info.findings)
