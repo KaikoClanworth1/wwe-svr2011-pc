@@ -85,6 +85,13 @@ void ForgetResolved(uint32_t base_address);
 // attire bake draws each mip from the level it just wrote back, and its
 // cached copy could still be the previous bake's at that address.
 void GuestWritten(uint32_t address, uint32_t size);
+// true while the renderer looks up the textures of a Superstar Threads attire
+// bake draw: each is checked against guest memory at every use, even in the
+// same frame. The game builds each attire part's paint layer on the CPU in
+// the same memory before its draw; on a slow PC two parts can come in one
+// frame, and the second part was drawn with the first one's layer (colours
+// on the wrong parts). Bake lookups are logged (threads bake: ...).
+void SetCheckEveryUse(bool on);
 
 // A resolve wrote the guest texture at `base_address` (physical): the image
 // is in `texture` (a copy of the render target, owned by the renderer), not

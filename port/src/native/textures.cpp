@@ -338,6 +338,9 @@ struct ResolvedViewEntry {
 std::unordered_map<uint64_t, ResolvedViewEntry> g_resolved_views;  // (generation, swizzle, gamma) ->
 Stats g_stats;
 const bool g_no_cache = std::getenv("SVR2011_NATIVE_NOCACHE") != nullptr;  // (debug)
+bool g_check_every_use = false;  // (SetCheckEveryUse: a Threads bake draw)
+// (test aid: Threads bake draws never re-check their textures - a missed check, as a slow PC got it)
+const bool g_test_bake_stale = std::getenv("SVR2011_TEST_BAKE_STALE") != nullptr;
 
 // 16 slices of 256 bytes spread over the resolve's guest span.
 uint64_t ResolvedFingerprint(uint32_t base_address, uint32_t bytes) {
@@ -1369,14 +1372,26 @@ uint32_t Texture(const Context& ctx, const uint32_t fetch_dwords[6], uint32_t di
       ++g_stats.unsupported;
       return UINT32_MAX;
     }
-  } else if (g_no_cache || e.written || ctx.frame > e.used_frame + kUnusedRecheckFrames ||
+  } else if (g_check_every_use && g_test_bake_stale) {
+  } else if (g_no_cache || g_check_every_use || e.written || ctx.frame > e.used_frame + kUnusedRecheckFrames ||
              ctx.frame >= e.checked_frame +
                               (e.dynamic ? e.interval
                                : ctx.frame < e.created_frame + kNewFrames ? kNewRecheckFrames
                                                                           : kRecheckFrames)) {
+    // (a Threads bake draw: same frame as its last check - before, a layer drawn then was the previous one)
+    const bool same_frame = e.checked_frame == ctx.frame;
     e.checked_frame = ctx.frame;
     e.written = false;
-    if (GuestHash(e) != e.hash) {
+    const bool changed = GuestHash(e) != e.hash;
+    if (g_check_every_use) {
+      static uint32_t logged = 0;
+      if (logged++ < 64) {
+        REXLOG_INFO("native renderer: threads bake: texture {:08X} format {} {}x{} {} (frame {}{})", e.base_address,
+                    uint32_t(fetch.format), fetch.size_2d.width + 1, fetch.size_2d.height + 1,
+                    changed ? "changed" : "same", ctx.frame, same_frame ? ", checked again in it" : "");
+      }
+    }
+    if (changed) {
       static const bool log_changes = std::getenv("SVR2011_LOG_TEXTURE_CHANGES") != nullptr;  // (debug)
       if (log_changes) {
         REXLOG_INFO("native renderer: texture {:08X} changed (frame {})", e.base_address, ctx.frame);
@@ -1526,6 +1541,8 @@ void GuestWritten(uint32_t address, uint32_t size) {
     if (base || mips) e.written = true;
   }
 }
+
+void SetCheckEveryUse(bool on) { g_check_every_use = on; }
 
 void RegisterResolved(uint32_t base_address, plume::RenderTexture* resource, RenderFormat format,
                       RenderFormat gamma_format, uint32_t components, bool swap_rb, uint32_t bytes) {

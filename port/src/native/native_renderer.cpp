@@ -4150,9 +4150,12 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   }
   RenderBufferReference draw_constants[4];
   {
+    // (Superstar Threads' attire bake - the 2080x1024 target: its paint layers checked at every draw)
+    textures::SetCheckEveryUse(targets.color->width == 2080 && targets.color->height == 1024);
     RenderBufferReference constants[4] = {GpuConstants(r, 0, kVertexConstantsBytes),
                                            GpuConstants(r, 256, kPixelConstantsBytes),
                                            SharedConstants(r, alpha_test, vs, ps, ndc), {}};
+    textures::SetCheckEveryUse(false);
     auto [cpu, gpu] = Allocate(r, 256);
     if (cpu) {
       const uint32_t n = r->frame_stats.drawn * 2654435761u;
