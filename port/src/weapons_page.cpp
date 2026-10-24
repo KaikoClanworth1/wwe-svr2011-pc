@@ -163,17 +163,45 @@ void Publish() {
   if (!svr2011::WeaponMods().empty()) svr2011::P2PSetHostProperty(kModProperty, PicksHash(ModPicks(c)));
 }
 
+// extreme_weapons: "<id>:<count>,..." for the game's weapons, "mod:<folder>:<count>" for a weapon mod (its id is
+// given out per install - Mods\Weapons\ids.txt - so a pick by id didn't survive another install or another mod
+// order). A mod's id still reads (older settings) while that id is one of this install's mods.
 void LoadSettings() {
   Counts c = GameSet();
-  const std::string s = rex::cvar::Query<std::string>("extreme_weapons");
+  std::string s = rex::cvar::Query<std::string>("extreme_weapons");
   if (!s.empty()) {
     std::fill(c.begin(), c.end(), 0);
     std::stringstream ss(s);
+    std::string unknown;
+    int picked = 0;
     for (std::string item; std::getline(ss, item, ',');) {
-      const size_t colon = item.find(':');
-      const int id = std::atoi(item.c_str()), n = colon == std::string::npos ? 1 : std::atoi(item.c_str() + colon + 1);
-      for (int i = 0; i < RowCount(); ++i)
-        if (Rows()[size_t(i)].id == id) c[size_t(i)] = std::clamp(n, 0, kMaxEach);
+      int row = -1, n = 1;
+      if (item.rfind("mod:", 0) == 0) {
+        const size_t colon = item.find(':', 4);
+        const std::string folder = item.substr(4, colon == std::string::npos ? std::string::npos : colon - 4);
+        if (colon != std::string::npos) n = std::atoi(item.c_str() + colon + 1);
+        for (int i = kCount; i < RowCount(); ++i)
+          if (Rows()[size_t(i)].mod && Rows()[size_t(i)].mod->folder == folder) row = i;
+      } else {
+        const size_t colon = item.find(':');
+        const int id = std::atoi(item.c_str());
+        if (colon != std::string::npos) n = std::atoi(item.c_str() + colon + 1);
+        for (int i = 0; i < RowCount(); ++i)
+          if (Rows()[size_t(i)].id == id) row = i;
+      }
+      if (row < 0) {
+        if (n > 0) unknown += (unknown.empty() ? "" : ", ") + item;
+        continue;
+      }
+      c[size_t(row)] = std::clamp(n, 0, kMaxEach);
+      picked += c[size_t(row)];
+    }
+    if (!unknown.empty())
+      REXLOG_WARN("[svr2011] weapons: picks that match no weapon here (a removed mod, another install's id): {} - left out",
+                  unknown);
+    if (picked == 0) {  // (nothing valid left: the game's own set - an empty choice would leave nothing under the ring)
+      REXLOG_WARN("[svr2011] weapons: no valid pick in extreme_weapons \"{}\" - the game's own Extreme Rules weapons", s);
+      c = GameSet(), s.clear();
     }
   }
   {
@@ -190,8 +218,12 @@ void SaveSettings() {
     std::lock_guard lock(g_mutex);
     g_custom = g_count != GameSet();
     if (g_custom)
-      for (int i = 0; i < RowCount(); ++i)
-        s += (s.empty() ? "" : ",") + std::to_string(Rows()[size_t(i)].id) + ":" + std::to_string(g_count[size_t(i)]);
+      for (int i = 0; i < RowCount(); ++i) {
+        const Row& r = Rows()[size_t(i)];
+        if (r.mod && !g_count[size_t(i)]) continue;  // (mods not picked: left out)
+        s += (s.empty() ? "" : ",") + (r.mod ? "mod:" + r.mod->folder : std::to_string(r.id)) + ":" +
+             std::to_string(g_count[size_t(i)]);
+      }
   }
   rex::cvar::SetFlagByName("extreme_weapons", s);
   svr2011::SaveConfigSetting("extreme_weapons", "\"" + s + "\"");
@@ -441,7 +473,14 @@ void ChooseExtremeWeapons(uint8_t* base, uint32_t list) {
     return;
   }
   std::string names, dropped;
-  const std::vector<uint32_t> nine = NineOf(want, names, dropped, &g_real);
+  size_t real = 0;
+  const std::vector<uint32_t> nine = NineOf(want, names, dropped, &real);
+  if (real == 0) {  // (no weapon of the choice fits / is here: the game's own - never nine hidden make-up ones)
+    REXLOG_WARN("[svr2011] weapons: Extreme Rules weapons, {} choice has none that can be made here{} - the game's own",
+                whose, dropped.empty() ? "" : " (left out: " + dropped + ")");
+    return;
+  }
+  g_real = real;
   const uint32_t at = uint32_t(run - ids.begin());
   for (size_t k = 0; k < nine.size(); ++k) Wr32(l + 4 + 4 * (at + uint32_t(k)), nine[k]);
   g_nine = nine;
