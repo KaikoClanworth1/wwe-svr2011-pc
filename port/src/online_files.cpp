@@ -24,6 +24,7 @@
 #include <sys/resource.h>
 #endif
 
+#include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 
@@ -398,7 +399,7 @@ std::string GameFilesOnlineMessage() {
   }
   if (files == GameFiles::kChecking || g_version.load() == Version::kChecking)
     return "Checking your game files.\nOnline will be ready in a moment - please try again.";
-  return "";
+  return ModsOnlineMessage();
 }
 
 const std::string& PortVersion() {
@@ -419,10 +420,76 @@ std::string VersionDifference(const std::string& theirs) {
 }
 
 std::atomic<bool> g_mods_online{true};  // (the server's switch: SetOnlineModsAllowed)
+std::atomic<int> g_mods_server{0};       // (0: not asked yet, 1: it answered, 2: it didn't - OnlineServerUnanswered)
 
 void SetOnlineModsAllowed(bool on) {
+  g_mods_server = 1;
   if (g_mods_online.exchange(on) != on)
     REXLOG_WARN("online: mods in online sessions {} by the server", on ? "allowed again" : "switched off");
+}
+
+void OnlineServerUnanswered() { g_mods_server = 2; }
+
+const std::vector<std::string>& ActiveMatchMods() {
+  static const std::vector<std::string> mods = [] {
+    std::vector<std::string> out;
+    if (NoMods()) return out;  // (Start Without Mods: none loaded - no_mods.h)
+    std::error_code ec;
+    const fs::path dir = rex::filesystem::GetExecutableFolder() / "Mods";
+    for (const char* kind : {"Superstars", "Moves", "Arenas", "Backstage", "Weapons", "Attires", "Media"})
+      for (const auto& e : fs::directory_iterator(dir / kind, ec))
+        if (e.is_directory() && !fs::exists(e.path() / "disabled", ec))
+          out.push_back(std::string(kind) + "/" + e.path().filename().string());
+    for (const auto& [id, on] : MatchTypeSwitches())  // (the restored match types: on unless "disabled")
+      if (on) out.push_back("MatchTypes/" + id);
+    // (the online mod tests' extra mod, SVR2011_TEST_MOD_SET_EXTRA "<kind>|<id>|...": BuildModSet)
+    if (const char* v = std::getenv("SVR2011_TEST_MOD_SET_EXTRA"); v && *v) {
+      std::string l = v;
+      const size_t a = l.find('|'), b = a == std::string::npos ? a : l.find('|', a + 1);
+      if (b != std::string::npos) out.push_back(l.substr(0, a) + "/" + l.substr(a + 1, b - a - 1));
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+  }();
+  return mods;
+}
+
+std::string ModsOnlineMessage() {
+  const auto& mods = ActiveMatchMods();
+  const int server = g_mods_server.load();
+  const bool blocked = !mods.empty() && !(server == 1 && g_mods_online.load());
+  static std::atomic<int> said{-1};  // (the log: once per change)
+  const int now = blocked ? server : -2;
+  if (said.exchange(now) != now && blocked) {
+    std::string list;
+    for (size_t i = 0; i < mods.size() && i < 6; ++i) list += (i ? ", " : "") + mods[i];
+    if (mods.size() > 6) list += ", ... (" + std::to_string(mods.size()) + " in all)";
+    REXLOG_WARN("online: matches off - {} mod(s) on ({}) and the server's mods_online {}", mods.size(), list,
+                server == 1 ? "is off" : server == 2 ? "unknown (no answer: as off)" : "not known yet");
+  }
+  if (!blocked) return "";
+  if (server == 0)
+    return "Checking the online server.\nOnline will be ready in a moment - please try again.";
+  // (the launcher's button: its own English label in every language)
+  struct Text {
+    uint32_t language;
+    const char* text;
+  };
+  static const Text kTexts[] = {
+      {1, "You have mods enabled.\nPlease relaunch the game with Start Without Mods in the launcher to play online "
+          "matches."},
+      {4, "Vous avez des mods activ\xC3\xA9s.\nRelancez le jeu avec Start Without Mods dans le lanceur pour jouer "
+          "des matchs en ligne."},
+      {3, "Du hast Mods aktiviert.\nStarte das Spiel im Launcher mit Start Without Mods neu, um Online-Matches zu "
+          "spielen."},
+      {5, "Tienes mods activados.\nVuelve a iniciar el juego con Start Without Mods en el launcher para jugar "
+          "partidas en l\xC3\xADnea."},
+      {6, "Hai delle mod attive.\nRiavvia il gioco con Start Without Mods nel launcher per giocare partite online."},
+  };
+  const uint32_t language = rex::cvar::Query<uint32_t>("user_language");
+  for (const Text& t : kTexts)
+    if (t.language == language) return t.text;
+  return kTexts[0].text;
 }
 
 bool OnlineModsAllowed() { return g_mods_online.load(); }
