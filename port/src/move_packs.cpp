@@ -2128,6 +2128,46 @@ REX_HOOK_RAW(sub_82154F00) {
   if (!told[id].exchange(true)) REXLOG_INFO("[svr2011] move packs: motion {} streamed (YMBs, a pack's)", id);
 }
 
+// A motion's face event (op 68: [68, n, frames]; sub_823C3F98 -> sub_823B3130 -> here with r4 = n - 1) looks
+// n - 1 up in the game's table at 0x82DA1540 - 18 entries (0-17; what follows is other data) - and reads the
+// face's s16 at that entry. A ported motion with n past 18 read far outside it: the match thread faulted and
+// both wrestlers stayed in the move (report 001255: The Brian Kendrick and Matt Striker in motion 7430, entry
+// 126 = 0x41000000). Such an event is skipped (the face keeps its expression) and logged once a motion.
+constexpr uint32_t kFaceEntries = 18;
+thread_local uint32_t t_face_char = 0;  // (the character whose op 68 is running: sub_823C3F98's r4, for the log)
+REX_EXTERN(__imp__sub_823C3F98);
+REX_HOOK_RAW(sub_823C3F98) {
+  t_face_char = ctx.r4.u32;
+  __imp__sub_823C3F98(ctx, base);
+  t_face_char = 0;
+}
+REX_EXTERN(__imp__sub_823B6EE0);
+REX_HOOK_RAW(sub_823B6EE0) {
+  // Test aids: SVR2011_TEST_FACE_INDEX=<n> - every face event (op 68) asks for entry n, as a broken ported
+  // motion's did; SVR2011_TEST_FACE_GUARD=0 - no guard (the report's fault).
+  static const int test_index = std::getenv("SVR2011_TEST_FACE_INDEX") ? std::atoi(std::getenv("SVR2011_TEST_FACE_INDEX")) : -1;
+  static const bool guard = [] { const char* v = std::getenv("SVR2011_TEST_FACE_GUARD"); return !v || *v != '0'; }();
+  if (test_index >= 0 && t_face_char) ctx.r4.u64 = uint32_t(test_index);
+  // (n = 0, r4 -1: the game's own case, left alone)
+  if (!guard || ctx.r4.u32 < kFaceEntries || ctx.r4.u32 == 0xFFFFFFFFu) {
+    __imp__sub_823B6EE0(ctx, base);
+    return;
+  }
+  const auto rd = [&](uint32_t a) {
+    const uint8_t* p = base + a;
+    return uint32_t(p[0]) << 24 | p[1] << 16 | p[2] << 8 | p[3];
+  };
+  uint32_t person = 10, motion = 0;
+  for (uint32_t i = 0; i < 10 && t_face_char; ++i)
+    if (rd(0x82E3CC50 + i * 4) == t_face_char) person = i, motion = rd(t_face_char + 212);
+  static std::mutex m;
+  static std::set<uint64_t> told;
+  std::lock_guard lock(m);
+  if (told.size() < 64 && told.insert(uint64_t(motion) << 32 | ctx.r4.u32).second)
+    REXLOG_WARN("[svr2011] motion event: face {} past the game's {} (person {}, motion {}) - skipped", ctx.r4.u32,
+                kFaceEntries, person, motion);
+}
+
 // The merge lock's owner check (MergeLock above).
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
