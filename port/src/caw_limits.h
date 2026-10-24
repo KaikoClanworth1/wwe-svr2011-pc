@@ -35,6 +35,13 @@ uint32_t ModelPageLimit();
 // BigModelMemory a failed allocation in it takes the fallback memory (ring_rules.cpp's sub_8269A8D8 hook), given back
 // by the heap's delete hook.
 constexpr uint32_t kStageHeap = 10;
+// The match's weapons' heap (1.2 MB, A8749E00-A8889E00): a block per weapon list entry, sized by its model (a table
+// 76,944 bytes, a cup 15,488), then the 87,584 bytes sub_8227C760 asks for last (lr 8227CD88). The game's nine fill
+// most of it; OPTIONS -> WEAPONS picks heavier in it (any picks: the list's free places are padded) ran it out -
+// that block 0, the copy into it a crash at lr 8215A008 (PC; Android: the fault retried forever - a frozen
+// loading screen, 24 Oct). With BigModelMemory a failed allocation in it takes the fallback memory too
+// (ring_rules.cpp's sub_8269BA30 and sub_8269A8D8 hooks).
+constexpr uint32_t kWeaponHeap = 38;
 // A block CawHeapFallback gave is freed (operator delete's hook,
 // frame_rate.cpp): true when it was one of them (freed here).
 bool CawHeapFree(uint32_t ptr);

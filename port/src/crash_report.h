@@ -19,4 +19,12 @@ void InstallCrashReporter(const std::filesystem::path& dir);
 // subsystem log what it knows (the native renderer logs GPU fault details).
 void SetCrashHook(void (*hook)());
 
+#if !defined(_WIN32)
+// The crash reporter takes the fatal signals again (the SDK's own handler
+// replaced it for SIGSEGV / SIGBUS when guest memory was set up): the next
+// fault is reported and ends the game (guest_faults.cpp - a fault retried
+// forever).
+void ReclaimCrashSignals();
+#endif
+
 }  // namespace svr2011

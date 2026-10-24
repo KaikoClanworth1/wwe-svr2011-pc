@@ -139,6 +139,14 @@ void OnSignal(int sig, siginfo_t* info, void* ucontext) {
 
 void SetCrashHook(void (*hook)()) { g_hook = hook; }
 
+void ReclaimCrashSignals() {
+  struct sigaction sa = {};
+  sa.sa_sigaction = OnSignal;
+  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sigemptyset(&sa.sa_mask);
+  for (int sig : kSignals) sigaction(sig, &sa, nullptr);
+}
+
 void InstallCrashReporter(const std::filesystem::path& dir) {
   g_dir = dir;
   // Its own stack: a stack overflow still reports.
