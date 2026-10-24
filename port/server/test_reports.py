@@ -109,6 +109,28 @@ def main():
     n2 = reports.normalise("[2026-10-25 01:02:03.999] exception 0xC0000005 at 0x7FF6000000AA thread 77 in C:\\x\\svr2011.exe")
     check("normalise: times, addresses, thread ids and folders out (%s)" % n1, n1 == n2)
 
+    # report zips carry old crash files too: the newest counts, a stale one doesn't, report.txt is no log
+    import datetime
+    stamp = lambda days: (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y%m%d_%H%M%S")
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        z.writestr("report.txt", "contents: the crashes folder, an error summary\n")
+        z.writestr("crashes/crash_%s.txt" % stamp(5), "exception OLD\n")
+        z.writestr("crashes/crash_%s.txt" % stamp(0.01), "exception NEW\n")
+    check("the newest crash file, not an old one", reports.first_error_line(out.getvalue(), "launcher") == "exception NEW")
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        z.writestr("report.txt", "contents: the crashes folder, an error summary\n")
+        z.writestr("crashes/crash_%s.txt" % stamp(5), "exception OLD\n")
+    check("only a stale crash file and report.txt: no line (the client's hint stands in)",
+          reports.first_error_line(out.getvalue(), "launcher") == "")
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        z.writestr("game/crashes/crash_%s.txt" % stamp(0.01), "exception GAME\n")
+        z.writestr("logs/modmaker_%s.log" % stamp(0.01).replace("_", "-"), "info\nERROR: convert failed\n")
+    check("the Mod Maker: its own log before the game's crash",
+          reports.first_error_line(out.getvalue(), "modmaker") == "ERROR: convert failed")
+
     crash1 = "exception 0xC0000005 at 0x7FF6A1B2C3D4 (svr2011.exe+0x1234)\nstack...\n"
     crash2 = "exception 0xC0000005 at 0x7FF600001111 (svr2011.exe+0x1234)\nother stack\n"
     img = png()

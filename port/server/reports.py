@@ -89,9 +89,32 @@ def normalise(line):
     return s.strip()[:200]
 
 
-def first_error_line(zip_bytes):
-    """The first crash / error line in a report zip: its crash files (crashes/...) first, then its logs (*.log,
-    *.txt) by name. '' when there's none (or no zip)."""
+_STAMP = re.compile(r"(20\d{6})[_-]?(\d{6})")
+
+
+def _stamp(name):
+    """The time in a file's name (crash_20261022_142646.txt, modmaker_20261024-044512.log) as an int, or 0."""
+    m = _STAMP.search(name)
+    return int(m.group(1) + m.group(2)) if m else 0
+
+
+def _stale(stamp, newest):
+    """A crash file from before this problem: a day older than the newest file in the zip, or two days older
+    than now (the player's clock and time zone may be off a little)."""
+    import datetime
+    try:
+        a = datetime.datetime.strptime(str(stamp), "%Y%m%d%H%M%S")
+        b = datetime.datetime.strptime(str(newest), "%Y%m%d%H%M%S") if newest else a
+    except ValueError:
+        return False
+    return b - a > datetime.timedelta(days=1) or datetime.datetime.now() - a > datetime.timedelta(days=2)
+
+
+def first_error_line(zip_bytes, app=""):
+    """The crash / error line a report is about, '' when there's none (or no zip). Report zips carry old crash
+    files too (the crashes folder as it is), so the newest come first (by the time in their names), a crash file
+    a day older than the newest file in the zip (or two days older than now) doesn't count, and the Mod Maker's own logs come before the
+    game's crashes. Crash files: their first error line (else their first line); logs: their first error line."""
     if not zip_bytes:
         return ""
     try:
@@ -99,10 +122,18 @@ def first_error_line(zip_bytes):
     except (zipfile.BadZipFile, ValueError):
         return ""
     names = [i for i in z.infolist() if not i.is_dir() and i.file_size <= (64 << 20)]
-    crash = sorted((i for i in names if re.search(r"(^|/)crash", i.filename, re.I)), key=lambda i: i.filename)
-    logs = sorted((i for i in names if i not in crash and re.search(r"\.(log|txt)$", i.filename, re.I)),
-                  key=lambda i: i.filename)
-    for group, crash_file in ((crash, True), (logs, False)):
+    newest = max([_stamp(i.filename) for i in names] or [0])
+    by_time = lambda i: (-_stamp(i.filename), i.filename)
+    crash = sorted((i for i in names if re.search(r"(^|/)crash", i.filename, re.I)
+                    and not (_stamp(i.filename) and _stale(_stamp(i.filename), newest))),
+                   key=by_time)
+    logs = sorted((i for i in names if i not in crash and not re.search(r"(^|/)crash", i.filename, re.I)
+                   and re.search(r"\.log$", i.filename, re.I)), key=by_time)  # (not report.txt: the client's summary)
+    groups = [(crash, True), (logs, False)]
+    if app == "modmaker":
+        own = [i for i in logs if "modmaker" in i.filename.lower()]
+        groups = [(own, False), (crash, True), ([i for i in logs if i not in own], False)]
+    for group, crash_file in groups:
         for info in group:
             try:
                 lines = [l.strip() for l in z.read(info).decode("utf-8", "replace").splitlines() if l.strip()]
@@ -118,7 +149,7 @@ def first_error_line(zip_bytes):
 
 def signature(meta, zip_bytes):
     """(signature, the line it was made from)"""
-    line = first_error_line(zip_bytes) or meta.get("client_signature", "")
+    line = first_error_line(zip_bytes, meta["app"]) or meta.get("client_signature", "")
     key = "|".join((meta["app"], meta["version"].lower(), meta["problem"].lower(), normalise(line)))
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16], line
 
