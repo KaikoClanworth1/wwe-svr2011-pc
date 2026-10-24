@@ -33,6 +33,7 @@
 #include <rex/ppc.h>
 
 #include "generated/default/svr2011_init.h"
+#include "thread_cpu.h"
 
 REXCVAR_DEFINE_BOOL(replays, true, "Gameplay", "Instant replays (after finishers and at the end of a match)");
 
@@ -135,6 +136,7 @@ REX_HOOK_RAW(sub_82322DA0) {
   const uint32_t state = Rd32(base + task + 16);
   if (task != last_task || state != last_state) {
     REXLOG_INFO("[svr2011] match end: step {} (task {:08X}, +20 {})", state, task, Rd32(base + task + 20));
+    if (state == 0) svr2011::LoadWatchStart();  // (a mode leaving the practice ring: thread_cpu.h)
     last_task = task, last_state = state, since = Clock::now(), told = false;
     return;
   }
