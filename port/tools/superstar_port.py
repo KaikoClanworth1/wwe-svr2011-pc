@@ -651,13 +651,23 @@ def load_picture(dds):
     blurred stretch of it"""
     from PIL import Image, ImageEnhance, ImageFilter
     import svr08_char
-    im = Image.open(io.BytesIO(dds)).convert('RGB')
+    src = Image.open(io.BytesIO(dds)).convert('RGBA')
+    im = src.convert('RGB')
     if im.size == (1024, 512):   # (already the screen's size: SvR 2008)
         return svr08_char.dds_encode(im.convert('RGBA'), 'DXT5')
+    # (a render with a cut-out - alpha - (WWE '13 menuHD): the figure alone over the backdrop; its colour under
+    # alpha 0 is a flat matte that showed as a box)
+    cut = src.getchannel('A').getextrema()[0] < 128
     canvas = ImageEnhance.Brightness(im.resize((1024, 512), Image.LANCZOS).filter(ImageFilter.GaussianBlur(18))).enhance(0.45)
+    if cut:
+        canvas = Image.new('RGB', (1024, 512), (18, 16, 20))
+        glow = Image.new('RGB', (1024, 512), (0, 0, 0))
+        glow.paste(im.resize((1024, 512), Image.LANCZOS), mask=src.getchannel('A').resize((1024, 512), Image.LANCZOS))
+        canvas = Image.blend(canvas, ImageEnhance.Brightness(glow.filter(ImageFilter.GaussianBlur(24))).enhance(0.6), 0.5)
     k = min(512 / im.width, 512 / im.height)
-    pic = im.resize((int(im.width * k), int(im.height * k)), Image.LANCZOS)
-    canvas.paste(pic, (1024 - pic.width - (512 - pic.width) // 2, (512 - pic.height) // 2))
+    pic = src.resize((int(im.width * k), int(im.height * k)), Image.LANCZOS)
+    canvas.paste(pic.convert('RGB'), (1024 - pic.width - (512 - pic.width) // 2, (512 - pic.height) // 2),
+                 mask=pic.getchannel('A') if cut else None)
     return svr08_char.dds_encode(canvas.convert('RGBA'), 'DXT5')
 
 

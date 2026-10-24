@@ -118,6 +118,8 @@ def port_moveset(c):
         nm = c.waze.get(v, '')
         if sl.get('fixed'):
             continue
+        if not v or (v not in c.waze and v not in w11):   # (an empty slot - 0 - or no move record: the base's; 0 was
+            continue                                    # "ported" as MOVE 0 into Rumble slots, Mankind '13)
         if getattr(c, 'select', None) is not None and to not in c.select:   # (moveset-pack --rows: these slots only)
             continue
         bank = (sl.get('bank') or '').strip()
@@ -188,7 +190,7 @@ def port_moveset(c):
             used.add(new_id)
             r = {'notes': [], 'warnings': [], 'dropped': []}
             a = dict(game=c.gid, item=str(v), out=os.path.join(pdir, str(v)), pac11=c.pac11, svrmod=c.svrmod,
-                     id=str(new_id), _g=c.mgame, _g11=g11m)
+                     id=str(new_id), _g=c.mgame, _g11=g11m, _avoid=used)
             if v in templ:
                 a['template'] = str(templ[v])
             a['cat'] = (slots.get(tos[0]) or {}).get('bank') or ''   # (template categories: the slot's - moves_port)
@@ -216,6 +218,10 @@ def port_moveset(c):
             finally:
                 stages, MP.DEADLINE, MP.QUIET, MP.STAGES = MP.STAGES, None, False, None
             log('%s ported in %.1f s (%s)' % (line, time.time() - t0, stage_times(stages)))
+            if r.get('id') and r['id'] != new_id:   # (moves_port moved it under its template banks' id limit)
+                used.discard(new_id)
+                new_id = r['id']
+                used.add(new_id)
             for to in tos:
                 area[to // 2] = new_id
                 rows.append((None, to, v, nm, 'ported (template %s)' % r.get('template'), new_id))

@@ -88,7 +88,8 @@ CATS = {'STAT': 'STAT', 'BASE': 'BASE', 'STN1': 'STN1', 'STN2': 'STN2', 'GRND': 
 # Games whose two-person moves keep the attacker turned 180 degrees in its own frame, this many root units down -z
 # from the victim's (w13_retarget.facing_frame). 2K15: its Attitude Adjustment 2 (2011's 5010 reused) matched
 # 2011's attacker only turned; unturned, the victim played its part metres away (docs/MOVE_PORTING.md).
-FACING_GAP = {'wwe2k15': 1500}
+FACING_GAP = {'wwe2k15': 1500, 'wwe13': 1500}   # (WWE '13: the same layout - its AA 50285 matches 2011's 5010 only
+                                                 # turned; '12 / 2K14 / 2K16 untested)
 
 
 class BadInput(Exception):
@@ -781,12 +782,12 @@ class Game11:
         tops = [max(k[0] for k in self.idx[p][1]) for p, kind, xs in self.banks_of(tid) if self.idx[p][1]]
         return min(tops) - 1 if tops else None
 
-    def free_record(self, name=None, near=None, limit=None):
+    def free_record(self, name=None, near=None, limit=None, avoid=None):
         """a record 2011 keeps without motions (a cut move): the one named `name`, else the first. near: a
         template id - only records in its thousand (a taunt in 9000-9999: an in-match taunt on a record
         elsewhere, 3894, wasn't found - Sabu's 9040 was). limit: the highest id that fits (id_limit)"""
         free = [i for i in sorted(self.waze) if i not in self.moved and i > 1000 and i not in self.in_profiles()
-                and (limit is None or i <= limit)]
+                and (limit is None or i <= limit) and not (avoid and i in avoid)]
         if near is not None and any(i // 1000 == near // 1000 for i in free):
             free = [i for i in free if i // 1000 == near // 1000]
         elif near is None:   # (a keyframe move: not in 9000-9999 - the game's streamed (YMBs) motions are 9000-9779 by
@@ -824,7 +825,7 @@ def slot_categories(bank):
     out = []
     for b in (bank or '').replace('+', ' ').split():
         b = b.strip().upper()
-        out += ['STN1', 'STN2'] if b == 'STND' else [b] if b in SINGLES else []
+        out += ['STN1', 'STN2'] if b == 'STND' else [b] if b in SINGLES or b == 'RUMB' else []
     return out or list(SINGLES)
 
 
@@ -1010,6 +1011,13 @@ def convert(a, rep):
     g11 = a.get('_g11') or Game11(a['pac11'], os.path.join(outdir, '.work_cache'))
     R0 = WR.Retarget(bind='rest', twist=True, ik=a['game'] != 'wwe12')
     cat11 = CATS.get(cat0, '')   # ('': every category - 2K14's coded ones)
+    # (a moveset slot's own category wins - moveset_port passes it: Mankind '13's Mandible Claw in a finisher
+    # slot (STN1) got an apron move as its template, both people sunk in the mat; Rumble elimination slots: RUMB)
+    if a.get('cat') and not a.get('template'):
+        sc = slot_categories(a['cat'])
+        if sc and sc != list(SINGLES):
+            cat11 = sc
+            rep['notes'].append("category: the moveset slot's (%s)" % '/'.join(sc))
     gap = None
     # (2K15 keeps the attacker in its own frame: turned into the victim's - w13_retarget.facing_frame)
     face = WR.facing_frame(FACING_GAP[a['game']]) if a['game'] in FACING_GAP and vic is not None else None
@@ -1039,11 +1047,20 @@ def convert(a, rep):
         cat11 = 'any'
     if not tid or tid not in g11.waze:
         raise BadInput('no 2011 template move (category %s); give --template' % cat11)
+    ymb = any(kd == 'YMBs' for p, kd, ks in g11.banks_of(tid))   # (a YMBs template - a taunt: a record in its thousand)
+    lim = g11.id_limit(tid)
     if a.get('id'):
         new_id, why = int(a['id']), 'option'
-    else:   # (a YMBs template - a taunt: a record in its thousand)
-        ymb = any(kd == 'YMBs' for p, kd, ks in g11.banks_of(tid))
-        new_id, why = g11.free_record(name, tid if ymb else None, g11.id_limit(tid))
+        # (an id given by a caller - moveset_port's pick - that no template bank can take: picked again under the
+        # limit; it went into no bank and the game never played it - Mankind '13's Mandible Claw on 17038)
+        if (lim is not None and new_id > lim) or (not ymb and new_id // 1000 == 9):
+            nid, why2 = g11.free_record(name, tid if ymb else None, lim, avoid=a.get('_avoid'))
+            if nid:
+                rep['warnings'].append("id %d is past what %d's banks take (%s): %d instead" % (
+                    new_id, tid, 'their last id %d' % (lim + 1) if lim is not None and new_id > lim else '9000-9999 are streamed motions', nid))
+                new_id, why = nid, why2
+    else:
+        new_id, why = g11.free_record(name, tid if ymb else None, lim)
     if not new_id:
         raise RuntimeError('no free 2011 move record')
     rep['notes'].append('template %d %s (%s)' % (tid, g11.waze[tid][1], 'option' if a.get('template') else
