@@ -2606,6 +2606,7 @@ REX_HOOK_RAW(sub_8257A218) {
   __imp__sub_8257A218(ctx, base);
   const auto r3 = ctx.r3.u64;
   ApplyRecords(base);
+  g_moves_checked = false;  // (the save's profiles - its kept edits - get CheckModProfiles' move check too)
   svr2011::UniverseModsLoaded(base);  // (the mods' Universe side table for this save)
   ctx.r3.u64 = r3;
 }
@@ -2756,7 +2757,8 @@ void CheckModProfiles(uint8_t* base) {
   }
   // Once the move records are loaded: a mod's own move the game has no usable
   // record for (SetOwnMoves may have run before they were) goes back to the
-  // base's - only where the slot still holds the mod's id, never an edit.
+  // base's - only where the slot still holds the mod's id; an edit only when it
+  // holds a move the game has no record for (then the mod's own).
   bool& checked = g_moves_checked;
   if (checked || MoveUsable(0) < 0) return;
   {  // (the profiles loaded: a stock superstar holds its moves - else later)
@@ -2783,14 +2785,27 @@ void CheckModProfiles(uint8_t* base) {
     if (si >= 512 || bi >= 512) continue;
     uint8_t* sp = base + kProfiles + si * kProfileSize;
     const uint8_t* bp = base + kProfiles + bi * kProfileSize;
-    std::string fixed;
+    std::string fixed, repaired;
     for (const auto& [off, id] : m.moves) {
-      if (off + 1u >= kEntrance || Rd16(sp + off) != id || MoveUsable(id) != 0) continue;
-      sp[off] = bp[off], sp[off + 1] = bp[off + 1];
-      fixed += fmt::format(" 0x{:03X}={}", off, id);
+      if (off + 1u >= kEntrance) continue;
+      const uint16_t cur = uint16_t(Rd16(sp + off) & 0x7FFF);
+      if (cur == id) {
+        if (MoveUsable(id) != 0) continue;
+        sp[off] = bp[off], sp[off + 1] = bp[off + 1];
+        fixed += fmt::format(" 0x{:03X}={}", off, id);
+      } else if ((!cur || MoveUsable(cur) == 0) && MoveUsable(id) == 1) {
+        // (a saved edit - or an older version of the mod - holding a move the game has no record for, or none:
+        // the mod's own move. Sabu 1.5's finisher 6861 had no record - 1.7 moved it to 6027 - and a save whose
+        // move-set was edited kept 6861: the finisher started and stopped after the flip.)
+        sp[off] = uint8_t(id >> 8), sp[off + 1] = uint8_t(id);
+        repaired += fmt::format(" 0x{:03X}={}->{}", off, cur, id);
+      }
     }
     if (!fixed.empty())
       REXLOG_WARN("[svr2011] superstar mods: {}: moves the game doesn't have, the base's put back:{}", m.folder, fixed);
+    if (!repaired.empty())
+      REXLOG_WARN("[svr2011] superstar mods: {}: saved moves the game has no record for, the mod's own put back:{}",
+                  m.folder, repaired);
     if (const char* t = std::getenv("SVR2011_TEST_EMPTY_MOVESET"); t && m.folder == t) {  // (test aid: a broken move-set)
       std::memset(sp, 0, kEntrance);
       REXLOG_INFO("[svr2011] superstar mods: test: {}'s move-set emptied", m.folder);
