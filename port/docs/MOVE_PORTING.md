@@ -160,6 +160,17 @@ page (`port/docs/MOVE_MODDING.md`).
   `SVR2011_TEST_SHOT_REQUEST`.
 - Needs a tag match: Batista Bomb & RKO (a double-team move) - not tested in a singles match.
 
+### WWE '12
+- Disc `WWE 12.iso`; its categories are 2011's names (CATS). Its STAT group 60051-60067 (G.T.S., Pedigree, World's
+  Strongest Slam ...) are special versions of finishers 2011 has (G.T.S. 1 = 4574): not new moves.
+- Pair layout as 2K15 (2.3, turned): its Attitude Adjustment 2 ported onto 2011's own 5010 plays like the stock move
+  turned (lock-up, lift, carry, drop) and metres apart unturned (contact sheets w12cal_on / w12cal_off).
+- Dives laid out as 2011's (flight 0000 0000 + branches 0030/40/50): see 2.5.
+- Hard moves, forced in the ring (hidden, 25 Oct): Koronco Buster 1, Tilt-A-Whirl Hurricanrana, Rolling Yoshi
+  Tonic, Snake Eyes 1 play through, victim down, no stuck pair; LeBell Lock / Octopus Stretch (submissions) start
+  and end without the hold loop (the parked submission issue, 2.8); Shooting Star Press 4 / Springboard Moonsault
+  (dives) can't be forced (2.5). Sync looks right where the camera catches it; d / e / g not run yet.
+
 ## 5. Parked: a reversal test aid
 
 Wanted: `SVR2011_TEST_REVERSE=<person>` - the next move on that person goes into its reversal branch (x 90-92),
