@@ -2055,6 +2055,28 @@ REX_HOOK_RAW(sub_82216C58) {
     if (att == fighter && tgt && frames > 300 && frames >= last + every) {
       last = frames;
       const uint32_t motion = force[3 + next++ % (force.size() - 3)];
+      // SVR2011_TEST_FORCE_PLACE=<x>,<z>,<yaw>[,<y>] - the attacker is first put there in the ring (y -12 the
+      // mat; yaw in radians, +z at 0): corner, rope and dive moves start where they belong (the move pairs the
+      // target with him).
+      static const std::vector<float> place = [] {
+        std::vector<float> v;
+        if (const char* e = std::getenv("SVR2011_TEST_FORCE_PLACE"))
+          for (const char* p = e; *p;) {
+            char* end = nullptr;
+            const float f = std::strtof(p, &end);
+            if (end == p) break;
+            v.push_back(f);
+            for (p = end; *p == ',' || *p == ' ';) ++p;
+          }
+        return v;
+      }();
+      if (place.size() >= 3) {
+        const float x = place[0], z = place[1], yaw = place[2], y = place.size() > 3 ? place[3] : -12.0f;
+        WrF(base + att + 288, x), WrF(base + att + 292, y), WrF(base + att + 296, z);
+        WrF(base + att + 276, yaw);
+        if (const uint32_t body = Rd32(base + att + 304)) WrF(base + body, x), WrF(base + body + 4, y), WrF(base + body + 8, z);
+        base[att + 444] = 0;  // (in the ring)
+      }
       const auto saved = ctx;
       ctx.r3.u64 = att;
       ctx.r4.u64 = tgt;
