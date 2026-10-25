@@ -911,6 +911,26 @@ def coded_category(g, g11, cat0):
     return [c for c, v in votes.most_common() if v * 4 >= top]
 
 
+def choose_submission(g11, frames, phases):
+    """the 2011 submission (a YMBs move in MVMT/ANAS, attacker and victim at x 0) most like a source hold: the
+    most phases in common, then the closest length"""
+    best = None
+    for path, (kind, keys, size) in g11.idx.items():
+        if not path.startswith('MVMT/ANAS') or kind != 'YMBs':
+            continue
+        xs = {}
+        for k in keys:
+            xs.setdefault(k[0], set()).add(k[1])
+        pairs = {k[0] for k in keys if k[1] == 0 and k[2] == 0} & {k[0] for k in keys if k[1] == 0 and k[2] == 1}
+        pac, bank = g11.bank(path)
+        for e in bank.entries:
+            if e['id'] in pairs and e['x'] == 0 and e['y'] == 0 and usable11(g11.waze, e['id']):
+                score = -10 * len(xs[e['id']] & phases) + abs(e['frames'] - frames) / 10.0
+                if best is None or score < best[0]:
+                    best = (score, e['id'])
+    return best[1] if best else None
+
+
 def choose_template_by_length(g11, cat, frames):
     """(the old rule: the closest length only)"""
     best = None
@@ -1084,6 +1104,16 @@ def convert(a, rep):
             tid, vic, gap = dive, None, None
             rep['notes'].append("a dive onto a lying victim: the attacker's motion on a one-person template, the "
                                 "victim reacts as in the game's own dives")
+    # A hold with phases (hold, struggle loops, escape, tap: 3+ two-person phases under 90) is a submission:
+    # 2011's are YMBs moves in MVMT/ANAS (x 0 1 2 4 6 7). A coded category mixes them with other moves - 2K15's
+    # M013 is mostly reversals, so its vote said STAT and the Patriot Lock got Mule Kick Reversal 2.
+    src_phases = {int(p) for p, d in by.items() if p.isdigit() and 0 < int(p) < 90 and 0 in d and 1 in d}
+    if not tid and vic is not None and len(src_phases) >= 3:
+        sub = choose_submission(g11, nf, src_phases)
+        if sub:
+            tid, cat11 = sub, ['ANAS']
+            rep['notes'].append('a submission (source phases %s): a 2011 submission (MVMT/ANAS) as the template' %
+                                ', '.join(str(x) for x in sorted(src_phases)))
     tid = tid or choose_template(g11, cat11, nf, gap)
     if not tid and not a.get('template'):   # (no two-person move of that category in 2011: any category)
         tid = choose_template(g11, '', nf, gap)
