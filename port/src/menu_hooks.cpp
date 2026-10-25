@@ -11,6 +11,7 @@
 
 #include "frame_rate.h"
 #include "menu_hooks.h"
+#include "thread_cpu.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -490,6 +491,7 @@ REX_HOOK_RAW(sub_82447210) {
       label = LabelText(ctx, base, it->second);
     REXLOG_INFO("[svr2011] menu select: {}{}group {:X} row {}{}", label, label.empty() ? "" : " (", group, cursor,
                 label.empty() ? "" : ")");
+    svr2011::LoadWatchMenuSelect(label.c_str());
     svr2011::TouchGameInMatch(false);  // (the touch controller's MENU layout)
     svr2011::SetFrameRateInMatch(false);  // (menus at 60 fps)
     svr2011::native::SetMatchScene(false);  // (wide screens: menus at 16:9)

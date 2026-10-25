@@ -52,6 +52,7 @@
 #include "free_cam.h"
 #include "crowd_fight.h"
 #include "match_box.h"
+#include "thread_cpu.h"
 
 namespace svr2011 {
 std::atomic<uint32_t> g_match_rule{~0u}, g_match_arena{~0u};  // (the last match placed: LastMatch)
@@ -1034,6 +1035,7 @@ REX_HOOK_RAW(sub_82BAA6E8) {
   const uint32_t table = ctx.r4.u32, size = ctx.r5.u32;
   std::vector<uint8_t> rows;
   if (g_memory && table) rows = WithRows(base + table, size);
+  svr2011::LoadWatchDone("its menus read");
   if (rows.empty()) {
     __imp__sub_82BAA6E8(ctx, base);
     return;
@@ -1883,6 +1885,7 @@ REX_EXTERN(__imp__sub_822AD738);
 REX_HOOK_RAW(sub_822AD738) {
   const uint32_t placer = ctx.r3.u32;
   svr2011::SetMatchLoading(false);  // (its loading screen is up)
+  svr2011::LoadWatchDone("a match placed");
   svr2011::g_match_placements.fetch_add(1);
   LogMatch(ctx, base, ctx.r4.u32);
   // Research aid (Hell in a Cell roof): SVR2011_TEST_CELL_START=<y tenths> -

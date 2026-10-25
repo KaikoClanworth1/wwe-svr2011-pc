@@ -44,6 +44,8 @@
 #include <rex/logging.h>
 #include <rex/thread.h>
 
+#include "match_types.h"
+
 namespace svr2011 {
 
 namespace {
@@ -181,36 +183,70 @@ namespace {
 
 uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
 
-// A hang note: where the guest thread `host_tid` is (its last call boundary:
-// lr = the last call made, ctr, r3, then the stack's saved return addresses).
-void LogSpinningThread(uint32_t host_tid, double pct, double logic) {
-  auto* kernel = REX_KERNEL_STATE();
-  auto* memory = kernel ? kernel->memory() : nullptr;
-  if (!memory) return;
-  uint8_t* base = memory->virtual_membase();
+// A guest thread's place: its last call boundary (lr = the last call made, ctr, r3), then the stack's saved
+// return addresses ("" when it isn't a guest thread with a context).
+std::string GuestPlace(rex::system::XThread* t, uint8_t* base, rex::memory::Memory* memory) {
+  if (!t->is_guest_thread() || !t->thread_state() || !t->thread_state()->context() || !t->pcr_ptr()) return {};
   const auto readable = [&](uint32_t a) {
     auto* heap = memory->LookupHeap(a);
     return heap && heap->QueryRangeAccess(a, a + 3) != rex::memory::PageAccess::kNoAccess;
   };
+  const PPCContext* c = t->thread_state()->context();
+  const uint32_t hi = Rd32(base + t->pcr_ptr() + 0x70), lo = Rd32(base + t->pcr_ptr() + 0x74);
+  const auto in_stack = [&](uint32_t a) { return lo < hi && a >= lo && a + 4 <= hi && readable(a); };
+  std::string chain;
+  uint32_t sp = c->r1.u32;
+  for (int i = 0; i < 12 && in_stack(sp); ++i) {
+    const uint32_t prev = Rd32(base + sp);
+    if (prev <= sp || !in_stack(prev) || !in_stack(prev - 8)) break;
+    chain += fmt::format(" {:08X}", Rd32(base + prev - 8));
+    sp = prev;
+  }
+  return fmt::format("lr {:08X} ctr {:08X} r3 {:08X}, stack{}", uint32_t(c->lr), c->ctr.u32, c->r3.u32,
+                     chain.empty() ? " -" : chain);
+}
+
+// A hang note: where the guest thread `host_tid` is.
+void LogSpinningThread(uint32_t host_tid, double pct, double logic) {
+  auto* kernel = REX_KERNEL_STATE();
+  auto* memory = kernel ? kernel->memory() : nullptr;
+  if (!memory) return;
   for (auto& t : kernel->object_table()->GetObjectsByType<rex::system::XThread>()) {
     if (!t || !t->thread() || t->thread()->system_id() != host_tid) continue;
-    if (!t->is_guest_thread() || !t->thread_state() || !t->thread_state()->context() || !t->pcr_ptr()) return;
-    const PPCContext* c = t->thread_state()->context();
-    const uint32_t hi = Rd32(base + t->pcr_ptr() + 0x70), lo = Rd32(base + t->pcr_ptr() + 0x74);
-    const auto in_stack = [&](uint32_t a) { return lo < hi && a >= lo && a + 4 <= hi && readable(a); };
-    std::string chain;
-    uint32_t sp = c->r1.u32;
-    for (int i = 0; i < 12 && in_stack(sp); ++i) {
-      const uint32_t prev = Rd32(base + sp);
-      if (prev <= sp || !in_stack(prev) || !in_stack(prev - 8)) break;
-      chain += fmt::format(" {:08X}", Rd32(base + prev - 8));
-      sp = prev;
-    }
-    REXLOG_WARN("hang? the game's logic thread at {:.1f}% for 20 s while thread {:08X} (g{:08X}) runs at {:.0f}%: lr {:08X} "
-                "ctr {:08X} r3 {:08X}, stack{}",
-                logic, t->thread_id(), t->creation_params()->start_address, pct, uint32_t(c->lr), c->ctr.u32,
-                c->r3.u32, chain.empty() ? " -" : chain);
+    const std::string place = GuestPlace(t.get(), memory->virtual_membase(), memory);
+    if (place.empty()) return;
+    REXLOG_WARN("hang? the game's logic thread at {:.1f}% for 20 s while thread {:08X} (g{:08X}) runs at {:.0f}%: {}",
+                logic, t->thread_id(), t->creation_params()->start_address, pct, place);
     return;
+  }
+}
+
+// The load watch (thread_cpu.h).
+std::mutex g_watch_mutex;
+std::string g_watch_label;              // the last menu row chosen
+uint32_t g_watch_placements = 0;        // matches placed by then
+bool g_watch_armed = false, g_watch_noted = false;
+Clock::time_point g_watch_since{};
+
+void CheckLoadWatch(double logic) {
+  std::string label;
+  {
+    std::lock_guard lock(g_watch_mutex);
+    if (!g_watch_armed || g_watch_noted || Clock::now() - g_watch_since < std::chrono::seconds(25)) return;
+    g_watch_noted = true;
+    label = g_watch_label;
+  }
+  auto* kernel = REX_KERNEL_STATE();
+  auto* memory = kernel ? kernel->memory() : nullptr;
+  if (!memory) return;
+  REXLOG_WARN("load stall? {} left the practice ring 25 s ago and its scene hasn't loaded (logic {:.1f}%) - "
+              "the game's threads:", label.empty() ? "a mode" : label, logic);
+  for (auto& t : kernel->object_table()->GetObjectsByType<rex::system::XThread>()) {
+    if (!t || !t->thread()) continue;
+    const std::string place = GuestPlace(t.get(), memory->virtual_membase(), memory);
+    if (!place.empty())
+      REXLOG_WARN("load stall?   thread {:08X} (g{:08X}): {}", t->thread_id(), t->creation_params()->start_address,
+                  place);
   }
 }
 
@@ -277,6 +313,7 @@ std::string Line() {
   bool logic_seen = false;
   for (const auto& [tid, role] : g_roles) logic_seen |= std::strcmp(role.c_str(), "logic") == 0;
   CheckHang(logic_seen, by_label.count("logic") ? by_label["logic"] : 0.0, top_tid, top_pct);
+  CheckLoadWatch(by_label.count("logic") ? by_label["logic"] : 0.0);
   std::vector<std::pair<double, std::string>> sorted;
   double total = 0;
   for (const auto& [label, pct] : by_label) sorted.emplace_back(pct, label), total += pct;
@@ -290,6 +327,35 @@ std::string Line() {
 }
 
 }  // namespace
+
+void LoadWatchMenuSelect(const char* label) {
+  std::lock_guard lock(g_watch_mutex);
+  g_watch_label = label ? label : "";
+  g_watch_placements = MatchPlacements();
+  g_watch_armed = false;
+}
+
+void LoadWatchStart() {
+  std::lock_guard lock(g_watch_mutex);
+  if (g_watch_armed || MatchPlacements() != g_watch_placements) return;  // (a match's own end: not this)
+  // (CREATE A MOVE-SET only: other modes - the CAW editor - may never read the menu table or place a match;
+  // test aid SVR2011_TEST_LOAD_WATCH=all watches every mode)
+  static const bool all = [] { const char* v = std::getenv("SVR2011_TEST_LOAD_WATCH"); return v && !std::strcmp(v, "all"); }();
+  if (!all && g_watch_label.rfind("CREATE A MOVE-SET", 0) != 0) return;
+  g_watch_armed = true, g_watch_noted = false, g_watch_since = Clock::now();
+}
+
+void LoadWatchDone(const char* what) {
+  std::lock_guard lock(g_watch_mutex);
+  if (!g_watch_armed) return;
+  // (test aid SVR2011_TEST_LOAD_WATCH=stall: a load that never ends - the note's proof)
+  static const bool stall = [] { const char* v = std::getenv("SVR2011_TEST_LOAD_WATCH"); return v && !std::strcmp(v, "stall"); }();
+  if (stall) return;
+  g_watch_armed = false;
+  if (std::getenv("SVR2011_TEST_LOAD_WATCH_LOG"))  // (test: a watch that ended in time)
+    REXLOG_INFO("load watch: {} loaded ({}, {:.1f} s)", g_watch_label, what,
+                std::chrono::duration<double>(Clock::now() - g_watch_since).count());
+}
 
 void StartThreadCpuLog() {
   static std::once_flag once;
