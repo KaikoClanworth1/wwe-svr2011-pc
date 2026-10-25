@@ -214,6 +214,65 @@ def main():
     one = next((x for x in json.loads(body)["reports"] if x["id"] == r1["id"]), {})
     check("the mark shows in the list", one.get("status") == "done")
 
+    # fixed: a whole signature group (the admin API), with how / commit / version / date
+    def post_json(path, body):
+        req = urllib.request.Request(url + path, method="POST", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as f:
+                return f.status, json.loads(f.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return e.code, {}
+    fix = {"note": "The pin count no longer repeats.", "commit": "abc1234", "version": "2.1.6", "date": "2026-10-25"}
+    st, d = post_json("/api/admin/report/%s/mark" % r1["signature"], {"status": "fixed", "fix": fix})
+    check("mark a signature fixed: 200, both its reports (%s)" % d.get("ids"),
+          st == 200 and sorted(d.get("ids", [])) == sorted([r1["id"], r2["id"]]))
+    st, body = get(url, "/api/admin/reports")
+    rows = json.loads(body)["reports"]
+    one = next((x for x in rows if x["id"] == r2["id"]), {})
+    check("the fix shows in the list (status fixed, note, commit, version, date)",
+          one.get("status") == "fixed" and one.get("fix") == fix)
+    st, d = post_json("/api/admin/report/%s/mark" % ("0" * 16), {"status": "fixed", "fix": fix})
+    check("mark an unknown signature: 404", st == 404)
+    st, d = post_json("/api/admin/report/%s/mark" % r3["id"], {"status": "fixed", "fix": {"note": "x" * 5000}})
+    rows = json.loads(get(url, "/api/admin/reports")[1])["reports"]
+    one = next((x for x in rows if x["id"] == r3["id"]), {})
+    check("a long note is cut, no date given -> today",
+          st == 200 and len(one.get("fix", {}).get("note", "")) == 1000 and len(one["fix"]["date"]) == 10)
+
+    # delete: the folder, the index line and the mark go
+    folder = os.path.join(a.node_data, "reports", reports._day(r2["id"]), r2["id"])
+    st, d = post_json("/api/admin/report/%s/delete" % r2["id"], {})
+    rows = json.loads(get(url, "/api/admin/reports")[1])["reports"]
+    status = json.load(open(os.path.join(a.node_data, "reports", "status.json"), encoding="utf-8"))
+    check("delete: 200, the folder, its index line and its mark gone",
+          st == 200 and not os.path.isdir(folder) and not any(x["id"] == r2["id"] for x in rows) and r2["id"] not in status)
+    one = next((x for x in rows if x["id"] == r1["id"]), {})
+    check("delete: its signature's count down to 1 (%s)" % one.get("count"), one.get("count") == 1)
+    st, d = post_json("/api/admin/report/%s/delete" % r2["id"], {})
+    check("delete it again: 404", st == 404)
+
+    # the CLI on the node's folder (as Main runs it on the node's PC)
+    import subprocess
+    cli = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports.py"), "--data", a.node_data]
+    out = subprocess.run(cli + ["mark", r6["id"], "--fixed", "Signed in again.", "--commit", "def5678", "--version",
+                                "2.1.6"], capture_output=True, text=True)
+    rows = json.loads(get(url, "/api/admin/reports")[1])["reports"]
+    one = next((x for x in rows if x["id"] == r6["id"]), {})
+    check("CLI mark --fixed: the server lists it (%s)" % out.stdout.strip(),
+          out.returncode == 0 and one.get("status") == "fixed" and one["fix"]["commit"] == "def5678")
+    out = subprocess.run(cli + ["list", "--fixed"], capture_output=True, text=True)
+    check("CLI list --fixed: the fixed ones", out.returncode == 0 and r6["id"] in out.stdout and r1["id"] in out.stdout)
+    out = subprocess.run(cli + ["mark", "nope", "--done"], capture_output=True, text=True)
+    check("CLI mark an unknown id: an error", out.returncode != 0)
+
+    # arena names (match_names.py: the live sessions' arena)
+    import match_names
+    check("arena names: stock, custom, unnamed and past the stock ones",
+          match_names.arena_name("arena 0") == "SMACKDOWN" and match_names.arena_name("arena 11") == "WRESTLEMANIA XXVI"
+          and match_names.arena_name("arena 9", "KING OF THE RING 1998") == "KING OF THE RING 1998"
+          and match_names.arena_name("arena 33") == "arena 33" and match_names.arena_name("arena 120") == "mod arena 120")
+
     print("\n%d failed" % len(FAILS) if FAILS else "\nall passed")
     return 1 if FAILS else 0
 

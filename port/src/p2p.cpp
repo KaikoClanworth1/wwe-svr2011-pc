@@ -48,6 +48,7 @@
 #include <rex/system/xmemory.h>
 #include <rex/thread.h>
 
+#include "arena_mods.h"
 #include "frame_rate.h"
 #include "online_files.h"
 #include "online_net.h"
@@ -1455,11 +1456,22 @@ void ReportLive(bool signed_in) {
       uint32_t rule = OnlineCreateSessionRule(), arena = ~0u, played = ~0u;
       LastMatch(&played, &arena);
       if (in_match && played != ~0u) rule = played;
+      // (a custom arena plays on a stock arena's number: its own name too - the manifest's name=, else its folder)
+      std::string arena_mod;
+      if (int tile = -1; in_match && !(arena_mod = ArenaModInUse(&tile)).empty()) {
+        std::istringstream manifest(ArenaModManifest());
+        for (std::string line; std::getline(manifest, line);)
+          if (line.rfind("name=", 0) == 0) {
+            arena_mod = line.substr(5);
+            while (!arena_mod.empty() && (arena_mod.back() == '\r' || arena_mod.back() == ' ')) arena_mod.pop_back();
+            break;
+          }
+      }
       bodies.push_back(fmt::format(
-          "{{\"session\": \"{:X}\", \"state\": \"{}\", \"rule\": \"{}\", \"arena\": \"{}\", "
+          "{{\"session\": \"{:X}\", \"state\": \"{}\", \"rule\": \"{}\", \"arena\": \"{}\", \"arena_mod\": {}, "
           "\"slots\": {}, \"version\": {}, \"network\": \"{}\", \"players\": [{}]}}",
           local.session.id, in_match ? "match" : "lobby", rule == ~0u ? "" : fmt::format("rule {:02X}", rule),
-          in_match && arena != ~0u ? fmt::format("arena {}", arena) : "",
+          in_match && arena != ~0u ? fmt::format("arena {}", arena) : "", JsonQuote(arena_mod),
           local.session.public_slots + local.session.private_slots, JsonQuote(PortVersion()), NetName(g_match_net),
           players));
     }

@@ -5,6 +5,9 @@ name's string id in string.pac (English); docs/MATCH_TYPES_RESEARCH.md. A few ar
 the game's name is blank or shared: the free-roaming backstage rows (0x19 / 0x1A, no name), the
 pin & give-up cages (0x40-0x42, named as the normal cage), the manager variants, the backstage
 rooms ("BACKSTAGE: ..."), and the Road to WrestleMania copies ("(STORY)").
+Arenas: string.pac's run of arena names, name of arena N = string 0x9C42 + N (the match record's arena
+number, live +64; PURE BLACK ROOM = 76 as in WWE '12+); blank / "ARENA nn" placeholders are left out. A custom
+arena plays on a stock arena's number, so the host also sends its own name (arena_mod, 2.1.6+).
 Views: the game's LEADERBOARDS labels (string.pac 0x4E92 / 0x4EBA-0x4ED4) for leaderboards.json.
 """
 import re
@@ -168,6 +171,68 @@ VIEWS = {
 }
 
 
+ARENAS = {
+    0: "SMACKDOWN",
+    1: "RAW",
+    2: "ECW",
+    3: "TRIBUTE TO THE TROOPS",
+    4: "SUMMERSLAM",
+    5: "BREAKING POINT",
+    6: "PPV HELL IN A CELL",
+    7: "SURVIVOR SERIES",
+    8: "PPV TLC:TABLES, LADDERS & CHAIRS",
+    9: "ROYAL RUMBLE",
+    10: "PPV ELIMINATION CHAMBER",
+    11: "WRESTLEMANIA XXVI",
+    12: "BACKLASH",
+    13: "JUDGMENT DAY",
+    14: "NIGHT OF CHAMPIONS",
+    15: "THE BASH",
+    16: "EXTREME RULES",
+    17: "WWE SUPERSTARS",
+    18: "BRAGGING RIGHTS",
+    19: "DRUID ARENA",
+    20: "ARENA FOR ELIMINATION CHAMBER MATCH",
+    22: "ARENA FOR ROYAL RUMBLE MATCH",
+    23: "ARENA FOR CREATE MOVES MODE",
+    24: "PROP CHECK",
+    25: "WWE APPROVAL",
+    26: "AUDIENCE CHECK",
+    29: "PRACTICE ARENA",
+    30: "SVR11 TRAININGFACILIT",
+    40: "CHARA CHECK STAGE",
+    53: "INTERVIEW SPACE BRAWL",
+    54: "DIRT SHEET BRAWL",
+    55: "OFFICE STAGE BRAWL",
+    56: "WALKWAY CONNECTOR",
+    57: "LOCKER ROOM BRAWL",
+    58: "INTERVIEW SPACE BRAWL",
+    59: "OFFICE STAGE BRAWL",
+    60: "GM OFFICE (SMACK)",
+    61: "GM OFFICE (RAW)",
+    62: "DIRT SHEET BRAWL",
+    63: "WALKWAY CONNECTOR",
+    64: "BACKSTAGE HALLWAY",
+    65: "LOCKER ROOM (SMACK)",
+    66: "LOCKER ROOM (RAW)",
+    67: "RESTAURANT",
+    68: "PARKING LOT",
+    69: "INTERVIEW AREA (SMACK)",
+    70: "INTERVIEW AREA (RAW)",
+    71: "LOCKER ROOM (ECW)",
+    72: "LOCKER ROOM FOR CENA",
+    73: "LOCKER ROOM FOR UNDERTAKER",
+    74: "LOCKER ROOM FOR TRIPLE H",
+    75: "LOCKER ROOM FOR JERICHO",
+    76: "PURE BLACK ROOM",
+    77: "PURE WHITE ROOM",
+    78: "FREE-ROAMING BACKSTAGE",
+    79: "PURE GREEN ROOM",
+    80: "NIGHTCLUB",
+    81: "RESTAURANT",
+}
+
+
 def rule_name(rule):
     """0x4D / "4D" / "rule 4D" -> "SINGLE EXTREME RULES MATCH" (None: not a rule id)"""
     if isinstance(rule, str):
@@ -180,3 +245,15 @@ def rule_name(rule):
 
 def view_name(view):
     return VIEWS.get(view)
+
+
+def arena_name(arena, mod=""):
+    """17 / "17" / "arena 17" (+ the host's custom arena name) -> "WWE SUPERSTARS"; a custom arena by its own name;
+    a number the game has no name for: "mod arena N" past the stock ones, else "arena N". '' when none is given."""
+    if mod:
+        return str(mod)[:60]
+    m = re.fullmatch(r"\s*(?:arena\s+)?(\d{1,4})\s*", str(arena or ""))
+    if not m:
+        return str(arena or "")[:40]
+    n = int(m.group(1))
+    return ARENAS.get(n) or ("mod arena %d" % n if n > max(ARENAS) else "arena %d" % n)

@@ -4,7 +4,8 @@ Each one is kept where the Community Creations bytes live (here, or the storage 
 there as plain files:
     <data>/reports/<yyyy-mm-dd>/<id>/report.json, report.zip, image0.png ...
     <data>/reports/index.jsonl     (one line per report: the dashboard's list, and the duplicates' counts)
-    <data>/reports/status.json     (id -> done / duplicate: the dashboard's marks)
+    <data>/reports/status.json     (id -> done / duplicate, or {status: fixed, note, commit, version, date}: the
+                                    dashboard's marks; `python reports.py mark ...` writes them too - see main())
 The sender's address is never stored (the core keeps it in memory for its rate limit only).
 
 Duplicates: a signature from app + version + problem + the first crash / error line in the zip's logs, made
@@ -17,6 +18,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import threading
 import time
 import zipfile
@@ -27,7 +29,24 @@ MAX_IMAGE = 8 << 20
 MAX_IMAGES = 5
 TEXT_CAP = {"what": 4000, "before": 4000}  # (every other text field: 200)
 FIELDS = ("format", "app", "version", "platform", "os", "problem", "happens", "what", "before", "contact")
-STATUSES = ("", "done", "duplicate")
+STATUSES = ("", "done", "duplicate", "fixed")
+FIX_FIELDS = {"note": 1000, "commit": 40, "version": 20, "date": 10}
+
+
+def clean_fix(raw):
+    """A fixed mark's details -> {note, commit, version, date} (date: today when not given)."""
+    raw = raw if isinstance(raw, dict) else {}
+    fix = {k: str(raw.get(k) or "").replace("\r\n", "\n").strip()[:cap] for k, cap in FIX_FIELDS.items()}
+    if not re.fullmatch(r"\d{4}-\d\d-\d\d", fix["date"]):
+        fix["date"] = time.strftime("%Y-%m-%d")
+    return fix
+
+
+def _mark_of(value):
+    """A status.json value -> (status, fix details or None); old marks are plain strings."""
+    if isinstance(value, dict):
+        return str(value.get("status", "")), {k: value.get(k, "") for k in FIX_FIELDS}
+    return str(value or ""), None
 
 
 def image_ext(data):
@@ -229,7 +248,9 @@ class LocalReports:
             rows, marks, counts = self._rows(), self._status(), dict(self.counts)
         rows = rows[-limit:][::-1]
         for r in rows:
-            r["status"] = marks.get(r["id"], "")
+            r["status"], fix = _mark_of(marks.get(r["id"]))
+            if fix:
+                r["fix"] = fix
             r["count"] = counts.get(r.get("signature", ""), 1)
         return rows
 
@@ -243,21 +264,65 @@ class LocalReports:
         except OSError:
             return None
 
-    def mark(self, rid, status):
-        if not _valid_id(rid) or status not in STATUSES:
+    def _write_status(self, marks):
+        tmp = self.status_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(marks, f, indent=1, ensure_ascii=False)
+        os.replace(tmp, self.status_path)
+
+    def mark(self, rid, status, fix=None):
+        """One report: done / duplicate / fixed (fix: {note, commit, version, date}) / '' (open again)."""
+        return bool(self.mark_many(rid, status, fix))
+
+    def mark_many(self, target, status, fix=None):
+        """A report id, or a signature (every report with it) -> the ids marked ([] when none)."""
+        if status not in STATUSES:
+            return []
+        value = dict(clean_fix(fix), status="fixed") if status == "fixed" else status
+        with self.lock:
+            if _valid_id(target):
+                ids = [target] if os.path.isdir(os.path.join(self.dir, _day(target), target)) else []
+            elif re.fullmatch(r"[0-9a-f]{16}", target or ""):
+                ids = [r["id"] for r in self._rows() if r.get("signature") == target]
+            else:
+                ids = []
+            if not ids:
+                return []
+            marks = self._status()
+            for rid in ids:
+                if value:
+                    marks[rid] = value
+                else:
+                    marks.pop(rid, None)
+            self._write_status(marks)
+        return ids
+
+    def delete(self, rid):
+        """A report gone for good: its folder, its index line and its mark."""
+        if not _valid_id(rid):
             return False
         with self.lock:
-            if not os.path.isdir(os.path.join(self.dir, _day(rid), rid)):
+            folder = os.path.join(self.dir, _day(rid), rid)
+            rows = self._rows()
+            keep = [r for r in rows if r.get("id") != rid]
+            if len(keep) == len(rows) and not os.path.isdir(folder):
                 return False
-            marks = self._status()
-            if status:
-                marks[rid] = status
-            else:
-                marks.pop(rid, None)
-            tmp = self.status_path + ".tmp"
+            shutil.rmtree(folder, ignore_errors=True)
+            try:
+                os.rmdir(os.path.dirname(folder))  # (the day's folder, once empty)
+            except OSError:
+                pass
+            tmp = self.index_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(marks, f, indent=1)
-            os.replace(tmp, self.status_path)
+                for r in keep:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            os.replace(tmp, self.index_path)
+            marks = self._status()
+            if marks.pop(rid, None) is not None:
+                self._write_status(marks)
+            self.counts = {}
+            for r in keep:
+                self.counts[r.get("signature", "")] = self.counts.get(r.get("signature", ""), 0) + 1
         return True
 
 
@@ -314,10 +379,20 @@ class RemoteReports:
         except Exception:
             return None
 
-    def mark(self, rid, status):
+    def mark(self, rid, status, fix=None):
+        return bool(self.mark_many(rid, status, fix))
+
+    def mark_many(self, target, status, fix=None):
         try:
-            with self._req("POST", "/reports/%s/mark" % rid, json.dumps({"status": status}).encode(),
+            with self._req("POST", "/reports/%s/mark" % target, json.dumps({"status": status, "fix": fix}).encode(),
                            "application/json") as f:
+                return json.loads(f.read() or b"{}").get("ids", [])
+        except Exception:
+            return []
+
+    def delete(self, rid):
+        try:
+            with self._req("POST", "/reports/%s/delete" % rid) as f:
                 return f.status == 200
         except Exception:
             return False
@@ -359,12 +434,77 @@ def node_routes(app, folder, key_ok):
         if not key_ok(request):
             return web.Response(status=403)
         try:
-            status = str((await request.json()).get("status", ""))
-        except ValueError:
+            body = await request.json()
+            status, fix = str(body.get("status", "")), body.get("fix")
+        except (ValueError, AttributeError):
             return web.Response(status=400)
-        return web.Response(status=200 if reports.mark(request.match_info["id"], status) else 404)
+        ids = reports.mark_many(request.match_info["id"], status, fix)
+        return web.json_response({"ok": bool(ids), "ids": ids}, status=200 if ids else 404)
+
+    async def delete(request):
+        if not key_ok(request):
+            return web.Response(status=403)
+        done = await asyncio.get_running_loop().run_in_executor(None, reports.delete, request.match_info["id"])
+        return web.Response(status=200 if done else 404)
 
     app.router.add_post("/reports", add)
     app.router.add_get("/reports", listing)
     app.router.add_post("/reports/{id}/mark", mark)
+    app.router.add_post("/reports/{id}/delete", delete)
     app.router.add_get("/reports/{id}/{name}", one)
+
+
+def main():
+    """On the machine that keeps the reports (the storage node's PC, or --role all), server running or not:
+        python reports.py --data <data folder> mark <report id | signature> --fixed "how it was fixed"
+                          --commit abc1234 --version 2.1.6 [--date 2026-10-25]
+        python reports.py --data <data folder> mark <id | signature> --done | --duplicate | --reopen
+        python reports.py --data <data folder> delete <report id>
+        python reports.py --data <data folder> list [--fixed]
+    A signature marks every report with it (the dashboard's groups). The dashboard shows the fixed ones under
+    "Fixed while you were away"."""
+    import argparse
+    ap = argparse.ArgumentParser(description=main.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--data", required=True, help="the server's --data folder (the one holding reports/)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    m = sub.add_parser("mark")
+    m.add_argument("target", help="a report id (20261025-101500-abc123) or a signature (16 hex)")
+    how = m.add_mutually_exclusive_group(required=True)
+    how.add_argument("--fixed", metavar="NOTE", help="fixed: a short plain-English note of how")
+    how.add_argument("--done", action="store_true")
+    how.add_argument("--duplicate", action="store_true")
+    how.add_argument("--reopen", action="store_true")
+    m.add_argument("--commit", default="")
+    m.add_argument("--version", default="", help="the version the fix ships in, e.g. 2.1.6")
+    m.add_argument("--date", default="", help="YYYY-MM-DD (default: today)")
+    d = sub.add_parser("delete")
+    d.add_argument("id")
+    ls = sub.add_parser("list")
+    ls.add_argument("--fixed", action="store_true", help="only the fixed ones")
+    a = ap.parse_args()
+    if not os.path.isdir(os.path.join(a.data, "reports")):
+        raise SystemExit("No reports folder in %s" % a.data)
+    store = LocalReports(a.data)
+    if a.cmd == "mark":
+        status = "fixed" if a.fixed is not None else "done" if a.done else "duplicate" if a.duplicate else ""
+        fix = {"note": a.fixed, "commit": a.commit, "version": a.version, "date": a.date} if status == "fixed" else None
+        ids = store.mark_many(a.target, status, fix)
+        if not ids:
+            raise SystemExit("No report with that id or signature.")
+        print("%s: %d report(s): %s" % (status or "reopened", len(ids), ", ".join(ids)))
+    elif a.cmd == "delete":
+        if not store.delete(a.id):
+            raise SystemExit("No report %s." % a.id)
+        print("deleted", a.id)
+    else:
+        for r in store.list(5000):
+            if a.fixed and r["status"] != "fixed":
+                continue
+            fix = r.get("fix")
+            print("%s  %-9s %s %s  %s%s" % (r["id"], r["status"] or "open", r.get("app"), r.get("version"),
+                                           r.get("problem"), "  -> %s (%s, %s)" % (fix["note"], fix["commit"],
+                                                                                   fix["version"]) if fix else ""))
+
+
+if __name__ == "__main__":
+    main()
