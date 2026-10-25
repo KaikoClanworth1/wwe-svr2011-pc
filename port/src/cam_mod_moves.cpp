@@ -178,13 +178,14 @@ uint32_t MatchMove(uint8_t* base, uint32_t slot, uint32_t got) {
     once = true;
     REXLOG_INFO("[svr2011] cam mods: match move getter active (slot {} move {})", slot, got & 0x7FFF);
   }
-  // Test aid: SVR2011_TEST_MOVE_LOG=1 logs the first 200 distinct (slot, move) pairs the match asks for.
+  // Test aid: SVR2011_TEST_MOVE_LOG=1 logs the first 2000 distinct (slot, move) pairs the match asks for (menus ask
+  // too: 200 ran out before a match).
   static const bool trace = [] { const char* v = std::getenv("SVR2011_TEST_MOVE_LOG"); return v && *v == '1'; }();
   if (trace) {
     static std::mutex tmu;
     static std::map<uint32_t, bool> seen;
     std::lock_guard lock(tmu);
-    if (seen.size() < 200 && !seen[slot << 16 | (got & 0xFFFF)]) {
+    if (seen.size() < 2000 && !seen[slot << 16 | (got & 0xFFFF)]) {
       seen[slot << 16 | (got & 0xFFFF)] = true;
       REXLOG_INFO("[svr2011] cam mods: match asks slot {} (category {}) -> move {}", slot, kSlotCategory[slot], got & 0x7FFF);
     }
