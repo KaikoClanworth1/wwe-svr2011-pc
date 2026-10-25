@@ -100,6 +100,19 @@ h2 .note, h2 .filter, h2 .btn { text-transform: none; letter-spacing: 0; font-we
 .btn:disabled { opacity: .5; cursor: default; }
 #reports h3 { font-size: 14px; margin: 20px 0 6px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 #reports code { white-space: pre-wrap; word-break: break-all; }
+#fixed { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 4px 16px 10px; margin: 0 0 22px; }
+#fixed h3 { font-size: 15px; margin: 12px 0 4px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.fx { border-top: 1px solid var(--line); padding: 12px 0; display: grid; grid-template-columns: 1fr auto; gap: 6px 14px; }
+.fx:first-of-type { border-top: 0; }
+.fx .what { color: var(--dim); font-size: 13px; margin: 2px 0 0; }
+.fx .how { margin: 6px 0 0; font-size: 14px; }
+.fx .how b { color: var(--ok); }
+#fixed h3 .spacer { flex: 1; }
+.fx .meta { font-size: 12px; color: var(--dim); margin-top: 4px; }
+.fx .meta code { font-size: 12px; }
+.fx .pics img { height: 54px; max-width: 110px; object-fit: cover; border-radius: 4px; margin: 6px 6px 0 0; }
+.fx .acts { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+@media (max-width: 600px) { .fx { grid-template-columns: 1fr; } .fx .acts { flex-direction: row; align-items: center; } }
 .btn.danger { border-color: var(--bad-line); color: var(--bad); }
 .btn.danger:hover { background: var(--bad-bg); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -300,6 +313,7 @@ td.acts { text-align: right; white-space: nowrap; }
     <h2>Problem reports <span class="spacer"></span>
       <label class="note"><input type="checkbox" id="rp-open" checked> Hide done / duplicates</label>
       <input class="filter" id="f-rp" placeholder="Filter" aria-label="Filter reports"></h2>
+    <div id="fixed" hidden></div>
     <p class="intro">Sent from Report a problem (launcher, Mod Maker, game, Android). Grouped by signature: the app, version, problem and the first crash / error line in the logs. The files are in the storage node's reports folder.</p>
     <div id="reports"><span class="empty">Loading&hellip;</span></div>
   </section>
@@ -619,7 +633,9 @@ td.acts { text-align: right; white-space: nowrap; }
     if (v.kind) parts.push(esc(v.kind));
     if (v.rule) parts.push(v.rule_name ? '<span title="' + esc(v.rule) + '">' + esc(v.rule_name) + '</span><span class="id">' +
                                          esc(v.rule.replace(/^rule\s*/, '')) + '</span>' : esc(v.rule));
-    if (v.arena) parts.push(esc(v.arena));
+    // (the arena by name - the game's, or a custom arena's own; its number in the tooltip)
+    if (v.arena) parts.push('<span title="' + esc(v.arena) + (v.arena_mod ? ' (custom arena)' : '') + '">' +
+                            esc(v.arena_name || v.arena) + '</span>');
     return parts.join(' · ');
   }
   function live() {
@@ -743,11 +759,63 @@ td.acts { text-align: right; white-space: nowrap; }
         }).join('') + '</tbody></table></div>';
     }).join('') : '<p class="empty">No reports' + (open && reportRows.length ? ' left open' : '') + '.</p>';
   }
+  // "Fixed while you were away": reports marked fixed (reports.py mark ... --fixed), newest fix first
+  function fixedShown() {
+    var f = el('f-rp').value.toLowerCase();
+    return reportRows.filter(function (r) {
+      return r.status === 'fixed' && (!f || [r.app, r.version, r.problem, r.what, r.fix && r.fix.note, r.fix && r.fix.version]
+        .join(' ').toLowerCase().indexOf(f) >= 0);
+    }).sort(function (a, b) {
+      return ((b.fix && b.fix.date) || '').localeCompare((a.fix && a.fix.date) || '') || b.received_at - a.received_at;
+    });
+  }
+  function renderFixed() {
+    var rows = fixedShown(), box = el('fixed');
+    box.hidden = !rows.length;
+    if (!rows.length) { box.innerHTML = ''; return; }
+    box.innerHTML = '<h3>Fixed while you were away <span class="tag on">' + rows.length + '</span><span class="spacer"></span>' +
+      '<button class="btn danger" data-fxall>Delete all shown</button></h3>' +
+      rows.map(function (r) {
+        var x = r.fix || {}, what = r.what || '';
+        if (what.length > 160) what = what.slice(0, 157) + '…';
+        var pics = (r.images || []).map(function (n) {
+          return '<a href="' + reportFile(r, n) + '" target="_blank" rel="noopener"><img loading="lazy" alt="' + esc(n) +
+            '" src="' + reportFile(r, n) + '"></a>';
+        }).join('');
+        return '<div class="fx"><div><strong>' + esc(r.problem) + '</strong> <span class="tag">' + esc(r.app) + ' ' + esc(r.version) + '</span>' +
+          (what ? '<p class="what">' + esc(what) + '</p>' : '') +
+          '<p class="how"><b>Fixed:</b> ' + esc(x.note || '(no note)') + '</p>' +
+          '<div class="meta">' + (x.version ? 'Ships in <strong>' + esc(x.version) + '</strong>' : 'Version not set') +
+          (x.commit ? ' &middot; commit <code>' + esc(x.commit) + '</code>' : '') + (x.date ? ' &middot; ' + esc(x.date) : '') +
+          ' &middot; reported <span title="' + esc(r.received) + '">' + ago(r.received_at) + '</span></div>' +
+          (pics ? '<div class="pics">' + pics + '</div>' : '') + '</div>' +
+          '<div class="acts"><a class="btn" href="' + reportFile(r, 'report.json') + '" target="_blank" rel="noopener">Details</a>' +
+          '<button class="btn danger" data-fxdel="' + esc(r.id) + '">Delete</button></div></div>';
+      }).join('');
+  }
+  function deleteReports(ids) {
+    return ids.reduce(function (p, id) {
+      return p.then(function () { return api('api/admin/report/' + encodeURIComponent(id) + '/delete', {method: 'POST'}); });
+    }, Promise.resolve()).then(loadReports, loadReports);
+  }
+  // (a Delete asks in place: the first click turns it into "Delete for good?", a second within 5 s deletes)
+  el('fixed').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-fxdel],[data-fxall]');
+    if (!b) return;
+    if (!b.dataset.armed) {
+      b.dataset.armed = '1'; b.dataset.label = b.textContent;
+      b.textContent = b.hasAttribute('data-fxall') ? 'Delete ' + fixedShown().length + ' for good?' : 'Delete for good?';
+      setTimeout(function () { if (b.isConnected && b.dataset.armed) { delete b.dataset.armed; b.textContent = b.dataset.label; } }, 5000);
+      return;
+    }
+    b.disabled = true;
+    deleteReports(b.hasAttribute('data-fxall') ? fixedShown().map(function (r) { return r.id; }) : [b.getAttribute('data-fxdel')]);
+  });
   function loadReports() {
     return api('api/admin/reports').then(function (d) {
       reportRows = d.reports || []; reportError = '';
       el('n-reports').textContent = reportRows.filter(function (r) { return !r.status; }).length || '';
-      if (current === 'reports') renderReports();
+      if (current === 'reports') { renderFixed(); renderReports(); }
     }).catch(function (e) { reportError = 'The reports could not be loaded (' + e.message + ').'; if (current === 'reports') renderReports(); });
   }
   el('reports').addEventListener('click', function (e) {
@@ -758,7 +826,7 @@ td.acts { text-align: right; white-space: nowrap; }
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status: b.getAttribute('data-s')})
     }).then(loadReports).catch(function () { b.disabled = false; });
   });
-  el('f-rp').addEventListener('input', renderReports);
+  el('f-rp').addEventListener('input', function () { renderFixed(); renderReports(); });
   el('rp-open').addEventListener('change', renderReports);
 
   // ---- the storage audit (Discovery tab): orphans on the node, hidden mods, missing files

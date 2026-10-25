@@ -44,16 +44,35 @@ in its `--data` folder:
     reports/<yyyy-mm-dd>/<id>/report.zip
     reports/<yyyy-mm-dd>/<id>/image0.png ...
     reports/index.jsonl                     one line per report (the list, and the duplicates' counts)
-    reports/status.json                     the dashboard's marks: id -> done / duplicate
+    reports/status.json                     the marks: id -> done / duplicate, or
+                                            {status: fixed, note, commit, version, date}
 
 The core passes a report to the node as one stored zip (`POST /reports` with `X-Storage-Key`); the node also
-answers `GET /reports`, `GET /reports/<id>/<file>`, `POST /reports/<id>/mark`. The sender's address stays in the
-core's memory, for the rate limit only.
+answers `GET /reports`, `GET /reports/<id>/<file>`, `POST /reports/<id>/mark` (the id may be a signature: every
+report with it; `{status, fix}`) and `POST /reports/<id>/delete`. The sender's address stays in the core's memory,
+for the rate limit only.
+
+## Marking a fix
+
+On the PC that keeps the reports (the storage node, or `--role all`), with the server running or not:
+
+    python port/server/reports.py --data <the server's --data> mark <report id | signature> --fixed "how it was fixed" --commit abc1234 --version 2.1.6 [--date 2026-10-25]
+    python port/server/reports.py --data <...> mark <id | signature> --done | --duplicate | --reopen
+    python port/server/reports.py --data <...> delete <report id>
+    python port/server/reports.py --data <...> list [--fixed]
+
+The same from the dashboard's API (admin): `POST /api/admin/report/<id | signature>/mark` with
+`{"status": "fixed", "fix": {"note", "commit", "version", "date"}}` (date: today when left out) and
+`POST /api/admin/report/<id>/delete`.
 
 ## Dashboard
 
-The Reports tab: reports grouped by signature (newest first), their count, the error line, picture thumbnails,
-Details (report.json), the zip, and Done / Duplicate / Reopen marks.
+The Reports tab:
+- "Fixed while you were away" first: the fixed reports, newest fix first, each with its problem, what happened, how it
+  was fixed, the version it ships in, the commit, the date, its pictures and Details. Delete (and "Delete all shown")
+  asks in place (a second click within 5 s) and removes the report's folder, index line and mark.
+- Then the open reports grouped by signature (newest first): their count, the error line, picture thumbnails,
+  Details (report.json), the zip, and Done / Duplicate / Reopen marks. Fixed ones leave this list.
 
 ## Deploying
 

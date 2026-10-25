@@ -877,7 +877,8 @@ class Service:
 
     async def api_live(self, request):
         """A session host's report (p2p.cpp, every 20 s while it hosts): {"session": hex id,
-        "kind", "rule", "arena", "state": "lobby" | "match", "players": [{"name", "path"}],
+        "kind", "rule", "arena" ("arena N"), "arena_mod" (a custom arena's name, 2.1.6+), "state": "lobby" | "match",
+        "players": [{"name", "path"}],
         "slots", "started"}. Kept LIVE_LIFE s; the dashboard's live view."""
         account = self.token_account(request)
         if not account:
@@ -901,7 +902,9 @@ class Service:
         self.live[sid] = {
             "session": sid, "host": account["name"], "kind": str(body.get("kind") or "")[:40],
             "rule": str(body.get("rule") or "")[:40],
-            "rule_name": match_names.rule_name(str(body.get("rule") or "")) or "", "arena": str(body.get("arena") or "")[:40], "state": state,
+            "rule_name": match_names.rule_name(str(body.get("rule") or "")) or "", "arena": str(body.get("arena") or "")[:40],
+            "arena_name": match_names.arena_name(body.get("arena"), str(body.get("arena_mod") or "")[:60]),
+            "arena_mod": bool(body.get("arena_mod")), "state": state,
             "players": players, "slots": int(body.get("slots") or 0), "version": str(body.get("version") or "")[:16],
             "network": str(body.get("network") or "")[:8],
             "since": old.get("since", now()), "state_since": old.get("state_since", now())
@@ -1709,11 +1712,19 @@ class Service:
 
     @admin_only
     async def admin_report_mark(self, request):
+        # (the id may be a signature: every report with it; status fixed takes fix: {note, commit, version, date})
         try:
-            status = str((await request.json()).get("status", ""))
-        except ValueError:
+            body = await request.json()
+            status, fix = str(body.get("status", "")), body.get("fix")
+        except (ValueError, AttributeError):
             return web.json_response({"ok": False}, status=400)
-        done = await asyncio.get_running_loop().run_in_executor(None, self.reports.mark, request.match_info["id"], status)
+        ids = await asyncio.get_running_loop().run_in_executor(None, self.reports.mark_many, request.match_info["id"],
+                                                               status, fix)
+        return web.json_response({"ok": bool(ids), "ids": ids}, status=200 if ids else 404)
+
+    @admin_only
+    async def admin_report_delete(self, request):
+        done = await asyncio.get_running_loop().run_in_executor(None, self.reports.delete, request.match_info["id"])
         return web.json_response({"ok": done}, status=200 if done else 404)
 
     # The blob audit: the files where the bytes live (here, or the storage node) against the blobs the
@@ -2358,6 +2369,7 @@ class Service:
             app.router.add_get(p + "/api/admin/reports", self.admin_reports)
             app.router.add_get(p + "/api/admin/report/{id}/{name}", self.admin_report_file)
             app.router.add_post(p + "/api/admin/report/{id}/mark", self.admin_report_mark)
+            app.router.add_post(p + "/api/admin/report/{id}/delete", self.admin_report_delete)
             app.router.add_get(p + "/api/admin/live", self.admin_live)
             app.router.add_get(p + "/api/admin/pings", self.admin_pings)
             app.router.add_get(p + "/api/admin/player", self.admin_player)
