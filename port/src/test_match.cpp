@@ -195,6 +195,7 @@ REX_HOOK_RAW(sub_8247B6C8) {
 REX_EXTERN(__imp__sub_828BC5E8);
 REX_HOOK_RAW(sub_828BC5E8) {
   if (ctx.r3.u32) svr2011::RtwmStreakPeople(base, ctx.r3.u32);  // (the Streak story played as a mod)
+  svr2011::SuperstarModHandovers(base);  // (a slot's old mod's saved profile written back since: this mod's)
   const TestMatch& m = Config();
   int picked_count = 0;
   if (ctx.r3.u32)

@@ -1338,6 +1338,21 @@ void OwnSelectTile(uint8_t* sr, const uint8_t* br) {
   if (Rd16(sr + kSelectTile) && Rd16(sr + kSelectTile) == Rd16(br + kSelectTile)) sr[kSelectTile] = sr[kSelectTile + 1] = 0;
 }
 
+// A slot that changed hands at a save load (ApplyRecords: another mod's record there) gets this mod's profile -
+// but the save's own profile for the slot (the old mod's moves, entrance and user movie) is written after that:
+// sub_82594C78, whose hook does the handover, loads the records; the profiles come a moment later, after the hooks.
+// With the record this mod's by then, every later pass kept the old mod's profile as a player's edit (a mod swapped
+// into a slot played the old one's entrance and movie; 25 Oct). So the profile given is watched for a short while
+// (RedoHandovers, once a frame and before a match's people are made): the first change in that time is the save's
+// write, and the handover is made again; a change after it (a player's CREATE AN ENTRANCE edit) stays.
+struct Handover {
+  svrfmt::Bytes given;  // the profile the slot was given
+  int frames = 0;       // frames left to watch it
+};
+std::map<uint32_t, Handover> g_handed;
+constexpr int kHandoverFrames = 600;  // (10 s; the save's write comes within milliseconds)
+void RedoHandovers(uint8_t* base, bool frame);
+
 void ApplyRecords(uint8_t* base) {
   // Test aid: SVR2011_TEST_ID_TABLE=1 - once, the ids whose present flag
   // (0x82DB3AE0 + id, sub_828B7078) is off, with their record index and name.
@@ -1411,6 +1426,7 @@ void ApplyRecords(uint8_t* base) {
       svr2011::ThreadsSlots(sp, m.folder);
       SetOwnMoves(sp, m);
       SetEntranceMedia(sp, m, bp);
+      g_handed[m.slot] = {svrfmt::Bytes(sp, sp + kProfileSize), kHandoverFrames};  // (RedoHandovers)
       REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {} (the slot held \"{}\": its moves and entrance not "
                   "kept for {})", m.base, m.slot, was, m.name);
     }
@@ -1450,6 +1466,34 @@ void ApplyRecords(uint8_t* base) {
     if (const char* e = std::getenv("SVR2011_TEST_STAR_EDIT"); e && uint32_t(std::atoi(e)) == m.slot)
       for (uint32_t i = 0; i < 15; ++i) sr[i] = i == 7 ? sr[i] : 20;
     REXLOG_INFO("[svr2011] superstar mods: record {} -> id {} ({}; was \"{}\")", m.base, m.slot, m.name, was);
+  }
+  RedoHandovers(base, false);
+}
+
+// `frame`: called once a frame (the watch counts down); else from a load or before a match.
+void RedoHandovers(uint8_t* base, bool frame) {
+  for (const auto& m : g_mods) {
+    const auto h = g_handed.find(m.slot);
+    if (h == g_handed.end()) continue;
+    const uint32_t bi = Rd16(base + kIdToIndex + m.base * 2), si = Rd16(base + kIdToIndex + m.slot * 2);
+    if (bi >= 512 || si >= 512 || bi == si) continue;
+    uint8_t* sp = base + kProfiles + si * kProfileSize;
+    const uint8_t* bp = base + kProfiles + bi * kProfileSize;
+    if (std::memcmp(sp, h->second.given.data(), kProfileSize)) {
+      // (the save's profile for the slot, written after the handover: this mod's again - once)
+      const int movie = sp[kEntrance + kMovie] << 8 | sp[kEntrance + kMovie + 1];
+      const int entrance = sp[kEntrance + 0x14] << 8 | sp[kEntrance + 0x15];
+      std::memcpy(sp, bp, kProfileSize);
+      svr2011::ThreadsSlots(sp, m.folder);
+      SetOwnMoves(sp, m);
+      SetEntranceMedia(sp, m, bp);
+      REXLOG_INFO("[svr2011] superstar mods: id {} - the save wrote the old mod's profile (entrance {}, movie {}) "
+                  "after the handover: {}'s again (entrance {}, movie {})", m.slot, entrance, movie, m.name,
+                  sp[kEntrance + 0x14] << 8 | sp[kEntrance + 0x15], sp[kEntrance + kMovie] << 8 | sp[kEntrance + kMovie + 1]);
+      g_handed.erase(h);
+      continue;
+    }
+    if (frame && --h->second.frames <= 0) g_handed.erase(h);
   }
 }
 
@@ -2549,6 +2593,7 @@ REX_HOOK_RAW(sub_82B89DC0) {
     RecordBlanks(base, before);
     ApplyRecords(base);
   }
+  RedoHandovers(base, false);  // (a handed-over slot's saved profile, if the loader wrote it by now)
   ctx.r3.u64 = r3;
 }
 REX_EXTERN(__imp__sub_8259C9A8);
@@ -2690,6 +2735,10 @@ void ExportCreatedEntrances(const uint8_t* base) {
 
 void CheckModProfiles(uint8_t* base) {
   ExportCreatedEntrances(base);
+  {
+    std::lock_guard lock(g_slots_mutex);
+    RedoHandovers(base, true);  // (a slot handed over at a save load: the save's own write after it)
+  }
   UniverseModsTick(base);  // (the game wrote its save: the mods' Universe side table beside it)
   UniverseTeamsTick(base);  // (Universe's teams and stables made / changed / dissolved: logged)
   UniverseWelcomeTick(base);  // (the Universe welcome accepted: kept as seen in the save file at once)
@@ -3048,6 +3097,7 @@ std::string SuperstarModFolder(uint32_t id) {
   const Mod* m = ModOf(id);
   return m ? m->folder : std::string();
 }
+void SuperstarModHandovers(uint8_t* base) { RedoHandovers(base, false); }
 std::string SuperstarModLoading(uint32_t id) {
   const Mod* m = ModOf(id);
   if (!m) return {};
