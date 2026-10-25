@@ -57,6 +57,13 @@ page (`port/docs/MOVE_MODDING.md`).
 - Coded categories (2K14+: `C000`, `E125`, ...) carry no meaning by name: the converter maps each to the 2011
   categories its moves' 2011 namesakes sit in (a vote - 2K15 E125/E127 standing front grapples, E136 behind,
   E160 diving, M050 ropes, M060 apron, M090 tag team), and uses the 2011 move of the same name when there is one.
+- **Dives onto a lying victim are one-person moves in 2011.** The Frog Splash 3555 and its kind are the
+  attacker's motion alone (x 0 y 0; the victim's x 50 y 1 is the miss) - the victim takes the hit with the
+  game's reaction. A source whose attacker starts high (root y < -1150, the top rope) and whose victim starts
+  lying (root y > -400) gets a one-person CORN template, picked by where the attacker ends, and its victim
+  track is left out (2K15's Superfly Splash: Leap of Faith 3591; before, Corner Head Scissors Flip - a
+  two-person corner move - and it was called off in 5 frames). Such a move can't be forced with
+  `SVR2011_TEST_FORCE_MOVE` (it starts a pair: the victim waits in a motion with no track of his).
 
 ### 2.6 Face events
 
@@ -93,6 +100,9 @@ page (`port/docs/MOVE_MODDING.md`).
   logs each person's motion changes; `SVR2011_TEST_FRAME_SHOT=<f.ppm>` with `_SHOTS=<n>`, `_SHOT_AT=<match frame>`
   and `_SHOT_EVERY=<k>` saves n frames k apart (contact sheets); `SVR2011_TEST_STATE_LOG=212,24` logs a person's
   motion and its frame (+24, a float) as they change.
+- **Placing the attacker**: `SVR2011_TEST_FORCE_PLACE=<x>,<z>,<yaw>[,<y>]` puts him there in the ring (y -12 the
+  mat, yaw in radians) before each forced start - rope, apron and corner moves (forced where the AI happens to
+  stand, the Rope Hung Suplex ran outside the ring and both sank under the mat).
 - **A forced move is never reversed**: `SVR2011_TEST_FORCE_MOVE` starts it with sub_82191AA8, past the point
   where the game decides a reversal (the stock F-5 5010, forced on a person tapping RT, was never reversed).
   Reversals can only be seen in moves the CPU picks itself, and even then rarely - see 5, reversal test aid.

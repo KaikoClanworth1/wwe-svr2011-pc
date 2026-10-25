@@ -722,6 +722,19 @@ class Game11:
             self._gaps_dirty = True
         return self._gaps[k]
 
+    def template_attacker_end_y(self, path, bank, e):
+        """the height (root y) a 2011 template's attacker ends at - a dive onto a lying victim ends low, on him
+        (a dive's x 50 y 1, the victim's branch, is the miss: standing - no help); kept with the start gaps"""
+        import ymks
+        if self._gaps is None:
+            self.template_gap(path, bank, e)
+        k = (path, e['id'], 'attacker end y')
+        if k not in self._gaps:
+            r = [kk['root'] for kk in ymks.body_keys(e['data'], bank.T) if kk.get('root')]
+            self._gaps[k] = r[-1][1] if r else None
+            self._gaps_dirty = True
+        return self._gaps[k]
+
     def save_gaps(self):
         import pickle
         if self._gaps_dirty:
@@ -829,9 +842,10 @@ def slot_categories(bank):
     return out or list(SINGLES)
 
 
-def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True):
+def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attacker_end_y=None):
     """the 2011 move in MVMT/<cat> (YMKs only, x0 y0 and x0 y1 both there) most like the source:
-    the attacker / victim start distance (a running move needs a running template) and the length"""
+    the attacker / victim start distance (a running move needs a running template), for a dive where the
+    attacker ends (low: on a lying victim) and the length"""
     import ymks
     best = None
     cats = [c.strip() for c in cat] if isinstance(cat, (list, tuple)) else [cat.strip() if cat else '']
@@ -839,8 +853,9 @@ def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True):
         if not any(path.startswith('MVMT/' + c) for c in cats) or kind != 'YMKs':
             continue
         ids = {k[0] for k in keys if k[1] == 0 and k[2] == 0} & {k[0] for k in keys if k[1] == 0 and k[2] == 1}
-        if not paired:   # (a one-person move - a strike: the victim reacts with its own motion)
-            ids = {k[0] for k in keys if k[1] == 0 and k[2] == 0} - {k[0] for k in keys if k[2] == 1}
+        if not paired:   # (a one-person move - a strike, a dive: the victim reacts with its own motion - a dive's
+            # reaction is a branch of its own, x 50 y 1: only x 0 counts)
+            ids = {k[0] for k in keys if k[1] == 0 and k[2] == 0} - {k[0] for k in keys if k[1] == 0 and k[2] == 1}
         if not ids:
             continue
         pac, bank = g11.bank(path)
@@ -857,6 +872,9 @@ def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True):
                     tg = g11.template_gap(path, bank, e)
                     if tg is not None:
                         score += abs(tg - gap) / 100.0
+                if attacker_end_y is not None and hasattr(g11, 'template_attacker_end_y'):
+                    ty = g11.template_attacker_end_y(path, bank, e)
+                    score += abs(ty - attacker_end_y) / 20.0 if ty is not None else 20.0
                 if best is None or score < best[0]:
                     best = (score, e['id'], path)
     if hasattr(g11, 'save_gaps'):
@@ -1054,6 +1072,18 @@ def convert(a, rep):
             cat11 = coded_category(g, g11, cat0)
             if cat11:
                 rep['notes'].append('category %s = 2011 %s (by the moves both games name alike)' % (cat0.strip(), '/'.join(cat11)))
+    vic_y = k1[0][0][1] if vic is not None else None
+    # A dive from the top rope onto a lying victim (the attacker's root starts high, the victim's low): 2011's
+    # dives (Frog Splash 3555 ...) are the attacker's alone - the victim takes the hit with the game's own
+    # reaction - so the template is a one-person move and the source's victim track is left out. Before, 2K15's
+    # Superfly Splash got a two-person corner move (Corner Head Scissors Flip) and was called off in 5 frames.
+    if not tid and vic is not None and R0.keys(att, 2, face)[0][0][1] < -1150 and vic_y > -400:
+        dive = choose_template(g11, ['CORN'], nf, None, paired=False,   # (dives are corner moves; SPE1 has strikes)
+                               attacker_end_y=R0.keys(att, nf, face)[-1][0][1])
+        if dive:
+            tid, vic, gap = dive, None, None
+            rep['notes'].append("a dive onto a lying victim: the attacker's motion on a one-person template, the "
+                                "victim reacts as in the game's own dives")
     tid = tid or choose_template(g11, cat11, nf, gap)
     if not tid and not a.get('template'):   # (no two-person move of that category in 2011: any category)
         tid = choose_template(g11, '', nf, gap)
