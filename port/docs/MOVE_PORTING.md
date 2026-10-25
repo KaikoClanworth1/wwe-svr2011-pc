@@ -93,6 +93,9 @@ page (`port/docs/MOVE_MODDING.md`).
   logs each person's motion changes; `SVR2011_TEST_FRAME_SHOT=<f.ppm>` with `_SHOTS=<n>`, `_SHOT_AT=<match frame>`
   and `_SHOT_EVERY=<k>` saves n frames k apart (contact sheets); `SVR2011_TEST_STATE_LOG=212,24` logs a person's
   motion and its frame (+24, a float) as they change.
+- **A forced move is never reversed**: `SVR2011_TEST_FORCE_MOVE` starts it with sub_82191AA8, past the point
+  where the game decides a reversal (the stock F-5 5010, forced on a person tapping RT, was never reversed).
+  Reversals can only be seen in moves the CPU picks itself, and even then rarely - see 5, reversal test aid.
 - **CPU use (e) and reversals (d)**: no forced move - a CPU vs CPU match with the ported moves in the CPU
   superstar's slots, `SVR2011_TEST_MOTION_LOG=1` and `SVR2011_TEST_CPU_LOG=1` (reversal rolls). In
   `SVR2011_TEST_MATCH` only person 1 is a CPU when person 0 is the first named: put the test superstar second.
@@ -108,3 +111,43 @@ page (`port/docs/MOVE_MODDING.md`).
 - Blocks `<phase><person>`: `0000 0000/0001` the move's attacker and victim for most grapples; `0030..` for
   springboard / diving moves.
 - Pair layout 2.3; frames 2.2.
+- Status of the hard moves (criteria a-g: sync, landing, damage, reversal, CPU use, no stuck pair / crash at
+  60 fps, survives save / load):
+
+  | Move | id | a-c | d reversal | e CPU picks it | f |
+  |---|---|---|---|---|---|
+  | Attitude Adjustment | 5743 | ok | pending tooling | yes (x2) | ok |
+  | F-5 | 7564 | ok | pending tooling | not yet (forced: ok) | ok |
+  | Triple German Suplex | 5188 | ok | pending tooling | yes (x3) | ok |
+  | The Last Ride | 5872 | ok | pending tooling | yes | ok |
+
+  (d) so far: each carries its template's reversal branches (x 90/91/92; the Last Ride's template has x 90
+  only), and in 6 CPU picks at the default 55 % reversal chance none was reversed, none stuck (527-537 frames,
+  the victim down after).
+  (g) passed for the F-5: CREATE A MOVE-SET -> CREATED SUPERSTAR -> a CAW -> SPECIAL MOVES -> SIGNATURES ->
+  `MOD: F-5 1`, ACCEPT CHANGES (saved); a new game on that save, a match with only that CAW holding the move
+  (`SVR2011_TEST_MATCH=people=CAW0,...`): the F-5 played 9 times, the victim down each time, no stuck pair.
+  The moveset keeps the id, so every pack move saves alike; menu shots of a hidden game come from
+  `SVR2011_TEST_SHOT_REQUEST`.
+- Needs a tag match: Batista Bomb & RKO (a double-team move) - not tested in a singles match.
+
+## 5. Parked: a reversal test aid
+
+Wanted: `SVR2011_TEST_REVERSE=<person>` - the next move on that person goes into its reversal branch (x 90-92),
+for a contact sheet of the switch from the ported x 0 into the template's branch (the likely bug: a pose pop
+where a reversal starts from the ported pose).
+
+Known:
+- Reversal branches are tracks of the move's own id at x 90 / 91 / 92 (the porter copies the template's).
+- `SVR2011_TEST_FORCE_MOVE` calls sub_82191AA8(attacker, victim, motion), which starts x 0 directly - the
+  reversal decision is upstream of it (the grapple's move choice), so forced moves are never reversed.
+- The CPU's reversal roll object is made by sub_82835150 (PROB at +8) and rolled by sub_82835200 (from
+  sub_828513D8), but `SVR2011_TEST_CPU_LOG` never logged a taken roll for a grapple - stock moves included -
+  so grapple reversals are decided elsewhere.
+- The test match's pick is racy: the scripted pad often controls no one (both people CPU); setting the slot's
+  controller byte (slot -8 = 0) did not make a person the player's.
+
+Where to look: the code that reads a motion's x - the YMKs lookup by (id, x, y) and its callers; find the
+caller that asks for x 90 (log every lookup with x >= 90 in a CPU match: stock reversals happen) and walk up to
+the decision; then start that path from the test aid.
+
