@@ -4,7 +4,10 @@
 #include "app.h"
 #include "session_log.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <memory>
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -452,9 +455,93 @@ bool RunCommand(const std::wstring& cmdline, std::function<void(int)> done, cons
   return true;
 }
 
+namespace {
+struct MovesAsk {
+  std::function<void()> go, cancel;
+  int frames = 0;
+};
+std::unique_ptr<MovesAsk> g_moves_ask;  // the conversion waiting for the warning's answer
+bool g_moves_ok = false;                // accepted this session
+bool g_moves_dont_show = false;         // the dialog's tick
+std::string MovesTestAnswer() {
+  const char* v = std::getenv("SVR2011_TEST_MOVES_WARNING");
+  return v ? v : "";
+}
+}  // namespace
+
+bool ConvertsMoves(const std::wstring& script, const std::vector<std::wstring>& args) {
+  if (args.empty() || args[0] != L"convert") return false;
+  if (script == L"moves_port.py") return true;
+  if (script == L"superstar_port.py") return std::find(args.begin(), args.end(), L"--no-moves") == args.end();
+  return false;
+}
+
+void MovesWarning() {
+  if (!g_moves_ask) return;
+  const char* kTitle = "Move converting is experimental###moveswarning";
+  if (!ImGui::IsPopupOpen(kTitle)) ImGui::OpenPopup(kTitle);
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSize(ImVec2(560 * g_scale, 0), ImGuiCond_Always);
+  if (!ImGui::BeginPopupModal(kTitle, nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) return;
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1), "Move converting is HIGHLY EXPERIMENTAL.");
+  ImGui::Spacing();
+  ImGui::Bullet();
+  ImGui::TextWrapped("There WILL be bugs: moves may freeze, look wrong or not work at all.");
+  ImGui::Bullet();
+  ImGui::TextWrapped("By continuing you agree that your mod may break in a future update, and that you may have to "
+                     "remake it from scratch.");
+  ImGui::Spacing();
+  ImGui::TextDisabled("Cancel and nothing is converted.");
+  ImGui::PopTextWrapPos();
+  ImGui::Spacing();
+  ImGui::Checkbox("Don't show this again", &g_moves_dont_show);
+  ImGui::Spacing();
+  const std::string test = g_behind ? MovesTestAnswer() : "";
+  ++g_moves_ask->frames;
+  PushAccent();
+  if (test == "accept_dont_show" && g_moves_ask->frames == 20) g_moves_dont_show = true;  // (test: the tick, then accept)
+  const bool go = ImGui::Button("I understand - convert", ImVec2(220 * g_scale, 0)) ||
+                  ((test == "accept" || test == "accept_dont_show") && g_moves_ask->frames > 30);
+  PopAccent();
+  ImGui::SameLine();
+  const bool cancel = ImGui::Button("Cancel", ImVec2(120 * g_scale, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+                      (test == "cancel" && g_moves_ask->frames > 30);
+  if (go || cancel) {
+    auto ask = std::move(g_moves_ask);
+    ImGui::CloseCurrentPopup();
+    if (go) {
+      g_moves_ok = true;
+      if (g_moves_dont_show) g_settings.moves_warning_off = true, SaveSettings();
+      Log("moves warning: accepted" + std::string(g_moves_dont_show ? " (don't show again)" : ""));
+      WhenIdle(ask->go);
+    } else {
+      Log("moves warning: cancelled - nothing converted");
+      Status("Not converted: move converting cancelled.");
+      ask->cancel();
+    }
+  }
+  ImGui::EndPopup();
+}
+
 bool RunToolJson(const std::wstring& script, const std::vector<std::wstring>& args,
                  std::function<void(int, const std::string&)> done, const std::wstring& cwd) {
   if (!ConvertersReady()) return false;
+  // moves: the experimental warning first (once a session; a hidden test only when it asks for it)
+  if (ConvertsMoves(script, args) && !g_moves_ok && !g_settings.moves_warning_off && (!g_behind || !MovesTestAnswer().empty())) {
+    if (g_moves_ask) {
+      Status("Answer the move warning first.");
+      return false;
+    }
+    g_moves_ask = std::make_unique<MovesAsk>();
+    g_moves_ask->go = [script, args, done, cwd] { RunToolJson(script, args, done, cwd); };
+    g_moves_ask->cancel = [done] {
+      if (done) done(2, "{\"ok\": false, \"error\": \"Not converted: you cancelled the move conversion.\"}");
+    };
+    Log("moves warning: shown before " + Utf8(script) + " convert");
+    return true;
+  }
   for (size_t i = 0; i + 1 < args.size(); ++i)
     if (args[i] == L"--svrmod" && args[i + 1].empty()) {  // (SvrmodArgs: a WWE '12 - 2K17 port without svrmod.exe)
       OpenToolsPanel("Missing: svrmod.exe (the Mod Maker's pac tool, needed for WWE '12 - 2K17 discs).");

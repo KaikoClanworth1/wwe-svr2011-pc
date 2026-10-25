@@ -377,6 +377,7 @@ struct Settings {
   std::vector<MyDisc> my_discs;
   bool discs_seeded = false;  // the old disc folders were searched once to fill My game discs
   bool keep_bik = false;      // mods keep a movie's Bink beside its .mp4 (the game's fallback where MP4 can't play)
+  bool moves_warning_off = false;  // "Don't show this again" on the move-converting warning
 };
 extern Settings g_settings;
 void SaveSettings();
