@@ -88,7 +88,7 @@ CATS = {'STAT': 'STAT', 'BASE': 'BASE', 'STN1': 'STN1', 'STN2': 'STN2', 'GRND': 
 # Games whose two-person moves keep the attacker turned 180 degrees in its own frame, this many root units down -z
 # from the victim's (w13_retarget.facing_frame). 2K15: its Attitude Adjustment 2 (2011's 5010 reused) matched
 # 2011's attacker only turned; unturned, the victim played its part metres away (docs/MOVE_PORTING.md).
-FACING_GAP = {'wwe2k15': 1500, 'wwe13': 1500}   # (WWE '13: the same layout - its AA 50285 matches 2011's 5010 only
+FACING_GAP = {'wwe2k15': 1500, 'wwe13': 1500, 'wwe12': 1500}   # (WWE '13: the same layout - its AA 50285 matches 2011's 5010 only
                                                  # turned; '12 / 2K14 / 2K16 untested)
 
 
@@ -801,6 +801,10 @@ class Game11:
         elsewhere, 3894, wasn't found - Sabu's 9040 was). limit: the highest id that fits (id_limit)"""
         free = [i for i in sorted(self.waze) if i not in self.moved and i > 1000 and i not in self.in_profiles()
                 and (limit is None or i <= limit) and not (avoid and i in avoid)]
+        # (not 16000 and up outside the template's own thousand: a move there never starts - the game doesn't even
+        # ask for its motion. WWE '12's Octopus Stretch on 17071 dropped both people to stance; on 5198 it played.
+        # Likely the same as 2K15's AA on 17013 and Mankind '13's Mandible Claw on 17038.)
+        free = [i for i in free if i < 16000 or (near is not None and i // 1000 == near // 1000)]
         if near is not None and any(i // 1000 == near // 1000 for i in free):
             free = [i for i in free if i // 1000 == near // 1000]
         elif near is None:   # (a keyframe move: not in 9000-9999 - the game's streamed (YMBs) motions are 9000-9779 by
@@ -842,7 +846,8 @@ def slot_categories(bank):
     return out or list(SINGLES)
 
 
-def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attacker_end_y=None):
+def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attacker_end_y=None, reversals=True,
+                    with_score=False):
     """the 2011 move in MVMT/<cat> (YMKs only, x0 y0 and x0 y1 both there) most like the source:
     the attacker / victim start distance (a running move needs a running template), for a dive where the
     attacker ends (low: on a lying victim) and the length"""
@@ -865,6 +870,8 @@ def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attac
                     continue
                 if allowed is not None and e['id'] not in allowed:
                     continue
+                if not reversals and 'reversal' in g11.waze[e['id']][1].lower():
+                    continue
                 if any(kd == 'YMBs' for p, kd, ks in g11.banks_of(e['id'])):
                     continue
                 score = abs(e['frames'] - frames) / 10.0
@@ -879,6 +886,8 @@ def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attac
                     best = (score, e['id'], path)
     if hasattr(g11, 'save_gaps'):
         g11.save_gaps()
+    if with_score:
+        return (best[1], best[0]) if best else (None, None)
     return best[1] if best else None
 
 
@@ -1036,6 +1045,13 @@ def convert(a, rep):
         nm = str(b.get('block', '00000000')).rjust(8, '0')
         by.setdefault(nm[:4], {})[int(nm[4:], 16)] = b
     pairs = sorted(p for p, d in by.items() if 0 in d and 1 in d and d[0]['frames'] > 2)
+    # A dive laid out as 2011's (WWE '12's Shooting Star Press / Frog Splash): 0000 0000 the attacker's flight alone,
+    # 0030 / 0040 / 0050 the pair's branches (2011's x 30 / 40 / 50). The flight is the move - taking the first
+    # pair block (0030) as the move gave a two-person template and no flight. (Taken for a corner move only, once its
+    # category is known: 2K15's Springboard Crossbody, an apron move, is laid out alike.)
+    flight = by['0000'][0] if ('0000' in by and 0 in by['0000'] and 1 not in by['0000'] and
+                               by['0000'][0]['frames'] > 2 and any(30 <= int(p) < 90 for p in pairs if p.isdigit())) else None
+    branched_dive = False
     if pairs:
         phase = pairs[0]
         att, vic = by[phase][0], by[phase][1]
@@ -1093,30 +1109,53 @@ def convert(a, rep):
             if cat11:
                 rep['notes'].append('category %s = 2011 %s (by the moves both games name alike)' % (cat0.strip(), '/'.join(cat11)))
     vic_y = k1[0][0][1] if vic is not None else None
-    # A dive from the top rope onto a lying victim (the attacker's root starts high, the victim's low): 2011's
-    # dives (Frog Splash 3555 ...) are the attacker's alone - the victim takes the hit with the game's own
-    # reaction - so the template is a one-person move and the source's victim track is left out. Before, 2K15's
-    # Superfly Splash got a two-person corner move (Corner Head Scissors Flip) and was called off in 5 frames.
-    if not tid and vic is not None and R0.keys(att, 2, face)[0][0][1] < -1150 and vic_y > -400:
+    # A dive from the top rope onto a lying victim (a corner move, the victim lying, the attacker's root up high -
+    # 2K15's starts on the turnbuckle), or one laid out as 2011's (branched_dive): 2011's dives (Frog Splash 3555 ...)
+    # are the attacker's alone - the victim takes the hit with the game's own reaction - so the template is a
+    # one-person move and the source's victim track is left out. Before, 2K15's Superfly Splash got a two-person
+    # corner move (Corner Head Scissors Flip) and was called off in 5 frames.
+    corner = 'CORN' in (cat11 if isinstance(cat11, list) else [cat11.strip() if cat11 else ''])
+    if not tid and corner and flight is not None:   # (laid out as 2011's: the flight at x 0, the branches at theirs)
+        att, vic, branched_dive = flight, None, True
+        nf = max(1, (att['frames'] - 1) // 2)
+        rep['notes'].append("source block 00000000 the attacker's flight (%d frames at 60 Hz), %s the branches" %
+                            (att['frames'], ' / '.join(p for p in pairs if p.isdigit() and 30 <= int(p) < 90)))
+    att_keys = R0.keys(att, nf, face)
+    if not tid and (branched_dive or (vic is not None and corner and vic_y > -400 and
+                                      min(k[0][1] for k in att_keys) < -1100)):
         dive = choose_template(g11, ['CORN'], nf, None, paired=False,   # (dives are corner moves; SPE1 has strikes)
-                               attacker_end_y=R0.keys(att, nf, face)[-1][0][1])
+                               attacker_end_y=att_keys[-1][0][1])
         if dive:
             tid, vic, gap = dive, None, None
             rep['notes'].append("a dive onto a lying victim: the attacker's motion on a one-person template, the "
                                 "victim reacts as in the game's own dives")
-    # A hold with phases (hold, struggle loops, escape, tap: 3+ two-person phases under 90) is a submission:
+    # A hold with phases (hold, struggle loops, escape, tap: 3+ two-person phases under 30) is a submission:
     # 2011's are YMBs moves in MVMT/ANAS (x 0 1 2 4 6 7). A coded category mixes them with other moves - 2K15's
-    # M013 is mostly reversals, so its vote said STAT and the Patriot Lock got Mule Kick Reversal 2.
-    src_phases = {int(p) for p, d in by.items() if p.isdigit() and 0 < int(p) < 90 and 0 in d and 1 in d}
+    # M013 is mostly reversals, so its vote said STAT and the Patriot Lock got Mule Kick Reversal 2. (30 and up
+    # are a dive's hit / miss branches - WWE '12's Shooting Star Press 4 has 30 / 40 / 50 - and 90-92 reversals.)
+    src_phases = {int(p) for p, d in by.items() if p.isdigit() and 0 < int(p) < 30 and 0 in d and 1 in d}
     if not tid and vic is not None and len(src_phases) >= 3:
         sub = choose_submission(g11, nf, src_phases)
         if sub:
             tid, cat11 = sub, ['ANAS']
             rep['notes'].append('a submission (source phases %s): a 2011 submission (MVMT/ANAS) as the template' %
                                 ', '.join(str(x) for x in sorted(src_phases)))
-    tid = tid or choose_template(g11, cat11, nf, gap)
+    # (a reversal as the template only for a reversal: WWE '12's G.T.S. and World's Strongest Slam, filed under
+    # its STAT, got Ankle Lock Reversal)
+    rev = 'reversal' in (name or '').lower()
+    if not tid:
+        tid, score = choose_template(g11, cat11, nf, gap, reversals=rev, with_score=True)
+        # (a two-person move filed under STAT - strikes and reversals: WWE '12's G.T.S. got Pull-Back Armbar - or a
+        # poor fit in its category's own moves also looks among the standing grapples; the better fit wins)
+        stat = 'STAT' in (cat11 if isinstance(cat11, list) else [cat11.strip() if cat11 else ''])
+        if vic is not None and (tid is None or stat or score > 6) and cat11 not in (['ANAS'], 'ANAS'):
+            t2, s2 = choose_template(g11, ['STN1', 'STN2'], nf, gap, reversals=rev, with_score=True)
+            if t2 is not None and (tid is None or s2 < score):
+                rep['notes'].append('a poor fit in MVMT/%s (score %.1f): the standing grapples fit better (%.1f)' %
+                                    ('/'.join(cat11) if isinstance(cat11, list) else cat11.strip(), score or 0, s2))
+                tid, cat11 = t2, ['STN1', 'STN2']
     if not tid and not a.get('template'):   # (no two-person move of that category in 2011: any category)
-        tid = choose_template(g11, '', nf, gap)
+        tid = choose_template(g11, '', nf, gap, reversals=rev)
         cat11 = 'any'
     if not tid or tid not in g11.waze:
         raise BadInput('no 2011 template move (category %s); give --template' % cat11)
@@ -1151,7 +1190,7 @@ def convert(a, rep):
     # x 0 / 1 / 2 / 4 / 6 / 7, of like lengths. Each template x takes its own phase (before, every x got phase 0's
     # motion: the hold never turned into the struggle).
     phase_blocks = {}
-    if vic is not None:
+    if vic is not None or branched_dive:   # (a dive's 0030 / 0040 / 0050 pairs: 2011's x 30 / 40 / 50)
         for ph, d in by.items():
             if not ph.isdigit():   # (decimal: 2K15's 0090 / 0091 / 0092 are 2011's reversal x 90-92)
                 continue
