@@ -11,7 +11,8 @@
 // The layout follows the game (a match starting: MATCH; a menu choice:
 // MENU) or is switched with its top-left button. The gear button opens the
 // editor: drag controls, resize, hide, change what a button presses, the
-// opacity - saved in UserData/touch_layout.txt.
+// opacity, give a control a picture of your own (touch_icons.h) - saved in
+// UserData/touch_layout.txt.
 //
 // Settings: touch_controls (on by default on Android), touch_auto_layout.
 // A real controller connected hides it (CreateControllerWatch).
@@ -25,6 +26,7 @@ struct ImFont;
 
 namespace rex::ui {
 class ImGuiDrawer;
+class ImmediateDrawer;
 class Window;
 }  // namespace rex::ui
 
@@ -46,9 +48,11 @@ std::unique_ptr<rex::input::InputDriver> CreateTouchDriver();
 std::unique_ptr<rex::input::DeviceAssignment> CreateControllerWatch();
 
 // Once, when the dialogs are created: the overlay, the editor and the
-// window's touches. `user_data`: where touch_layout.txt lives.
+// window's touches. `user_data`: where touch_layout.txt and touch_icons live.
+// `immediate`: makes the textures of the icons (null: no icons).
 void InstallTouchControls(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
-                          const std::filesystem::path& user_data);
+                          const std::filesystem::path& user_data,
+                          rex::ui::ImmediateDrawer* immediate = nullptr);
 
 // Font for the labels (null: ImGui's default, scaled).
 void SetTouchControlsFont(ImFont* font);

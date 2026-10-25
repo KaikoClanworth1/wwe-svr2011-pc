@@ -1,6 +1,7 @@
 // WWE SmackDown vs. Raw 2011 - on-screen touch controller (see touch_controls.h).
 
 #include "touch_controls.h"
+#include "touch_icons.h"
 #include "pad_types.h"
 #include "online_overlay.h"
 #include "keyboard_typing.h"
@@ -130,10 +131,14 @@ struct Control {
   float anchor = 0, dx = 0, y = 0, size = 0.15f;
   bool visible = true;
   std::string caption;  // under the label (one-touch moves: what it does)
+  std::string icon;     // a PNG in UserData/touch_icons drawn instead of the button (touch_icons.h); empty: none
   // State.
   bool pressed = false;
   float sx = 0, sy = 0;  // stick / D-pad deflection, -1..1 (y down)
 };
+
+// The sticks and the D-pad show their own state, so only the other controls take an icon.
+bool CanHaveIcon(const Control& c) { return c.kind != Kind::kStick && c.kind != Kind::kDpad; }
 
 enum { kMenu = 0, kMatch = 1, kLayouts = 2 };
 const char* const kLayoutNames[kLayouts] = {"MENU", "MATCH"};
@@ -290,6 +295,8 @@ void Save() {
       std::snprintf(line, sizeof(line), "control %d %s %.3f %.4f %.4f %.4f %d %X\n", l, c.id.c_str(),
                     c.anchor, c.dx, c.y, c.size, c.visible ? 1 : 0, c.action);
       s << line;
+      // (a name may hold spaces: it is the rest of the line)
+      if (!c.icon.empty()) s << "icon " << l << ' ' << c.id << ' ' << c.icon << '\n';
     }
   }
   std::error_code ec;
@@ -334,6 +341,17 @@ void Load() {
         c.size = std::clamp(size, 0.04f, 0.6f);
         c.visible = vis != 0;
         if (c.kind == Kind::kButton) c.action = uint32_t(std::strtoul(action.c_str(), nullptr, 16));
+      }
+    } else if (key == "icon") {
+      // icon <layout> <control id> <file name in UserData/touch_icons>
+      int l = -1;
+      std::string id, name;
+      if (!(in >> l >> id) || l < 0 || l >= kLayouts) continue;
+      std::getline(in >> std::ws, name);
+      while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) name.pop_back();
+      if (!TouchIconNameValid(name)) continue;  // (a layout file may come from anyone)
+      for (Control& c : g_layouts[l]) {
+        if (c.id == id && CanHaveIcon(c)) c.icon = name;
       }
     }
   }
@@ -474,14 +492,27 @@ bool Visible() {
 
 enum UiId {
   kUiLayoutMenu, kUiLayoutMatch, kUiSmaller, kUiBigger, kUiShow, kUiPrevAction, kUiNextAction,
-  kUiFainter, kUiStronger, kUiAuto, kUiReset, kUiDone,
+  kUiFainter, kUiStronger, kUiAuto, kUiReset, kUiDone, kUiPrevIcon, kUiNextIcon,
 };
+
+// The PNGs in UserData/touch_icons, listed when the editor opens.
+std::vector<std::string> g_icons;
+
+// An icon's name as the toolbar shows it.
+std::string IconLabel(const std::string& icon) {
+  if (icon.empty()) return "NONE";
+  std::string s = icon.substr(0, icon.size() - 4);  // (".png")
+  if (s.size() > 14) s = s.substr(0, 12) + "..";
+  return s;
+}
 
 void OpenEditor() {
   ReleaseAll();
   g_edit_layout = g_mode.load();
   g_selected = -1;
   g_drag_pointer = UINT32_MAX;
+  TouchIconsRetry();  // (a picture may have been added since)
+  g_icons = TouchIconList();
   g_editor = true;
 }
 
@@ -518,6 +549,18 @@ void EditorAction(int id) {
         k = (k + (id == kUiNextAction ? 1 : n - 1)) % n;
         c->action = kActions[k].mask;
         c->caption.clear();
+      }
+      break;
+    case kUiPrevIcon:
+    case kUiNextIcon:
+      if (c && CanHaveIcon(*c)) {
+        // NONE (the drawn button), then each PNG in the folder.
+        const int n = int(g_icons.size()) + 1;
+        int k = 0;
+        for (int i = 0; i < int(g_icons.size()); ++i)
+          if (g_icons[i] == c->icon) k = i + 1;
+        k = (k + (id == kUiNextIcon ? 1 : n - 1)) % n;
+        c->icon = k == 0 ? std::string() : g_icons[k - 1];
       }
       break;
     case kUiFainter:
@@ -737,6 +780,23 @@ void TextFit(ImDrawList* dl, ImVec2 centre, float size, float width, ImU32 colou
   Text(dl, centre, size, colour, text);
 }
 
+// A control drawn as the player's own picture, fitted into the space of the
+// button it replaces (a round one or a pill) and dimmed a little while pressed.
+void DrawIcon(ImDrawList* dl, const Control& c, const TouchIcon& icon, float alpha) {
+  const ImVec2 p = Centre(c), h = Half(c);
+  const float r = c.size * g_u * 0.5f;
+  const float press = c.pressed ? 0.92f : 1.0f;
+  const float fit = std::min(h.x * 2 * press / icon.width, h.y * 2 * press / icon.height);
+  const float hw = icon.width * fit * 0.5f, hh = icon.height * fit * 0.5f;
+  const float k = c.pressed ? 0.7f : 1.0f;
+  dl->AddImage(reinterpret_cast<ImTextureID>(icon.texture), ImVec2(p.x - hw, p.y - hh), ImVec2(p.x + hw, p.y + hh),
+               ImVec2(0, 0), ImVec2(1, 1), Colour(k, k, k, alpha));
+  if (!c.caption.empty()) {
+    TextFit(dl, ImVec2(p.x, p.y + h.y + r * 0.22f), r * 0.42f, r * 2.4f, Colour(1, 1, 1, 0.85f * alpha),
+            c.caption.c_str());
+  }
+}
+
 void FaceColour(uint32_t action, float* r, float* g, float* b) {
   *r = *g = *b = 0.92f;
   if (action == X_INPUT_GAMEPAD_A) *r = 0.35f, *g = 0.80f, *b = 0.25f;
@@ -790,6 +850,12 @@ void DrawControl(ImDrawList* dl, const Control& c, float alpha, bool selected) {
       break;
     }
     default: {
+      // The player's own picture, if the control has one that loads.
+      TouchIcon icon;
+      if (!c.icon.empty() && CanHaveIcon(c) && TouchIconGet(c.icon, &icon)) {
+        DrawIcon(dl, c, icon, alpha);
+        break;
+      }
       const char* label = c.kind == Kind::kLayout ? kLayoutNames[g_mode.load()]
                           : c.kind == Kind::kEdit ? "EDIT"
                           : c.kind == Kind::kHelp ? "?"
@@ -885,6 +951,11 @@ void DrawEditor(ImDrawList* dl) {
       items.push_back({std::string("PRESSES ") + ActionLabel(c->action), kUiNextAction, false});
       items.push_back({">", kUiNextAction, false});
     }
+    if (CanHaveIcon(*c)) {
+      items.push_back({"<", kUiPrevIcon, false});
+      items.push_back({"ICON " + IconLabel(c->icon), kUiNextIcon, false});
+      items.push_back({">", kUiNextIcon, false});
+    }
   }
   items.push_back({"OPACITY -", kUiFainter, false});
   items.push_back({"OPACITY " + std::to_string(int(std::lround(g_opacity * 100))) + "% +", kUiStronger, false});
@@ -894,7 +965,9 @@ void DrawEditor(ImDrawList* dl) {
   DrawToolbar(dl, items);
   const float h = std::max(40.0f, g_h * 0.075f);
   Text(dl, ImVec2(g_w * 0.5f, g_h * 0.97f), h * 0.42f, Colour(1, 1, 1, 0.85f),
-       c ? "Drag to move. The buttons above size it, hide it or change what it presses."
+       c ? (g_icons.empty() && CanHaveIcon(*c)
+                ? "Drag to move. To give it an icon, put PNG pictures in UserData/touch_icons and reopen EDIT."
+                : "Drag to move. The buttons above size it, hide it, change what it presses or its icon.")
          : "Tap a control to change it, or drag it to move it.");
 }
 
@@ -1078,9 +1151,10 @@ std::unique_ptr<InputDriver> CreateTouchDriver() { return std::make_unique<Touch
 std::unique_ptr<DeviceAssignment> CreateControllerWatch() { return std::make_unique<ControllerWatch>(); }
 
 void InstallTouchControls(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
-                          const std::filesystem::path& user_data) {
+                          const std::filesystem::path& user_data, rex::ui::ImmediateDrawer* immediate) {
   g_window = window;
   g_file = user_data / "touch_layout.txt";
+  TouchIconsInit(immediate, user_data);
   Load();
   if (drawer) new TouchOverlay(drawer);  // lives for the whole run
   if (window) {
