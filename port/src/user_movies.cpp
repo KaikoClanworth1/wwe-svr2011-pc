@@ -437,6 +437,7 @@ REX_HOOK_RAW(sub_828B52D8) {
   }
   // (an HD movie - an .mp4 the platform decodes: its stub, hd_movies.h)
   const std::string path = file.empty() ? "GAME:\\movies\\titantron\\999.bik" : "umovie:\\" + svr2011::HdMovieFile(file);
+  REXLOG_INFO("user movies: entrance movie {} plays {}", id, path);
   if (path.size() < 250) std::memcpy(base + ctx.r3.u32, path.c_str(), path.size() + 1);
 }
 

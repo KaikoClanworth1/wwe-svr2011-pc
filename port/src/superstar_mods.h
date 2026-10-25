@@ -34,6 +34,9 @@ bool IsSuperstarMod(uint32_t id);
 std::string SuperstarModFolder(uint32_t id);
 // A mod's loading picture file (manifest loading=, else its load.dds; "" for none).
 std::string SuperstarModLoading(uint32_t id);
+// Before a match's people are built (sub_828BC5E8): a slot that changed hands at a save load and holds the old
+// mod's saved profile again gets this mod's moves, entrance and movie back.
+void SuperstarModHandovers(uint8_t* base);
 // Once a frame: a mod's profile that is its slot's placeholder again (a
 // save's copy) gets the mod's back.
 void CheckModProfiles(uint8_t* base);
