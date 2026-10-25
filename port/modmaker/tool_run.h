@@ -50,6 +50,14 @@ bool RunTool(const std::wstring& script, const std::vector<std::wstring>& args, 
 // the log and its "progress <0-100> <text>" lines to the status bar.
 bool RunToolJson(const std::wstring& script, const std::vector<std::wstring>& args,
                  std::function<void(int code, const std::string& out)> done, const std::wstring& cwd = L"");
+// Move converting is experimental: a RunToolJson that converts moves (moves_port.py convert, superstar_port.py
+// convert without --no-moves) first shows a warning the player must accept - once per session, never again with its
+// "Don't show this again". Cancel: nothing runs and done() gets exit 2 with {"ok":false,"error":...}. Each frame:
+// MovesWarning() draws it. Hidden test runs (--behind) skip it unless SVR2011_TEST_MOVES_WARNING is set
+// (show: just shown; accept / accept_dont_show / cancel: answered after a moment, for the test).
+void MovesWarning();
+bool ConvertsMoves(const std::wstring& script, const std::vector<std::wstring>& args);
+
 // Stops the running RunToolJson converter and everything it started (its job object); its done() then gets a
 // non-zero code and ToolCancelled() is true until the next converter starts.
 void CancelTool();

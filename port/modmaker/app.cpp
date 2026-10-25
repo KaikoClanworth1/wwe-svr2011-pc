@@ -1949,6 +1949,7 @@ void LoadSettings() {
   }
   g_settings.discs_seeded = Value(t, "discs_seeded") == "1";
   g_settings.keep_bik = Value(t, "keep_bik") == "1";
+  g_settings.moves_warning_off = Value(t, "moves_warning_off") == "1";
 }
 
 }  // namespace
@@ -1965,6 +1966,7 @@ void SaveSettings() {
   for (const auto& d : g_settings.my_discs) t += "my_disc=" + d.key + "|" + d.id + "|" + Utf8(d.path) + "\n";
   if (g_settings.discs_seeded) t += "discs_seeded=1\n";
   if (g_settings.keep_bik) t += "keep_bik=1\n";
+  if (g_settings.moves_warning_off) t += "moves_warning_off=1\n";
   WriteFile(PathStr(SettingsDir() / L"settings.txt"), Bytes(t.begin(), t.end()));
 }
 
@@ -2930,6 +2932,7 @@ void Draw() {
   if (!g_drop_files.empty() && ++g_drop_frames > 2) g_drop_files.clear();  // (dropped where nothing takes files)
   full_preview::Draw();  // (its own window, over the page)
   ToolsPanel();          // (the Mod Maker tools: found / missing, Install what's missing)
+  MovesWarning();        // (before a move conversion: the experimental warning to accept)
   session::Tick();       // (the session log file, page changes, the Report a problem window)
   // Ctrl+S saves the project
   if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S) && Hooks(g_project_page)) ProjectSave(false);
