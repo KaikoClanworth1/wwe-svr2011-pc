@@ -89,8 +89,14 @@ page (`port/docs/MOVE_MODDING.md`).
 - The attacker of a ground hold is NOT turned (Patriot Lock: 1455 units as stored, 2955 turned): the turn is
   chosen per move by the closer start (2.3). Turned without the shift, a YMBs attacker held one pose.
 - YMBs tracks are moved so the source attacker starts where the template's does (as the keyframe path).
-- Open: a forced ported hold plays x 0 and ends - it doesn't enter the hold / struggle loop the stock one does
-  (the loop comes from the template's records and the game's submission state, not yet matched).
+- **A hold with phases is a submission**: a source with 3+ two-person phases under 90 (hold, struggle loops,
+  escape, tap) gets a 2011 submission template (a YMBs move in MVMT/ANAS, most phases in common, then the
+  closest length) before the category vote - a coded category mixes holds with other moves (2K15's M013 is
+  mostly reversals: its vote said STAT and the Patriot Lock got Mule Kick Reversal 2; now Single Leg Boston
+  Crab 21308).
+- Open: a forced ported hold doesn't play out (25 Oct: it stays in the motion for the whole run, Ankle Lock 3
+  or Boston Crab alike; before it played x 0 and ended): it doesn't run the hold / struggle loop the stock one
+  does (the loop comes from the template's records and the game's submission state, not yet matched).
 
 ## 3. Testing a ported move
 
