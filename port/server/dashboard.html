@@ -133,6 +133,9 @@ td.acts { text-align: right; white-space: nowrap; }
 .tag { font-size: 11.5px; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--line); color: var(--dim);
        white-space: nowrap; }
 .tag.on { color: var(--ok); border-color: var(--ok-line); }
+.kind { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 1px 7px; border-radius: 999px;
+        border: 1px solid var(--line); color: var(--dim); background: var(--panel-2); vertical-align: 1px; }
+.kind.ranked { color: #fff; background: var(--accent); border-color: var(--accent); }
 .tag.bad { color: var(--bad); border-color: var(--bad-line); }
 .id { color: var(--faint); font-size: 11.5px; font-family: ui-monospace, Consolas, monospace; margin-left: 4px; }
 .empty { color: var(--faint); text-align: center; padding: 18px; }
@@ -273,10 +276,12 @@ td.acts { text-align: right; white-space: nowrap; }
   </section>
 
   <section role="tabpanel" id="p-matches" aria-labelledby="tab-matches" tabindex="0" hidden>
-    <h2>Sessions now <span class="spacer"></span><span class="note" id="live-note"></span></h2>
+    <h2>Sessions now <span class="spacer"></span><span class="note" id="live-note"></span>
+      <select class="filter" id="f-kind" aria-label="Match kind"><option value="">All matches</option>
+        <option value="ranked">Ranked</option><option value="player">Player</option><option value="?">Not known (older game)</option></select></h2>
     <div class="scroll"><table>
-      <thead><tr><th>Host</th><th>Players</th><th>Match</th><th>State</th><th>For</th><th>Session</th></tr></thead>
-      <tbody id="live"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
+      <thead><tr><th>Host</th><th>Kind</th><th>Players</th><th>Match</th><th>State</th><th>For</th><th>Session</th></tr></thead>
+      <tbody id="live"><tr><td colspan="7" class="empty">Loading&hellip;</td></tr></tbody>
     </table></div>
 
     <h2>Leaderboards <span class="spacer"></span><select class="filter" id="lb-view" aria-label="Leaderboard"></select></h2>
@@ -577,7 +582,7 @@ td.acts { text-align: right; white-space: nowrap; }
       var games = n('win') + n('loss') + n('draw') + n('dq') + n('disconnect');
       var rows = d.matches.map(function (m) {
         var net = m.net || {};
-        return '<tr><td class="note">' + ago(m.at) + '</td><td title="leaderboard view ' + esc(m.view) + '">' + esc(m.type) +
+        return '<tr><td class="note">' + ago(m.at) + '</td><td title="leaderboard view ' + esc(m.view) + '">' + kindBadge('ranked') + ' ' + esc(m.type) +
           '</td><td>' + resultTag(m.result) + '</td><td class="num">' + (m.rated > 0 ? '+' : '') + m.rated +
           '</td><td>' + (m.net ? pingCell(net.rtt) : '<span class="note">-</span>') + '</td><td>' + esc(net.path || '') +
           '</td><td>' + esc(net.network || '') + '</td></tr>';
@@ -599,6 +604,13 @@ td.acts { text-align: right; white-space: nowrap; }
     });
   }
 
+  // A hosted session's kind (the host's report, 2.1.6+): RANKED (accent) / PLAYER; ? from an older game
+  function kindBadge(k) {
+    return k === 'ranked' ? '<span class="kind ranked" title="Ranked Match">RANKED</span>' :
+      k === 'player' ? '<span class="kind" title="Player Match">PLAYER</span>' :
+      '<span class="kind" title="not known: the host\'s game is older than 2.1.6">?</span>';
+  }
+
   // ---- ping: who's online now and their last match's network report
   function pings() {
     return api('api/admin/pings').then(function (d) {
@@ -612,7 +624,7 @@ td.acts { text-align: right; white-space: nowrap; }
         // (what they're in now: a match or a lobby, the path the host sees, for how long)
         var nowCell = !s ? '<span class="note">menus</span>' :
           '<span class="tag' + (inMatch ? ' on' : '') + '" title="' + esc((s.rule_name || s.rule || '') + ' · host ' + s.host) + '">' +
-          (inMatch ? 'in a match' : 'in a lobby') + '</span> ' + esc(s.path === 'host' ? 'hosting' : s.path) +
+          (inMatch ? 'in a match' : 'in a lobby') + '</span> ' + kindBadge(s.match_kind) + ' ' + esc(s.path === 'host' ? 'hosting' : s.path) +
           ' <span class="note">' + dur(d.now - s.since) + '</span>';
         var lastCell = p.last ? pingCell(l.rtt) : inMatch ?
           '<span class="note">first match in progress: its report comes when it ends</span>' :
@@ -647,19 +659,29 @@ td.acts { text-align: right; white-space: nowrap; }
         ' relay stream' + (d.relay.length === 1 ? '' : 's');
       el('live-note').textContent = n + ' session' + (n === 1 ? '' : 's') + ' reported · ' + d.relay.length + ' relay stream' +
         (d.relay.length === 1 ? '' : 's') + ' · ' + d.udp_games + ' UDP relay games · match network: ' + (d.match_network || 'auto');
-      el('live').innerHTML = n ? d.sessions.map(function (v) {
-        var players = v.players.map(function (p) {
-          return '<button class="linkish" data-player="' + esc(p.name) + '">' + esc(p.name) + '</button>' +
-            (p.path ? ' <span class="tag' + (p.path === 'relay' ? '' : ' on') + '">' + esc(p.path) + '</span>' : '');
-        }).join(', ');
-        return '<tr><td>' + esc(v.host) + (v.version ? ' <span class="tag">' + esc(v.version) + '</span>' : '') +
-          (v.network ? ' <span class="tag">' + esc(v.network) + '</span>' : '') +
-          '</td><td>' + players + ' <span class="note">' + v.players.length + (v.slots ? '/' + v.slots : '') + '</span></td><td>' +
-          matchCell(v) + '</td><td><span class="tag' + (v.state === 'match' ? ' on' : '') + '">' + esc(v.state) + '</span> ' +
-          dur(d.now - v.state_since) + '</td><td>' + dur(d.now - v.since) + '</td><td class="note">' + esc(v.session) + '</td></tr>';
-      }).join('') : '<tr><td colspan="6" class="empty">No sessions reported right now (games report while they host).</td></tr>';
+      liveData = d; renderLive();
     }).catch(function () {});
   }
+  var liveData = null;
+  function renderLive() {
+    var d = liveData;
+    if (!d) return;
+    var want = el('f-kind').value, n = d.sessions.length;
+    var shown = d.sessions.filter(function (v) { return !want || (v.match_kind || '?') === want; });
+    el('live').innerHTML = shown.length ? shown.map(function (v) {
+      var players = v.players.map(function (p) {
+        return '<button class="linkish" data-player="' + esc(p.name) + '">' + esc(p.name) + '</button>' +
+          (p.path ? ' <span class="tag' + (p.path === 'relay' ? '' : ' on') + '">' + esc(p.path) + '</span>' : '');
+      }).join(', ');
+      return '<tr><td>' + esc(v.host) + (v.version ? ' <span class="tag">' + esc(v.version) + '</span>' : '') +
+        (v.network ? ' <span class="tag">' + esc(v.network) + '</span>' : '') +
+        '</td><td>' + kindBadge(v.match_kind) + '</td><td>' + players + ' <span class="note">' + v.players.length + (v.slots ? '/' + v.slots : '') + '</span></td><td>' +
+        matchCell(v) + '</td><td><span class="tag' + (v.state === 'match' ? ' on' : '') + '">' + esc(v.state) + '</span> ' +
+        dur(d.now - v.state_since) + '</td><td>' + dur(d.now - v.since) + '</td><td class="note">' + esc(v.session) + '</td></tr>';
+    }).join('') : '<tr><td colspan="7" class="empty">' + (n ? 'No ' + (want === '?' ? 'sessions of an unknown kind' : want + ' matches') +
+      ' right now.' : 'No sessions reported right now (games report while they host).') + '</td></tr>';
+  }
+  el('f-kind').addEventListener('change', renderLive);
   var lbView = 1;
   function lbName(v) { return (v.label || v.name) + (v.weekly ? ' (weekly)' : '') + ' - ' + v.rows; }
   function leaderboard() {

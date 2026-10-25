@@ -877,7 +877,8 @@ class Service:
 
     async def api_live(self, request):
         """A session host's report (p2p.cpp, every 20 s while it hosts): {"session": hex id,
-        "kind", "rule", "arena" ("arena N"), "arena_mod" (a custom arena's name, 2.1.6+), "state": "lobby" | "match",
+        "kind", "match_kind" ("ranked" / "player", 2.1.6+; "" = not known: an older game), "rule", "arena" ("arena N"),
+        "arena_mod" (a custom arena's name, 2.1.6+), "state": "lobby" | "match",
         "players": [{"name", "path"}],
         "slots", "started"}. Kept LIVE_LIFE s; the dashboard's live view."""
         account = self.token_account(request)
@@ -905,6 +906,7 @@ class Service:
             "rule_name": match_names.rule_name(str(body.get("rule") or "")) or "", "arena": str(body.get("arena") or "")[:40],
             "arena_name": match_names.arena_name(body.get("arena"), str(body.get("arena_mod") or "")[:60]),
             "arena_mod": bool(body.get("arena_mod")), "state": state,
+            "match_kind": str(body.get("match_kind") or "") if body.get("match_kind") in ("ranked", "player") else "",
             "players": players, "slots": int(body.get("slots") or 0), "version": str(body.get("version") or "")[:16],
             "network": str(body.get("network") or "")[:8],
             "since": old.get("since", now()), "state_since": old.get("state_since", now())
@@ -2081,7 +2083,8 @@ class Service:
                 key = p["name"].lower()
                 if key and (key not in sessions or v["state"] == "match"):
                     sessions[key] = {"state": v["state"], "path": p["path"], "since": v["state_since"],
-                                     "host": v["host"], "rule": v.get("rule", ""), "rule_name": v.get("rule_name", "")}
+                                     "host": v["host"], "rule": v.get("rule", ""), "rule_name": v.get("rule_name", ""),
+                                     "match_kind": v.get("match_kind", "")}
 
         def rows():
             out = []
