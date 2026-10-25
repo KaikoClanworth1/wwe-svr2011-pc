@@ -1467,10 +1467,14 @@ void ReportLive(bool signed_in) {
             break;
           }
       }
+      // (Ranked or Player Match: the session's X_CONTEXT_GAME_TYPE as it was made, 0 = ranked; "" not known)
+      const auto game_type = local.session.contexts.find(kContextGameType);
+      const char* match_kind =
+          game_type == local.session.contexts.end() ? "" : game_type->second == 0 ? "ranked" : "player";
       bodies.push_back(fmt::format(
-          "{{\"session\": \"{:X}\", \"state\": \"{}\", \"rule\": \"{}\", \"arena\": \"{}\", \"arena_mod\": {}, "
+          "{{\"session\": \"{:X}\", \"match_kind\": \"{}\", \"state\": \"{}\", \"rule\": \"{}\", \"arena\": \"{}\", \"arena_mod\": {}, "
           "\"slots\": {}, \"version\": {}, \"network\": \"{}\", \"players\": [{}]}}",
-          local.session.id, in_match ? "match" : "lobby", rule == ~0u ? "" : fmt::format("rule {:02X}", rule),
+          local.session.id, match_kind, in_match ? "match" : "lobby", rule == ~0u ? "" : fmt::format("rule {:02X}", rule),
           in_match && arena != ~0u ? fmt::format("arena {}", arena) : "", JsonQuote(arena_mod),
           local.session.public_slots + local.session.private_slots, JsonQuote(PortVersion()), NetName(g_match_net),
           players));
