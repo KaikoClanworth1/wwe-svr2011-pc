@@ -8,6 +8,8 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdlib>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <set>
@@ -50,9 +52,14 @@ namespace svr2011 {
 
 namespace {
 
-// Songs' gains (SetSongGain): by lower-case file name, as factors.
+// Songs' gains (SetSongGain): by lower-case file name, as factors. A mod's theme copy is in here even at 0 dB.
 std::mutex g_gain_mutex;
 std::map<std::u16string, float> g_gains;
+// The player's own songs' levels: <Music>/.levels.txt, "<file name>\t<dB>" lines the launcher writes (its Music
+// tab's Level volume: the Mod Maker's -24 LUFS). Read again when the file changes.
+std::filesystem::path g_levels_path;
+std::filesystem::file_time_type g_levels_time;
+std::map<std::u16string, float> g_levels;
 
 std::u16string GainKey(const std::filesystem::path& file) {
   std::u16string k = file.filename().u16string();
@@ -61,10 +68,35 @@ std::u16string GainKey(const std::filesystem::path& file) {
   return k;
 }
 
+void ReadLevels() {  // (under g_gain_mutex)
+  std::error_code ec;
+  if (g_levels_path.empty()) return;
+  const auto t = std::filesystem::last_write_time(g_levels_path, ec);
+  if (ec) {
+    g_levels.clear();
+    return;
+  }
+  if (t == g_levels_time && !g_levels.empty()) return;
+  g_levels_time = t;
+  g_levels.clear();
+  std::ifstream in(g_levels_path, std::ios::binary);
+  std::string line;
+  while (std::getline(in, line)) {
+    const size_t tab = line.find('\t');
+    if (tab == std::string::npos || !tab) continue;
+    const std::string name = line.substr(0, tab);
+    const float db = std::clamp(float(std::atof(line.c_str() + tab + 1)), -20.0f, 6.0f);
+    g_levels[GainKey(std::filesystem::path(std::u8string(name.begin(), name.end())))] = std::pow(10.0f, db / 20.0f);
+  }
+}
+
 float SongGain(const std::filesystem::path& file) {
   std::lock_guard lock(g_gain_mutex);
-  const auto g = g_gains.find(GainKey(file));
-  return g == g_gains.end() ? 1.0f : g->second;
+  const auto key = GainKey(file);
+  if (const auto g = g_gains.find(key); g != g_gains.end()) return g->second;
+  ReadLevels();
+  const auto l = g_levels.find(key);
+  return l == g_levels.end() ? 1.0f : l->second;
 }
 
 using rex::kernel::xam::apps::XmpApp;
@@ -775,8 +807,7 @@ std::vector<std::filesystem::path> UserMusicSongs() {
 void SetSongGain(const std::filesystem::path& file, float db) {
   db = std::clamp(db, -20.0f, 6.0f);
   std::lock_guard lock(g_gain_mutex);
-  if (db == 0.0f) g_gains.erase(GainKey(file));
-  else g_gains[GainKey(file)] = std::pow(10.0f, db / 20.0f);
+  g_gains[GainKey(file)] = std::pow(10.0f, db / 20.0f);   // (0 dB kept too: a mod's theme copy isn't levelled again)
 }
 
 std::filesystem::path UserMusicSong(const std::string& name) {
@@ -788,6 +819,10 @@ std::filesystem::path UserMusicSong(const std::string& name) {
 
 void InstallUserMusic(const std::filesystem::path& folder) {
   g_folder = folder;
+  {
+    std::lock_guard lock(g_gain_mutex);
+    g_levels_path = folder / ".levels.txt";
+  }
   std::error_code ec;
   std::filesystem::create_directories(folder, ec);  // so players can find it
   g_player = new Player();
