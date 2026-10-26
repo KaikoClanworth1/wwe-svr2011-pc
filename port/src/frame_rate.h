@@ -53,6 +53,9 @@ void SetSceneThirtyFps(bool on);
 void SetLockstep(bool on);
 bool Lockstep();
 
+// The world updates the frame running now got (1; 2 at 30 fps or a slow frame; 0 while the free camera holds it).
+int WorldPassesThisFrame();
+
 // Chooses the frame rate, at once (GRAPHICS -> FRAME RATE).
 void SetTargetFrameRate(int fps);
 

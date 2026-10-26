@@ -21,6 +21,11 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base);
 // A pad's state as the game got it (frame_rate.cpp, XamInputGetState: `state` its 16 bytes, `result` 0 = connected).
 void MatchRecordPad(uint32_t user, uint32_t result, const uint8_t* state);
 
+// A replay (SVR2011_REPLAY=<folder>): the recorded pad for this frame instead of the player's (false: none -
+// the player's stands), and the recorded world updates for the frame about to run (0: not replaying).
+bool MatchReplayPad(uint32_t user, uint32_t& result, uint8_t* state);
+int MatchReplayPasses();
+
 // The black box logged a case (match_box.cpp MatchBoxLog): its text into box.txt.
 void MatchRecordBox(const std::string& text);
 
