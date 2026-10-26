@@ -250,6 +250,32 @@ bool EntrancePicker(const char* label, int& value, const char* none, float width
   return changed;
 }
 
+// The victory scene after a singles win (victory=; docs/VICTORY_SCENES.md): another superstar's, a generic one or
+// a pack's own (Victories()); "Preview" plays it in the Full preview.
+bool g_test_victory_open = false;
+void VictoryRow() {
+  std::string cur = "The game's (a generic one)";
+  for (const auto& v : Victories())
+    if (v.number == g_star.victory) cur = std::to_string(v.number) + "  " + v.name + (v.from.empty() ? "" : "  [" + v.from + "]");
+  if (g_star.victory > 0 && cur[0] == 'T') cur = std::to_string(g_star.victory) + "  (not installed)";
+  ImGui::SetNextItemWidth(320 * g_scale);
+  if (ImGui::BeginCombo("Victory", cur.c_str(), ImGuiComboFlags_HeightLarge)) {
+    if (ImGui::Selectable("The game's (a generic one)", g_star.victory <= 0)) g_star.victory = -1, Touch();
+    for (const auto& v : Victories()) {
+      const std::string row = std::to_string(v.number) + "  " + v.name + (v.from.empty() ? "" : "  [" + v.from + "]");
+      if (ImGui::Selectable((row + "##v").c_str(), g_star.victory == v.number)) g_star.victory = v.number, Touch();
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::SameLine();
+  ImGui::BeginDisabled(g_star.victory <= 0);
+  if (ImGui::Button("Preview##victory")) OpenFullPreview(g_star.victory);
+  ImGui::EndDisabled();
+  Hint("What the superstar does after winning a singles match: another superstar's celebration (The Rock, Cena, "
+       "Kofi ...), one of the game's generic ones, or one a move pack adds (EVP scripts numbered 6000-7999). Tag, "
+       "title and match-type celebrations stay the game's.");
+}
+
 // The model pac carries an entrance outfit: an EMD entry of kind 4 for its first attire ("%06d%02d", last digits 04).
 bool HasEntranceOutfit(const std::wstring& pac) {
   static std::map<std::wstring, bool> cache;
@@ -1154,6 +1180,7 @@ bool PrepareJob(Job& j) {
   if (const std::string g = GainText(); !g.empty() && !g_star.song.empty()) j.manifest += "theme_gain=" + g + "\n";
   if (const std::string g = CallGainText(); !g.empty() && !g_star.voice.empty()) j.manifest += "call_gain=" + g + "\n";
   if (g_star.entrance >= 0) j.manifest += "entrance=" + std::to_string(g_star.entrance) + "\n";
+  if (g_star.victory > 0) j.manifest += "victory=" + std::to_string(g_star.victory) + "\n";
   if (g_star.song.empty() && g_star.music > 0) j.manifest += "music=" + std::to_string(g_star.music) + "\n";
   for (int a = 1; a < 4; ++a)
     if (g_star.attire_entrance[a] > 0)
@@ -2307,7 +2334,7 @@ void OpenFullPreview(int n, int start_part) {
   full_preview::Request r;
   r.entrance = n;
   r.star = kStyles[g_star.style].template_id;
-  const int gear = GearShown(g_view_attire);
+  const int gear = n >= 6000 ? 0 : GearShown(g_view_attire);  // (a victory scene: in the attire, as after a match)
   const auto [pac, in] = AttireSource(gear ? gear : g_view_attire);
   r.model = !pac.empty() ? pac : StyleChPac();
   r.attire = !pac.empty() ? in : 1;
@@ -3266,7 +3293,10 @@ void Draw() {
   TextField("Author (optional)", g_star.author, sizeof g_star.author);
   TextField("Version (optional)", g_star.version, sizeof g_star.version, "1.0");
   MovesetSection();
+  static bool more_once = false;  // (--star-victory: the section open, scrolled to)
+  if (g_test_victory_open) ImGui::SetNextItemOpen(true), more_once = true, g_test_victory_open = false;
   if (ImGui::CollapsingHeader("More: entrance, announcer, abilities, moves")) {
+    if (more_once) ImGui::SetScrollHereY(0.1f), more_once = false;
     ImGui::Indent();
     if (EntrancePicker("Entrance", g_star.entrance, "The style's")) Touch();
     ImGui::SameLine();
@@ -3276,6 +3306,7 @@ void Draw() {
          "superstar's, Jeff Hardy's from SvR 2010 it ships unused (535) - or one an installed move pack adds "
          "(the From another game tab makes them from other games). Attires 2-4 can have their own.");
     CreatedEntranceRow();
+    VictoryRow();
     {
       ImGui::SetNextItemWidth(320 * g_scale);
       const std::string cur = g_star.pose < 0 ? "The style's" : PoseLabel(g_star.pose);
@@ -3560,7 +3591,7 @@ std::string StateText() {
     s += "\nattire" + std::to_string(a + 1) + "=" + Utf8(g_star.attires[a]) + "|" + g_star.attire_names[a] + "|" +
          std::to_string(g_star.attire_entrance[a]);
   s += "\nmoveset=" + MovesetText() + "\ncae=" + Utf8(g_star.cae) + "\nthreads=" + g_star.threads;
-  s += "\nentrance=" + std::to_string(g_star.entrance) + "\npose=" + std::to_string(g_star.pose) + "\nannouncer=" + g_star.announcer + "\nhometown=" + g_star.hometown_city + "," + g_star.hometown_state + "\nmoves=" + Utf8(g_star.moves) +
+  s += "\nentrance=" + std::to_string(g_star.entrance) + "\nvictory=" + std::to_string(g_star.victory) + "\npose=" + std::to_string(g_star.pose) + "\nannouncer=" + g_star.announcer + "\nhometown=" + g_star.hometown_city + "," + g_star.hometown_state + "\nmoves=" + Utf8(g_star.moves) +
        "\npack=" + Utf8(g_star.pack) + "\nabil=" + std::to_string(g_star.own_abilities);
   for (int a : g_star.abilities) s += "," + std::to_string(a);
   for (const auto& [a, op] : g_star.gear) s += "\ngear" + std::to_string(a) + "=" + op;
@@ -3693,6 +3724,7 @@ void WriteProject(ProjectOut& out) {
     if (g_star.attire_entrance[a] > 0) out.Key("attire" + std::to_string(a + 1) + "_entrance", g_star.attire_entrance[a]);
   }
   if (g_star.entrance >= 0) out.Key("entrance", g_star.entrance);
+  if (g_star.victory > 0) out.Key("victory", g_star.victory);
   if (!g_star.source_game.empty()) out.Key("source", g_star.source_game + (g_star.source_id >= 0 ? " " + std::to_string(g_star.source_id) : ""));
   if (g_star.source_entrance >= 0) out.Key("source_entrance", g_star.source_entrance);
   if (!g_star.entrance_note.empty()) out.Key("entrance_note", g_star.entrance_note);
@@ -3751,6 +3783,7 @@ bool Read(const ProjectIn& in, bool mod) {
   g_star.call = in.GetInt("call", -1);
   if (const std::string h = in.Get("height"); !h.empty()) g_star.height = std::clamp(float(std::atof(h.c_str())), 0.8f, 1.25f);
   g_star.entrance = in.GetInt("entrance", -1);
+  g_star.victory = in.GetInt("victory", -1);
   {
     const std::string src = in.Get("source");  // "<game> <their id>" (a ported superstar)
     const size_t sp = src.find(' ');
@@ -3979,6 +4012,7 @@ void SetModel(const std::wstring& ch_pac) {
 }
 
 void TestEntrance(int n) { g_star.entrance = n; }
+void TestVictory(int n) { g_star.victory = n, g_test_victory_open = true; }
 void TestInstall() { Install(false); }
 bool PickEntrance(const char* label, int& value, const char* none, float width) { return EntrancePicker(label, value, none, width); }
 bool EntranceOutfit(const std::wstring& pac) { return HasEntranceOutfit(pac); }

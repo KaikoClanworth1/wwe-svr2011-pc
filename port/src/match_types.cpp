@@ -2009,6 +2009,18 @@ REX_HOOK_RAW(sub_82216C58) {
                   RdF(base + fighter + 296), base[fighter + 444]);
     }
   }
+  // Test aid: SVR2011_TEST_LOSE=<person>,<s> - at <s> seconds of the match clock the person loses (to person 0).
+  static const std::pair<int, int> lose = [] {
+    const char* v = std::getenv("SVR2011_TEST_LOSE");
+    int p = -1, s = 0;
+    if (v && std::sscanf(v, "%d,%d", &p, &s) != 2) p = -1;
+    return std::make_pair(p, s);
+  }();
+  if (lose.first >= 0 && fighter && int(Rd32(base + fighter + 1156)) == lose.first &&
+      Rd32(base + 0x82E3CD0C) == uint32_t(lose.second * 60) && !base[fighter + 447]) {
+    base[fighter + 447] = 1, base[fighter + 448] = 0;
+    REXLOG_INFO("match types: test - person {} loses", lose.first);
+  }
   for (Attack& a : g_attacks)
     if (a.fighter == fighter && a.wrestler) {
       // (test aid: SVR2011_TEST_LJ_MOTION=<id>[,<id>...] - each attack the next)

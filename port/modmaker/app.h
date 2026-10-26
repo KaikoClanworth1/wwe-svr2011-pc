@@ -252,6 +252,11 @@ bool EntrancesReady();
 void ReloadEntrances();
 // A pack folder's entrances (its pack.txt pacentry EVP lines).
 std::vector<EntranceInfo> PackEntrances(const fs::path& pack);
+// The victory scenes a superstar can have (manifest victory=, docs/VICTORY_SCENES.md): the game's own singles ones
+// (pac\evt\Winning*.pac: 6000 + id for the superstars who have one, 7000-7107 the generic singles and divas ones)
+// and installed packs' EVP scripts numbered 6000-7999.
+const std::vector<EntranceInfo>& Victories();
+constexpr bool IsVictoryNumber(int n) { return n >= 6000 && n < 8000; }
 // A song's integrated loudness in LUFS (BS.1770; loudness.cpp). Slow: call it from a worker.
 bool MeasureLufs(const std::wstring& file, double* lufs, std::string* error);
 constexpr double kThemeTargetLufs = -24.0;  // where a mod's theme sits next to the game's own
@@ -444,7 +449,7 @@ extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
-                      void TestHeight(float scale); void TestCallGain(float db); void TestMoveset(const std::string& spec); void ThreadsDraw(); void ThreadsTest(const std::string& spec); void TestCae(const std::string& id); void TestImportMoveset(const std::string& spec); void TestEntrance(int n); void TestInstall(); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestLoad(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
+                      void TestHeight(float scale); void TestCallGain(float db); void TestMoveset(const std::string& spec); void ThreadsDraw(); void ThreadsTest(const std::string& spec); void TestCae(const std::string& id); void TestImportMoveset(const std::string& spec); void TestEntrance(int n); void TestVictory(int n); void TestInstall(); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestLoad(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
                       void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step); void TestSimpleFrom(int step); void TestSimpleChain(const std::string& spec);
                       // entrance gear from another superstar (tools/svr11_build.py --gear-from / --onto): the game superstars
                       // with gear, a popup to pick one, and the transplant onto <target pac>'s attire (done(new pac) on success)

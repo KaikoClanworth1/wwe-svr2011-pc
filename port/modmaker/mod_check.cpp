@@ -468,8 +468,8 @@ void CheckSuperstar(const fs::path& dir, std::vector<Problem>& p) {
   const Manifest m = ReadManifest(dir);
   ManifestBasics(dir, m, "superstar", p);
   TrailingSpaces(dir, m, p);
-  UnknownKeys(dir, m, {"short", "base", "song", "music", "theme_gain", "movie", "voice", "call_gain", "loading", "style", "ratings", "call", "hometown", "announcer", "height", "pose",
-                       "entrance", "abilities", "moves", "pack", "game_look", "cae"},
+  UnknownKeys(dir, m, {"short", "base", "song", "music", "theme_gain", "theme_gain_auto", "movie", "voice", "call_gain", "loading", "style", "ratings", "call", "hometown", "announcer", "height", "pose",
+                       "entrance", "victory", "abilities", "moves", "pack", "game_look", "cae"},
               {"attire"}, p);
   const std::string name = Trim(m.Get("name"));
   const std::string who = name.empty() ? std::string("The superstar") : name;
@@ -643,7 +643,7 @@ bool GearStar(int star) {
 void CheckAttire(const fs::path& dir, std::vector<Problem>& p) {
   const Manifest m = ReadManifest(dir);
   ManifestBasics(dir, m, "attire", p);
-  UnknownKeys(dir, m, {"superstar", "attire", "model", "entrance", "gear"}, {}, p);
+  UnknownKeys(dir, m, {"superstar", "attire", "model", "entrance", "victory", "gear"}, {}, p);
   long star = 0;
   if (!IsInt(Trim(m.Get("superstar")), 100, 321, &star))
     p.push_back(Error("This outfit isn't set for any superstar: the game leaves it out.").With(kOpen, OpenIt(dir)));

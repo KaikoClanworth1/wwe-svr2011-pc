@@ -33,7 +33,7 @@ page (`port/docs/MOVE_MODDING.md`).
   frames; the person's motion frame at +24 counts match frames). **2K14/2K15 YANM blocks have twice 2011's keys**:
   2K15's Attitude Adjustment 2 is 532 source frames, 2011's 265 - the converter samples every second one.
 
-### 2.3 Where the two people are (2K15, WWE '12, WWE '13)
+### 2.3 Where the two people are (2K15, WWE '12, WWE '13, 2K14, 2K16, 2K17)
 
 - **The victim (block person 1) starts at the origin; the attacker (person 0) is stored in its own frame:
   turned 180 degrees about the vertical and 1500 root units down -z.** Turned into the victim's frame
@@ -42,6 +42,9 @@ page (`port/docs/MOVE_MODDING.md`).
 - **WWE '12 is laid out the same way** (found 25 Oct): its moves that 2011 also has start, turned, as 2011's do -
   Gory Bomb 2 0 units apart (2011: 100), Attitude Adjustment 2 142 (229), Tombstone Piledriver 1 376 (329) -
   and about 1500 apart unturned. Every WWE '12 grapple ported before this started its pair metres apart.
+- **2K14, 2K16 and 2K17 too** (26 Oct, porter-2k17 6e95c654): before, their grapples started the pair metres apart
+  (a player's 2K17 Blue Thunder Bomb, Sami Zayn). A move ported with 2.1.5 or older from these games has to be
+  ported again.
 
 ### 2.4 Ids
 
@@ -65,6 +68,11 @@ page (`port/docs/MOVE_MODDING.md`).
 - **The template is never a reversal unless the source is one** (WWE '12's G.T.S., filed under its STAT, got
   Ankle Lock Reversal). A two-person move filed under STAT (strikes and reversals), or a poor fit in its
   category, also looks among the standing grapples STN1 / STN2; the better fit wins (G.T.S.: Powerbomb 4).
+- **The template's situation must match** (WAZE +0x73: 0 standing front, 9 dives, 10/11 corner, 13/14 the
+  victim seated on the turnbuckle): a standing grapple doesn't get a dive or corner template unless its source
+  category says corner (`CORN`), nor one filed under the rope, apron or corner groups (MVMT ROPE / APRO / CORN)
+  unless asked for. Before, the Blue Thunder Bomb got DDT 14 and the Dragon Special a rope template; now Gory
+  Neckbreaker 5015. Moves ported before keep their templates (16 checked).
 - **Dives onto a lying victim are one-person moves in 2011.** The Frog Splash 3555 and its kind are the
   attacker's motion alone (x 0 y 0; the victim's x 50 y 1 is the miss) - the victim takes the hit with the
   game's reaction. A source whose attacker starts high (root y < -1150, the top rope) and whose victim starts
@@ -102,7 +110,7 @@ page (`port/docs/MOVE_MODDING.md`).
 - The attacker of a ground hold is NOT turned (Patriot Lock: 1455 units as stored, 2955 turned): the turn is
   chosen per move by the closer start (2.3). Turned without the shift, a YMBs attacker held one pose.
 - YMBs tracks are moved so the source attacker starts where the template's does (as the keyframe path).
-- **A hold with phases is a submission**: a source with 3+ two-person phases under 30 (hold, struggle loops,
+- **A hold with phases is a submission**: a source with two-person phases 1, 2 and 4 (and more) under 30 (hold, struggle loops,
   escape, tap; 30 and up are a dive's branches, 90-92 reversals) gets a 2011 submission template (a YMBs move in MVMT/ANAS, most phases in common, then the
   closest length) before the category vote - a coded category mixes holds with other moves (2K15's M013 is
   mostly reversals: its vote said STAT and the Patriot Lock got Mule Kick Reversal 2; now Single Leg Boston
@@ -130,6 +138,15 @@ page (`port/docs/MOVE_MODDING.md`).
   `SVR2011_TEST_MATCH` only person 1 is a CPU when person 0 is the first named: put the test superstar second.
   Put front grapples in the front grapple groups C/D/E (move block 0x98-0xB2, not the fixed 0xB4-0xBA); the
   rear slots 0xBC-0xC2 are rarely picked. Damage per CPU hit is in the CPU log's `damage n in k hits`.
+- **Dives**: `SVR2011_TEST_FORCE_DIVE=<every s>,<set-up motion>,<dive>[,<dive>...]` - the attacker floors the victim
+  with the set-up (a paired takedown, e.g. 5000), then at +600 frames is put on the top turnbuckle (28.8, -21.9,
+  -28.8, facing the victim) and starts the dive as a paired start, the victim restarted lying where he lies.
+  Results 26 Oct: the stock Frog Splash 3555 dives into the ring onto the victim (the control); 2K15's Superfly
+  Splash lands on him, WWE '12's Shooting Star Press across his legs; WWE '12's Springboard Moonsault 5094 rises
+  and flips but lands about 2 m past the victim, who isn't hit (a springboard starts from the side ropes - the
+  aid's corner start may not be its place; not fixed).
+- **Ending a match**: `SVR2011_TEST_LOSE=<person>,<s>` - at <s> seconds the person loses to person 0 (victory
+  scenes). `SVR2011_TEST_EVP_LOG=1` logs every scene script the game opens (`/EVPx/<n>`, with the caller).
 - **Hidden test games**: `SVR2011_WINDOW_HIDDEN=1` (tools/test_guard.ps1 sets it) - the window is never shown;
   use frame shots, window screenshots of a hidden window are black.
 

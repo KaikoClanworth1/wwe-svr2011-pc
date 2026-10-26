@@ -31,6 +31,9 @@ int mods_install(const WCHAR *game_dir, const WCHAR *zip);
 /* The Shrink movies button without its window (tests: --mods-shrink <game folder>): every superstar / media
    mod's .bik movie (not the bundled mods') and Custom Movies' .bik -> .mp4; the result on the status line. */
 int mods_shrink(const WCHAR *game_dir);
+/* The Level music button without its window (tests: --mods-level <game folder>): the mods' themes (a gain the
+   author left out) and the Music folder's songs at the Mod Maker's -24 LUFS (music_level.h); the dB per song printed. */
+int mods_level(const WCHAR *game_dir);
 
 /* A main menu background made from a picture (backgrounds.h; tests:
    --bg-add <game folder> <picture> [logo]). 1 on success; prints the folder. */

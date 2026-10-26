@@ -5,7 +5,8 @@
 // pac\evt\Nyujyo*.pac - the first found, as the game (a mod's entry wins). The script's objects: the
 // entrant is the first character (type 01000000 00000000), the camera the first camera (00010000 0).
 // A track's key in the bank is (25000 + object, x = slot, y); the segments are slots 0 / 5 / 10 / 15 / 20,
-// played one after another (0 = the hidden intro: the entrant isn't drawn, the titantron plays). The
+// played one after another (0 = the hidden intro: the entrant isn't drawn, the titantron plays; a victory scene,
+// 6000+ from pac\evt\Winning*.pac, is all slot 0 and drawn). The
 // entrant's y0 = body (char_preview::DecodeClip, with y2 / y3 the fingers); the camera's y1 (else y0; the game picks one of the two) =
 // 29-byte mode-1 keys [count][f32 pos x3, 0.01 units][f32 rot x3, rad][f32 fov] (tools/ymks.py
 // decode_camera): R = Rz Ry Rx, looking down the camera's local -x, its local -y the up; count = the
@@ -130,6 +131,8 @@ float PartStart(const Loaded& L, int part) {
 }
 
 Request g_req;
+// Segment 0 is an entrance's hidden intro (no entrant); a victory scene (6000+, pac\evt\Winning*.pac) has only that one.
+bool Intro(const Seg& s) { return s.slot == 0 && g_req.entrance < 6000; }
 int g_cam_pin = -1;  // the camera tracks: -1 the game's way (one at random each play), 0 A (y0), 1 B (y1)
 int g_cam_now = 1;   // the ones this play uses
 bool g_test_view_on = false;  // (test aid --full-preview-view)
@@ -217,7 +220,8 @@ bool FindEntrance(const std::wstring& game, const std::wstring& own_pack, int n,
     }
   std::vector<fs::path> pacs;
   for (const auto& e : fs::directory_iterator(fs::path(game) / L"pac" / L"evt", ec))
-    if (Lower(PathStr(e.path().filename())).rfind("nyujyo", 0) == 0) pacs.push_back(e.path());
+    if (const std::string f = Lower(PathStr(e.path().filename())); f.rfind("nyujyo", 0) == 0 || f.rfind("winning", 0) == 0)
+      pacs.push_back(e.path());  // (Winning*.pac: the victory scenes, 6000+)
   std::sort(pacs.begin(), pacs.end());
   for (const auto& p : pacs) {
     PacIndex idx;
@@ -928,7 +932,7 @@ void Apply(std::unique_ptr<Loaded> L) {
       char_preview::RenderProp(rtv, dsv, w, h, view, proj, st.prop, st.r, st.t, none);
     const int si = std::clamp(g_seg_now, 0, int(g_cur->segs.size()) - 1);
     const Seg& s = g_cur->segs[size_t(si)];
-    if (s.slot == 0 || !s.body) {  // (segment 0 is the hidden intro: no entrant)
+    if (Intro(s) || !s.body) {  // (segment 0 is the hidden intro: no entrant)
       if (g_dump) {
         std::fprintf(g_dump, "K %.0f S %d L %.2f lift 0 V", g_key, s.slot, g_local_key);
         for (int i = 0; i < 16; ++i) std::fprintf(g_dump, " %.5f", view[i]);
@@ -1176,7 +1180,7 @@ void Draw() {
       // Show's 29 s 125.bik from tick 4, the SvR logo back on the screen after it, 14 Oct)
       // The intro (segment 0) keeps the arena's picture too: the movie already runs (timed from the entrance's start)
       // but the game's screen shows the arena's logo until the superstar is out (Big Show, keys 39-206).
-      const bool tt = g_titantron_on && (g_bink || g_tt_mf) && g_tt_srv && s.slot != 0 && g_key / 30.0 < TitantronSeconds();
+      const bool tt = g_titantron_on && (g_bink || g_tt_mf) && g_tt_srv && !Intro(s) && g_key / 30.0 < TitantronSeconds();
       if (tt) TitantronAt(g_key / 30.0);
       editor::SetTextureOverride("tf_titan", tt && g_tt_screen ? g_tt_srv : nullptr);
       if (L.arena) {
@@ -1187,9 +1191,9 @@ void Draw() {
         ImGui::GetWindowDrawList()->AddText(ImVec2(at.x + 8, at.y + 8), IM_COL32(220, 160, 160, 255), "The practice arena (pac\\bg\\bg29.pac) didn't load.");
       }
       ImDrawList* dl = ImGui::GetWindowDrawList();
-      if (!char_preview::ModelReady() && s.slot != 0)
+      if (!char_preview::ModelReady() && !Intro(s))
         dl->AddText(ImVec2(at.x + 8, at.y + 8), IM_COL32(230, 230, 235, 230), "Loading the superstar...");
-      if (s.slot == 0) dl->AddText(ImVec2(at.x + 8, at.y + 8), IM_COL32(230, 230, 235, 200), "The intro (the superstar comes out after it)");
+      if (Intro(s)) dl->AddText(ImVec2(at.x + 8, at.y + 8), IM_COL32(230, 230, 235, 200), "The intro (the superstar comes out after it)");
       // the titantron in a corner where the arena has no screen
       if (g_titantron_on && !g_tt_note.empty()) {  // (one that can't play: why)
         const ImVec2 ts = ImGui::CalcTextSize(g_tt_note.c_str());

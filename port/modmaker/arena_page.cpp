@@ -1000,7 +1000,7 @@ void Tick() {
   if (!g_test_save.empty() && g_test_state == 0) {
     g_test_state = 1;
     if (g_test_lib >= 0) editor::TestLibrary(g_test_lib);
-    editor::TestEdit();
+    if (!editor::RunObjectTests()) editor::TestEdit();
     // and the VS screen: the theme's biggest picture as a red / yellow checker
     if (g_proj.backstage < 0) LoadVsTheme(g_proj.arena);
     const VsTexture* big = nullptr;

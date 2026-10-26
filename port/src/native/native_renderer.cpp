@@ -1841,7 +1841,11 @@ void ApplyOutputSettings(Renderer* r) {
     res = std::clamp(float(h) / float(kHeight * scale), 0.25f, 1.0f);
     g_fsr = h < out_h;
   } else if (scene_height > 0) {  // A chosen height (1080P): the 720p step above it, the scene scaled down to it.
-    const uint32_t h = uint32_t(std::clamp<int32_t>(scene_height, int32_t(kHeight / 4), int32_t(kHeight * kMaxRenderScale)));
+    // (anti-aliasing multiplies the chosen height - 1080P at 2X draws 2160 lines and Present averages them down -
+    // up to AUTO's most, 4x or the window's own; it used to be ignored here: 900P / 1080P / 2880P had no AA at all)
+    const uint64_t with_aa = uint64_t(scene_height) * aa;
+    const uint64_t cap = std::max<uint64_t>(uint64_t(kHeight) * std::max<uint32_t>(4u, window_scale), uint64_t(scene_height));
+    const uint32_t h = uint32_t(std::clamp<uint64_t>(std::min(with_aa, cap), kHeight / 4, uint64_t(kHeight) * kMaxRenderScale));
     scale = (h + kHeight - 1) / kHeight;
     res = std::clamp(float(h) / float(kHeight * scale), 0.25f, 1.0f);
   }
@@ -4771,7 +4775,12 @@ bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
   const textures::Context ctx = TextureContext(r);
   const uint32_t srv = textures::Texture(ctx, fetch, 0);
   if (srv == UINT32_MAX) return false;
-  const uint32_t sampler = textures::Sampler(ctx, fetch);
+  // (bilinear whatever the game's fetch says: present.ps averages a bigger front buffer down with bilinear taps
+  // - with the game's point filter each tap was one texel, so ANTI-ALIASING 2X, a 2:1 scene, averaged nothing)
+  uint32_t linear_fetch[6];
+  std::memcpy(linear_fetch, fetch, sizeof(linear_fetch));
+  linear_fetch[3] = (linear_fetch[3] & ~(0xFu << 19)) | (1u << 19) | (1u << 21);  // (mag / min filter: linear)
+  const uint32_t sampler = textures::Sampler(ctx, linear_fetch);
   const uint32_t w = (fetch[2] & 0x1FFF) + 1, h = ((fetch[2] >> 13) & 0x1FFF) + 1;
   const float scale[2] = {std::min(1.0f, float(kWidth) / float(w)),
                           std::min(1.0f, float(kHeight) / float(h))};

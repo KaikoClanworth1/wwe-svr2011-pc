@@ -1387,15 +1387,18 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                    : "The game's text: changes the next time the game starts.";
       case kRenderer: return "The graphics API the game draws with. AUTO: Direct3D 12, else Vulkan, else Direct3D 11 (older GPUs).";
       case kRenderScale:
-        return "The most the game renders at. AUTO fills the screen; lower is faster (360P / 480P: softer, for weak "
-               "devices; 1080P: sharp on a 1080p screen, lighter than AUTO's 1440P).";
+        return "The game's picture size. AUTO fills the screen; lower is faster (360P / 480P: softer, for weak "
+               "devices; 1080P: sharp on a 1080p screen, lighter than AUTO's 1440P). ANTI-ALIASING draws it bigger.";
       case kCrowd:
         return crowd_ == crowd_at_start_ ? "The people in the seats. OFF: empty seats - faster on weak PCs and phones."
                                          : "Takes effect the next time the game starts.";
       case kShadows: return "The wrestlers', ring's and arena's shadows. OFF: faster.";
       case kAntiAliasing:
-        return "Renders at 2, 3 or 4 times the resolution per side and averages it down (4, 9 or 16 samples a "
-               "pixel): smoother edges, slower. Limited by RENDER SCALE.";
+        return upscale_ ? "Off while UPSCALING is on: FSR / DLSS draw the picture smaller and smooth its edges "
+                          "themselves. Set UPSCALING to OFF to use this."
+                        : "Smoother edges: the picture is drawn 2, 3 or 4 times as tall and wide as your screen and "
+                          "shrunk to it - slower. At most 4x the Xbox 360's 720p, so on a 1080p screen 3X and 4X look "
+                          "the same. Works with every RENDER RESOLUTION.";
       case kUpscaling:
         return upscale_ >= 9
                    ? "NVIDIA DLSS 4 (experimental, RTX GPUs): matches drawn smaller and rebuilt by NVIDIA's AI model "

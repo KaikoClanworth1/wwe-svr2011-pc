@@ -109,6 +109,10 @@ void Shutdown();
 void TestStart(int view, const std::string& select);
 // test aid: the selected object gets this picture, as "Use a picture..." gives one
 void TestPicture(const std::string& path);
+// --test-add-object / --test-export-object / --test-remove-part (on the --select object); RunObjectTests runs them in
+// place of the test edit (false: none given)
+void TestObjects(const std::string& add, const std::string& export_dir, int remove_part);
+bool RunObjectTests();
 // test aid: moves the selection 2 m, adds a 2 m box at ringside, red top rope, warmer light
 void TestEdit();
 // test aid: every entrance-zone model of library arena `lib` added in its place

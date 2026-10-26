@@ -374,7 +374,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
         modmaker/svrfmt/pac.cpp modmaker/svrfmt/archive.cpp modmaker/svrfmt/texture.cpp modmaker/svrfmt/jboy.cpp modmaker/svrfmt/disc.cpp modmaker/pac_editor.cpp modmaker/loudness.cpp modmaker/port_page.cpp modmaker/attire_page.cpp
         modmaker/pac_attires.cpp modmaker/installed_page.cpp modmaker/svrfmt/char_fbx.cpp modmaker/rig_map.cpp launcher/unzip.c
         modmaker/svrfmt/fbx_write.cpp modmaker/svrfmt/png.cpp modmaker/svrfmt/arena.cpp
-        modmaker/svrfmt/arena_import.cpp modmaker/svrfmt/zip_write.cpp
+        modmaker/svrfmt/arena_import.cpp modmaker/svrfmt/model_objects.cpp modmaker/svrfmt/zip_write.cpp
         modmaker/third_party/ufbx/ufbx.c launcher/bink_decode.c
         ${IMGUI_SRC}/imgui.cpp ${IMGUI_SRC}/imgui_draw.cpp ${IMGUI_SRC}/imgui_tables.cpp
         ${IMGUI_SRC}/imgui_widgets.cpp ${IMGUI_SRC}/backends/imgui_impl_win32.cpp
@@ -392,7 +392,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     # (Media Foundation only when used: Windows "N" without the Media Feature Pack)
     target_link_options(svr2011_modmaker PRIVATE -Wl,/DELAYLOAD:mfplat.dll -Wl,/DELAYLOAD:mfreadwrite.dll)
     set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")
-    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/report.c launcher/report_send.c launcher/report_match.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/release_check.c launcher/unzip.c launcher/mods_tab.c launcher/backgrounds.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/setup_tab.c launcher/discover_tab.c launcher/launcher.rc src/utf8.manifest)
+    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/apk_package.c launcher/report.c launcher/report_send.c launcher/report_match.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/release_check.c launcher/unzip.c launcher/mods_tab.c launcher/backgrounds.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/setup_tab.c launcher/discover_tab.c launcher/music_level.c launcher/launcher.rc src/utf8.manifest)
     set_target_properties(svr2011_launcher PROPERTIES OUTPUT_NAME "SvR2011 Launcher")
     # The hybrid CRT: the VC++ part (vcruntime) built in, the Universal CRT from Windows (ucrtbase.dll /
     # api-ms-win-crt-*, part of Windows 10+; Windows 7/8.1 with update KB2999226). The launcher starts

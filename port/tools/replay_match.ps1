@@ -24,12 +24,13 @@ $attires = $wrestlers | ForEach-Object { if ($_.attire) { $_.attire } else { 1 }
 $ports = $wrestlers | ForEach-Object { if ($null -ne $_.port) { $_.port } else { -1 } }
 $seed = if ($m.seeds -and $m.seeds.rand) { "0x$($m.seeds.rand)" } else { "" }
 
-# (the wrestlers' motions at the bell: trail.txt's first line - "person x y z motion" parts)
+# (the wrestlers' and the referee's motions and places (in 4s) at the bell: trail.txt's first line - "person x y z
+# motion" parts)
 function Get-BellMotions([string]$trail) {
     $first = Get-Content $trail -ErrorAction SilentlyContinue | Where-Object { $_ -match '^0 \|' } | Select-Object -First 1
     if (-not $first) { return $null }
     return (($first -split '\|' | Select-Object -Skip 1 | ForEach-Object { $f = $_.Trim() -split '\s+'
-        if ([int]$f[0] -lt 6) { "$($f[0]):$($f[4])" } }) -join ' ')
+        if ([int]$f[0] -le 6) { "$($f[0]):$($f[4])@$([math]::Round([double]$f[1] / 4)),$([math]::Round([double]$f[3] / 4))" } }) -join ' ')
 }
 $wantBell = Get-BellMotions (Join-Path $Recording "trail.txt")
 

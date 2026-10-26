@@ -38,6 +38,7 @@
 #include "imgui.h"
 #include "svrfmt/arena_build.h"
 #include "svrfmt/arena_import.h"
+#include "svrfmt/model_objects.h"
 #include "svrfmt/png.h"
 
 namespace fs = std::filesystem;
@@ -280,6 +281,11 @@ float g_snap_step = 5;  // units (1 = 10 cm)
 bool g_frame_all = false;
 int g_test_view = -1;  // (TestStart)
 std::string g_test_select;
+int g_file_from = 0;  // Add object from a file: 0 any 3D program in metres, 1 in centimetres, 2 Export to Blender
+// (test aids on the --select object: --test-add-object <file>[,<from>[,<x>,<up>,<z> metres]], --test-export-object
+// <dir>, --test-remove-part <n> - run instead of the test edit by --test-edit-save)
+std::string g_test_add_object, g_test_export_dir;
+int g_test_remove_part = -1;
 std::string g_test_picture;  // (test aid --test-picture: put on the --select object as "Use a picture..." does)
 
 // camera
@@ -1378,6 +1384,112 @@ void AddBox(float w, float h, float d) {
   Log("Added a box. Pick its texture on the right.");
 }
 
+// An OBJ / FBX from any 3D program (svrfmt/model_objects.h: metres or centimetres, Y up, counter-clockwise front
+// faces, textures from its materials) -> one added object standing on the floor at the view centre. from 2: a file
+// Export to Blender wrote (game units, the game's winding) - the round-trip importer, as before.
+int AddFileObject(const std::string& path, int from) {
+  const std::string label = U8(fs::u8path(path).stem());
+  if (from == 2) return ImportObject(path, label);
+  const int host = HostModel();
+  if (host < 0) { Log("This arena has no model to add objects to."); return -1; }
+  AddOptions opt;
+  opt.obj_unit_meters = from == 1 ? 0.01f : 1.0f;
+  AddReport rep;
+  const bool ok = AddObjectFile(*g_arena, host, path, opt, rep);
+  for (const auto& w : rep.warnings) Log("  " + w);
+  for (const auto& e : rep.errors) Log("  error: " + e);
+  if (!ok) {
+    if (rep.first_mesh >= 0) {  // (added, then refused - too much detail: taken out again)
+      auto& ms = g_arena->models[host].model.meshes;
+      ms.erase(ms.begin() + rep.first_mesh, ms.end());
+      ForgetGpu(host);
+    }
+    return -1;
+  }
+  const int i = AdoptNewMeshes(host, size_t(rep.first_mesh), label);
+  if (i < 0) return -1;
+  Obj& o = g_objs[i];
+  const float floor = g_area_lo >= 0 ? g_target.y : 0.0f;  // (y down: the floor at 0; an area's: below the view)
+  o.pos = {g_target.x - o.pivot.x, floor - o.pivot.y, g_target.z - o.pivot.z};
+  ApplyObj(o);
+  Log("Added " + label + ": " + std::to_string(rep.meshes_added) + " part(s), " + std::to_string(rep.textures_added) +
+      " new texture(s).");
+  return i;
+}
+
+// A folder (the system's folder picker), "" if none.
+std::string PickFolderU8(const wchar_t* title) {
+  std::string out;
+  IFileOpenDialog* dlg = nullptr;
+  if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+    DWORD opt = 0;
+    dlg->GetOptions(&opt);
+    dlg->SetOptions(opt | FOS_PICKFOLDERS);
+    dlg->SetTitle(title);
+    IShellItem* item = nullptr;
+    PWSTR path = nullptr;
+    if (SUCCEEDED(dlg->Show(nullptr)) && SUCCEEDED(dlg->GetResult(&item)) && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+      out = U8(fs::path(path));
+      CoTaskMemFree(path);
+    }
+    if (item) item->Release();
+    dlg->Release();
+  }
+  return out;
+}
+
+// The object as it stands now (moved, turned, scaled) -> <dir>/<label>.obj + .mtl + its textures as PNG.
+void ExportObject(const Obj& o, const std::string& dir) {
+  std::string path, err;
+  const std::string name = o.label.substr(0, o.label.find("  ("));  // (not the "  (id)" the list shows)
+  if (ExportObjectObj(*g_arena, o.model, o.meshes, dir, &path, &err, name)) Log("Exported " + o.label + " to " + path + ".");
+  else Log("Could not export " + o.label + ": " + err);
+}
+
+// One part (mesh) of an object taken out: emptied in the arena as the game expects (svrfmt/model_objects.h); the
+// object's own copies follow, so later moves keep it out. Not on the undo list.
+bool RemovePart(Obj& o, size_t k) {
+  if (k >= o.meshes.size()) return false;
+  std::string err;
+  if (!RemoveObject(*g_arena, o.model, o.meshes[k], &err)) {
+    Log("Could not remove that part: " + err);
+    return false;
+  }
+  const Mesh& m = g_arena->models[o.model].model.meshes[size_t(o.meshes[k])];
+  o.base[k] = m.verts;
+  o.strips[k] = m.strips;
+  ApplyObj(o);
+  Log("Removed part " + std::to_string(k + 1) + " of " + o.label + ".");
+  return true;
+}
+
+void PartsPanel(Obj& o) {
+  if (o.meshes.size() < 2) return;
+  const std::string head = "Parts (" + std::to_string(o.meshes.size()) + ")";
+  if (!ImGui::CollapsingHeader(head.c_str())) return;
+  static int pick = -1, pick_of = -1;
+  if (pick_of != g_sel) pick = -1, pick_of = g_sel;
+  const Model& m = g_arena->models[o.model].model;
+  const float scale = ImGui::GetFontSize() / 17.0f;
+  ImGui::BeginChild("parts", ImVec2(0, std::min(160.0f, 22.0f * float(o.meshes.size()) + 8) * scale), true);
+  for (size_t k = 0; k < o.meshes.size(); ++k) {
+    const Mesh& s = m.meshes[size_t(o.meshes[k])];
+    size_t tris = 0;
+    for (const auto& st : s.strips) tris += StripToTriangles(st.indices).size();
+    const int slot = DiffuseSlot(s);
+    const std::string tex = slot >= 0 && slot < int(m.textures.size()) ? m.textures[slot] : "-";
+    char b[128];
+    std::snprintf(b, sizeof b, "%zu  %s  %zu triangles%s##part%zu", k + 1, tex.c_str(), tris, tris ? "" : " (removed)", k);
+    if (ImGui::Selectable(b, pick == int(k))) pick = int(k);
+  }
+  ImGui::EndChild();
+  ImGui::BeginDisabled(pick < 0);
+  if (ImGui::Button("Remove part") && RemovePart(o, size_t(pick))) pick = -1;
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::TextDisabled("(can't be undone)");
+}
+
 // ---------------------------------------------------------------- view
 
 V3 Eye() {
@@ -1952,6 +2064,15 @@ void Inspector() {
       return;
     }
   }
+  ImGui::SameLine();
+  if (ImGui::Button("Export OBJ...")) {
+    const std::string dir = PickFolderU8(L"A folder for the object (.obj, .mtl and its textures)");
+    if (!dir.empty()) ExportObject(o, dir);
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("This object as it stands (moved, turned, scaled) as an OBJ with its textures: metres, Y up - "
+                      "for Blender or any 3D program, or to add it to another arena.");
+  PartsPanel(o);
   // texture
   if (!o.meshes.empty()) {
     const Model& m = am.model;
@@ -2143,6 +2264,12 @@ void AddPanel() {
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("Every picture in the folder whose name matches one of the arena's textures replaces it (fitted to "
                       "the same size and format): a whole retexture at once, e.g. textures exported from another game.");
+  static const char* kFrom[] = {"Any 3D program (metres)", "Any 3D program (centimetres)", "Export to Blender (10 cm)"};
+  ImGui::SetNextItemWidth(-LabelRoom("File from"));
+  ImGui::Combo("File from", &g_file_from, kFrom, 3);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Blender, 3ds Max, SketchUp...: metres (or centimetres), Y up, textures from the file's "
+                      "materials. Export to Blender: a file this editor wrote, in its own units.");
   if (ImGui::Button("Add object from a file (.obj / .fbx)...")) {
     wchar_t file[MAX_PATH] = L"";
     OPENFILENAMEW ofn = {sizeof ofn};
@@ -2151,15 +2278,11 @@ void AddPanel() {
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST;
     if (GetOpenFileNameW(&ofn)) {
-      const fs::path p(file);
-      const int i = ImportObject(U8(p), U8(p.stem()));
-      if (i >= 0) {
-        g_sel = i;
-        Log("Added " + U8(p.filename()) + " (textures: a textures folder beside it, or pick one).");
-      }
+      const int i = AddFileObject(U8(fs::path(file)), g_file_from);
+      if (i >= 0) g_sel = i;
     }
   }
-  ImGui::TextDisabled("Files in game units (10 cm), as Export to Blender writes.");
+  ImGui::TextDisabled("Stands on the floor at the view centre. Textures: the file's materials (an OBJ's .mtl).");
 }
 
 void BudgetPanel() {
@@ -2713,6 +2836,42 @@ void TestStart(int view, const std::string& select) {
   g_test_select = select;
 }
 void TestPicture(const std::string& path) { g_test_picture = path; }
+void TestObjects(const std::string& add, const std::string& export_dir, int remove_part) {
+  g_test_add_object = add, g_test_export_dir = export_dir, g_test_remove_part = remove_part;
+}
+bool RunObjectTests() {
+  if (g_test_add_object.empty() && g_test_export_dir.empty() && g_test_remove_part < 0) return false;
+  // the --select object: exported as it is, then a part removed
+  if (g_sel >= 0 && !g_test_export_dir.empty()) ExportObject(g_objs[g_sel], g_test_export_dir);
+  if (g_sel >= 0 && g_test_remove_part >= 0) {
+    Obj& o = g_objs[g_sel];
+    if (g_test_remove_part == 0) {  // (0: every part)
+      for (size_t k = 0; k < o.meshes.size(); ++k) RemovePart(o, k);
+    } else {
+      RemovePart(o, size_t(g_test_remove_part - 1));
+    }
+  }
+  if (!g_test_add_object.empty()) {
+    std::string file = g_test_add_object;
+    int from = 0;
+    float at[3] = {};
+    bool placed = false;
+    if (const size_t c = file.find(','); c != std::string::npos && c > 2) {  // (not the drive's colon)
+      const std::string rest = file.substr(c + 1);
+      file.resize(c);
+      placed = std::sscanf(rest.c_str(), "%d,%f,%f,%f", &from, &at[0], &at[1], &at[2]) == 4;
+    }
+    if (placed) g_target = {at[0] * 10, 0, at[2] * 10};
+    const int i = AddFileObject(file, from);
+    if (i >= 0 && placed) {
+      Obj& o = g_objs[i];
+      o.pos = {at[0] * 10 - o.pivot.x, -at[1] * 10 - o.pivot.y, at[2] * 10 - o.pivot.z};
+      ApplyObj(o);
+    }
+    Log(std::string("test objects: ") + file + (i >= 0 ? " added" : " NOT added"));
+  }
+  return true;
+}
 
 void Shutdown() {
   if (g_budget_thread.joinable()) g_budget_thread.join();
