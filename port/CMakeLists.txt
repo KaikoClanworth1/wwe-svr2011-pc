@@ -61,6 +61,7 @@ set(SVR2011_SOURCES
     src/match_types.cpp
     src/match_diag.cpp
     src/match_box.cpp
+    src/match_record.cpp
     src/caw_check.cpp
     src/caw_limits.cpp
     src/match_hud.cpp
@@ -181,7 +182,7 @@ endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" "${CMAKE_CURRENT_SOURCE_DIR}/BUILD_COMMIT.txt")
 # (online_files.cpp too: the online version gate compares it with the newest release)
-set_source_files_properties(src/svr2011_app.cpp src/online_files.cpp PROPERTIES COMPILE_DEFINITIONS
+set_source_files_properties(src/svr2011_app.cpp src/online_files.cpp src/match_record.cpp PROPERTIES COMPILE_DEFINITIONS
     "SVR2011_PORT_VERSION=\"${SVR2011_PORT_VERSION}\";SVR2011_BUILD_COMMIT=\"${SVR2011_BUILD_COMMIT}\"")
 
 # Windows only: XAudio2 audio, crash reports, PC music (XAudio2 + Media

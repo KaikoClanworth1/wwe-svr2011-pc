@@ -52,6 +52,7 @@
 #include "free_cam.h"
 #include "crowd_fight.h"
 #include "match_box.h"
+#include "match_record.h"
 #include "thread_cpu.h"
 
 namespace svr2011 {
@@ -2253,6 +2254,7 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
   MatchHudTick(base);  // (match_hud.h: the HUD shows while the match's clock runs)
   svr2011::CrowdHandoffUpdate(ctx, base);  // (a fan hands a weapon over the barricade: crowd_fight.h)
   svr2011::MatchBoxUpdate(ctx, base);      // (the match's black box: match_box.h)
+  svr2011::MatchRecordUpdate(ctx, base);   // (match recordings: match_record.h)
   // Research aid (stuck wrestlers, B11/B12): SVR2011_TEST_STUCK_CHARS=1 - each
   // second, people 0-5 whose place and motion (+212) haven't changed for 10 s
   // while the match clock runs are logged (once each time), with the motion.

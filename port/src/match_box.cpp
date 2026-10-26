@@ -25,6 +25,7 @@
 
 #include "arena_mods.h"
 #include "match_diag.h"
+#include "match_record.h"
 #include "move_packs.h"
 #include "p2p.h"
 
@@ -128,14 +129,17 @@ std::vector<std::string> g_pending;
 
 void Detect(const std::string& why) { g_pending.push_back(why); }
 
-// Test aid: SVR2011_TEST_BOX=<what>[,<match clock>] - once a match (clock 600), a detector's case made up for
+// Test aid: SVR2011_TEST_BOX=<what>[,<match clock>] - once a match (clock 600, from the bell), a detector's case made up for
 // person 0 (teleport: lying 440 then standing; nan: a NaN position; missing: its motion missed by every bank;
 // refloop: the referee's count step repeating) or a crash (crash: a fault on the world update's thread).
-void TestBox(uint32_t clock, Person*& p0, bool& nan_test) {
+void TestBox(uint32_t clock, bool referee, Person*& p0, bool& nan_test) {
   static const char* v = std::getenv("SVR2011_TEST_BOX");
   static size_t done = 0;
+  static bool bell = false;  // (the clock counted from the bell: it also runs through the entrances, then resets)
   if (!v) return;
   if (clock < 60) done = 0;
+  if (clock <= 2) bell = referee;
+  if (!bell) return;
   char list[64] = {};
   int at = 600;
   std::sscanf(v, "%63[a-z+],%d", list, &at);
@@ -207,7 +211,7 @@ void MatchBoxUpdate(PPCContext& ctx, uint8_t* base) {
       g_rule = rule;
     }
     Person* p0 = nullptr;
-    bool nan_test = false;
+    bool nan_test = false, referee = false;
     for (int i = 0; i < kPeople; ++i) {
       Person& p = g_people[size_t(i)];
       const uint32_t ch = Rd32(base + kChars + uint32_t(i) * 4);
@@ -217,7 +221,7 @@ void MatchBoxUpdate(PPCContext& ctx, uint8_t* base) {
       }
       if (p.ch != ch) p = {}, p.ch = ch;
       p.person = Rd32(base + ch + kPerson);
-      if (p.person == 6) g_referee = true;
+      if (p.person == 6) g_referee = referee = true;
       if (p.person == 0) p0 = &p;
       p.x = RdF(base + ch + 288), p.y = RdF(base + ch + 292), p.z = RdF(base + ch + 296);
       const uint32_t motion = Rd32(base + ch + kMotion);
@@ -235,7 +239,7 @@ void MatchBoxUpdate(PPCContext& ctx, uint8_t* base) {
         Detect(fmt::format("person {} stood up from lying {} with no get-up", p.person, prev));
       }
     }
-    TestBox(clock, p0, nan_test);
+    TestBox(clock, referee, p0, nan_test);
     // A NaN or far-away position (a wrestler thrown out of the world)
     for (int i = 0; i < kPeople; ++i) {
       Person& p = g_people[size_t(i)];
@@ -365,6 +369,7 @@ void MatchBoxLog(const char* why) {
     ++g_logged;
   }
   const std::string text = MatchBoxText(why, false);
+  MatchRecordBox(text);  // (the match's folder: box.txt - match_record.h)
   size_t at = 0;
   while (at < text.size()) {
     const size_t end = text.find('\n', at);
@@ -386,6 +391,7 @@ void MatchBoxMatchEnded() {
     std::lock_guard lock(g_box);
     g_on = false;
   }
+  MatchRecordEnded(text);  // (the match's folder: box.txt, match.json complete, done.txt - match_record.h)
   if (text.empty()) return;
   namespace fs = std::filesystem;
   const std::string log = rex::cvar::Query<std::string>("log_file");
@@ -402,6 +408,7 @@ void MatchBoxMatchEnded() {
 }
 
 void MatchBoxCrashText(FILE* f) {
+  MatchRecordCrashText(f);  // (the match's folder, marked unfinished: match_record.h)
   if (!f || !g_box.try_lock()) return;  // (a crash inside the box's own work: no box)
   const bool on = g_on;
   g_box.unlock();
