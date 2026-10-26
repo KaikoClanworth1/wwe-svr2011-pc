@@ -36,6 +36,7 @@
 #include "caw_limits.h"
 #include "match_diag.h"
 #include "p2p.h"
+#include "pad_types.h"
 
 #include "generated/default/svr2011_init.h"
 
@@ -140,6 +141,7 @@ struct Recording {
   uint32_t rule = 0, arena = 0;
   std::string arena_manifest;
   std::vector<svr2011::MatchPerson> people;
+  std::map<uint32_t, std::pair<bool, int>> cpu_attire;  // (character index: a CPU, the attire 1-4 - wrestlers only)
   FILE* inputs = nullptr;
   FILE* trail = nullptr;
   std::array<std::array<uint8_t, 17>, 8> pads{};  // (the last noted: connected + state, per user)
@@ -184,9 +186,14 @@ void WriteJson(bool complete) {  // (under g_rec)
   std::string people;
   for (const auto& p : g.people) {
     if (!people.empty()) people += ",\n    ";
-    people += fmt::format("{{\"index\": {}, \"person\": {}, \"name\": {}, \"superstar\": {}, \"mod\": {}, \"caw\": null}}",
-                          p.index, p.person, Json(p.name), p.superstar,
-                          p.mod.empty() ? std::string("null") : ModJson("Superstars", p.mod));
+    const auto ca = g.cpu_attire.find(p.index);
+    const bool known = ca != g.cpu_attire.end();
+    people += fmt::format(
+        "{{\"index\": {}, \"person\": {}, \"name\": {}, \"superstar\": {}, \"cpu\": {}, \"attire\": {}, \"mod\": {}, "
+        "\"caw\": null}}",
+        p.index, p.person, Json(p.name), p.superstar, known ? (ca->second.first ? "true" : "false") : "null",
+        known && ca->second.second ? std::to_string(ca->second.second) : std::string("null"),
+        p.mod.empty() ? std::string("null") : ModJson("Superstars", p.mod));
   }
   const std::string arena_id = Key(g.arena_manifest, "id");
   const std::string arena_name = Key(g.arena_manifest, "name");
@@ -247,6 +254,19 @@ void Start(uint8_t* base, uint32_t clock) {  // (under g_rec)
   g.people = svr2011::MatchPeople(base);
   for (auto& p : g.people)  // (MatchPeople's names end " (id N)": the id is its own key)
     if (const size_t at = p.name.rfind(" (id "); at != std::string::npos) p.name.resize(at);
+  // Each wrestler's CPU flag and attire, from the match's pick slots (*0x82EDEB48 +432, 2116 bytes a person: -8
+  // the controller, 1 the CPU; +8 superstar * 100 + (attire - 1) * 10 + 2) and the character's player +1152 - a
+  // CPU only while no pad of a local player plays him (a test's cpu=all marks the picks too: match_types.cpp).
+  if (const uint32_t match = Rd32(base + 0x82EDEB48); match >= 0x40000000u && !(match & 3))
+    for (const auto& p : g.people) {
+      if (p.person >= 6) continue;
+      const uint32_t c = Rd32(base + kChars + p.index * 4);
+      const uint8_t* slot = base + match + 432 + p.person * 2116;
+      const uint32_t port = c ? Rd32(base + c + 1152) : ~0u, pick = Rd32(slot + 8);
+      const bool pad = port < svr2011::kMaxPlayers && svr2011::PlayerPadType(port) != svr2011::PadType::kNone;
+      const int attire = pick != 51200 && pick / 100 < 512 ? int(pick % 100 / 10) + 1 : 0;
+      g.cpu_attire[p.index] = {slot[-8] == 1 && !pad, attire};
+    }
   std::string names;
   for (const auto& p : g.people)
     if (p.person < 6) names += (names.empty() ? "" : "_vs_") + Safe(p.name);
