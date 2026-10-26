@@ -300,7 +300,8 @@ def main():
                   "length_s": 312, "result": "won: JEFF HARDY", "rule": {"id": 0x4D, "name": "SINGLE EXTREME RULES MATCH"},
                   "arena": {"id": 9, "name": "ROYAL RUMBLE", "mod": {"type": "Arenas", "id": "arena_" + tag}},
                   "people": [{"index": 0, "name": "JEFF HARDY", "cpu": False, "mod": {"type": "Superstars", "id": "test"}, "caw": None},
-                             {"index": 1, "name": "RANDY ORTON", "cpu": True, "mod": None, "caw": None}],
+                             {"index": 1, "name": "RANDY ORTON", "cpu": True, "mod": None, "caw": None},
+                             {"index": 2, "person": 6, "name": "REFEREE", "mod": None, "caw": None}],
                   "frame_rate": 60, "online": False}
     mz = io.BytesIO()
     with zipfile.ZipFile(mz, "w") as z:
