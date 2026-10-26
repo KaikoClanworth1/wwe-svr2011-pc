@@ -1278,6 +1278,7 @@ struct PinGuard {
   uint32_t start = 0;   // (match frame the referee's count motion began)
   bool broken = false;  // (the count dropped to 0: the timing rules)
   uint32_t motions = 0; // (the pinner's and his opponent's motions at the start)
+  int32_t voiced = 0;   // (the count the judge last called out: its +104 after the judge ran)
 };
 int32_t CountAt(uint32_t frames) { return frames >= 210 ? 3 : frames >= 140 ? 2 : frames >= 78 ? 1 : 0; }
 PinGuard g_pin;
@@ -1376,10 +1377,16 @@ REX_HOOK_RAW(sub_822446E0) {
       }
       g_pin.count = std::max(g_pin.count, CountAt(into));
       Wr32(base + judge + 100, uint32_t(g_pin.count));
+      // The lost step also takes the count the judge last called out (+104) back to 0, every update: with only
+      // +100 put back the judge saw a new count each update and said "two" again and again until the 3 - the
+      // loud repeating 2-count (report 2026-10-24: up to ~70 times at a lost 2). So the count already called
+      // out goes back too: the judge speaks only when the count goes up.
+      if (g_pin.voiced > 0) Wr32(base + judge + 104, uint32_t(std::min(g_pin.voiced, g_pin.count)));
     }
   }
   if (!LostTraceOn()) {
     __imp__sub_822446E0(ctx, base);
+    if (g_pin.judge == judge) g_pin.voiced = int32_t(Rd32(base + judge + 104));
     PinCountLog(base, judge, pinner, pin_on, frame);
     return;
   }
@@ -1391,8 +1398,20 @@ REX_HOOK_RAW(sub_822446E0) {
                 Rd32(base + judge + 116), Rd32(base + judge + 112), Rd32(base + pinner + 212),
                 ref ? Rd32(base + ref + 212) : 0, frame, g_extra_update ? " (extra update)" : "");
   __imp__sub_822446E0(ctx, base);
+  if (g_pin.judge == judge) g_pin.voiced = int32_t(Rd32(base + judge + 104));
   CheckLost(base, before, "sub_822446E0", lr);
   PinCountLog(base, judge, pinner, pin_on, frame);
+}
+// Problem reports: each count voice the pin judge plays (sub_82165AD8 called from sub_822446E0, its id
+// 0x20000 + count - 30863 / 30866) - a repeated "two" shows as repeated lines (200 a session).
+REX_EXTERN(__imp__sub_82165AD8);
+REX_HOOK_RAW(sub_82165AD8) {
+  static int lines = 0;
+  if (const uint32_t lr = uint32_t(ctx.lr); lr >= 0x822446E0 && lr < 0x82244C30 && lines < 200 && ++lines)
+    REXLOG_INFO("pin voice {:X} (count {} or {} by its bank), frame {}{}", ctx.r4.u32,
+                int32_t(ctx.r4.u32) - 0x20000 + 30863, int32_t(ctx.r4.u32) - 0x20000 + 30866,
+                Rd32(base + kMatchFrames), g_extra_update ? " (extra update)" : "");
+  __imp__sub_82165AD8(ctx, base);
 }
 SVR2011_LOST_TRACE(sub_82245DF8)
 SVR2011_LOST_TRACE(sub_82243660)
