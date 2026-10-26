@@ -265,6 +265,7 @@ $gameArgs += $o.args
 
 # ---- run
 $t0 = Get-Date
+Use-SvrTestServer -GameDir $game -GameArgs $gameArgs | Out-Null
 $proc = Start-Process (Join-Path $game $exeName) -WorkingDirectory $game -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
 Set-SvrTestPriority $proc
 for ($t = 0; $t -lt 100 -and -not $proc.HasExited; $t++) { $proc.Refresh(); if ($proc.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 }

@@ -112,6 +112,7 @@ $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
 Remove-Item Env:SVR2011_NATIVE_SHADERS -ErrorAction SilentlyContinue
 foreach ($e in $Env) { $k, $v = $e -split '=', 2; Set-Item "Env:$k" $v }
 $a = @("--log_file=`"$log`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false", "--monitor=2")
+Use-SvrTestServer -GameDir $Game -GameArgs $a | Out-Null
 $p = Start-Process (Join-Path $Game "svr2011.exe") -WorkingDirectory $Game -ArgumentList $a -PassThru -WindowStyle Minimized
 $loadIds = @()
 try {

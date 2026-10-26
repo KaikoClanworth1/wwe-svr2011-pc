@@ -33,6 +33,7 @@ $args_ = @("--log_file=`"$log`"", "--log_level=debug", "--audio_mute=true", "--f
 $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"
 $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED = "0"
 Use-TestSaves
+Use-SvrTestServer -GameDir $game -GameArgs $args_ | Out-Null
 $p = Start-Process (Join-Path $game "svr2011.exe") -WorkingDirectory $game -ArgumentList $args_ -PassThru -WindowStyle Minimized
 Set-SvrTestPriority $p
 
