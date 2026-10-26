@@ -3081,6 +3081,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   // superstar / signs / media pages' --star*, --sign, --media-* and --test-*-save
   int start_editor = -1, start_view = -1, start_new = -1, start_page = -1, start_backstage = -1, test_lib = -1;
   std::wstring start_mod, start_select, test_save, project, test_project, test_roundtrip, moves_pack, page_name;
+  std::string test_obj_add, test_obj_export;  // (--test-add-object / --test-export-object: editor::TestObjects)
+  int test_obj_remove = -1;
   bool behind = false;  // --behind: tests - the window is never shown at all (frames still run)
   std::wstring perf_tour;  // --perf-tour <report>: every page in turn, its first-frame and slowest times
   std::vector<std::wstring> run_tool_args;
@@ -3410,6 +3412,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--page-name") && more) page_name = argv[++i];  // arena editor backstage superstar moves signs media assets anims icons help
     else if (!wcscmp(argv[i], L"--select") && more) start_select = argv[++i];
     else if (!wcscmp(argv[i], L"--test-picture") && more) editor::TestPicture(Utf8(argv[++i]));
+    else if (!wcscmp(argv[i], L"--test-add-object") && more) test_obj_add = Utf8(argv[++i]);
+    else if (!wcscmp(argv[i], L"--test-export-object") && more) test_obj_export = Utf8(argv[++i]);
+    else if (!wcscmp(argv[i], L"--test-remove-part") && more) test_obj_remove = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-edit-save") && more) test_save = argv[++i];
     else if (!wcscmp(argv[i], L"--new-arena") && more) start_new = _wtoi(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-lib") && more) test_lib = _wtoi(argv[++i]);
@@ -3627,6 +3632,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   backgrounds_page::TestStart(background_files, background_save);
   media_page::TestStart(media_arena, media_video, media_pictures, media_save);
   arena_page::SetTestSave(test_save, test_lib);
+  if (!test_obj_add.empty() || !test_obj_export.empty() || test_obj_remove >= 0)
+    editor::TestObjects(test_obj_add, test_obj_export, test_obj_remove);
   if (start_new >= 0 && start_new < 20) arena_page::StartNew(start_new);
   if (start_editor >= 0 && start_editor < 20) arena_page::OpenEditor(start_editor);
   editor::TestStart(start_view, Utf8(start_select));  // (before the arena is set)
