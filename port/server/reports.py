@@ -264,6 +264,11 @@ def match_summary(match_bytes):
     for p in m.get("people") if isinstance(m.get("people"), list) else []:
         p = d(p)
         mod = d(p.get("mod"))
+        try:  # ("person": the match's place - 6 the referee, 7 / 8 the announcers: not the wrestlers)
+            if int(p.get("person", 0)) >= 6:
+                continue
+        except (TypeError, ValueError):
+            pass
         people.append({"name": str(p.get("name") or p.get("superstar") or "?")[:60], "cpu": bool(p.get("cpu")),
                        "mod": str(mod.get("id") or "")[:80] if p.get("mod") else "", "caw": p.get("caw") is not None})
     amod = d(arena.get("mod"))
