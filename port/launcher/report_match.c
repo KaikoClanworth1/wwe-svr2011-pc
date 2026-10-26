@@ -284,6 +284,13 @@ static int json_str(const char *j, const char *key, char *out, int n)
 }
 
 /* The picker's line: "THE SANDMAN vs EDGE - RAW, ONE ON ONE NORMAL - 26 Oct 01:30, 5:12 (won: EDGE)". */
+static void match_label(const WCHAR *dir, const WCHAR *name, WCHAR *out, int n);
+void report_match_label(const WCHAR *dir, WCHAR *out, int n)
+{
+    const WCHAR *name = wcsrchr(dir, L'\\');
+    match_label(dir, name ? name + 1 : dir, out, n);
+}
+
 static void match_label(const WCHAR *dir, const WCHAR *name, WCHAR *out, int n)
 {
     WCHAR json_path[MAX_PATH], done[MAX_PATH];
@@ -297,15 +304,29 @@ static void match_label(const WCHAR *dir, const WCHAR *name, WCHAR *out, int n)
         const char *pp = strstr((const char *)j, "\"people\"");
         const char *ar = strstr((const char *)j, "\"arena\"");
         const char *ru = strstr((const char *)j, "\"rule\"");
-        if (pp) {   /* (each person's "name", up to the array's end) */
-            const char *endp = strchr(pp, ']');
-            const char *p = pp;
-            char nm[60];
-            while ((p = strstr(p, "\"name\"")) && (!endp || p < endp)) {
-                json_str(p, "name", nm, sizeof nm);
+        if (pp && (pp = strchr(pp, '[')) != NULL) {
+            /* (each entry {index, person, name, ...} of the array - the wrestlers only: "person" 6 is the referee,
+               7 and 8 the announcers) */
+            const char *p = pp + 1;
+            while (*p && *p != ']') {
+                const char *open = strchr(p, '{'), *q;
+                char obj[1024], nm[60], person[16];
+                int depth = 0;
+                size_t k = 0;
+                if (!open) break;
+                for (q = open; *q; q++) {
+                    if (*q == '{') depth++;
+                    else if (*q == '}' && --depth == 0) break;
+                    if (k + 1 < sizeof obj) obj[k++] = *q;
+                }
+                obj[k] = 0;
+                if (!*q) break;
+                p = q + 1;
+                while (*p == ',' || *p == ' ' || *p == '\r' || *p == '\n' || *p == '\t') p++;
+                if (json_str(obj, "person", person, sizeof person) && atoi(person) >= 6) continue;
+                if (!json_str(obj, "name", nm, sizeof nm) || !nm[0]) continue;
                 if (people[0]) strncat_s(people, sizeof people, " vs ", _TRUNCATE);
                 strncat_s(people, sizeof people, nm, _TRUNCATE);
-                p += 6;
             }
         }
         if (ar) json_str(ar, "name", arena, sizeof arena);
@@ -330,8 +351,14 @@ static void match_label(const WCHAR *dir, const WCHAR *name, WCHAR *out, int n)
             snprintf(dur, sizeof dur, "%d:%02d", secs / 60, secs % 60);
             strncat_s(line, sizeof line, dur, _TRUNCATE);
         }
-        if (GetFileAttributesW(done) == INVALID_FILE_ATTRIBUTES) strncat_s(line, sizeof line, " (crashed / unfinished)", _TRUNCATE);
-        else if (result[0]) { strncat_s(line, sizeof line, " (", _TRUNCATE); strncat_s(line, sizeof line, result, _TRUNCATE); strncat_s(line, sizeof line, ")", _TRUNCATE); }
+        /* (result: "running", "ended" or "crash" - docs/MATCH_RECORDINGS.md; no done.txt: not complete) */
+        if (!strcmp(result, "crash")) strncat_s(line, sizeof line, " (crashed)", _TRUNCATE);
+        else if (GetFileAttributesW(done) == INVALID_FILE_ATTRIBUTES) strncat_s(line, sizeof line, " (unfinished)", _TRUNCATE);
+        else if (result[0] && strcmp(result, "ended") && strcmp(result, "running")) {
+            strncat_s(line, sizeof line, " (", _TRUNCATE);
+            strncat_s(line, sizeof line, result, _TRUNCATE);
+            strncat_s(line, sizeof line, ")", _TRUNCATE);
+        }
     }
     MultiByteToWideChar(CP_UTF8, 0, line, -1, out, n);
 }
