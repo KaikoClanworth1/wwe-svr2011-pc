@@ -12,3 +12,6 @@ int report_make(const WCHAR *game_dir, const WCHAR *version, WCHAR *out, int out
 /* ... with the player's description of the problem (UTF-8, or NULL) at the top of report.txt. */
 int report_make_ex(const WCHAR *game_dir, const WCHAR *version, const char *description, WCHAR *out, int outn,
                    int *logs, int *crashes);
+/* ... and a recorded match's folder (logs\matches\<name>, report_match.h) as match/<name>/ (NULL: none). */
+int report_make_match(const WCHAR *game_dir, const WCHAR *version, const char *description, const WCHAR *match_dir,
+                      WCHAR *out, int outn, int *logs, int *crashes);

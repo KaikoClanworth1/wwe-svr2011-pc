@@ -658,8 +658,41 @@ int report_make(const WCHAR *game_dir, const WCHAR *version, WCHAR *out, int out
     return report_make_ex(game_dir, version, NULL, out, outn, logs, crashes);
 }
 
+/* A recorded match's files (logs\matches\<name>\, a handful, under 5 MB) as match/<name>/... */
+static void add_match(Zip *z, const WCHAR *match_dir)
+{
+    WCHAR pat[MAX_PATH], path[MAX_PATH];
+    const WCHAR *name = wcsrchr(match_dir, L'\\');
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    name = name ? name + 1 : match_dir;
+    swprintf_s(pat, MAX_PATH, L"%s\\*", match_dir);
+    if ((h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
+        return;
+    do {
+        char zname[260];
+        size_t size = 0;
+        uint8_t *d;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            continue;
+        swprintf_s(path, MAX_PATH, L"%s\\%s", match_dir, fd.cFileName);
+        if (!(d = read_file(path, &size, 8u << 20)))
+            continue;
+        snprintf(zname, sizeof zname, "match/%ls/%ls", name, fd.cFileName);
+        zip_add(z, zname, d, size);
+        free(d);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
 int report_make_ex(const WCHAR *game_dir, const WCHAR *version, const char *description, WCHAR *out, int outn,
                    int *logs, int *crashes)
+{
+    return report_make_match(game_dir, version, description, NULL, out, outn, logs, crashes);
+}
+
+int report_make_match(const WCHAR *game_dir, const WCHAR *version, const char *description, const WCHAR *match_dir,
+                      WCHAR *out, int outn, int *logs, int *crashes)
 {
     WCHAR dir[MAX_PATH], sub[MAX_PATH];
     SYSTEMTIME st;
@@ -714,6 +747,8 @@ int report_make_ex(const WCHAR *game_dir, const WCHAR *version, const char *desc
     add_settings(&z, game_dir);
     add_saves_check(&z, game_dir);
     add_mods_text(&z, game_dir);
+    if (match_dir && match_dir[0])
+        add_match(&z, match_dir);
     zip_finish(&z);
     fclose(z.f);
     return 1;
