@@ -61,7 +61,8 @@ void report_signature(const WCHAR *game_dir, char *out, int n);
 /* A picture the server takes: png / jpeg / webp by its first bytes, 5 MB at most. 0 with why if not. */
 int report_image_ok(const WCHAR *path, WCHAR *why, int why_n);
 
-/* One line saying what will be sent (shown before Send). */
+/* One line saying what will be sent (shown before Send): the match (match_name set) and the mods with a
+   mod_zips entry (any non-NULL - before Send, a mark for "will be sent") are named, with their size. */
 void report_send_summary(const ReportUpload *u, WCHAR *out, int n);
 
 /* Sends it to <server>/api/reports (server: online_server, e.g. https://sho-ti.me/svr). 1 if the server took it

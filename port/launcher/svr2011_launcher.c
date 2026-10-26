@@ -3339,6 +3339,19 @@ static void rep_pics_show(HWND w)
     ZeroMemory(&u, sizeof u);
     u.zip = L"report.zip";
     u.n_images = s_rep_npics;
+    if (s_rep_rm.has_match && !s_rep_mods_busy) {   /* (the match and the mods Send would take, as rep_match_parts) */
+        const uint64_t limit = s_rep_rm.max_upload ? s_rep_rm.max_upload : REP_MOD_MAX;
+        uint64_t total = 0;
+        u.match_name = "match";
+        u.mods = s_rep_rm.mods;
+        u.n_mods = s_rep_rm.n_mods;
+        for (i = 0; IsDlgButtonChecked(w, REP_INCMODS) == BST_CHECKED && i < s_rep_rm.n_mods; i++) {
+            const ReportMod *d = &s_rep_rm.mods[i];
+            if (d->on_server || !d->hash[0] || !d->send || total + d->size > limit) continue;
+            u.mod_zips[i] = L"";
+            total += d->size;
+        }
+    }
     report_send_summary(&u, line, 300);
     SetDlgItemTextW(w, REP_SUMMARY, line);
 }
@@ -3414,6 +3427,7 @@ static void rep_match_pick(HWND w)
         SetDlgItemTextW(w, REP_MODS, line);
         EnableWindow(GetDlgItem(w, REP_INCMODS), FALSE);
         InterlockedExchange(&s_rep_mods_busy, 0);
+        rep_pics_show(w);
         return;
     }
     s_rep_rm.match = s_rep_matches[sel];
@@ -3685,6 +3699,9 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case REP_MATCH:
             if (HIWORD(wp) == CBN_SELCHANGE) rep_match_pick(w);
             return 0;
+        case REP_INCMODS:
+            rep_pics_show(w);   /* (the summary: with or without the mods) */
+            return 0;
         case REP_COPYID: {
             WCHAR id[64];
             MultiByteToWideChar(CP_UTF8, 0, s_rep_result.id, -1, id, 64);
@@ -3734,6 +3751,7 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             SetDlgItemTextW(w, REP_MODS, line);
             EnableWindow(GetDlgItem(w, REP_INCMODS), s_rep_rm.n_mods > 0);
             InterlockedExchange(&s_rep_mods_busy, 0);
+            rep_pics_show(w);
         }
         free(j);
         return 0;
