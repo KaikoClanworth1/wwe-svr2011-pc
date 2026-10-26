@@ -160,6 +160,7 @@ struct Mod {
   std::vector<std::pair<uint16_t, uint16_t>> moves;
   int entrance = -1;            // entrance number (manifest entrance=; profile +0x1C0 +0x14..+0x18)
   int attire_entrance[4] = {-1, -1, -1, -1};  // per attire (manifest attire<N>_entrance=; EntranceForAttire)
+  int victory = -1;  // its victory scene when it wins a singles match (manifest victory=; VictoryOfWinner)
   // a created entrance (manifest cae=<file>: a whole 284-byte entrance block as the game holds it, big-endian -
   // its five scene parts are copied in: motion, pyro and the rest per scene, as CREATE AN ENTRANCE's ADVANCED
   // CREATION makes them); its parts' hash (.applied cae=) so a player's own later edit stays
@@ -833,6 +834,7 @@ void LoadMods() {
         }
         if (l.rfind("pose=", 0) == 0) m.pose = uint32_t(std::clamp(std::atoi(l.c_str() + 5), 0, 65535));
         if (l.rfind("entrance=", 0) == 0) m.entrance = std::clamp(std::atoi(l.c_str() + 9), 0, 65535);
+        if (l.rfind("victory=", 0) == 0) m.victory = std::clamp(std::atoi(l.c_str() + 8), 0, 65535);
         if (l.rfind("cae=", 0) == 0) {  // (a created entrance's block: CaeParts)
           std::ifstream in(f / fs::u8path(l.substr(4)), std::ios::binary);
           std::vector<uint8_t> b((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -1002,6 +1004,7 @@ struct AttireMod {
   std::string folder, name;
   uint32_t id = 0, attire = 0;  // attire: 0-3 (the digit)
   int entrance = -1;
+  int victory = -1;  // (victory=: VictoryOfWinner)
 };
 std::vector<AttireMod> g_attire_mods;
 std::unordered_map<uint32_t, uint32_t> g_attire_pairs;  // id -> guest 4 x {name string id, unlock}
@@ -1013,6 +1016,7 @@ constexpr uint32_t kAttireModNameIds = 0xB400;           // string ids for attir
 // superstar's own attires - not an attire of their own (no name, no slot of the attire rule); the first folder
 // (A-Z) for an attire keeps it. (id, attire digit) -> entrance.
 std::map<std::pair<uint32_t, uint32_t>, int> g_attire_entrance_only;
+std::map<std::pair<uint32_t, uint32_t>, int> g_attire_victory_only;  // (the same for victory=)
 
 const AttireMod* AttireModOf(uint32_t id, uint32_t attire) {
   for (const auto& a : g_attire_mods)
@@ -1059,6 +1063,7 @@ void LoadAttireMods() {
         else if (k == "name") p.a.name = v.substr(0, 31);
         else if (k == "model") p.model = v;
         else if (k == "entrance") p.a.entrance = std::clamp(std::atoi(v.c_str()), 0, 65535);
+        else if (k == "victory") p.a.victory = std::clamp(std::atoi(v.c_str()), 0, 65535);
       }
       std::fclose(t);
     }
@@ -1075,7 +1080,11 @@ void LoadAttireMods() {
         continue;
       }
     }
-    if (!fs::exists(f / p.model, ec)) {  // (no model: an entrance for one of the superstar's own attires, or nothing)
+    if (!fs::exists(f / p.model, ec)) {  // (no model: an entrance / victory for one of the superstar's own attires, or nothing)
+      if (p.asked && p.a.victory > 0 &&
+          g_attire_victory_only.emplace(std::make_pair(p.a.id, uint32_t(p.asked - 1)), p.a.victory).second)
+        REXLOG_INFO("[svr2011] attire mods: {} -> superstar {} attire {}: victory {} (no model of its own)", p.a.folder,
+                    p.a.id, p.asked, p.a.victory);
       if (p.asked && p.a.entrance > 0) {
         if (g_attire_entrance_only.emplace(std::make_pair(p.a.id, uint32_t(p.asked - 1)), p.a.entrance).second)
           REXLOG_INFO("[svr2011] attire mods: {} -> superstar {} attire {}: entrance {} (no model of its own)", p.a.folder,
@@ -1083,7 +1092,7 @@ void LoadAttireMods() {
         else
           REXLOG_WARN("[svr2011] attire mods: {}: superstar {} attire {} has an entrance from another mod already - left out",
                       p.a.folder, p.a.id, p.asked);
-      } else {
+      } else if (!p.asked || p.a.victory <= 0) {
         REXLOG_WARN("[svr2011] attire mods: {}: no {} (and no entrance= for attire 1-4) - left out", p.a.folder, p.model);
       }
       continue;
@@ -2247,6 +2256,52 @@ REX_HOOK_RAW(sub_82756768) {
   if (const int n = EntranceForAttire(ctx, base, mgr, idx, false); n > 0) ctx.r3.u64 = uint32_t(n);
   else ctx.r3 = r;
   ctx.r3.u64 = svr2011::EntranceFallback(base, mgr, idx, -1, ctx.r3.u32);
+}
+
+// Victory scenes (docs/VICTORY_SCENES.md): after the match the winner's scene is a script EVP? n from
+// pac\evt\Winning*.pac, queued in the entrance queue (*(0x82E3DDFC) + 5872) at +416 and started by
+// sub_8275DEE0: 6000 + id for the 26 superstars who have their own (6139 John Cena), else a generic one (7000-7107
+// the singles and divas ones; tag, trio, manager, title and match-type scenes are 7150+ and 8000+). A mod's
+// victory= (a superstar mod, or an attire mod for that attire, with or without a model) replaces a singles scene
+// with any scene that exists - another superstar's, a generic one or a pack's own (pacentry EVPx <n>).
+namespace {
+constexpr uint32_t kQueue = 5872, kVictoryAt = 416, kFighters = 0x82E3CC50, kPerson = 1156, kLost = 447,
+                   kBeatenBy = 448;
+int VictoryOfWinner(const uint8_t* base, uint32_t table, uint32_t* key_out) {
+  for (uint32_t i = 0; i < 8; ++i) {
+    const uint32_t c = Rd32(base + kFighters + i * 4);
+    if (!c || !base[c + kLost]) continue;
+    const uint32_t person = base[c + kBeatenBy];
+    if (person >= 16) return -1;
+    const uint32_t key = Rd32(base + table + kSlotsAt + person * kSlotSize + kSlotKey), attire = key / 10 % 10;
+    *key_out = key;
+    if (const Mod* m = ModOf(key / 100)) return m->victory;
+    if (const AttireMod* am = AttireModOf(key / 100, attire); am && am->victory > 0) return am->victory;
+    const auto it = g_attire_victory_only.find({key / 100, attire});
+    return it != g_attire_victory_only.end() ? it->second : -1;
+  }
+  return -1;
+}
+}  // namespace
+REX_EXTERN(__imp__sub_8275DEE0);
+REX_HOOK_RAW(sub_8275DEE0) {
+  if (const uint32_t table = Rd32(base + kSlotTable)) {
+    uint8_t* at = base + table + kQueue + kVictoryAt;
+    const uint32_t now = Rd32(at);
+    uint32_t key = 0;
+    const int want = now >= 6000 && now <= 7107 ? VictoryOfWinner(base, table, &key) : -1;
+    if (now >= 6000 && now <= 7107)
+      REXLOG_INFO("[svr2011] victory: scene {} for superstar {} attire {}", now, key / 100, key / 10 % 10 + 1);
+    if (want > 0 && uint32_t(want) != now) {
+      if (svr2011::EntranceScriptExists(want)) {
+        Wr32(at, uint32_t(want));
+        REXLOG_INFO("[svr2011] victory: superstar {} attire {}: scene {} instead of {}", key / 100, key / 10 % 10 + 1, want, now);
+      } else {
+        REXLOG_WARN("[svr2011] victory: superstar {}: victory={} has no script - the game's {} plays", key / 100, want, now);
+      }
+    }
+  }
+  __imp__sub_8275DEE0(ctx, base);
 }
 
 // Audio events by name (sub_82BEC030(name, ...)): a mod's own announcer

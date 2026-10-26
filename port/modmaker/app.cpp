@@ -533,7 +533,7 @@ bool InstallModFiles(const fs::path& dir, const std::vector<ZipEntry>& files, st
     for (const auto& f : files)
       if (f.name == "manifest.txt") {
         const std::string t(f.data.begin(), f.data.end());
-        for (const char* k : {"type", "name", "base", "song", "music", "movie", "theme_gain", "call_gain", "entrance", "cae", "moves", "pack"})
+        for (const char* k : {"type", "name", "base", "song", "music", "movie", "theme_gain", "call_gain", "entrance", "victory", "cae", "moves", "pack"})
           if (const std::string v = Value(t, k); !v.empty()) keys += std::string(" ") + k + "=" + v;
       }
     Log("install: " + PathStr(dir.parent_path().filename()) + "/" + PathStr(dir.filename()) + " (" + std::to_string(files.size()) +
@@ -1150,7 +1150,7 @@ void ReloadEntrances() {
         if (!e.is_directory(ec) || fs::exists(e.path() / L"disabled", ec)) continue;
         const fs::path pack = std::wstring(where) == L"Moves" ? e.path() : e.path() / L"moves";
         for (auto& i : PackEntrances(pack))
-          if (seen.insert(i.number).second) out.push_back(std::move(i));
+          if (!IsVictoryNumber(i.number) && seen.insert(i.number).second) out.push_back(std::move(i));
       }
     std::sort(out.begin(), out.end(), [](const EntranceInfo& a, const EntranceInfo& b) { return a.number < b.number; });
     g_entrances_next = std::move(out);
@@ -1172,6 +1172,41 @@ bool EntrancesReady() {
 const std::vector<EntranceInfo>& Entrances() {
   static const std::vector<EntranceInfo> kNone;
   return EntrancesReady() ? g_entrances : kNone;
+}
+
+const std::vector<EntranceInfo>& Victories() {
+  static std::vector<EntranceInfo> v;
+  static bool done = false;
+  if (done) return v;
+  done = true;
+  std::set<int> seen;
+  std::error_code ec;
+  std::vector<fs::path> pacs;
+  for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"pac" / L"evt", ec))
+    if (Lower(PathStr(e.path().filename())).rfind("winning", 0) == 0) pacs.push_back(e.path());
+  std::sort(pacs.begin(), pacs.end());
+  for (const auto& p : pacs) {
+    PacIndex idx;
+    if (!ReadPacIndex(p, idx)) continue;
+    for (const auto& e : idx.entries) {
+      if (e.group.rfind("EVP", 0) != 0 || e.name.empty() || !std::isdigit(uint8_t(e.name[0]))) continue;
+      const int n = std::atoi(e.name.c_str());
+      if (n < 6000 || n > 7107 || !seen.insert(n).second) continue;  // (singles: tag, trio, manager scenes are 7150+)
+      Bytes b;
+      EntranceInfo i;
+      i.number = n;
+      if (ReadPacEntry(p, e, b)) i.name = EvpName(b);
+      v.push_back(std::move(i));
+    }
+  }
+  for (const wchar_t* where : {L"Moves", L"Superstars"})
+    for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / where, ec)) {
+      if (!e.is_directory(ec) || fs::exists(e.path() / L"disabled", ec)) continue;
+      for (auto& i : PackEntrances(std::wstring(where) == L"Moves" ? e.path() : e.path() / L"moves"))
+        if (IsVictoryNumber(i.number) && seen.insert(i.number).second) v.push_back(std::move(i));
+    }
+  std::sort(v.begin(), v.end(), [](const EntranceInfo& a, const EntranceInfo& b) { return a.number < b.number; });
+  return v;
 }
 
 const std::map<int, MoveInfo>& MoveInfos() {
@@ -3059,6 +3094,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   float star_height = 0, star_call_gain = 0;
   std::string star_moveset, star_import_moveset;
   int star_entrance = 0;
+  int star_victory = 0;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
   std::string star_name;
   std::vector<std::wstring> sign_files, media_pictures, background_files;
@@ -3432,6 +3468,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-cae") && more) star_page::TestCae(Utf8(argv[++i]));  // a created entrance (Mods\.cae id)
     else if (!wcscmp(argv[i], L"--star-import-moveset") && more) star_import_moveset = Utf8(argv[++i]);  // star:<id> | mod:<folder>
     else if (!wcscmp(argv[i], L"--star-entrance") && more) star_entrance = _wtoi(argv[++i]);
+    else if (!wcscmp(argv[i], L"--star-victory") && more) star_victory = _wtoi(argv[++i]);  // (victory=, the section open)
     else if (!wcscmp(argv[i], L"--run-fix") && more) g_test_fix = Utf8(argv[++i]);
     else if (!wcscmp(argv[i], L"--install-star")) g_test_install_frames = 0;  // "<text>[|<n>]" (see g_test_fix)
     else if (!wcscmp(argv[i], L"--show-problems")) g_show_problems = true;
@@ -3585,6 +3622,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (!star_moveset.empty()) star_page::TestMoveset(star_moveset);
   if (!star_import_moveset.empty()) star_page::TestImportMoveset(star_import_moveset);
   if (star_entrance) star_page::TestEntrance(star_entrance);
+  if (star_victory) star_page::TestVictory(star_victory);
   signs_page::TestStart(sign_files, sign_save);
   backgrounds_page::TestStart(background_files, background_save);
   media_page::TestStart(media_arena, media_video, media_pictures, media_save);

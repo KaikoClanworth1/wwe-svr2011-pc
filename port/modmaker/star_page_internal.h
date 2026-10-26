@@ -56,6 +56,7 @@ struct StarProject {
   int pose = -1;                  // pose=<motion id>: the select / VS panel's pose (-1: the style's)
   int music = 0;                  // music= : a theme of the game's own (its music id 1-253) instead of a song file; 0 = none
   int entrance = -1;              // entrance= number (-1: the style's); a superstar's id, or 535 (Jeff Hardy's, unused)
+  int victory = -1;               // victory= scene (-1: the game's; Victories())
   char announcer[32] = "";        // announcer=<NAME>: the ring announcer's own clips of that name
   char hometown_city[32] = "";    // hometown=<CITY>[,<STATE>]: the announcer's own hometown clips
   char hometown_state[32] = "";
