@@ -4,7 +4,8 @@
 //   SVR2011_TEST_MATCH="people=JOHN CENA,RANDY ORTON arena=11 cpu=all"
 //
 // attires=2,1: each person's attire (1-4, in person order; default 1). min=2: only a match with 2 or more
-// picks (a Road to WrestleMania story's match, not its walk); an empty name keeps that person.
+// picks (a Road to WrestleMania story's match, not its walk); an empty name keeps that person. exact=1: only the
+// people listed (a later slot that the route's presses picked is emptied - match replay tests).
 // people: roster names (as the log's "match:" lines print them), ids, or
 // CAW<N> (the Created Superstar in save slot N - enough for the entrances
 // and the ring announcer; the match itself crashed once: the select screen's
@@ -59,6 +60,7 @@ struct TestMatch {
   int arena = -1;
   bool all_cpu = false;  // cpu=all: every person a CPU (the picks too)
   int min_people = 0;    // min=N: only a match whose picks are N or more (min=2: a story's match, not its walk)
+  bool exact = false;    // exact=1: the people listed only - a later slot the route's presses picked is emptied
 };
 
 const TestMatch& Config() {
@@ -100,6 +102,8 @@ const TestMatch& Config() {
         m.arena = std::atoi(value.c_str());
       } else if (key == "cpu") {
         m.all_cpu = value == "all";
+      } else if (key == "exact") {
+        m.exact = value == "1";
       } else if (key == "min") {
         m.min_people = std::atoi(value.c_str());
       } else {
@@ -253,6 +257,12 @@ REX_HOOK_RAW(sub_828BC5E8) {
       done += (done.empty() ? "" : ", ") +
               (caw ? "CAW " + std::to_string(id) : std::string(reinterpret_cast<const char*>(Record(base, id) + kName)));
     }
+    if (m.exact)  // (match replays: a phantom third wrestler made two runs of one setup differ)
+      for (uint32_t i = uint32_t(m.people.size()); i < 6; ++i)
+        if (uint8_t* slot = base + match + kSlots + i * kSlotSize; Rd32(slot + 8) != kNoPick) {
+          REXLOG_INFO("test match: slot {} emptied (exact=1)", i);
+          Wr32(slot + 8, kNoPick);
+        }
     REXLOG_INFO("test match: people {}; arena {}", done.empty() ? "as picked" : done,
                 Rd32(base + kLive + kArena));
     // Test aid: SVR2011_TEST_DAMAGE=<0-255> - the six DAMAGE BALANCING sliders (game block +10394..+10399, damage x

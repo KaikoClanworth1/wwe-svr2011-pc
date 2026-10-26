@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -349,23 +350,32 @@ REX_HOOK_RAW(sub_821C6BE0) {
                 base[kSeedCounters], base[kSeedCounters + 1], lr, g_updates);
 }
 
-// Replay research: SVR2011_TEST_RAND_LOG=1 - who calls the CRT rand() in a match, every 10 s; SVR2011_TEST_RAND_FIXED=1
-// - one rand() state for every thread, reset when a match's clock starts.
+// The CRT rand() keeps a state per thread, seeded from the clock: a match's draws (who starts how, the AI - on the
+// logic thread and the characters' job threads) differ run to run. From each match's load (sub_823EEB98,
+// MatchRecordMatchLoads) every call site draws from a state of its own (the same generator: x 0x343FD + 0x269EC3,
+// bits 16-30), seeded from the match's seed and the site - so the order the threads call in doesn't matter. The
+// seed goes into match.json, so a replay draws the same.
+// Replay research: SVR2011_TEST_RAND_LOG=1 - who calls rand() in a match, every 10 s (logic thread or not).
 std::mutex g_rand_mutex;
 std::map<uint32_t, uint32_t> g_rand_callers;
-uint32_t g_rand_state = 1;
+thread_local bool t_logic = false;  // (the world update's thread: MatchRecordUpdate runs on it every frame)
+std::atomic<bool> g_match_rand_on{false};
+uint32_t g_match_seed = 0;                     // (under g_rand_mutex)
+std::map<uint32_t, uint32_t> g_site_rand;     // (call site -> its state, under g_rand_mutex)
 REX_EXTERN(__imp__sub_828F2430);
 REX_HOOK_RAW(sub_828F2430) {
   static const bool log = std::getenv("SVR2011_TEST_RAND_LOG") != nullptr;
-  static const bool fixed = std::getenv("SVR2011_TEST_RAND_FIXED") != nullptr;
   if (log) {
     std::lock_guard lock(g_rand_mutex);
-    ++g_rand_callers[uint32_t(ctx.lr)];
+    ++g_rand_callers[uint32_t(ctx.lr) | (t_logic ? 0u : 1u)];  // (bit 0: another thread's call)
   }
-  if (fixed) {
+  if (g_match_rand_on.load(std::memory_order_relaxed)) {
     std::lock_guard lock(g_rand_mutex);
-    g_rand_state = g_rand_state * 0x343FD + 0x269EC3;
-    ctx.r3.u64 = (g_rand_state >> 16) & 0x7FFF;
+    const uint32_t lr = uint32_t(ctx.lr) | (t_logic ? 0u : 1u);  // (a site's logic-thread calls: a stream of their own)
+    auto [it, fresh] = g_site_rand.try_emplace(lr, 0);
+    if (fresh) it->second = g_match_seed ^ (lr * 2654435761u);
+    it->second = it->second * 0x343FD + 0x269EC3;
+    ctx.r3.u64 = (it->second >> 16) & 0x7FFF;
     return;
   }
   __imp__sub_828F2430(ctx, base);
@@ -373,8 +383,27 @@ REX_HOOK_RAW(sub_828F2430) {
 
 namespace svr2011 {
 
+void MatchRecordMatchLoads() {
+  if (!t_logic) {
+    REXLOG_WARN("[svr2011] record: a match loads off the logic thread - its rand() stays the CRT's");
+    return;
+  }
+  // (test aid: SVR2011_TEST_RAND_SEED=<n> - this seed for every match)
+  static const char* test = std::getenv("SVR2011_TEST_RAND_SEED");
+  const uint32_t seed = test ? uint32_t(std::strtoul(test, nullptr, 0))
+                             : uint32_t(std::chrono::steady_clock::now().time_since_epoch().count() * 2654435761u);
+  {
+    std::lock_guard lock(g_rand_mutex);
+    g_match_seed = seed;
+    g_site_rand.clear();
+  }
+  g_match_rand_on = true;
+  REXLOG_INFO("[svr2011] record: a match loads - its rand() seed {:08X}", seed);
+}
+
 void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
   (void)ctx;
+  t_logic = true;
   ++g_updates;
   const uint32_t clock = Rd32(base + kMatchFrames);
   const uint32_t c0 = Rd32(base + kChars);
@@ -385,9 +414,14 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
     if (!s.empty()) REXLOG_INFO("[svr2011] record: rand() callers in the last 10 s:{}", s);
     g_rand_callers.clear();
   }
-  if (static const bool fixed = std::getenv("SVR2011_TEST_RAND_FIXED") != nullptr; fixed && clock == 1) {
+  // The bell: the draws start again from the match's seed (before it, the people's loading - its pace the disk's -
+  // decides how many frames the intro gets, so a replay is anchored here).
+  if (static uint32_t last_clock = 0; clock == 1 && last_clock != 1 && g_match_rand_on) {
     std::lock_guard lock(g_rand_mutex);
-    g_rand_state = 1;
+    g_site_rand.clear();
+    last_clock = clock;
+  } else {
+    last_clock = clock;
   }
   {
     std::lock_guard lock(g_rec);
@@ -417,10 +451,18 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
   // Test aid: SVR2011_TEST_TRAIL=<file> - every world update of a match: the clock and each person's position, motion
   // and motion frame (two runs of one match compared line by line: does the game play it the same?)
   static const char* trail = std::getenv("SVR2011_TEST_TRAIL");
-  if (!trail || !clock || !c0) return;
+  // (before the bell - the clock at 0 - its lines are "pre <frame>", the frames counted from the characters' coming)
+  static uint32_t pre = 0;
+  if (!trail || !c0 || c0 < 0x40000000u) {
+    pre = 0;
+    return;
+  }
   if (!g_trail_test) g_trail_test = std::fopen(trail, "w");
   if (!g_trail_test) return;
-  std::string line = fmt::format("{}", clock);
+  std::string line = clock ? fmt::format("{}", clock) : fmt::format("pre {}", ++pre);
+  if (clock) pre = 0;
+  // (the random table's four draw indexes, 0x82E3689C: inlined draws all over the game advance them)
+  line += fmt::format(" | r {} {} {} {}", base[0x82E3689C], base[0x82E3689D], base[0x82E3689E], base[0x82E3689F]);
   for (uint32_t i = 0; i < 10; ++i) {
     const uint32_t c = Rd32(base + kChars + i * 4);
     if (c < 0x40000000u || (c & 3)) continue;
