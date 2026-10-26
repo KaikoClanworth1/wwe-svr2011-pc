@@ -35,6 +35,7 @@ typedef struct {
     int n_mods;
     const WCHAR *mod_zips[REPORT_MAX_MODS];        /* mods[i]'s zip to send, or NULL (on the server / not ticked) */
     void (*progress)(void *ctx, uint64_t sent, uint64_t total);   /* (called from the sending thread) */
+    uint64_t save_bytes;                           /* the zip holds the main save (its size: the Sends line), 0 not */
     void *ctx;
 } ReportUpload;
 

@@ -36,6 +36,11 @@ final class ProblemReport {
 
     // ... with the player's description (ReportForm) at the top of report.txt.
     static Result make(File gameFolder, String appVersion, String description) throws IOException {
+        return make(gameFolder, appVersion, description, false);
+    }
+
+    // ... and (withSave: the form's "Include my main save" tick) the main save as save/ (addMainSave).
+    static Result make(File gameFolder, String appVersion, String description, boolean withSave) throws IOException {
         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
         File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         dir.mkdirs();
@@ -50,7 +55,8 @@ final class ProblemReport {
                 + "GPU: " + (GpuInfo.known().isEmpty() ? "?" : GpuInfo.known()) + "\n"
                 + "made: " + stamp + "\n"
                 + "contents: the newest game logs (logs/), crash reports (crashes/) and svr2011.toml "
-                + "(account token and password removed); IP addresses blanked (x.x.x.x)\n";
+                + "(account token and password removed)" + (withSave ? ", the main save (save/: SaveData.dat - "
+                + "no Created Superstars or Paint Tool)" : "") + "; IP addresses blanked (x.x.x.x)\n";
             // (the player's words first: what a reader looks for)
             if (description != null && !description.isEmpty()) info = description + "\n" + info;
             put(zip, "report.txt", info.getBytes(StandardCharsets.UTF_8));
@@ -70,8 +76,34 @@ final class ProblemReport {
             }
             addSavesCheck(zip, gameFolder);
             addModsText(zip, gameFolder);
+            if (withSave) addMainSave(zip, gameFolder);
         }
         return r;
+    }
+
+    // The player's main save, as the PC launcher's (launcher/report.c main_save): save/SaveData.dat (story, Universe
+    // and Road to WrestleMania progress, options), save/.info/SaveData.dat.header (the name the game finds it by)
+    // and save/.universe/* (the mods' Universe data) - not the Created Superstars (*.cas), Paint Tool, logos,
+    // highlight reels, replays, the online cache or backups. tools/report_save.py puts it in a test user data.
+    // Returns its bytes (zip null: only counts them - the form's tick text).
+    static long addMainSave(ZipOutputStream zip, File gameFolder) throws IOException {
+        File dir = savesDir(gameFolder);
+        long total = 0;
+        String[] names = {"SaveData.dat", ".info/SaveData.dat.header"};
+        for (String n : names) {
+            File f = new File(dir, n);
+            if (!f.isFile()) continue;
+            total += f.length();
+            if (zip != null) put(zip, "save/" + n, read(f, 32 << 20));
+        }
+        File[] uni = new File(dir, ".universe").listFiles();
+        if (uni != null)
+            for (File f : uni) {
+                if (!f.isFile()) continue;
+                total += f.length();
+                if (zip != null) put(zip, "save/.universe/" + f.getName(), read(f, 8 << 20));
+            }
+        return total;
     }
 
     // The saves folder: svr2011.toml's saves_folder (relative to the game folder), else <game>/Saves.

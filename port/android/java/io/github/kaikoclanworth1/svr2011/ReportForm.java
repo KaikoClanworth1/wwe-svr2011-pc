@@ -18,6 +18,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -54,6 +55,22 @@ final class ReportForm {
         v.addView(what);
         label(a, v, "What were you doing just before? (menu or mode, match type, superstars, mods)");
         v.addView(before);
+        // (the main save: on unless the player turns it off - ProblemReport.addMainSave)
+        long saveBytes = 0;
+        try {
+            saveBytes = ProblemReport.addMainSave(null, InstallActivity.gameFolder());
+        } catch (Exception e) {
+            saveBytes = 0;
+        }
+        CheckBox withSave = new CheckBox(a);
+        withSave.setText(String.format(java.util.Locale.US, "Include my main save (story / Universe progress and options "
+            + "- not my created superstars or Paint Tool)%s", saveBytes > 0 ? String.format(java.util.Locale.US,
+            ", %.1f MB", saveBytes / 1048576.0) : ""));
+        withSave.setTextColor(LauncherActivity.kText);
+        withSave.setChecked(saveBytes > 0);
+        withSave.setEnabled(saveBytes > 0);
+        withSave.setPadding(0, a.dp(10), 0, 0);
+        v.addView(withSave);
         TextView error = a.text("", 14, LauncherActivity.kRed);
         error.setVisibility(View.GONE);
         v.addView(error);
@@ -84,7 +101,8 @@ final class ReportForm {
             final String[] failed = new String[1];
             a.background(() -> {
                 try {
-                    result[0] = ProblemReport.make(InstallActivity.gameFolder(), a.versionName(), description);
+                    result[0] = ProblemReport.make(InstallActivity.gameFolder(), a.versionName(), description,
+                        withSave.isChecked());
                 } catch (Exception e) {
                     failed[0] = e.getMessage();
                 }

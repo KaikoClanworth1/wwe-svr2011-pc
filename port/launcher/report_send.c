@@ -197,7 +197,7 @@ int report_image_ok(const WCHAR *path, WCHAR *why, int why_n)
 
 void report_send_summary(const ReportUpload *u, WCHAR *out, int n)
 {
-    WCHAR match[40] = L"", mods[80] = L"";
+    WCHAR match[40] = L"", mods[80] = L"", sav[60] = L"";
     uint64_t bytes = 0;
     int i, k = 0;
     if (u->match_name) wcscpy_s(match, 40, L", the match recording");
@@ -206,9 +206,10 @@ void report_send_summary(const ReportUpload *u, WCHAR *out, int n)
     if (k)
         swprintf_s(mods, 80, bytes >= (10ull << 20) ? L", %d mod%s (%.0f MB)" : L", %d mod%s (%.1f MB)", k,
                    k == 1 ? L"" : L"s", bytes / 1048576.0);
-    swprintf_s(out, n, L"Sends: your answers%s%s%s%s, %d picture%s - no password, token or internet addresses.",
+    if (u->save_bytes) swprintf_s(sav, 60, L", your main save (%.1f MB)", u->save_bytes / 1048576.0);
+    swprintf_s(out, n, L"Sends: your answers%s%s%s%s%s, %d picture%s - no password, token or internet addresses.",
                u->zip ? L", the report zip (newest logs, crash reports, settings" : L"",
-               u->zip ? L")" : L"", match, mods, u->n_images, u->n_images == 1 ? L"" : L"s");
+               u->zip ? L")" : L"", sav, match, mods, u->n_images, u->n_images == 1 ? L"" : L"s");
 }
 
 /* A JSON answer's string or number value for "key" (a flat object: no nesting needed here). */
