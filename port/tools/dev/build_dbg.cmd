@@ -11,6 +11,6 @@ set PATH=C:\Program Files\LLVM\bin;%PORT%\..\recomp\bin;%PATH%
 if not exist "%B%\build.ninja" (
   cmake -S "%PORT%" -B "%B%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ ^
     "-DCMAKE_C_FLAGS=-march=x86-64-v2" "-DCMAKE_CXX_FLAGS=-march=x86-64-v2" -DREXSDK_DIR="%PORT%\..\recomp\rexglue-sdk" ^
-    -DSVR2011_DEBUG_SUITE=ON || exit /b 1
+    -DSVR2011_DEBUG_SUITE=ON -DREXGLUE_USE_VULKAN=ON || exit /b 1
 )
 start "" /low /wait /b ninja -C "%B%" -j 2 %T%

@@ -455,7 +455,7 @@ extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion
                       bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width);
                       bool PickEntrance(const char* label, int& value, const char* none, float width = 320);
                       bool EntranceOutfit(const std::wstring& pac); }
-namespace attire_page { extern PageHooks hooks; void TestPacAttires(const std::wstring& spec); void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); }
+namespace attire_page { extern PageHooks hooks; void TestPacAttires(const std::wstring& spec); void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); void TestKeepEntrance(); }
 namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save);
                        Image SignPicture(const Image& src);
                        // a sign pack's files (manifest.txt + NN_<name>.dds) from 128 x 64 signs; installed into
