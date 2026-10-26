@@ -88,8 +88,10 @@ CATS = {'STAT': 'STAT', 'BASE': 'BASE', 'STN1': 'STN1', 'STN2': 'STN2', 'GRND': 
 # Games whose two-person moves keep the attacker turned 180 degrees in its own frame, this many root units down -z
 # from the victim's (w13_retarget.facing_frame). 2K15: its Attitude Adjustment 2 (2011's 5010 reused) matched
 # 2011's attacker only turned; unturned, the victim played its part metres away (docs/MOVE_PORTING.md).
-FACING_GAP = {'wwe2k15': 1500, 'wwe13': 1500, 'wwe12': 1500}   # (WWE '13: the same layout - its AA 50285 matches 2011's 5010 only
-                                                 # turned; '12 / 2K14 / 2K16 untested)
+FACING_GAP = {'wwe2k15': 1500, 'wwe13': 1500, 'wwe12': 1500,   # (WWE '13: the same layout - its AA 50285 matches
+              'wwe2k14': 1500, 'wwe2k16': 1500, 'wwe2k17': 1500}  # 2011's 5010 only turned; '12, 2K14, 2K16 and 2K17
+# alike: their AA 50285 starts 142-160 units apart turned (2011's own: 229), 1641 as stored - a 2K17 Blue Thunder
+# Bomb ported before this started its pair metres apart, "the animation skipped and Edge froze")
 
 
 class BadInput(Exception):
@@ -665,6 +667,7 @@ class Game11:
             raise BadInput('--pac11 is not an SvR 2011 pac folder: %s' % pac11)
         self.pac11, self.SM = pac11, SM
         self.waze = SS.Game(pac11, 11).waze()          # {id: (bits, name)}
+        self.situation = SS.Game(pac11, 11).situation()  # {id: where it starts - WAZE +0x73}
         os.makedirs(work, exist_ok=True)
         self.idx = SM.bank_index(pac11, os.path.join(work, 'bank_index11.pkl'))
         self.moved = set()
@@ -871,6 +874,16 @@ def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attac
                 if allowed is not None and e['id'] not in allowed:
                     continue
                 if not reversals and 'reversal' in g11.waze[e['id']][1].lower():
+                    continue
+                # (a move from the top rope or onto an opponent seated on the turnbuckle - WAZE situation 9-11, 13,
+                # 14 - only when corner moves are asked for: 2K17's Blue Thunder Bomb, a standing powerbomb, got DDT
+                # 14 (23153, situation 13) through the categories its namesakes voted for)
+                if 'CORN' not in cats and getattr(g11, 'situation', {}).get(e['id']) in (9, 10, 11, 13, 14):
+                    continue
+                # (nor one that is also a rope, apron or corner move - its events wait on the ropes: it then got
+                # Dragon Special, in SPE2 and ROPE; 2K15's F-5 froze on such a template)
+                if any(p.startswith('MVMT/') and p.split('/')[1] in ('ROPE', 'APRO', 'CORN') and p.split('/')[1] not in cats
+                       for p, kd, ks in g11.banks_of(e['id'])):
                     continue
                 if any(kd == 'YMBs' for p, kd, ks in g11.banks_of(e['id'])):
                     continue
@@ -1129,12 +1142,14 @@ def convert(a, rep):
             tid, vic, gap = dive, None, None
             rep['notes'].append("a dive onto a lying victim: the attacker's motion on a one-person template, the "
                                 "victim reacts as in the game's own dives")
-    # A hold with phases (hold, struggle loops, escape, tap: 3+ two-person phases under 30) is a submission:
+    # A hold with phases (hold, struggle loops, escape, tap: two-person phases 1, 2 and 4 among those under 30 -
+    # 2011's x 1 / 2 / 4; 2K17's Blue Thunder Bomb, a powerbomb with phases 1 / 2 / 3, got Walls of Jericho when 3
+    # phases were enough) is a submission:
     # 2011's are YMBs moves in MVMT/ANAS (x 0 1 2 4 6 7). A coded category mixes them with other moves - 2K15's
     # M013 is mostly reversals, so its vote said STAT and the Patriot Lock got Mule Kick Reversal 2. (30 and up
     # are a dive's hit / miss branches - WWE '12's Shooting Star Press 4 has 30 / 40 / 50 - and 90-92 reversals.)
     src_phases = {int(p) for p, d in by.items() if p.isdigit() and 0 < int(p) < 30 and 0 in d and 1 in d}
-    if not tid and vic is not None and len(src_phases) >= 3:
+    if not tid and vic is not None and {1, 2, 4} <= src_phases:
         sub = choose_submission(g11, nf, src_phases)
         if sub:
             tid, cat11 = sub, ['ANAS']
