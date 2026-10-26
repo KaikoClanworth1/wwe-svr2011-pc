@@ -27,6 +27,40 @@ Answers (JSON):
 - `400` bad input, `413` too large, `429` too many (5 in 10 minutes and 20 a day per address, and per account),
   `503` the storage node is down: `{"ok": false, "error": "<text to show>"}`. The client keeps its zip.
 
+## The match folder and its mods (2.1.6+)
+
+A report can carry the game's match folder (`logs\matches\<date>_<people>\`: match.json, inputs.bin, box.txt,
+loaded.txt, mods.txt - Arena Porting's format 1) and the mods used in that match, so the match can be replayed.
+The launcher (HCTP chat, report_match.c) sends them like this:
+
+1. `POST /api/reports/mods/check` with `{"mods": [{"hash", "size", "name", "type", "id", "version"}]}` (64 at most;
+   30 checks per 10 minutes per address) -> `{"ok": true, "missing": [hashes to send], "max_upload": <bytes for
+   this report>, "max_mod": <bytes per mod>, "mods_off": <true: send none - the server's mod store is full>}`.
+2. `POST /api/reports` as above, plus the parts `match` (`match.zip`, 5 MB at most) and `mod0` .. `modN` (each a zip
+   of one mod folder, file name `<hash>.zip`, 300 MB each and 300 MB of mods a report; only the `missing` ones).
+   `report` gains `"match": "<folder name>"` and `"mods": [{hash, name, type, id, version, size, sent}]` (every mod
+   of the match, `sent` whether it came along). The answer gains `"match": true/false`, `"mods_stored": [hashes]`,
+   `"mods_refused": {hash: why}` (`hash mismatch`, `too large`, `server mod store full`, `not in the report's mod
+   list`); a refused mod never fails the report. `413` when a cap is passed: the launcher sends it again without
+   mods.
+
+The hash is the mod folder's CONTENT hash (the same folder gives the same hash however it is zipped): SHA-256 over
+its files, sorted by their relative path as UTF-8 with '/' separators and ASCII letters lower-cased; each file adds
+that path, a 0 byte, its size as 8 bytes little-endian, then its bytes. Files or folders whose name starts with '.'
+and files named `disabled` are left out (of the hash and the zip). The zip holds paths relative to the mod folder
+(one top folder is accepted and taken off). The server checks every mod it is sent against its hash.
+
+Kept on the node: `reports/<day>/<id>/match.zip` and `reports/mods/<hash>.svrmod` (each mod once, whatever report
+sent it; a mod goes when the last report listing it is deleted). The mods together are capped by the node's
+`--report-mod-quota-gb` (default 20); the dashboard warns from 80 %. nginx: `client_max_body_size 400m` on
+`/svr/api/reports`, request buffering off (the core writes mod parts to `<data>/tmp/reports` as they come).
+
+Dashboard: under each report with them, the match line (people, mod / CAW / CPU, rule, arena or custom arena, version,
+fps, result), its zip, the mods (a download each, "not sent" for the others, their sizes) and **Get replay pack**:
+one zip with `match/` (the match folder), `mods/<type>_<id>_<hash>.svrmod`, `mods.txt` and `report.json`. Above the
+list: the space the report mods use. Admin routes: `GET /api/admin/report/<id>/match.zip`,
+`GET /api/admin/report/<id>/replay.zip`, `GET /api/admin/report-mod/<hash>`.
+
 ## The signature (duplicates)
 
 `sha1(app | version | problem | line)[:16]`, where `line` is the first crash / error line in the zip (its
