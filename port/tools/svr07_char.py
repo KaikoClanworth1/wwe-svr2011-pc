@@ -97,10 +97,12 @@ def bake(kids):
     normal = Image.new('RGBA', NORMAL, (128, 128, 255, 255))
     sx, sy = NORMAL[0] / COLOR[0], NORMAL[1] / COLOR[1]
     for d, (x, y, w, h) in boxes.items():
-        color.paste(images[d].resize((w, h), Image.LANCZOS), (x, y))
+        # (S8.resize_rgba, not Image.resize: Pillow premultiplies RGBA, so where a 2007 part's alpha is near 0 -
+        # Mick Foley's vest 0..32, pants 1..15 - its colour came out as dark streaks and coloured specks)
+        color.paste(S8.resize_rgba(images[d], (w, h), Image.LANCZOS), (x, y))
         if d in normal_of:
             nb = (int(x * sx), int(y * sy), max(1, int(w * sx)), max(1, int(h * sy)))
-            nim = Image.open(io.BytesIO(tex[normal_of[d]])).convert('RGBA').resize(nb[2:], Image.LANCZOS)
+            nim = S8.resize_rgba(Image.open(io.BytesIO(tex[normal_of[d]])).convert('RGBA'), nb[2:], Image.LANCZOS)
             normal.paste(nim, nb[:2])
     for (k, i), d in diffuse_of.items():
         x, y, w, h = boxes[d]
