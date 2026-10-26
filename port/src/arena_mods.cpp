@@ -1311,6 +1311,9 @@ REX_HOOK_RAW(sub_826A17D0) {
     // (the VS screen opening: its theme - test scripts wait for this line, vs_styles.h)
     static int logged = 0;
     if (!std::strncmp(path, "/MENU/M", 7) && logged++ < 100) REXLOG_INFO("[svr2011] VS screen: theme {:.16}", path);
+    static const bool evp_log = std::getenv("SVR2011_TEST_EVP_LOG") != nullptr;
+    if (evp_log && !std::strncmp(path, "/EV", 3))
+      REXLOG_INFO("evp: {:.20} (lr {:08X})", path, uint32_t(ctx.lr));
     // An arena mod with its own VS theme (vs/theme.pac): "/MENU/M<nn>x" -> "/VA<k>/VSTx" (the same length), its group
     // in the VS styles' overlay pac. Decided here, as the screen opens: the game finds the file by this name now
     // (the boot-time names are only the game's own).
