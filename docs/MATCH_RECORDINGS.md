@@ -45,7 +45,7 @@ with `inputs.bin` at 192 bytes.
   "rule": {"id": 0, "name": "rule 00"},
   "arena": {"id": 1, "name": "arena 1", "mod": null},
   "people": [
-    {"index": 0, "person": 0, "name": "JOHN CENA", "superstar": 57, "mod": null, "caw": null}
+    {"index": 0, "person": 0, "name": "JOHN CENA", "superstar": 57, "cpu": false, "attire": 2, "mod": null, "caw": null}
   ],
   "frame_rate": 60,
   "online": false,
@@ -61,6 +61,10 @@ with `inputs.bin` at 192 bytes.
   - `ended`: the match's end task started;
   - `crash`: the crash report was written while the match ran.
 - `people` lists every character in the match, the referee (`person` 6) and the announcers included.
+- `cpu` is true when the CPU plays the wrestler. That means the pick slot's controller is the CPU and no local
+  player's pad plays them.
+- `attire` is the picked attire, 1-4.
+- `cpu` and `attire` are `null` for the referee and the announcers.
 - `mod` is `null` for stock content. For a mod it is `{type, id, version, files}`, where `files` is the hash used
   in mods.txt.
 - `cpu_tab` gives -1 for anything left at the game's own setting.
