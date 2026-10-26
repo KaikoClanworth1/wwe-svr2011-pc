@@ -41,10 +41,8 @@ function Seconds([string]$t) {
 $people = @(1..6 | Where-Object { $o.p[$_] } | ForEach-Object { $o.p[$_] })
 if ($people.Count -lt 2) { throw "svrtest lan: --p1 and --p2 at least" }
 
-# ---- guards: the player's game, room for two test games (4 at most, all chats)
-Assert-NoPlayerGame
-$running = @(Get-SvrGames).Count
-if ($running -gt 2) { throw "svrtest lan: $running test games already run - two more would pass 4" }
+# ---- guards: the player's game, room for two test games (test_guard's limit, all chats)
+Assert-NoPlayerGame -Games 2
 
 # ---- the game folder (svrtest's, the dbg exe)
 $prep = @(& (Join-Path $PSScriptRoot "svrtest.ps1") prepare --exe dbg --mods $o.mods)
@@ -111,6 +109,7 @@ function Start-Side([string]$side, [string[]]$extra) {
               "--mnk_mode=false", "--p2p_port_mapping=false", "--p2p_relay=false", "--dbg_boot=online",
               "--dbg_state_clock=$($o.clock)", "--dbg_out=`"$(Join-Path $out $side)`"") + $extra
     $procs[$side] = Start-Process $exe -WorkingDirectory $game -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
+    Set-SvrTestPriority $procs[$side]
     foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_INPUT_FILE", "SVR2011_CONFIG", "SVR2011_USER_DATA") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
 }
 $online = "SVRDBG: boot: page online open"
