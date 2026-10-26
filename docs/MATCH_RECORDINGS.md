@@ -42,8 +42,8 @@ with `inputs.bin` at 192 bytes.
   "start": "2026-10-26T18:47:03",
   "length_s": 34,
   "result": "ended",
-  "rule": {"id": 0, "name": "rule 00"},
-  "arena": {"id": 1, "name": "arena 1", "mod": null},
+  "rule": {"id": 0, "name": "SINGLE"},
+  "arena": {"id": 1, "name": "RAW", "mod": null},
   "people": [
     {"index": 0, "person": 0, "name": "JOHN CENA", "superstar": 57, "cpu": false, "attire": 2, "mod": null, "caw": null}
   ],
@@ -67,6 +67,12 @@ with `inputs.bin` at 192 bytes.
 - `cpu` and `attire` are `null` for the referee and the announcers.
 - `mod` is `null` for stock content. For a mod it is `{type, id, version, files}`, where `files` is the hash used
   in mods.txt.
+- Rule and arena names are the game's own strings, in the game's language.
+  - The rule's name comes from its rule record (+56, a string.pac string id).
+  - A stock arena's name is string 0x9C42 + its id.
+  - A mod arena uses the name from its manifest.
+  - The fallbacks are `rule XX` and `arena N`. `port/server/match_names.py` has English names, tidied in places,
+    for the dashboard.
 - `cpu_tab` gives -1 for anything left at the game's own setting.
 
 The launcher's report form (HCTP) and the server (Extras) read these keys. Tell both before renaming a key or

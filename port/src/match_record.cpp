@@ -35,6 +35,7 @@
 #include "arena_mods.h"
 #include "caw_limits.h"
 #include "match_diag.h"
+#include "menu_hooks.h"
 #include "p2p.h"
 #include "pad_types.h"
 
@@ -139,7 +140,7 @@ struct Recording {
   std::string start;
   std::chrono::steady_clock::time_point started;
   uint32_t rule = 0, arena = 0;
-  std::string arena_manifest;
+  std::string arena_manifest, rule_name, arena_name;  // (the names: the game's strings, a mod arena's manifest)
   std::vector<svr2011::MatchPerson> people;
   std::map<uint32_t, std::pair<bool, int>> cpu_attire;  // (character index: a CPU, the attire 1-4 - wrestlers only)
   FILE* inputs = nullptr;
@@ -196,7 +197,6 @@ void WriteJson(bool complete) {  // (under g_rec)
         p.mod.empty() ? std::string("null") : ModJson("Superstars", p.mod));
   }
   const std::string arena_id = Key(g.arena_manifest, "id");
-  const std::string arena_name = Key(g.arena_manifest, "name");
   const std::string s = fmt::format(
       "{{\n  \"format\": 1,\n  \"complete\": {},\n  \"game\": {{\"version\": {}, \"commit\": {}}},\n  \"start\": {},\n"
       "  \"length_s\": {},\n  \"result\": {},\n  \"rule\": {{\"id\": {}, \"name\": {}}},\n"
@@ -205,8 +205,7 @@ void WriteJson(bool complete) {  // (under g_rec)
       "\"damage_level\": {}, \"pin_level\": {}, \"momentum_level\": {}}},\n  \"weapons\": {{\"picks\": {}}},\n"
       "  \"inputs\": {{\"file\": \"inputs.bin\", \"version\": {}}}\n}}\n",
       complete ? "true" : "false", Json(SVR2011_PORT_VERSION), Json(SVR2011_BUILD_COMMIT), Json(g.start), len, Json(g.result),
-      g.rule, Json(fmt::format("rule {:02X}", g.rule)), g.arena,
-      Json(arena_name.empty() ? fmt::format("arena {}", g.arena) : arena_name),
+      g.rule, Json(g.rule_name), g.arena, Json(g.arena_name),
       arena_id.empty() ? std::string("null") : ModJson("Arenas", arena_id), people, REXCVAR_GET(frame_rate),
       svr2011::P2POnlineMode() ? "true" : "false", Json(rex::cvar::Query<std::string>("gpu_backend")),
       REXCVAR_GET(cpu_reversal_chance), REXCVAR_GET(cpu_reversal_rates), REXCVAR_GET(cpu_damage_level),
@@ -246,7 +245,7 @@ void ListMods(fs::path game, fs::path out, std::set<std::pair<std::string, std::
   if (FILE* f = std::fopen((out / "mods.txt").string().c_str(), "wb")) std::fwrite(text.data(), 1, text.size(), f), std::fclose(f);
 }
 
-void Start(uint8_t* base, uint32_t clock) {  // (under g_rec)
+void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
   const int keep = REXCVAR_GET(match_recordings);
   if (keep <= 0) return;
   if (g.mods.joinable()) g.mods.join();  // (an earlier match's, ended without its end task)
@@ -301,6 +300,15 @@ void Start(uint8_t* base, uint32_t clock) {  // (under g_rec)
   g.on = true, g.bell = g_updates, g.started = std::chrono::steady_clock::now();
   g.rule = base[kLive], g.arena = Rd32(base + kLive + 64);
   g.arena_manifest = svr2011::ArenaModManifest();
+  // The names as the game shows them (port/server/match_names.py has the English ones): the rule record's +56 is
+  // its name's string id (misc.pac RUL, *0x82EDE954, 100 bytes a rule); arena n's name is string 0x9C42 + n; a mod
+  // arena plays on a stock arena's number, so its manifest's name.
+  if (const uint32_t rules = Rd32(base + 0x82EDE954); rules && g.rule < 119)
+    g.rule_name = svr2011::GameString(ctx, base, Rd32(base + rules + g.rule * 100 + 56));
+  if (g.rule_name.empty()) g.rule_name = fmt::format("rule {:02X}", g.rule);
+  g.arena_name = Key(g.arena_manifest, "name");
+  if (g.arena_name.empty() && g.arena < 200) g.arena_name = svr2011::GameString(ctx, base, 0x9C42 + g.arena);
+  if (g.arena_name.empty()) g.arena_name = fmt::format("arena {}", g.arena);
   for (const auto& p : g.people)
     if (!p.mod.empty()) g.used.insert({"Superstars", p.mod});
   if (const std::string id = Key(g.arena_manifest, "id"); !id.empty()) g.used.insert({"Arenas", id});
@@ -389,7 +397,7 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
       for (uint32_t i = 0; i < 10; ++i)
         if (const uint32_t c = Rd32(base + kChars + i * 4); c >= 0x40000000u && !(c & 3) && Rd32(base + c + 1156) == 6)
           referee = true;
-      if (referee) Start(base, clock);
+      if (referee) Start(ctx, base, clock);
     }
     if (g.on && match) {
       g.fallback_peak = std::max(g.fallback_peak, FallbackBytesInUse());
