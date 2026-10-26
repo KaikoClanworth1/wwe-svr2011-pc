@@ -23,6 +23,8 @@ results page (section 9) links to it.
   stay quiet.
 - **Ports and servers.** Each game gets its own `--p2p_port` in 36500-36599. Online tests use only a local private
   server (`test_server.ps1` / `svrtest lan`), never the live server or the VPS. Stop the servers right after.
+  `test_guard.ps1`'s `Use-SvrTestServer` runs before every game start. It points any test without a local server
+  at a dead address (`REX_ONLINE_SERVER=http://127.0.0.1:9`) and refuses a start on a non-local one.
 - **Stopping.** Stop processes by PID, only the ones this run started. Never filter by command line.
 - **No GUI.** The launcher and Mod Maker are used through CLI test flags only. First check that the exe has the
   flag (`strings`/timestamp), because an old exe would open its window.

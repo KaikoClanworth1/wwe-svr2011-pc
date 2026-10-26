@@ -108,6 +108,7 @@ function Start-Side([string]$side, [string[]]$extra) {
     $gameArgs = @("--log_file=`"$(Join-Path $out "$side.log")`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false",
               "--mnk_mode=false", "--p2p_port_mapping=false", "--p2p_relay=false", "--dbg_boot=online",
               "--dbg_state_clock=$($o.clock)", "--dbg_out=`"$(Join-Path $out $side)`"") + $extra
+    Use-SvrTestServer -GameDir $game -GameArgs $gameArgs | Out-Null
     $procs[$side] = Start-Process $exe -WorkingDirectory $game -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
     Set-SvrTestPriority $procs[$side]
     foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_INPUT_FILE", "SVR2011_CONFIG", "SVR2011_USER_DATA") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }

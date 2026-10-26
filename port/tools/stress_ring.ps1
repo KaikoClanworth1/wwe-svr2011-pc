@@ -35,6 +35,7 @@ for ($i = 1; $i -le $Runs; $i++) {
     if ($Native) { $a += "--native_renderer=shadow" }
     $a += $Extra
     Use-TestSaves
+    Use-SvrTestServer -GameDir $game -GameArgs $a | Out-Null
     $p = Start-Process (Join-Path $game $Exe) -WorkingDirectory $game -ArgumentList $a -PassThru -WindowStyle Minimized
     $handle = $p.Handle  # keeps the exit code available
     for ($t = 0; $t -lt 100 -and -not $p.HasExited; $t++) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 }

@@ -67,6 +67,7 @@ function Stop-TestGames {
 }
 
 function Assert-NoPlayerGame([int]$Games = 1) {
+    Use-SvrTestServer | Out-Null
     # A process that is shutting down reports no command line: look again
     # before taking such a one for the player's.
     for ($try = 0; $try -lt 5; $try++) {
@@ -76,6 +77,58 @@ function Assert-NoPlayerGame([int]$Games = 1) {
         Start-Sleep -Seconds 2
     }
     throw "The game is running (pid $($player[0].ProcessId), not started by a test) - not starting a test while someone is playing."
+}
+
+# No test game ever talks to the live server (sho-ti.me / the VPS): the SDK's
+# online_server default is the live one, and a test config without the key (svrtest's
+# game folder) or the player's own config would send test reports, uploads and
+# stats there. Only a local private server (127.x / localhost) is allowed; anything
+# else becomes a dead local address through REX_ONLINE_SERVER (the SDK's environment
+# override: above the config file, below --online_server on the command line).
+$SvrDeadServer = "http://127.0.0.1:9"
+
+function Test-SvrLocalServer([string]$url) {
+    return $url -match '^\s*https?://(127\.\d+\.\d+\.\d+|localhost|\[::1\])(:\d+)?(/|$)'
+}
+
+# A file this guard may rewrite: a test's own copy (under port\runs or a marked test folder).
+function Test-SvrPrivatePath([string]$path) {
+    return ($path -match [regex]::Escape("\port\runs\")) -or (Test-HasTestMarker $path)
+}
+
+# Call right before every game start (Assert-NoPlayerGame calls it too, without the
+# details). Works out the server the game will use: --online_server in -GameArgs, then
+# REX_ONLINE_SERVER, then the config (-Config, else SVR2011_CONFIG, else
+# <GameDir>\svr2011.toml), then the SDK default. A non-local one in a test's own
+# config is rewritten to the dead address; otherwise REX_ONLINE_SERVER points the
+# game there. Throws when the command line or a caller's REX_ONLINE_SERVER names a
+# non-local server. Returns the server the game will use.
+function Use-SvrTestServer([string]$GameDir = "", $GameArgs = @(), [string]$Config = "") {
+    if ($env:REX_ONLINE_SERVER -eq $SvrDeadServer) { Remove-Item Env:REX_ONLINE_SERVER }  # (ours: decide again)
+    $cfg = if ($Config) { $Config } elseif ($env:SVR2011_CONFIG) { $env:SVR2011_CONFIG } elseif ($GameDir) { Join-Path $GameDir "svr2011.toml" } else { "" }
+    $arg = ""
+    foreach ($m in [regex]::Matches(($GameArgs -join " "), '--online_server=("[^"]*"|\S+)')) { $arg = $m.Groups[1].Value.Trim('"') }
+    if ($arg) {
+        if (-not (Test-SvrLocalServer $arg)) { throw "test_guard: --online_server=$arg is not a local test server - refusing to start a test game on it." }
+        return $arg
+    }
+    if ($env:REX_ONLINE_SERVER) {
+        if (-not (Test-SvrLocalServer $env:REX_ONLINE_SERVER)) { throw "test_guard: REX_ONLINE_SERVER=$($env:REX_ONLINE_SERVER) is not a local test server - refusing to start a test game on it." }
+        return $env:REX_ONLINE_SERVER
+    }
+    $toml = ""
+    if ($cfg -and (Test-Path -LiteralPath $cfg)) {
+        $text = [IO.File]::ReadAllText($cfg)
+        foreach ($m in [regex]::Matches($text, '(?m)^\s*online_server\s*=\s*"?([^"\r\n]*)"?')) { $toml = $m.Groups[1].Value.Trim() }
+        if ($toml -and -not (Test-SvrLocalServer $toml) -and (Test-SvrPrivatePath $cfg)) {
+            [IO.File]::WriteAllText($cfg, ($text -replace '(?m)^(\s*online_server\s*=\s*).*$', "`${1}`"$SvrDeadServer`""))
+            Write-Host "test_guard: $cfg pointed at $toml - now $SvrDeadServer"
+            $toml = $SvrDeadServer
+        }
+    }
+    if ($toml -and (Test-SvrLocalServer $toml)) { return $toml }
+    $env:REX_ONLINE_SERVER = $SvrDeadServer   # (no key, the player's config, or a live server: never the live one)
+    return $SvrDeadServer
 }
 
 # Game load: while the user plays something (or has their own SvR open), at most
