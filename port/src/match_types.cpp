@@ -1247,20 +1247,20 @@ REX_HOOK_RAW(sub_827374A0) {
   if (g_pending_like != ~0u && ((rule >= g_pending_rule_lo && rule <= g_pending_rule_hi) ||
                          (!g_pending_select_only && rule == kWholeBackstage2)))
     ShapeRule(base, played, g_pending_like, g_pending_select_only);
-  // 6-MAN WEAPONS EVERYWHERE: a tornado match - everyone legal, no tags (B11:
-  // it played as a 6-man tag). The rule record's +8 is 2 where everyone is
-  // legal (triple threat, fatal-4-way, the tornado rules 0x0F and 2 on 2
-  // Extreme Rules 0x4E), 0 in the tag rules; back after the match (RestoreRule).
-  if (g_weapons && rule == 0x08)
-    if (const uint32_t rules = Rd32(base + kRules)) {
-      if (g_saved.rule != rule) {
-        g_saved.rule = rule;
-        std::memcpy(g_saved.rec, base + rules + rule * kRuleSize, kRuleSize);
-        std::memcpy(g_saved.rec2, base + rules + kRule2 + rule * kRule2Size, kRule2Size);
-      }
-      base[rules + rule * kRuleSize + 8] = 2;
-      REXLOG_INFO("match types: WEAPONS EVERYWHERE - 6-man as a tornado match");
-    }
+  // 6-MAN WEAPONS EVERYWHERE: a free-for-all - all six in the ring, each for
+  // himself. Its rule is 6-MAN's normal one, the 6-man tag 0x08 (two of each
+  // team on the apron). B11 set only the record's +8 (2, "everyone legal"),
+  // but the game's own tornado 6-man (0x0B) has +8 0 too - its tornado bytes
+  // are in the option record - and the 2.1.5 report still saw a tag match. So
+  // the record takes the shape of the 6-man battle royal (0x23: six teams,
+  // the free-for-all option), as 6-MAN's backstage rows do (ShapeRule: the
+  // slots and teams, the match family, the option record's people count and
+  // free-for-all byte); back after the match (RestoreRule).
+  constexpr uint32_t kSixTag = 0x08, kSixFreeForAll = 0x23;
+  if (g_weapons && rule == kSixTag) {
+    ShapeRule(base, rule, kSixFreeForAll, false);
+    REXLOG_INFO("match types: WEAPONS EVERYWHERE - 6-man as a free-for-all (shaped like rule {:02X})", kSixFreeForAll);
+  }
   ctx.r4.u64 = played;
   __imp__sub_827374A0(ctx, base);
 }
