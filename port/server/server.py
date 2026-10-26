@@ -1120,28 +1120,59 @@ class Service:
 
     STREAM_FROM = 4 << 20  # (smaller: read whole, through the cache)
 
+    @staticmethod
+    def byte_range(request, size):
+        """The request's "Range: bytes=N-" / "bytes=N-M" (one range) against a file of `size` bytes:
+        (start, end inclusive), None (no Range, or one we don't take - the whole file), or "bad" (past the end:
+        416). A broken download asks for the rest with it (the launcher's Discovery resume)."""
+        m = re.fullmatch(r"\s*bytes\s*=\s*(\d+)\s*-\s*(\d*)\s*", request.headers.get("Range", ""))
+        if not m:
+            return None
+        start = int(m.group(1))
+        end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+        if start >= size:
+            return "bad"
+        return None if end < start else (start, end)
+
     async def send_blob(self, request, sha, headers=None, content_type="application/octet-stream"):
         """A stored file to the client: a small one whole; a big one passed on in pieces as they are read
-        (and unpacked) here or on the storage node. None when it isn't there (the caller's 404)."""
+        (and unpacked) here or on the storage node. A Range ("bytes=N-", "bytes=N-M") answers 206 with that
+        part - a stored blob read from N, a packed one unpacked and its first N bytes dropped. None when it
+        isn't there (the caller's 404)."""
         loop = asyncio.get_running_loop()
         size = self.store.blob_size(sha)
+        rng = self.byte_range(request, size) if size else None
+        headers = dict(headers or {}, **{"Accept-Ranges": "bytes"})
+        if rng == "bad":
+            return web.Response(status=416, headers={"Content-Range": "bytes */%d" % size, "Accept-Ranges": "bytes"})
+        start, end = rng if rng else (0, (size or 1) - 1)
+        if rng:
+            headers["Content-Range"] = "bytes %d-%d/%d" % (start, end, size)
         if size is None or size <= self.STREAM_FROM:
             data = await loop.run_in_executor(None, self.store._get_blob, sha)
-            return None if data is None else web.Response(body=data, content_type=content_type, headers=headers)
-        pieces = await loop.run_in_executor(None, self.store.blob_chunks, sha)
+            if data is None:
+                return None
+            return web.Response(body=data[start:end + 1] if rng else data, status=206 if rng else 200,
+                                content_type=content_type, headers=headers)
+        pieces = await loop.run_in_executor(None, lambda: self.store.blob_chunks(sha, start=start))
         first = await loop.run_in_executor(None, next, pieces, None) if pieces is not None else None
         if first is None:
             return None
-        response = web.StreamResponse(headers=dict(headers or {}, **{"Content-Type": content_type}))
-        response.content_length = size
+        response = web.StreamResponse(status=206 if rng else 200, headers=dict(headers, **{"Content-Type": content_type}))
+        response.content_length = end - start + 1
         await response.prepare(request)
-        sent = 0
+        sent, left = 0, end - start + 1
         try:
             piece = first
-            while piece is not None:
+            while piece is not None and left > 0:
+                if len(piece) > left:   # (bytes=N-M: up to M)
+                    piece = piece[:left]
                 await response.write(piece)
                 sent += len(piece)
-                piece = await loop.run_in_executor(None, next, pieces, None)
+                left -= len(piece)
+                piece = await loop.run_in_executor(None, next, pieces, None) if left > 0 else None
+            if left <= 0:
+                await loop.run_in_executor(None, pieces.close)
         except (ConnectionError, asyncio.CancelledError):  # (the client went away)
             await loop.run_in_executor(None, pieces.close)
             raise
@@ -1518,11 +1549,15 @@ class Service:
         if not info:
             return web.Response(status=404)
         name = re.sub(r'[^A-Za-z0-9 ._()-]', "_", blobs["file_name"] or "mod.svrmod")
-        # (counted before it is sent: a streamed download's handler returns only at its end)
-        if self.store.blob_size(blobs["sha"]) is None:
+        # (counted before it is sent: a streamed download's handler returns only at its end; a resumed one -
+        # a Range not from 0 - is the same download, not counted again)
+        size = self.store.blob_size(blobs["sha"])
+        if size is None:
             return web.Response(status=404)
-        discovery.counted(self.store, mid)
-        self.stats.count("downloads")
+        rng = self.byte_range(request, size)
+        if not rng or (rng != "bad" and rng[0] == 0):
+            discovery.counted(self.store, mid)
+            self.stats.count("downloads")
         response = await self.send_blob(request, blobs["sha"],
                                         headers={"Content-Disposition": 'attachment; filename="%s"' % name})
         return response if response is not None else web.Response(status=404)
