@@ -3479,8 +3479,8 @@ static void rep_page1(HWND w)
         rep_add(w, L"Static", L"", SS_NOPREFIX | SS_PATHELLIPSIS, 20, 462 + REP_DY + i * 26, 380, 20, REP_PIC0 + i, NULL);
         rep_add(w, L"Button", L"Remove", WS_TABSTOP, 410, 458 + REP_DY + i * 26, 90, 24, REP_DEL0 + i, NULL);
     }
-    rep_add(w, L"Static", L"", SS_LEFT | SS_NOPREFIX, 20, 594 + REP_DY, 480, 22, REP_SUMMARY, NULL);
-    c = rep_add(w, PROGRESS_CLASSW, L"", 0, 20, 618 + REP_DY, 480, 12, REP_PROGRESS, NULL);
+    rep_add(w, L"Static", L"", SS_LEFT | SS_NOPREFIX, 20, 594 + REP_DY, 480, 34, REP_SUMMARY, NULL);
+    c = rep_add(w, PROGRESS_CLASSW, L"", 0, 20, 602 + REP_DY, 480, 16, REP_PROGRESS, NULL);   /* (over the summary, while sending) */
     SendMessageW(c, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
     ShowWindow(c, SW_HIDE);
     rep_add(w, L"Static", L"", SS_LEFT, 20, 640 + REP_DY, 180, 36, REP_STATUS, NULL);
@@ -3670,6 +3670,7 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             EnableWindow(GetDlgItem(w, REP_CREATE), FALSE);
             EnableWindow(GetDlgItem(w, REP_MATCH), FALSE);
             EnableWindow(GetDlgItem(w, REP_INCMODS), FALSE);
+            ShowWindow(GetDlgItem(w, REP_SUMMARY), SW_HIDE);
             ShowWindow(GetDlgItem(w, REP_PROGRESS), SW_SHOW);
             {
                 HANDLE t = CreateThread(NULL, 0, rep_send_thread, w, 0, NULL);
