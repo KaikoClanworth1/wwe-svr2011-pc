@@ -9331,11 +9331,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             static ReportMatch list[REPORT_MAX_MATCHES];
             if (report_match_list(argv[2], list, REPORT_MAX_MATCHES) > 0) rm.match = list[0], rm.has_match = 1;
         } else if (wmatch[0] && _wcsicmp(wmatch, L"none")) {
-            const WCHAR *nm = wcsrchr(wmatch, L'\\');
-            ReportMatch list[1];
             wcscpy_s(rm.match.dir, MAX_PATH, wmatch);
-            wcscpy_s(rm.match.label, 200, nm ? nm + 1 : wmatch);
-            (void)list;
+            report_match_label(wmatch, rm.match.label, 200);
             rm.has_match = GetFileAttributesW(wmatch) != INVALID_FILE_ATTRIBUTES;
         }
         if (rm.has_match) {

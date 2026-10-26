@@ -35,6 +35,9 @@ typedef struct {
 /* The newest recorded matches (up to max), newest first. */
 int report_match_list(const WCHAR *game_dir, ReportMatch *out, int max);
 
+/* A match folder's picker line (people, arena, rule, when, length; "(crashed)" / "(unfinished)"). */
+void report_match_label(const WCHAR *match_dir, WCHAR *out, int n);
+
 /* The mods a match used (its mods.txt), each resolved to its installed folder and hashed. */
 int report_match_mods(const WCHAR *game_dir, const WCHAR *match_dir, ReportMod *out, int max);
 
