@@ -194,6 +194,83 @@ std::vector<int> GearOf(const std::wstring& pac) {
   return v;
 }
 
+// A superstar mod as this attire (one step): an installed one (Mods\Superstars\<folder>), a .svrmod or a superstar
+// project (.svrproj) - its model pac (a mod's or a project's copy taken out into the project cache), its name and
+// entrance. The rest of the page (which of its attires, the gear, the clash checks) then works on that pac.
+struct StarSource {
+  std::wstring model;
+  std::string name;
+  int entrance = -1;
+};
+bool ReadStarSource(const std::wstring& src, StarSource& out, std::string* why) {
+  std::error_code ec;
+  out = StarSource();
+  if (fs::is_directory(src, ec)) {  // (installed: the folder's manifest and its files as they are)
+    Bytes t;
+    if (!ReadFile(PathStr(fs::path(src) / L"manifest.txt"), t)) return *why = "the folder has no manifest.txt", false;
+    const std::string m(t.begin(), t.end());
+    if (Value(m, "type") != "superstar") return *why = "it isn't a superstar mod (type=" + Value(m, "type") + ")", false;
+    const std::string inner = Value(m, "model").empty() ? "ch.pac" : Value(m, "model");
+    out.model = (fs::path(src) / fs::u8path(inner)).wstring();
+    out.name = Value(m, "name");
+    out.entrance = Value(m, "entrance").empty() ? -1 : std::atoi(Value(m, "entrance").c_str());
+  } else {
+    Bytes zip;
+    ProjectIn in;
+    in.dir = fs::path(src).parent_path() / fs::path(src).stem();
+    if (!ReadFile(Utf8(src), zip) || !ZipRead(zip, in.files)) return *why = "it can't be read as a .svrmod or a project", false;
+    const bool mod = Lower(FileName(src)).ends_with(".svrmod");
+    const ZipEntry* txt = in.Find(mod ? "manifest.txt" : "project.txt");
+    if (!txt) return *why = mod ? "the mod has no manifest.txt" : "the project has no project.txt", false;
+    in.text.assign(txt->data.begin(), txt->data.end());
+    if (mod && in.Get("type") != "superstar") return *why = "it isn't a superstar mod (type=" + in.Get("type") + ")", false;
+    if (mod) {
+      const std::string inner = in.Get("model").empty() ? "ch.pac" : in.Get("model");
+      if (in.Find(inner)) out.model = in.Extract(inner);
+    } else {  // (a project: the model's original path while it is there, else the project's copy)
+      const std::string from = in.Get("model.from");
+      out.model = !from.empty() && fs::exists(Wide(from), ec) ? Wide(from) : in.Get("model").empty() ? L"" : in.Extract(in.Get("model"));
+    }
+    out.name = in.Get("name");
+    out.entrance = in.GetInt("entrance", -1);
+  }
+  if (out.model.empty() || !fs::exists(out.model, ec)) return *why = "it has no model pac (ch.pac)", false;
+  return true;
+}
+
+// The installed superstar mods: folder -> name (A-Z by folder).
+std::vector<std::pair<std::wstring, std::string>> InstalledStars() {
+  std::vector<std::pair<std::wstring, std::string>> out;
+  std::error_code ec;
+  for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / L"Superstars", ec)) {
+    Bytes t;
+    if (!e.is_directory(ec) || !ReadFile(PathStr(e.path() / L"manifest.txt"), t)) continue;
+    const std::string m(t.begin(), t.end());
+    if (Value(m, "type") != "superstar") continue;
+    out.emplace_back(e.path().wstring(), Value(m, "name").empty() ? PathStr(e.path().filename()) : Value(m, "name"));
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+bool g_keep_entrance = false;  // (From a superstar mod: its entrance= goes with the attire)
+
+// The source taken in: the model, the attire's name when none is typed, the entrance if asked.
+bool TakeStarSource(const std::wstring& src) {
+  StarSource s;
+  std::string why;
+  if (!ReadStarSource(src, s, &why)) return Status("That superstar mod can't be used: " + why + "."), false;
+  g_at.model = s.model, g_at.from = 1, g_at.gear.clear();
+  if (!g_at.name[0] && !s.name.empty()) std::snprintf(g_at.name, sizeof g_at.name, "%s", s.name.c_str());
+  if (g_keep_entrance && s.entrance > 0) g_at.entrance = s.entrance;
+  Log("attire: from the superstar mod " + Utf8(src) + " - model " + Utf8(s.model) + ", entrance " +
+      (g_keep_entrance && s.entrance > 0 ? std::to_string(s.entrance) : std::string("the superstar's")));
+  Status((s.name.empty() ? std::string("The superstar mod") : s.name) + "'s look is the model now" +
+         (g_keep_entrance && s.entrance > 0 ? ", with its entrance." : ".") + " Pick which of its attires below.");
+  Touch();
+  return true;
+}
+
 void Problems(std::vector<Problem>& p) {
   if (g_at.star < 0) p.push_back(Error("No superstar yet.", "Pick whose attire this is."));
   if (g_at.model.empty()) p.push_back(Error("No model yet.", "A character model pac (ch.pac): its first attire becomes this attire."));
@@ -255,8 +332,13 @@ void Draw() {
   if (!g_ed_test.empty()) RunEditorTest();
   if (g_test.pending) {
     g_test.pending = false;
-    g_at.star = g_test.star, g_at.model = g_test.model, g_at.slot = g_test.slot;
-    std::snprintf(g_at.name, sizeof g_at.name, "TEST GEAR");
+    g_at.star = g_test.star, g_at.slot = g_test.slot;
+    if (Lower(FileName(g_test.model)).ends_with(".pac")) {
+      g_at.model = g_test.model;
+      std::snprintf(g_at.name, sizeof g_at.name, "TEST GEAR");
+    } else {
+      TakeStarSource(g_test.model);  // (a superstar mod: an installed folder, a .svrmod or a project)
+    }
   }
   if (!g_test_save.empty() && g_at.star >= 0 && !g_at.model.empty()) {
     std::vector<ZipEntry> files;
@@ -320,6 +402,25 @@ void Draw() {
   if (FileRow("Model (ch.pac)...", g_at.model, "none", kPacFilter, 1, "A character model pac - one of the game's, a superstar mod's or a "
               "converted one (From another game tab): the attire picked below becomes this attire."))
     g_at.from = 1;
+  ImGui::BeginDisabled(Busy());
+  if (ImGui::Button("From a superstar mod...")) ImGui::OpenPopup("attire_star_mod");
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::Checkbox("Keep its entrance", &g_keep_entrance);
+  Hint("One step: a superstar mod (installed, a .svrmod or a superstar project) becomes this attire of the superstar "
+       "picked above - its model, its name, and its entrance if kept. Pick which of its attires below.");
+  if (ImGui::BeginPopup("attire_star_mod")) {
+    const auto stars = InstalledStars();
+    if (stars.empty()) ImGui::TextDisabled("No superstar mods installed.");
+    for (const auto& [dir, name] : stars)
+      if (ImGui::Selectable((name + "##" + Utf8(dir)).c_str())) TakeStarSource(dir);
+    ImGui::Separator();
+    if (ImGui::Selectable("A .svrmod or project file...")) {
+      const std::wstring f = PickFile(false, L"A superstar mod or project", kOpenFilter, 1, L"svrmod", L"");
+      if (!f.empty()) TakeStarSource(f);
+    }
+    ImGui::EndPopup();
+  }
   if (!g_at.model.empty()) {  // which of the pac's attires
     const std::vector<int> own = ModelAttires(g_at.model);
     if (own.size() > 1) {
@@ -604,6 +705,7 @@ void TestStart(int star, const std::wstring& model, int slot, const std::wstring
   g_test = {star, model, slot, true};  // (applied on the page's first frame: the projects are reset after the command line)
   g_test_save = save;
 }
+void TestKeepEntrance() { g_keep_entrance = true; }
 
 PageHooks hooks = {
     "attire", Draw, Problems, Reset, StateText, WriteProject,
