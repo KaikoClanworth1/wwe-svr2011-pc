@@ -591,6 +591,11 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
   g_base = base;
   ++g_updates;
   const uint32_t clock = Rd32(base + kMatchFrames);
+  // Replay research: SVR2011_TEST_PRE_BELL_SLOW_MS=<ms> - each frame from a match's load to its bell this much
+  // longer (does the people's loading pace decide the pre-bell intro?)
+  if (static const int slow = [] { const char* v = std::getenv("SVR2011_TEST_PRE_BELL_SLOW_MS"); return v ? std::atoi(v) : 0; }();
+      slow > 0 && g_loaded && !clock)
+    std::this_thread::sleep_for(std::chrono::milliseconds(slow));
   const uint32_t c0 = Rd32(base + kChars);
   if (static const bool log = std::getenv("SVR2011_TEST_RAND_LOG") != nullptr; log && g_updates % 600 == 0) {
     std::lock_guard lock(g_rand_mutex);
@@ -647,6 +652,25 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
       }
     }
   }
+  // Replay research: SVR2011_TEST_REPLAY_DUMP=<file> - the first 40 clock values of a match after its load: persons 0,
+  // 1 and the referee's first 8 KB (hex, one line each) - two runs diffed show which fields part first.
+  if (static const char* dump = std::getenv("SVR2011_TEST_REPLAY_DUMP"); dump && g.on && clock >= 1 && clock <= 40) {
+    static FILE* f = std::fopen(dump, "w");
+    static uint32_t last = 0;
+    if (f && clock != last) {
+      last = clock;
+      for (uint32_t i = 0; i < 10; ++i) {
+        const uint32_t c = Rd32(base + kChars + i * 4);
+        if (c < 0x40000000u || (c & 3)) continue;
+        const uint32_t person = Rd32(base + c + 1156);
+        if (person > 1 && person != 6) continue;
+        std::string hex = fmt::format("{} {} ", clock, person);
+        for (uint32_t k = 0; k < 8192; ++k) hex += fmt::format("{:02x}", unsigned(base[c + k]));
+        std::fputs((hex + "\n").c_str(), f);
+      }
+      std::fflush(f);
+    }
+  }
   // Test aid: SVR2011_TEST_TRAIL=<file> - every world update of a match: the clock and each person's position, motion
   // and motion frame (two runs of one match compared line by line: does the game play it the same?)
   static const char* trail = std::getenv("SVR2011_TEST_TRAIL");
@@ -662,6 +686,8 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
   if (clock) pre = 0;
   // (the random table's four draw indexes, 0x82E3689C: inlined draws all over the game advance them)
   line += fmt::format(" | r {} {} {} {}", base[0x82E3689C], base[0x82E3689D], base[0x82E3689E], base[0x82E3689F]);
+  // (the pre-match scenario: *0x82EC4B50 +16 - its people's opening actions, sub_825C64C0)
+  if (const uint32_t sc = Rd32(base + 0x82EC4B50); sc >= 0x40000000u && !(sc & 3)) line += fmt::format(" k{}", Rd32(base + sc + 16));
   for (uint32_t i = 0; i < 10; ++i) {
     const uint32_t c = Rd32(base + kChars + i * 4);
     if (c < 0x40000000u || (c & 3)) continue;
