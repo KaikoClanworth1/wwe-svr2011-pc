@@ -11,8 +11,9 @@ joined by `_vs_`, using letters, digits and `-` only, and cut at 80 characters. 
 `match_recordings` folders are kept (cvar, group Logs: 20 by default, 0 turns recordings off). Older ones are
 deleted when a new match starts.
 
-The recording starts at the bell: the first world update after the clock resets, with a referee in the ring. The
-menu's attract match has no referee, so it is not recorded. The files are written while the match runs, so a crash
+The recording starts at the bell: the first world update after the clock resets, with a referee in the ring, after
+a match's load (sub_823EEB98). The menus' attract matches never load that way (one of them has a referee), so they
+are not recorded. The files are written while the match runs, so a crash
 leaves whatever was written up to that point. `done.txt` is written last, once the match's end task starts.
 
 Code: `port/src/match_record.cpp` (`match_record.h`).
@@ -45,14 +46,16 @@ with `inputs.bin` at 192 bytes.
   "rule": {"id": 0, "name": "SINGLE"},
   "arena": {"id": 1, "name": "RAW", "mod": null},
   "people": [
-    {"index": 0, "person": 0, "name": "JOHN CENA", "superstar": 57, "cpu": false, "attire": 2, "mod": null, "caw": null}
+    {"index": 0, "person": 0, "name": "JOHN CENA", "superstar": 57, "cpu": false, "attire": 2, "port": 0, "mod": null,
+     "caw": null}
   ],
   "frame_rate": 60,
   "online": false,
   "renderer": "any",
   "cpu_tab": {"reversal_chance": -1, "reversal_rates": -1, "damage_level": -1, "pin_level": -1, "momentum_level": -1},
   "weapons": {"picks": "mod:light_tube:3,4:1"},
-  "inputs": {"file": "inputs.bin", "version": 0},
+  "inputs": {"file": "inputs.bin", "version": 1},
+  "frames": 1769,
   "seeds": {"rand": "AC303B9C", "rand_sites": {"82302C40": 578, "82C2E2F4+": 85}, "table_load": [0, 0, 0, 0],
             "table_bell": [0, 0, 1, 60], "table_steps": [[], [87, 117, 147], [], [380, 385, 390]], "frames_load_to_bell": 857}
 }
@@ -66,7 +69,9 @@ with `inputs.bin` at 192 bytes.
 - `cpu` is true when the CPU plays the wrestler. That means the pick slot's controller is the CPU and no local
   player's pad plays them.
 - `attire` is the picked attire, 1-4.
-- `cpu` and `attire` are `null` for the referee and the announcers.
+- `port` is the controller (0-3) of the local player who plays the wrestler, or `null` for the CPU.
+- `cpu`, `attire` and `port` are `null` for the referee and the announcers.
+- `frames` is the number of frames from the bell to the last write (the end, or the crash).
 - `mod` is `null` for stock content. For a mod it is `{type, id, version, files}`, where `files` is the hash used
   in mods.txt.
 - Rule and arena names are the game's own strings, in the game's language.
@@ -98,16 +103,18 @@ Type	id	version	on|off	used|-	files	name
 
 The list is built on a thread of its own, so a large Mods folder does not hold up the bell.
 
-## inputs.bin (version 0)
+## inputs.bin (version 1)
 
 All values are little-endian.
 
-- Head, 16 bytes: `"SVRI"`, u32 version (0), u32 the frame at the bell (counted from the game's start), u32 0.
+- Head, 16 bytes: `"SVRI"`, u32 version (1), u32 the frame at the bell (counted from the game's start), u32 0.
 - Records, 22 bytes each:
   - u32: frames since the bell. A frame runs one world update, or two at 30 fps or on a slow PC;
-  - u8: the user (0-7);
-  - u8: 0 if the pad is connected, 1 if not;
-  - 16 bytes: the XINPUT_STATE as the game got it (guest byte order).
+  - u8: the user (0-7), or 0xFF for a frame's world updates (version 1);
+  - for a pad: u8 0 if the pad is connected, 1 if not, then 16 bytes, the XINPUT_STATE as the game got it (guest
+    byte order);
+  - for 0xFF: u8 0, then the number of world updates this frame ran (1, or 2 at 30 fps or on a slow frame; 0 while
+    the free camera holds the match), then 15 bytes of 0. Written when the number changes; a recording starts at 1.
 
   The packet number (the state's first 4 bytes) is written as 0. It goes up on every read, not only when the
   pad changes.
@@ -117,7 +124,7 @@ at 30 fps or on slow frames reuse the cached state, so they add nothing.
 
 ## seeds
 
-What an exact replay will need (see Replay below). Nothing reads it yet.
+What an exact replay will need later (see Replay below). The replay tool uses `rand` only.
 
 - `rand`: the match's rand() seed. From the match's load, every rand() call site draws from a stream of its own,
   seeded from this seed and the site, so the order threads call in doesn't change the draws. The streams start
@@ -141,20 +148,40 @@ match recording: <folder> (unfinished: no done.txt)
 
 match.json is rewritten with `result: "crash"`. The black box goes into the crash report as before.
 
-## Replay (planned)
+## Replay
 
-Version 0 records the inputs but cannot play them back yet. The plan:
+```
+port\tools\replay_match.ps1 -Recording <a recording's folder> -GameDir <game folder> [-UserData <test saves>]
+```
 
-- **Start state:** entrances are skipped by setup, and replay is anchored at the bell. A match that starts in a
-  mid-brawl is marked as approximate.
-- **rand():** the game's own rand() gets one state, with a recorded seed. The online lockstep's handling is
-  reused.
-- **Pads:** played back per world update from the bell.
-- **Divergence report:** the replay is compared with `trail.txt`.
+The tool reads match.json and starts a hidden test game that goes through the scripted route to the same match:
+- the same wrestlers (CAWs by save slot), attires, controllers, rule and arena (`SVR2011_TEST_MATCH`,
+  `SVR2011_TEST_RULE`);
+- the same rand() seed (`SVR2011_TEST_RAND_SEED`);
+- entrances off.
 
-Planned switches: `SVR2011_REPLAY=<folder>` and an svrtest command.
+`SVR2011_REPLAY=<folder>` then takes over at the bell:
+- Every frame gets the recording's pads (users 0-7, as recorded; a user with no record yet keeps its own).
+- It gets the recorded number of world updates, so 30 fps and slow frames come out as they were.
+- After the recording's `frames` the pads are the players' again.
 
-Research switches already in the build:
+The replay records itself like any match. Its folder gets `replay.txt`, and the tool adds the frame shots:
+- `replay.txt` heads with the second where the replay parts from the recording's `trail.txt` (a wrestler 2.0 or
+  more from the recorded place). Below that, second by second, the farthest anyone is (`*`: a wrestler's motion
+  differs).
+- The frame shots are `shot_NN.png` (`-Shots`, one every `-ShotEvery` seconds of the match).
+
+**Approximate.** Only the player's side is replayed: the pads, the setup and the rand() seed.
+
+- **The pre-bell intro:** in an entrances-off match it is a sneak attack or a standing start. It comes out either
+  way, run to run, because the people load at disk pace. When the bell finds other motions than the recording's,
+  the tool stops the game and starts again (`-Tries`, 4).
+- **The CPU's first moves:** they part within a few seconds. The game's random table steps on a timer that started
+  before the bell (`seeds.table_steps`), and its loading pace isn't replayed.
+- **Matches with entrances:** a recording made with entrances replays without them, so it starts from the in-ring
+  places.
+
+Test aids for replays and replay research:
 
 | Switch | What it does |
 |---|---|
@@ -162,6 +189,7 @@ Research switches already in the build:
 | `SVR2011_TEST_RAND_LOG` | Logs who calls rand(), every 10 s. |
 | `SVR2011_TEST_RAND_SEED=<n>` | Uses this rand() seed for every match. |
 | `SVR2011_TEST_ENTRANCES=0\|1` | Turns the match's entrances off or on (live rules +38). |
+| `SVR2011_TEST_MATCH=... ports=0,-1` | Each person's controller: a player's 0-3, or -1 for the CPU. |
 | `SVR2011_TEST_MATCH=... exact=1` | Only the listed people: empties a later slot that the route's presses picked. |
 | `SVR2011_TEST_TRAIL=<file>` | Writes a line per frame: the clock (`pre N` before the bell), the random table's indexes, then each person's position, motion and motion frame. |
 

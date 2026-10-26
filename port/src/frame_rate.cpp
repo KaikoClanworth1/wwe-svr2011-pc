@@ -214,11 +214,18 @@ namespace {
 Clock::time_point g_world_last;
 double g_world_acc = 0;  // 60 Hz ticks of real time not yet run
 int g_world_ticks = 1;   // update passes this frame
+int g_world_passes = 1;  // (the passes run: 0 while the free camera holds the match)
 
 constexpr int kMaxTicks = 2;  // (below 30 fps the game slows down rather than racing: 3-4 updates a frame - a
                                // window in the background, tabbing out - crashed a worker thread, sub_8281F5F0)
 
 uint32_t G32(uint8_t* base, uint32_t a) { return Rd32(base + a); }
+
+}  // namespace
+
+int svr2011::WorldPassesThisFrame() { return g_world_passes; }
+
+namespace {
 void P32(uint8_t* base, uint32_t a, uint32_t v) { Wr32(base + a, v); }
 
 // What the world update is running: a watchdog logs it when the update is
@@ -456,6 +463,7 @@ REX_HOOK_RAW(sub_8269D768) {
 #if SVR2011_DEBUG_SUITE
   if (const int n = svr2011::dbg::SpeedTicks(); n && !g_lockstep) g_world_ticks = n, g_world_acc = 0;  // (dbg_speed)
 #endif
+  if (const int n = svr2011::MatchReplayPasses(); n > 0) g_world_ticks = n, g_world_acc = 0;  // (a replay: as recorded)
   // 30 fps at 60 Hz (SetHalfFrames): while frames take two updates (a PC that
   // can't keep 60 Hz) every frame is shown - as 30 fps did before - and every
   // other one again once it keeps up (a running average of the updates).
@@ -514,6 +522,7 @@ REX_HOOK_RAW(sub_8269C728) {
   JobEv('F', uint32_t(g_world_ticks));
   // (free camera F8: the match held - no update passes, the frame drawn as it was; free_cam.h)
   const int passes = svr2011::FreeCamPaused() && !g_lockstep && svr2011::InMatch() ? 0 : g_world_ticks;
+  g_world_passes = passes;
   for (int i = 0; i < passes; ++i) {
     g_dbg_pass_now = 10 + i;
     g_dbg_pass = 10 + i;
@@ -762,6 +771,10 @@ REX_HOOK_RAW(sub_82905058) {
     svr2011::OnlineRulesPad(b);  // (LB / RB: the PORT RULES row - online_rules.h)
   }
   if (out && ctx.r3.u32 == 0) svr2011::PadIconsInput(user, base + out);  // (who pressed last: pad_icons.h)
+  if (out) {  // (a replay: the recording's pad this frame - match_record.h)
+    uint32_t result = ctx.r3.u32;
+    if (svr2011::MatchReplayPad(user, result, base + out)) ctx.r3.u64 = result;
+  }
   if (r && out) {
     r->valid = true;
     r->result = ctx.r3.u32;

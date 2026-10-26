@@ -5,7 +5,8 @@
 //
 // attires=2,1: each person's attire (1-4, in person order; default 1). min=2: only a match with 2 or more
 // picks (a Road to WrestleMania story's match, not its walk); an empty name keeps that person. exact=1: only the
-// people listed (a later slot that the route's presses picked is emptied - match replay tests).
+// people listed (a later slot that the route's presses picked is emptied - match replay tests). ports=0,-1: each
+// person's controller - a player's (0-3) or -1 the CPU (match replays: tools/replay_match.ps1).
 // people: roster names (as the log's "match:" lines print them), ids, or
 // CAW<N> (the Created Superstar in save slot N - enough for the entrances
 // and the ring announcer; the match itself crashed once: the select screen's
@@ -60,7 +61,8 @@ struct TestMatch {
   int arena = -1;
   bool all_cpu = false;  // cpu=all: every person a CPU (the picks too)
   int min_people = 0;    // min=N: only a match whose picks are N or more (min=2: a story's match, not its walk)
-  bool exact = false;    // exact=1: the people listed only - a later slot the route's presses picked is emptied
+  bool exact = false;
+  std::vector<int> ports;  // ports=0,-1: per person, the player's controller (0-3) playing him, or -1 the CPU    // exact=1: the people listed only - a later slot the route's presses picked is emptied
 };
 
 const TestMatch& Config() {
@@ -102,6 +104,10 @@ const TestMatch& Config() {
         m.arena = std::atoi(value.c_str());
       } else if (key == "cpu") {
         m.all_cpu = value == "all";
+      } else if (key == "ports") {
+        std::istringstream list(value);
+        std::string n;
+        while (std::getline(list, n, ',')) m.ports.push_back(std::clamp(std::atoi(n.c_str()), -1, 3));
       } else if (key == "exact") {
         m.exact = value == "1";
       } else if (key == "min") {
@@ -249,6 +255,10 @@ REX_HOOK_RAW(sub_828BC5E8) {
         slot[-8] = 1;          // (controller: the CPU)
       }
       if (m.all_cpu) slot[-8] = 1;  // (cpu=all: the picks too)
+      if (i < m.ports.size()) {  // (ports=: the controller - slot -8 1 the CPU, else slot -4's low bits the player)
+        if (m.ports[i] < 0) slot[-8] = 1;
+        else slot[-8] = 0, slot[-4] = uint8_t((slot[-4] & ~7) | m.ports[i]);
+      }
       // Online (a LAN test, tools/dev/svrtest_lan.ps1): a player's slot carries the lobby's whole person record
       // (+56 its flag, the record at +92 - sub_828B90F8) and two 112-byte entries (+2040 / +2044 their flags -
       // sub_828B91A0), which the commit's people builder copies instead of building the superstar at +8. Off:

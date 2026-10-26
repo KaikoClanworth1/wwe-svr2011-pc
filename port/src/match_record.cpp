@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -21,6 +22,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -36,6 +38,7 @@
 #include "arena_mods.h"
 #include "caw_limits.h"
 #include "match_diag.h"
+#include "frame_rate.h"
 #include "menu_hooks.h"
 #include "p2p.h"
 #include "pad_types.h"
@@ -77,9 +80,11 @@ std::map<uint32_t, uint32_t> g_site_draws;    // (call site -> draws since the b
 uint8_t* g_base = nullptr;                    // (the guest memory: MatchRecordUpdate's)
 uint64_t g_load_frame = 0;                    // (the frame of the last match load)
 std::array<uint8_t, 4> g_load_table{};        // (the random table's indexes then)
+std::atomic<bool> g_loaded{false};            // (a match loaded since the last recording: the menus' attract matches
+                                              // - one has a referee - never come through the match's load)
 constexpr uint32_t kObjects = 0x82DE0220, kObjectSlots = 72;
 constexpr uint32_t kSeedCounters = 0x82EC6A2C;  // (u8 x2: the seed table's next index, by caller kind)
-constexpr uint32_t kInputsVersion = 0;
+constexpr uint32_t kInputsVersion = 1;  // (1: + the frames' world updates, user 0xFF)
 
 uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
 float RdF(const uint8_t* p) {
@@ -165,6 +170,8 @@ struct Recording {
   std::string arena_manifest, rule_name, arena_name;  // (the names: the game's strings, a mod arena's manifest)
   std::vector<svr2011::MatchPerson> people;
   std::map<uint32_t, std::pair<bool, int>> cpu_attire;  // (character index: a CPU, the attire 1-4 - wrestlers only)
+  std::map<uint32_t, uint32_t> ports;                   // (character index: the player's controller 0-3 playing him)
+  int last_passes = 1;                                  // (the last frame's world updates written to inputs.bin)
   FILE* inputs = nullptr;
   FILE* trail = nullptr;
   std::array<std::array<uint8_t, 17>, 8> pads{};  // (the last noted: connected + state, per user)
@@ -223,6 +230,17 @@ std::string SeedsJson() {  // (under g_rec)
                      g.seed, sites, list(g.table_load), list(g.table_bell), steps, g.frames_load_to_bell);
 }
 
+// inputs.bin: after the 16-byte head ("SVRI", version, the bell's frame, 0) 22-byte records - u32 frames since the
+// bell, u8 user, then for a pad (users 0-7, one record per change): u8 connected (0) or not (1) and the 16-byte
+// XINPUT_STATE as the game got it (its packet number 0); for user 0xFF (version 1): u8 0, then the frame's world
+// updates (1, or 2 at 30 fps / a slow frame; 0 the free camera's hold) in the next byte, when it changes.
+void WriteInput(uint32_t frame, uint8_t user, const std::array<uint8_t, 17>& data) {  // (under g_rec)
+  if (!g.inputs) return;
+  std::fwrite(&frame, 4, 1, g.inputs);
+  std::fwrite(&user, 1, 1, g.inputs);
+  std::fwrite(data.data(), 1, data.size(), g.inputs);
+}
+
 void WriteJson(bool complete) {  // (under g_rec)
   const auto len = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - g.started).count();
   std::string people;
@@ -231,10 +249,11 @@ void WriteJson(bool complete) {  // (under g_rec)
     const auto ca = g.cpu_attire.find(p.index);
     const bool known = ca != g.cpu_attire.end();
     people += fmt::format(
-        "{{\"index\": {}, \"person\": {}, \"name\": {}, \"superstar\": {}, \"cpu\": {}, \"attire\": {}, \"mod\": {}, "
-        "\"caw\": null}}",
+        "{{\"index\": {}, \"person\": {}, \"name\": {}, \"superstar\": {}, \"cpu\": {}, \"attire\": {}, \"port\": {}, "
+        "\"mod\": {}, \"caw\": null}}",
         p.index, p.person, Json(p.name), p.superstar, known ? (ca->second.first ? "true" : "false") : "null",
         known && ca->second.second ? std::to_string(ca->second.second) : std::string("null"),
+        g.ports.count(p.index) ? std::to_string(g.ports.at(p.index)) : std::string("null"),
         p.mod.empty() ? std::string("null") : ModJson("Superstars", p.mod));
   }
   const std::string arena_id = Key(g.arena_manifest, "id");
@@ -244,14 +263,14 @@ void WriteJson(bool complete) {  // (under g_rec)
       "  \"arena\": {{\"id\": {}, \"name\": {}, \"mod\": {}}},\n  \"people\": [\n    {}\n  ],\n  \"frame_rate\": {},\n"
       "  \"online\": {},\n  \"renderer\": {},\n  \"cpu_tab\": {{\"reversal_chance\": {}, \"reversal_rates\": {}, "
       "\"damage_level\": {}, \"pin_level\": {}, \"momentum_level\": {}}},\n  \"weapons\": {{\"picks\": {}}},\n"
-      "  \"inputs\": {{\"file\": \"inputs.bin\", \"version\": {}}},\n  \"seeds\": {}\n}}\n",
+      "  \"inputs\": {{\"file\": \"inputs.bin\", \"version\": {}}},\n  \"frames\": {},\n  \"seeds\": {}\n}}\n",
       complete ? "true" : "false", Json(SVR2011_PORT_VERSION), Json(SVR2011_BUILD_COMMIT), Json(g.start), len, Json(g.result),
       g.rule, Json(g.rule_name), g.arena, Json(g.arena_name),
       arena_id.empty() ? std::string("null") : ModJson("Arenas", arena_id), people, REXCVAR_GET(frame_rate),
       svr2011::P2POnlineMode() ? "true" : "false", Json(rex::cvar::Query<std::string>("gpu_backend")),
       REXCVAR_GET(cpu_reversal_chance), REXCVAR_GET(cpu_reversal_rates), REXCVAR_GET(cpu_damage_level),
       REXCVAR_GET(cpu_pin_level), REXCVAR_GET(cpu_momentum_level),
-      Json(rex::cvar::Query<std::string>("extreme_weapons")), kInputsVersion, SeedsJson());
+      Json(rex::cvar::Query<std::string>("extreme_weapons")), kInputsVersion, g_updates - g.bell, SeedsJson());
   if (FILE* f = std::fopen((g.dir / "match.json").string().c_str(), "wb")) std::fwrite(s.data(), 1, s.size(), f), std::fclose(f);
 }
 
@@ -286,6 +305,124 @@ void ListMods(fs::path game, fs::path out, std::set<std::pair<std::string, std::
   if (FILE* f = std::fopen((out / "mods.txt").string().c_str(), "wb")) std::fwrite(text.data(), 1, text.size(), f), std::fclose(f);
 }
 
+// -- Replays (SVR2011_REPLAY=<a recording's folder>) ------------------------------------------------------------
+// The match set up as the recording's (tools/replay_match.ps1 from its match.json: people, attires, controllers,
+// rule, arena, the rand() seed), entrances as the player had them. From the bell, each frame gets the recorded
+// pads and the recorded number of world updates; after the recording's frames the pads are the player's again.
+// Approximate: the people stand where the bell found them in this run, and the game's random table and loading
+// pace aren't replayed (docs/MATCH_RECORDINGS.md). The replay's own recording (a folder of its own) gets
+// replay.txt: second by second, how far each person is from the recording's trail.txt - where the two part.
+struct Replay {
+  bool loaded = false, on = false, done = false;
+  fs::path from;                        // (the recording)
+  uint64_t bell = 0, frames = 0;        // (this run's bell frame; the recording's frames from its bell)
+  std::array<std::vector<std::pair<uint32_t, std::array<uint8_t, 17>>>, 8> pads;
+  std::array<size_t, 8> at{};
+  std::map<uint32_t, int> passes;       // (frame -> world updates from then on)
+};
+Replay g_replay;  // (under g_rec)
+
+void ReplayLoad() {  // (under g_rec)
+  g_replay.loaded = true;
+  const char* v = std::getenv("SVR2011_REPLAY");
+  if (!v || !*v) return;
+  g_replay.from = fs::u8path(v);
+  const std::string json = ReadText(g_replay.from / "match.json");
+  if (const size_t k = json.find("\"frames\": "); k != std::string::npos)
+    g_replay.frames = std::strtoull(json.c_str() + k + 10, nullptr, 10);
+  FILE* f = std::fopen((g_replay.from / "inputs.bin").string().c_str(), "rb");
+  uint32_t head[4] = {};
+  if (!f || std::fread(head, 4, 4, f) != 4 || head[0] != 0x49525653u) {
+    REXLOG_WARN("[svr2011] replay: no inputs.bin in {} - nothing replayed", g_replay.from.string());
+    if (f) std::fclose(f);
+    return;
+  }
+  uint8_t rec[22];
+  uint32_t last = 0, count = 0;
+  while (std::fread(rec, 1, sizeof(rec), f) == sizeof(rec)) {
+    uint32_t frame;
+    std::memcpy(&frame, rec, 4);
+    std::array<uint8_t, 17> data;
+    std::memcpy(data.data(), rec + 5, 17);
+    if (rec[4] < 8) g_replay.pads[rec[4]].push_back({frame, data});
+    else if (rec[4] == 0xFF) g_replay.passes[frame] = data[1];
+    last = std::max(last, frame), ++count;
+  }
+  std::fclose(f);
+  if (!g_replay.frames) g_replay.frames = last + 600;  // (no "frames": a crash's recording - 10 s past its last input)
+  REXLOG_INFO("[svr2011] replay: {} - {} records (inputs.bin v{}), {} frames from the bell", g_replay.from.string(), count,
+              head[1], g_replay.frames);
+}
+
+void ReplayBell() {  // (under g_rec: this run's bell - the recording's frame 0 from the next frame)
+  if (!g_replay.loaded) ReplayLoad();
+  if (g_replay.from.empty() || g_replay.on || g_replay.done) return;
+  g_replay.on = true, g_replay.bell = g_updates, g_replay.at = {};
+  REXLOG_INFO("[svr2011] replay: from the bell (frame {}), the recording's pads for {} frames", g_updates,
+              g_replay.frames);
+}
+
+// The per-second trails (trail.txt): second -> person -> x, y, z, motion.
+std::map<int, std::map<int, std::array<double, 4>>> ReadTrail(const fs::path& file) {
+  std::map<int, std::map<int, std::array<double, 4>>> t;
+  std::istringstream in(ReadText(file));
+  for (std::string line; std::getline(in, line);) {
+    if (line.empty() || line[0] == '#') continue;
+    std::istringstream l(line);
+    int second;
+    if (!(l >> second)) continue;
+    for (std::string part; std::getline(l, part, '|');) {
+      std::istringstream p(part);
+      int person;
+      std::array<double, 4> v{};
+      if (p >> person >> v[0] >> v[1] >> v[2] >> v[3]) t[second][person] = v;
+    }
+  }
+  return t;
+}
+
+void ReplayReport() {  // (under g_rec: the replay's end - replay.txt in this run's own folder)
+  if (g.trail) std::fflush(g.trail);
+  const auto a = ReadTrail(g_replay.from / "trail.txt"), b = ReadTrail(g.dir / "trail.txt");
+  std::string text = fmt::format("replay of {}\n(second: the farthest any person is from the recording's place, "
+                                 "in game units - the ring is about 50 across; * a motion differs)\n",
+                                 g_replay.from.filename().string());
+  int parts = -1;
+  std::string why;
+  for (const auto& [second, people] : a) {
+    const auto it = b.find(second);
+    if (it == b.end()) continue;
+    double farthest = 0;
+    bool motions = false;
+    for (const auto& [person, v] : people) {
+      const auto o = it->second.find(person);
+      if (o == it->second.end()) continue;
+      const double d = std::sqrt((v[0] - o->second[0]) * (v[0] - o->second[0]) + (v[2] - o->second[2]) * (v[2] - o->second[2]) +
+                                 (v[1] - o->second[1]) * (v[1] - o->second[1]));
+      if (person < 6 && v[3] != o->second[3]) motions = true;
+      if (d > farthest) farthest = d;
+      if (parts < 0 && person < 6 && d > 2.0)
+        parts = second, why = fmt::format("person {} is {:.1f} from the recording's place (motion {} - recorded {})", person,
+                                          d, int(o->second[3]), int(v[3]));
+    }
+    text += fmt::format("{} {:.1f}{}\n", second, farthest, motions ? " *" : "");
+  }
+  const std::string head =
+      parts < 0 ? std::string("the replay stays with the recording (no person 2.0 or more from it at a second)")
+                : fmt::format("the replay parts from the recording at second {}: {}", parts, why);
+  if (FILE* f = std::fopen((g.dir / "replay.txt").string().c_str(), "wb"))
+    std::fputs((head + "\n" + text).c_str(), f), std::fclose(f);
+  REXLOG_INFO("[svr2011] replay: {} - replay.txt in {}", head, g.dir.string());
+}
+
+void ReplayFrame(uint8_t* base, uint32_t clock) {  // (under g_rec: each frame, after it ran)
+  (void)base, (void)clock;
+  if (!g_replay.on || g_updates - g_replay.bell < g_replay.frames) return;
+  g_replay.on = false, g_replay.done = true;
+  REXLOG_INFO("[svr2011] replay: done - the recording's {} frames played; the pads are the players' again", g_replay.frames);
+  if (g.on) ReplayReport();
+}
+
 void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
   const int keep = REXCVAR_GET(match_recordings);
   if (keep <= 0) return;
@@ -306,6 +443,7 @@ void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
       const bool pad = port < svr2011::kMaxPlayers && svr2011::PlayerPadType(port) != svr2011::PadType::kNone;
       const int attire = pick != 51200 && pick / 100 < 512 ? int(pick % 100 / 10) + 1 : 0;
       g.cpu_attire[p.index] = {slot[-8] == 1 && !pad, attire};
+      if (pad) g.ports[p.index] = port;
     }
   std::string names;
   for (const auto& p : g.people)
@@ -441,6 +579,7 @@ void MatchRecordMatchLoads() {
     g_site_rand.clear();
   }
   g_match_rand_on = true;
+  g_loaded = true;
   g_load_frame = g_updates;
   if (g_base) std::memcpy(g_load_table.data(), g_base + kTableIndexes, 4);
   REXLOG_INFO("[svr2011] record: a match loads - its rand() seed {:08X}", seed);
@@ -472,13 +611,21 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
   {
     std::lock_guard lock(g_rec);
     const bool match = clock && c0 >= 0x40000000u && !(c0 & 3);
-    if (match && !g.on && clock <= 2) {  // (the bell: with a referee - not the menu's attract match)
+    if (match && !g.on && clock <= 2) {  // (the bell: with a referee, after a match's load - not an attract match)
       bool referee = false;
       for (uint32_t i = 0; i < 10; ++i)
         if (const uint32_t c = Rd32(base + kChars + i * 4); c >= 0x40000000u && !(c & 3) && Rd32(base + c + 1156) == 6)
           referee = true;
-      if (referee) Start(ctx, base, clock);
+      if (referee && g_loaded.exchange(false)) Start(ctx, base, clock), ReplayBell();
     }
+    if (g.on && g.bell < g_updates)
+      if (const int passes = svr2011::WorldPassesThisFrame(); passes != g.last_passes) {
+        g.last_passes = passes;
+        std::array<uint8_t, 17> data{};
+        data[1] = uint8_t(passes);
+        WriteInput(uint32_t(g_updates - 1 - g.bell), 0xFF, data);  // (this frame's: the pads read in it have its number)
+      }
+    ReplayFrame(base, clock);
     if (g.on && match) {
       g.fallback_peak = std::max(g.fallback_peak, FallbackBytesInUse());
       for (size_t i = 0; i < 4; ++i)  // (each index's first steps after the bell: its timer's phase)
@@ -525,6 +672,30 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
   if (clock % 600 == 0) std::fflush(g_trail_test);
 }
 
+bool MatchReplayPad(uint32_t user, uint32_t& result, uint8_t* state) {
+  if (user >= 8 || !state) return false;
+  std::lock_guard lock(g_rec);
+  if (!g_replay.on) return false;
+  const uint64_t frame = g_updates - g_replay.bell;
+  auto& v = g_replay.pads[user];
+  size_t& i = g_replay.at[user];
+  while (i + 1 < v.size() && v[i + 1].first <= frame) ++i;
+  if (v.empty() || v[i].first > frame) return false;
+  const auto& d = v[i].second;
+  result = d[0] ? 0x48F : 0;  // (ERROR_DEVICE_NOT_CONNECTED)
+  std::memcpy(state, d.data() + 1, 16);
+  const uint32_t packet = uint32_t(frame + 1);  // (the packet number: a new one each frame)
+  state[0] = uint8_t(packet >> 24), state[1] = uint8_t(packet >> 16), state[2] = uint8_t(packet >> 8), state[3] = uint8_t(packet);
+  return true;
+}
+
+int MatchReplayPasses() {
+  std::lock_guard lock(g_rec);
+  if (!g_replay.on) return 0;
+  const auto it = g_replay.passes.upper_bound(uint32_t(g_updates - g_replay.bell));
+  return it == g_replay.passes.begin() ? 1 : std::prev(it)->second;
+}
+
 void MatchRecordPad(uint32_t user, uint32_t result, const uint8_t* state) {
   if (user >= 8 || !state) return;
   std::lock_guard lock(g_rec);
@@ -535,13 +706,7 @@ void MatchRecordPad(uint32_t user, uint32_t result, const uint8_t* state) {
   std::memset(now.data() + 1, 0, 4);  // (dwPacketNumber: it counts every read, not changes - not kept)
   if (g.pad_seen[user] && g.pads[user] == now) return;
   g.pad_seen[user] = true, g.pads[user] = now;
-  // inputs.bin v0: after the 16-byte head ("SVRI", version, the bell's update, 0) one record per change of a pad -
-  // u32 updates since the bell, u8 user, u8 connected (0) or not (1), the 16-byte XINPUT_STATE as the game got it (its packet number 0).
-  const uint32_t at = uint32_t(g_updates - g.bell);
-  std::fwrite(&at, 4, 1, g.inputs);
-  const uint8_t u = uint8_t(user);
-  std::fwrite(&u, 1, 1, g.inputs);
-  std::fwrite(now.data(), 1, now.size(), g.inputs);
+  WriteInput(uint32_t(g_updates - g.bell), uint8_t(user), now);
 }
 
 void MatchRecordBox(const std::string& text) {
@@ -566,6 +731,10 @@ void MatchRecordEnded(const std::string& box) {
     std::fputs(fmt::format("at the end (update {}):\n  fallback memory {} KB (peak {} KB)\n", g_updates,
                            FallbackBytesInUse() / 1024, g.fallback_peak / 1024).c_str(), f);
     std::fclose(f);
+  }
+  if (g_replay.on) {  // (the replay's match ended before the recording's frames ran out)
+    g_replay.on = false, g_replay.done = true;
+    ReplayReport();
   }
   if (g.inputs) std::fclose(g.inputs);
   if (g.trail) std::fclose(g.trail);
