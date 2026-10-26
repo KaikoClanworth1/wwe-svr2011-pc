@@ -25,6 +25,7 @@
 // the frame's last update (below). Online lockstep: one update a frame.
 #include "frame_rate.h"
 #include "match_box.h"
+#include "match_record.h"
 #include "match_diag.h"
 #include "free_cam.h"
 #include "thread_cpu.h"
@@ -770,6 +771,7 @@ REX_HOOK_RAW(sub_82905058) {
                                                              (base[out + 7] > 0x40 ? 0x800 : 0))
                                                 : 0);  // (arena_mods.h: LB/RB, LT/RT as 0x400/0x800)
     if (user == 0) svr2011::CheckModProfiles(base);  // (superstar_mods.h)
+    svr2011::MatchRecordPad(user, ctx.r3.u32, base + out);  // (the match's inputs.bin: match_record.h)
   }
 }
 

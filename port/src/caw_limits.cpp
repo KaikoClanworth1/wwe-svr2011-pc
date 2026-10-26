@@ -177,6 +177,11 @@ uint32_t ModelPageLimit() {
   return pages;
 }
 
+uint32_t FallbackBytesInUse() {
+  std::lock_guard lock(g_fallback_mutex);
+  return g_fallback_bytes;
+}
+
 bool CawHeapFree(uint32_t ptr) {
   if (!ptr || !g_fallback_blocks.load(std::memory_order_relaxed)) return false;
   std::lock_guard lock(g_fallback_mutex);

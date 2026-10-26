@@ -45,5 +45,7 @@ constexpr uint32_t kWeaponHeap = 38;
 // A block CawHeapFallback gave is freed (operator delete's hook,
 // frame_rate.cpp): true when it was one of them (freed here).
 bool CawHeapFree(uint32_t ptr);
+// The fallback memory in use now (bytes): match recordings' loaded.txt.
+uint32_t FallbackBytesInUse();
 
 }  // namespace svr2011
