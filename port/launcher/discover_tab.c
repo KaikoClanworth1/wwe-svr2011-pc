@@ -30,10 +30,13 @@ enum {
     D_PIC, D_PICPREV, D_PICLBL, D_PICNEXT, D_INFO, D_DESC, D_BACK, D_DOWNLOAD, D_DELETE,
     U_TITLE, U_NAME_L, U_NAME, U_VER_L, U_VER, U_TYPES_L, U_T0, U_T1, U_T2, U_T3, U_TAGS_L, U_TAGS, U_DESC_L, U_DESC,
     U_FILE_L, U_FILE, U_FILE_PICK, U_PICS_L, U_PICS, U_PICS_PICK, U_AUTHOR, U_SEND, U_CANCEL, U_PROGRESS,
-    D_EDIT, D_NEWFILE, D_FIRSTPIC, D_COUNT   /* (the uploader's own: Edit..., New version..., Make first) */
+    D_EDIT, D_NEWFILE, D_FIRSTPIC,   /* (the uploader's own: Edit..., New version..., Make first) */
+    D_DLBAR, D_DLCANCEL, D_COUNT     /* (a download running: its bar and Cancel) */
 };
 enum { V_GRID, V_MOD, V_UPLOAD };
-enum { R_LIST, R_THUMB, R_DETAIL, R_PIC, R_DOWNLOAD, R_UPLOAD, R_DELETE, R_PROGRESS, R_EDIT };
+enum { R_LIST, R_THUMB, R_DETAIL, R_PIC, R_DOWNLOAD, R_UPLOAD, R_DELETE, R_PROGRESS, R_EDIT,
+       R_RECONNECT, R_DLPROG };   /* (the server didn't answer: trying again; a download's progress) */
+#define DL_TRIES 6   /* (a download that breaks: resumed / restarted this many times in all) */
 #define PER_PAGE 24
 #define THUMB_W 160
 #define THUMB_H 120
@@ -49,8 +52,15 @@ typedef struct {
 } Mod;
 
 static HWND s_wnd, s_c[D_COUNT];
-static int s_base, s_view = V_GRID, s_page, s_total, s_n, s_gen, s_shown, s_busy, s_pic, s_cur = -1;
-static int s_mine;   /* (the mod shown is the signed-in account's own: Edit / New version / Delete) */
+static int s_base, s_view = V_GRID, s_page, s_total, s_n, s_shown, s_busy, s_pic, s_cur = -1;
+static volatile LONG s_gen;   /* (read by the threads: a newer page stops an older one's retries) */
+/* The mod shown is the signed-in account's own (Edit / New version / Delete): only on the server's word ("mine" in
+   its page, asked with the token) for the token signed in now - owner_now() checks it at every view. */
+static int s_mine;
+static char s_mine_token[160];   /* (the token the page was asked with) */
+static volatile LONG s_dl_cancel;   /* (Cancel on a download) */
+static int s_dl;                    /* (a download runs) */
+static Mod s_dl_mod;                /* (the mod it is: the player may browse on meanwhile) */
 static int s_edit;   /* (the form edits this mod - its id - instead of uploading a new one) */
 static WCHAR s_cur_desc[2001], s_ini[MAX_PATH];
 static long long s_last_visit;   /* (the previous visit to Discovery: "Updated" since then) */
@@ -444,6 +454,173 @@ static int http(const Job *j, const WCHAR *method, const WCHAR *path, const char
     return (int)status;
 }
 
+/* The same answer of another kind (a reconnect's or a download's progress). */
+static void post_as(Job *j, int kind, int status, const WCHAR *text)
+{
+    const int was = j->kind;
+    j->kind = kind;
+    post(j, status, NULL, 0, 0, text);
+    j->kind = was;
+}
+
+/* Waits ms, a little at a time; 0 when the page moved on meanwhile (gen) or a download was cancelled. */
+static int wait_while(const Job *j, int ms, int download)
+{
+    for (; ms > 0; ms -= 100) {
+        if (download ? s_dl_cancel != 0 : j->gen != s_gen) return 0;
+        Sleep(100);
+    }
+    return 1;
+}
+
+static const int k_backoff[] = { 2, 5, 10, 30 };   /* (seconds between tries; then 30 s each) */
+static int backoff(int tries) { return k_backoff[tries < 4 ? tries : 3]; }
+
+/* A GET for a page (the list, a mod's page): while the server doesn't answer at all, tried again quietly - 2, 5,
+   10, then every 30 s - with "Reconnecting..." shown, until it does or the player goes elsewhere (gen). */
+static int http_retry(Job *j, const WCHAR *path, uint8_t **out, size_t *out_n, size_t max)
+{
+    int st, tries = 0;
+    for (;;) {
+        st = http(j, L"GET", path, NULL, NULL, 0, out, out_n, max);
+        if (st > 0 || j->gen != s_gen) return st;
+        free(*out);
+        *out = NULL;
+        {
+            WCHAR t[200];
+            swprintf_s(t, 200, L"Reconnecting\x2026 (the online server didn't answer - trying again in %d s)", backoff(tries));
+            post_as(j, R_RECONNECT, 0, t);
+        }
+        if (!wait_while(j, backoff(tries++) * 1000, 0)) return st;
+    }
+}
+
+/* A download's progress line: "45% - 90.0 of 200.0 MB - 12.3 MB/s". */
+static void dl_progress(Job *j, long long have, long long total, double speed, const WCHAR *extra)
+{
+    WCHAR t[300], a[32], b[32], rate[32] = L"";
+    fmt_bytes(a, 32, have);
+    if (speed > 0) swprintf_s(rate, 32, L" - %.1f MB/s", speed / 1048576.0);
+    if (total > 0) {
+        fmt_bytes(b, 32, total);
+        swprintf_s(t, 300, L"Downloading %d%% - %s of %s%s%s", (int)(have * 100 / total), a, b, rate, extra ? extra : L"");
+    } else {
+        swprintf_s(t, 300, L"Downloading - %s%s%s", a, rate, extra ? extra : L"");
+    }
+    post_as(j, R_DLPROG, total > 0 ? (int)(have * 1000 / total) : 0, t);
+}
+
+/* The mod's file into `part` as it comes, with progress. A connection that breaks is tried again (DL_TRIES in all,
+   2 / 5 / 10 / 30 s apart): from where it broke when the server answers a Range with 206, else from the start.
+   1 when every byte is in (the Content-Length's, when the server gave one); why: why not. */
+static int download_to(Job *j, const WCHAR *part, WCHAR *why)
+{
+    WCHAR base[260], url[1000], host[256], upath[900], headers[600];
+    URL_COMPONENTS uc;
+    long long have = 0, total = -1;
+    int tries = 0, done = 0;
+    HANDLE f = CreateFileW(part, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) { wcscpy_s(why, 200, L"the download folder (Tools\\.downloads) can't be written"); return 0; }
+    s_server(base, 260);
+    while (wcslen(base) && base[wcslen(base) - 1] == L'/') base[wcslen(base) - 1] = 0;
+    swprintf_s(url, 1000, L"%s%s", base, j->path);
+    ZeroMemory(&uc, sizeof uc);
+    uc.dwStructSize = sizeof uc;
+    uc.lpszHostName = host; uc.dwHostNameLength = 256;
+    uc.lpszUrlPath = upath; uc.dwUrlPathLength = 900;
+    if (!WinHttpCrackUrl(url, 0, 0, &uc)) { CloseHandle(f); wcscpy_s(why, 200, L"the server's address is wrong"); return 0; }
+    while (!done && !s_dl_cancel) {
+        HINTERNET ses = NULL, con = NULL, req = NULL;
+        DWORD status = 0, sz = sizeof status;
+        int broke = 1;   /* (no answer, or it stopped part way: worth another try) */
+        ses = WinHttpOpen(L"SvR2011 Launcher", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                          WINHTTP_NO_PROXY_BYPASS, 0);
+        if (ses) {
+            WinHttpSetTimeouts(ses, 10000, 15000, 30000, 30000);   /* (30 s without a byte: broken) */
+            con = WinHttpConnect(ses, host, uc.nPort, 0);
+        }
+        if (con)
+            req = WinHttpOpenRequest(con, L"GET", upath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                     uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
+        if (req) {
+            headers[0] = 0;
+            if (j->token[0]) swprintf_s(headers, 600, L"Authorization: Bearer %S\r\n", j->token);
+            if (have > 0) swprintf_s(headers + wcslen(headers), 600 - wcslen(headers), L"Range: bytes=%lld-\r\n", have);
+            if (WinHttpSendRequest(req, headers[0] ? headers : WINHTTP_NO_ADDITIONAL_HEADERS, (DWORD)-1L,
+                                   WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(req, NULL)) {
+                WCHAR len[32] = L"";
+                DWORD ln = sizeof len;
+                WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                    WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz, WINHTTP_NO_HEADER_INDEX);
+                if (!WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, len, &ln,
+                                         WINHTTP_NO_HEADER_INDEX)) len[0] = 0;
+                if (status == 206 && have > 0) {   /* (the rest, from where it broke) */
+                    WCHAR range[96] = L"";
+                    DWORD rn = sizeof range;
+                    long long from = -1;
+                    if (WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_RANGE, WINHTTP_HEADER_NAME_BY_INDEX, range, &rn,
+                                            WINHTTP_NO_HEADER_INDEX))
+                        swscanf_s(range, L"bytes %lld-", &from);
+                    if (from != have) { status = 0; have = 0; }   /* (not the part asked for: from the start) */
+                    else if (len[0]) total = have + _wtoi64(len);
+                }
+                if (status == 200 || (status == 206 && have == 0)) {   /* (the whole file: from the start) */
+                    LARGE_INTEGER zero = { 0 };
+                    SetFilePointerEx(f, zero, NULL, FILE_BEGIN);
+                    SetEndOfFile(f);
+                    have = 0;
+                    total = len[0] ? _wtoi64(len) : -1;
+                }
+                if (status == 200 || status == 206) {
+                    static uint8_t buf[1 << 16];   /* (one download at a time: s_dl) */
+                    ULONGLONG t0 = GetTickCount64(), last = 0;
+                    long long at0 = have;
+                    DWORD got = 0, put = 0;
+                    for (;;) {
+                        if (s_dl_cancel) break;
+                        if (!WinHttpReadData(req, buf, sizeof buf, &got)) break;   /* (broken) */
+                        if (!got) { broke = total >= 0 && have < total; break; }   /* (the end - all of it?) */
+                        if (!WriteFile(f, buf, got, &put, NULL) || put != got) {
+                            wcscpy_s(why, 200, L"the file couldn't be written (disk full?)");
+                            broke = 0;
+                            status = 0;
+                            break;
+                        }
+                        have += got;
+                        if (GetTickCount64() - last >= 200) {
+                            const double secs = (GetTickCount64() - t0) / 1000.0;
+                            last = GetTickCount64();
+                            dl_progress(j, have, total, secs > 0.2 ? (have - at0) / secs : 0, NULL);
+                        }
+                    }
+                    if (!s_dl_cancel && !broke && !why[0]) done = 1;
+                } else if (status) {
+                    broke = 0;   /* (the server said no - 404, 403...: not worth trying again) */
+                    swprintf_s(why, 200, L"the server said %d", (int)status);
+                }
+            }
+        }
+        if (req) WinHttpCloseHandle(req);
+        if (con) WinHttpCloseHandle(con);
+        if (ses) WinHttpCloseHandle(ses);
+        if (done || s_dl_cancel || !broke || why[0]) break;
+        if (++tries >= DL_TRIES) {
+            wcscpy_s(why, 200, L"the connection kept breaking");
+            break;
+        }
+        {
+            WCHAR t[120];
+            swprintf_s(t, 120, L" - connection lost, %s in %d s (try %d of %d)", have > 0 ? L"resuming" : L"starting again",
+                       backoff(tries - 1), tries + 1, DL_TRIES);
+            dl_progress(j, have, total, 0, t);
+        }
+        wait_while(j, backoff(tries - 1) * 1000, 1);
+    }
+    CloseHandle(f);
+    if (s_dl_cancel && !done) wcscpy_s(why, 200, L"cancelled");
+    return done && !why[0];
+}
+
 /* A multipart request: the text fields, the four pictures (with_pics: made here from j->pics), the .svrmod
    (j->file). The HTTP status; why: what went wrong here. */
 static int send_multipart(Job *j, int with_pics, const WCHAR *method, const WCHAR *url, uint8_t **data, size_t *n,
@@ -531,7 +708,7 @@ static DWORD WINAPI job_thread(LPVOID p)
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
     switch (j->kind) {
     case R_LIST:
-        st = http(j, L"GET", j->path, NULL, NULL, 0, &data, &n, 1 << 20);
+        st = http_retry(j, j->path, &data, &n, 1 << 20);
         if (st == 200 && data) {   /* (the page's ids and picture counters, for its pictures) */
             const char *q = jkey((const char *)data, (const char *)data + n, "mods"), *end = (const char *)data + n;
             while (q && q < end && j->n_ids < PER_PAGE && (q = strchr(q, '{')) && q < end) {
@@ -547,41 +724,43 @@ static DWORD WINAPI job_thread(LPVOID p)
             if (j->gen != s_gen) break;
             swprintf_s(path, 64, L"/api/mods/%d/img/0?v=%d", j->ids[i], j->pics_v[i]);
             data = NULL;
-            if (http(j, L"GET", path, NULL, NULL, 0, &data, &n, 2 << 20) == 200) {
+            if ((st = http_retry(j, path, &data, &n, 2 << 20)) == 200) {
                 j->kind = R_THUMB;
                 post(j, 200, data, n, i, NULL);
                 j->kind = R_LIST;
             } else free(data);
+            st = 200;   /* (a picture missing: the next one still) */
         }
         break;
     case R_DETAIL:
-        st = http(j, L"GET", j->path, NULL, NULL, 0, &data, &n, 1 << 20);
+        st = http_retry(j, j->path, &data, &n, 1 << 20);
         post(j, st, data, n, 0, NULL);
         j->kind = R_PIC;
         for (i = 0; i < 4 && st == 200 && j->gen == s_gen; i++) {
             swprintf_s(path, 64, L"%s/img/%d?v=%d", j->path, i, j->index);
             data = NULL;
-            if (http(j, L"GET", path, NULL, NULL, 0, &data, &n, 2 << 20) == 200) post(j, 200, data, n, i, NULL);
+            if (http_retry(j, path, &data, &n, 2 << 20) == 200) post(j, 200, data, n, i, NULL);
             else free(data);
         }
         break;
     case R_DOWNLOAD: {
-        WCHAR dir[MAX_PATH];
-        st = http(j, L"GET", j->path, NULL, NULL, 0, &data, &n, 300u << 20);
-        if (st == 200 && n) {
-            HANDLE f;
-            DWORD put = 0;
-            swprintf_s(dir, MAX_PATH, L"%s\\Tools", s_game);
-            CreateDirectoryW(dir, NULL);
-            wcscat_s(dir, MAX_PATH, L"\\.downloads");
-            CreateDirectoryW(dir, NULL);
-            swprintf_s(j->file, MAX_PATH, L"%s\\discovery.svrmod", dir);
-            f = CreateFileW(j->file, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-            if (f == INVALID_HANDLE_VALUE || !WriteFile(f, data, (DWORD)n, &put, NULL) || put != n) st = -1;
-            if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
+        /* into <id>.part, renamed to discovery.svrmod only when it is all in: a broken or cancelled download never
+           reaches the install (the .part is deleted) */
+        WCHAR dir[MAX_PATH], part[MAX_PATH], why[200] = L"";
+        swprintf_s(dir, MAX_PATH, L"%s\\Tools", s_game);
+        CreateDirectoryW(dir, NULL);
+        wcscat_s(dir, MAX_PATH, L"\\.downloads");
+        CreateDirectoryW(dir, NULL);
+        swprintf_s(part, MAX_PATH, L"%s\\discovery_%d.part", dir, j->index);
+        swprintf_s(j->file, MAX_PATH, L"%s\\discovery.svrmod", dir);
+        if (download_to(j, part, why) && MoveFileExW(part, j->file, MOVEFILE_REPLACE_EXISTING)) {
+            st = 200;
+        } else {
+            DeleteFileW(part);
+            if (!why[0]) wcscpy_s(why, 200, L"the file couldn't be put in place");
+            st = s_dl_cancel ? -2 : -1;
         }
-        free(data);
-        post(j, st, NULL, 0, 0, j->file);
+        post(j, st, NULL, 0, 0, st == 200 ? j->file : why);
         break;
     }
     case R_DELETE:
@@ -660,12 +839,25 @@ static Job *job(int kind)
 
 static const int k_grid_ids[] = { D_SEARCH, D_TYPE, D_SORT, D_GO, D_GRID, D_PREV, D_PAGE, D_NEXT, D_UPLOAD };
 static const int k_mod_ids[] = { D_PIC, D_PICPREV, D_PICLBL, D_PICNEXT, D_INFO, D_DESC, D_BACK, D_DOWNLOAD, D_DELETE,
-                                 D_EDIT, D_NEWFILE, D_FIRSTPIC };
+                                 D_EDIT, D_NEWFILE, D_FIRSTPIC, D_DLBAR, D_DLCANCEL };
+
+/* The mod's page shows the player's own mod: the server said so ("mine") for the token signed in now - not for one
+   from before a sign-out or another account's sign-in (then its Delete was refused: 403). */
+static int owner_now(void)
+{
+    char token[160];
+    WCHAR me[8];
+    long long my_id = -1;
+    if (s_view != V_MOD || s_cur < 0 || !s_mine) return 0;
+    s_account(token, sizeof token, me, 8, &my_id);
+    return token[0] && !strcmp(token, s_mine_token);
+}
 
 static void set_view(int v)
 {
-    int i;
+    int i, mine;
     s_view = v;
+    mine = owner_now();
     for (i = 0; i < D_COUNT; i++) {
         int show = i == D_STATUS;
         size_t k;
@@ -673,7 +865,9 @@ static void set_view(int v)
         for (k = 0; k < sizeof k_mod_ids / sizeof k_mod_ids[0]; k++) if (k_mod_ids[k] == i) show = v == V_MOD;
         if (i >= U_TITLE && i <= U_PROGRESS) show = v == V_UPLOAD;
         if (i == D_DELETE || i == D_EDIT || i == D_NEWFILE || i == D_FIRSTPIC)
-            show = show && s_mine;   /* (only on the player's own mod - also when the page is shown again) */
+            show = show && mine && !s_dl;   /* (only on the player's own mod - checked again at every view) */
+        if (i == D_DLBAR || i == D_DLCANCEL) show = show && s_dl;   /* (a download: its bar, in the buttons' place) */
+        if (i == D_DOWNLOAD) show = show && !s_dl;
         if (s_c[i]) ShowWindow(s_c[i], show ? SW_SHOW : SW_HIDE);
     }
 }
@@ -716,18 +910,17 @@ static void open_mod(int i)
     SetWindowTextW(s_c[D_INFO], L"");
     SetWindowTextW(s_c[D_DESC], L"");
     SetWindowTextW(s_c[D_PICLBL], L"1 / 4");
-    {   /* the player's own: the signed-in account's id is the mod's owner (not its name: an online name typed on
-           the Online page isn't the account until signed in with it) */
-        char token[160];
-        WCHAR me[64];
+    if (!(j = job(R_DETAIL))) return;
+    {   /* the player's own: only when the page's answer says so ("mine", asked with this token) */
+        WCHAR me[8];
         long long my_id = -1;
-        s_account(token, sizeof token, me, 64, &my_id);
-        s_mine = token[0] && my_id >= 0 && s_mods[i].owner == my_id;
+        s_account(j->token, sizeof j->token, me, 8, &my_id);
+        strcpy_s(s_mine_token, sizeof s_mine_token, j->token);
+        s_mine = 0;
         set_view(V_MOD);
     }
     InvalidateRect(s_c[D_PIC], NULL, TRUE);
-    if (!(j = job(R_DETAIL))) return;
-    s_gen++;
+    InterlockedIncrement(&s_gen);
     swprintf_s(j->path, 700, L"/api/mods/%d", s_mods[i].id);
     j->index = s_mods[i].pics;
     start(j);
@@ -974,6 +1167,10 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
     C(D_NEWFILE, L"Button", L"New version\x2026", BS_PUSHBUTTON | WS_TABSTOP, 396, 488, 112, 30);
     C(D_DELETE, L"Button", L"Delete", BS_PUSHBUTTON | WS_TABSTOP, 514, 488, 74, 30);
     C(D_FIRSTPIC, L"Button", L"Make first", BS_PUSHBUTTON | WS_TABSTOP, 442, 360, 146, 28);
+    /* (a download: its bar and Cancel in the buttons' place; the line under them says how far) */
+    C(D_DLBAR, PROGRESS_CLASSW, L"", PBS_SMOOTH, 136, 496, 340, 14);
+    SendMessageW(s_c[D_DLBAR], PBM_SETRANGE32, 0, 1000);
+    C(D_DLCANCEL, L"Button", L"Cancel", BS_PUSHBUTTON | WS_TABSTOP, 488, 488, 100, 30);
     /* the upload form */
     C(U_TITLE, L"Static", L"Upload a mod: every field but tags and the description is needed. Only .svrmod files.",
       SS_LEFT | SS_NOPREFIX, 28, 54, 560, 20);
@@ -1017,6 +1214,14 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
 
 void discover_set_ini(const WCHAR *ini) { wcscpy_s(s_ini, MAX_PATH, ini ? ini : L""); }
 
+int discover_test_state(int *permille, int *owner_buttons, WCHAR *line, size_t n)
+{
+    if (permille) *permille = s_dl ? (int)SendMessageW(s_c[D_DLBAR], PBM_GETPOS, 0, 0) : -1;
+    if (owner_buttons) *owner_buttons = s_c[D_DELETE] && IsWindowVisible(s_c[D_DELETE]);
+    if (line) GetWindowTextW(s_c[D_STATUS], line, (int)n);
+    return s_dl;
+}
+
 void discover_show(const WCHAR *game_dir)
 {
     if (!s_shown && s_ini[0]) {   /* (this run's first visit: what's newer than the last one is "Updated") */
@@ -1027,7 +1232,14 @@ void discover_show(const WCHAR *game_dir)
         WritePrivateProfileStringW(L"Discovery", L"LastVisit", v, s_ini);
     }
     wcscpy_s(s_game, MAX_PATH, game_dir ? game_dir : L"");
-    set_view(s_view);
+    set_view(s_view);   /* (owner_now: a sign-out or another account since hides the owner's buttons here) */
+    if (s_view == V_MOD && s_cur >= 0) {   /* signed in with another token since the page was asked: ask again */
+        char token[160];
+        WCHAR me[8];
+        long long my_id = -1;
+        s_account(token, sizeof token, me, 8, &my_id);
+        if (token[0] && strcmp(token, s_mine_token)) open_mod(s_cur);
+    }
     if (s_view == V_UPLOAD) upload_view();
     if (s_view == V_UPLOAD && !s_busy) ShowWindow(s_c[U_PROGRESS], SW_HIDE);
     if (!s_shown) {
@@ -1057,15 +1269,16 @@ int discover_command(int id, int code)
         if (s_edit && s_cur >= 0 && !s_busy) { s_edit = 0; form_clear(); open_mod(s_cur); return 1; }
         s_gen++; s_mine = 0; set_view(V_GRID);
         return 1;
-    case D_EDIT: edit_view(); return 1;
+    case D_EDIT: if (owner_now()) edit_view(); return 1;
     case D_NEWFILE:
+        if (!owner_now()) return 1;
         edit_view();
         SendMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + U_FILE_PICK, BN_CLICKED), 0);
         return 1;
     case D_FIRSTPIC: {   /* the picture shown becomes the first (PATCH picture_order) */
         Job *j;
         int k, o = 1;
-        if (s_cur < 0 || s_pic == 0 || s_busy) return 1;
+        if (s_cur < 0 || s_pic == 0 || s_busy || !owner_now()) return 1;
         if (!(j = job(R_EDIT)) || !(j->json = (char *)malloc(64))) { free(j); return 1; }
         sprintf_s(j->json, 64, "{\"picture_order\":[%d", s_pic);
         for (k = 0; k < 4; k++) if (k != s_pic) { sprintf_s(j->json + strlen(j->json), 64 - strlen(j->json), ",%d", k); o++; }
@@ -1090,16 +1303,29 @@ int discover_command(int id, int code)
         if (!s_game[0]) { status(L"Install the game first (Setup)."); return 1; }
         if (!(j = job(R_DOWNLOAD))) return 1;
         s_busy = 1;
-        EnableWindow(s_c[D_DOWNLOAD], FALSE);
-        swprintf_s(j->path, 700, L"/api/mods/%d/file", s_mods[s_cur].id);
+        s_dl = 1;
+        s_dl_cancel = 0;
+        s_dl_mod = s_mods[s_cur];
+        j->index = s_dl_mod.id;
+        swprintf_s(j->path, 700, L"/api/mods/%d/file", s_dl_mod.id);
+        SendMessageW(s_c[D_DLBAR], PBM_SETPOS, 0, 0);
+        EnableWindow(s_c[D_DLCANCEL], TRUE);
+        set_view(s_view);
         status(L"Downloading\x2026");
         start(j);
         return 1;
     }
+    case D_DLCANCEL:
+        if (s_dl) {
+            InterlockedExchange(&s_dl_cancel, 1);
+            EnableWindow(s_c[D_DLCANCEL], FALSE);
+            status(L"Cancelling the download\x2026");
+        }
+        return 1;
     case D_DELETE: {
         Job *j;
         WCHAR t[200];
-        if (s_cur < 0) return 1;
+        if (s_cur < 0 || !owner_now()) return 1;
         swprintf_s(t, 200, L"Delete \"%s\" from Discovery for everyone?", s_mods[s_cur].name);
         if (MessageBoxW(s_wnd, t, L"Delete my mod", MB_OKCANCEL | MB_ICONQUESTION) != IDOK) return 1;
         if (!(j = job(R_DELETE))) return 1;
@@ -1200,12 +1426,25 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
     }
     r = (Result *)lp;
     if (!r) return 1;
-    if ((r->kind == R_LIST || r->kind == R_THUMB || r->kind == R_DETAIL || r->kind == R_PIC) && r->gen != s_gen) {
+    if ((r->kind == R_LIST || r->kind == R_THUMB || r->kind == R_DETAIL || r->kind == R_PIC || r->kind == R_RECONNECT) &&
+        r->gen != s_gen) {
         free(r->data);
         free(r);
         return 1;
     }
     switch (r->kind) {
+    case R_RECONNECT:   /* (the list / page comes back by itself when the server answers) */
+        if (!s_dl) status(r->text);
+        break;
+    case R_DLPROG:
+        if (s_dl) {
+            const char *v = getenv("SVR2011_DISCOVER_CANCEL_AT");   /* (test aid: Cancel at that many 0.1 %) */
+            SendMessageW(s_c[D_DLBAR], PBM_SETPOS, (WPARAM)r->status, 0);
+            if (!s_dl_cancel) status(r->text);
+            if (v && *v && r->status >= atoi(v) && !s_dl_cancel)
+                SendMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_DLCANCEL, BN_CLICKED), 0);
+        }
+        break;
     case R_LIST: {
         const char *p, *end = (const char *)r->data + r->n;
         ListView_DeleteAllItems(s_c[D_GRID]);
@@ -1295,21 +1534,26 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         wcscpy_s(s_cur_desc, 2001, desc);
         {   /* the server's word on whose it is (asked with the token), when it gives one */
             const char *mine = jkey((const char *)r->data, end, "mine");
-            if (mine) {
-                s_mine = !strncmp(mine, "true", 4);
-                if (s_view == V_MOD) set_view(V_MOD);
-            }
+            s_mine = mine && !strncmp(mine, "true", 4);
+            if (s_view == V_MOD) set_view(V_MOD);
         }
         {
             const long long got = downloaded_stamp(md->id), now_v = md->updated ? md->updated : md->created;
             SetWindowTextW(s_c[D_DOWNLOAD], got && now_v > got ? L"Download the update" : L"Download and install");
+        }
+        {   /* test aid (--capture discover with SVR2011_DISCOVER_OPEN), once: SVR2011_DISCOVER_DOWNLOAD=1 downloads it
+               (the capture waits for the download: discover_test_state) */
+            static int downloaded;
+            const char *v = getenv("SVR2011_DISCOVER_DOWNLOAD");
+            if (v && *v == '1' && !downloaded++)
+                PostMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_DOWNLOAD, BN_CLICKED), 0);
         }
         {   /* test aid (--capture discover with SVR2011_DISCOVER_OPEN), once: SVR2011_DISCOVER_EDIT=1 edits the mod -
                " (edited)" on its name, SVR2011_DISCOVER_EDIT_PIC=<picture> as its 2nd picture,
                SVR2011_DISCOVER_EDIT_FILE=<svrmod> as a new version "<version>.1"; =first: the 3rd picture first */
             static int edited;
             const char *v = getenv("SVR2011_DISCOVER_EDIT");
-            if (v && *v && !edited++ && s_mine) {
+            if (v && *v && !edited++ && owner_now()) {
                 if (!strcmp(v, "view")) {   /* (=view: the edit form only) */
                     edit_view();
                 } else if (!strcmp(v, "first")) {
@@ -1364,18 +1608,26 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         break;
     case R_DOWNLOAD:
         s_busy = 0;
-        EnableWindow(s_c[D_DOWNLOAD], TRUE);
-        if (r->status != 200) { answer_error(r, L"Download", t, 400); status(t); break; }
+        s_dl = 0;
+        set_view(s_view);
+        if (r->status == -2) { swprintf_s(t, 400, L"Download of \"%s\" cancelled - nothing was installed.", s_dl_mod.name); status(t); break; }
+        if (r->status != 200) {
+            swprintf_s(t, 400, L"Download of \"%s\" failed (%s) - nothing was installed. Try again in a moment.",
+                       s_dl_mod.name, r->text);
+            status(t);
+            break;
+        }
         if (mods_install(s_game, r->text)) {
-            if (s_ini[0] && s_cur >= 0) {
+            if (s_ini[0]) {
                 WCHAR k[32], v[32];
-                swprintf_s(k, 32, L"Mod%d", s_mods[s_cur].id);
-                swprintf_s(v, 32, L"%lld", s_mods[s_cur].updated ? s_mods[s_cur].updated : s_mods[s_cur].created);
+                swprintf_s(k, 32, L"Mod%d", s_dl_mod.id);
+                swprintf_s(v, 32, L"%lld", s_dl_mod.updated ? s_dl_mod.updated : s_dl_mod.created);
                 WritePrivateProfileStringW(L"Discovery", k, v, s_ini);
-                SetWindowTextW(s_c[D_DOWNLOAD], L"Download and install");
+                if (s_view == V_MOD && s_cur >= 0 && s_mods[s_cur].id == s_dl_mod.id)
+                    SetWindowTextW(s_c[D_DOWNLOAD], L"Download and install");
             }
             swprintf_s(t, 400, L"Installed \"%s\" - it's on the Installed Mods tab and loads the next time the game starts.",
-                       s_cur >= 0 ? s_mods[s_cur].name : L"");
+                       s_dl_mod.name);
             status(t);
         } else {
             status(L"Downloaded, but it could not be installed - the Installed Mods tab says why.");

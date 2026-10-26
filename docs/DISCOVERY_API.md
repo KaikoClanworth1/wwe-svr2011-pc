@@ -43,6 +43,11 @@ Every list and detail answer uses this shape:
   Bearer token when signed in and the answer has `mine` (see the row). Sign-in (`/api/login`, `/api/register`) also
   answers the account's `id` now.
 - `GET /api/mods/{id}/file`: the `.svrmod`. Each download counts.
+  - Big files stream with `Content-Length`. The launcher shows progress from it and checks that every byte came.
+  - When a download breaks, the launcher tries again (6 tries in all, 2 / 5 / 10 / 30 s apart) with
+    `Range: bytes=<have>-`. It appends on `206` with a matching `Content-Range`. On `200` it starts again from 0.
+  - The server answers `200` (the whole file) today, so a break restarts the download. Only a complete file is
+    installed.
 - `GET /api/mods/{id}/img/{n}` (n 0-3): picture n, a 1024 x 768 JPEG.
   - It carries an `ETag`, so you can send `If-None-Match` and get a 304.
   - Ask for `img/{n}?v=<pics>` so a replaced picture is a new URL.
