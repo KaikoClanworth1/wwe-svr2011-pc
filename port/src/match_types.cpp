@@ -1995,14 +1995,17 @@ REX_HOOK_RAW(sub_82216C58) {
     }
   __imp__sub_82216C58(ctx, base);
   // Test aid: SVR2011_TEST_MOTION_LOG=1 - each fighter's motion (+212) when
-  // it changes, with the person and the match frame.
+  // it changes, with the person, the match frame, where he is (+288) and his
+  // area (+444: 0 the ring, 1 outside).
   static const bool motion_log = std::getenv("SVR2011_TEST_MOTION_LOG") != nullptr;
   if (motion_log && fighter) {
     static uint32_t last_motion[16] = {};
     const uint32_t person = std::min<uint32_t>(Rd32(base + fighter + 1156), 15), m = Rd32(base + fighter + 212);
     if (m != last_motion[person]) {
       last_motion[person] = m;
-      REXLOG_INFO("motion: person {} -> {} (frame {}, state {})", person, m, Rd32(base + 0x82E3CD0C), base[fighter + 446]);
+      REXLOG_INFO("motion: person {} -> {} (frame {}, state {}) at ({:.1f}, {:.1f}, {:.1f}) area {}", person, m,
+                  Rd32(base + 0x82E3CD0C), base[fighter + 446], RdF(base + fighter + 288), RdF(base + fighter + 292),
+                  RdF(base + fighter + 296), base[fighter + 444]);
     }
   }
   for (Attack& a : g_attacks)
@@ -2087,6 +2090,77 @@ REX_HOOK_RAW(sub_82216C58) {
       sub_82191AA8(ctx, base);
       REXLOG_INFO("match types: test - person {} starts motion {} on person {} ({} -> state {})", force[0], motion,
                   force[1], frames, Rd32(base + att + 212));
+      ctx = saved;
+    }
+  }
+  // Test aid: SVR2011_TEST_FORCE_DIVE=<every s>,<set-up motion>,<dive motion>[,<dive motion>...] - a dive from the
+  // top rope onto a lying person 1: every <s> seconds person 0 takes person 1 down with the set-up move (a paired
+  // move that leaves him lying, e.g. 5000 - person 0 put in the middle of the ring first, so it stays in the ring);
+  // 10 s later (the set-up over: placed during a move, both went back to its track) he is put on the top turnbuckle
+  // - (28.8, -21.9, -28.8), where a CPU's climb ends - with person 1 lying 20 units in front of him, and the dive
+  // starts through the paired start sub_82191AA8 (it keeps written places - the one-person setter sub_82396E80 didn't,
+  // with or without sub_8217C2B8), after which person 1 gets his own lying motion back (a dive has no track of his).
+  // A start with no target crashed: sub_8218F550 links the two people (+96 of each = the other) and wrote to 0x60.
+  // Stock dives start on the turnbuckle; ported ones (their tracks start at the root) rise where he stood, with
+  // person 1 put beside him - enough to see where the dive lands.
+  static const std::vector<uint32_t> dive = [] {
+    std::vector<uint32_t> v;
+    if (const char* e = std::getenv("SVR2011_TEST_FORCE_DIVE"))
+      for (const char* p = e; *p;) {
+        char* end = nullptr;
+        const unsigned long n = std::strtoul(p, &end, 10);
+        if (end == p) break;
+        v.push_back(uint32_t(n));
+        for (p = end; *p == ',' || *p == ' ';) ++p;
+      }
+    return v.size() >= 3 ? v : std::vector<uint32_t>{};
+  }();
+  if (!dive.empty()) {
+    constexpr uint32_t kChars = 0x82E3CC50, kMatchFrames = 0x82E3CD0C;
+    const uint32_t att = Rd32(base + kChars), tgt = Rd32(base + kChars + 4);
+    const uint32_t frames = Rd32(base + kMatchFrames), every = std::max<uint32_t>(dive[0], 10) * 60;
+    static uint32_t phase_at = 0, next = 0;
+    static int phase = 0;  // (0: the set-up next, 1: the dive next)
+    if (att == fighter && tgt && frames > 300) {
+      if (frames < phase_at) phase_at = 0, phase = 0;  // (a new match)
+      const auto saved = ctx;
+      auto put = [&](uint32_t f, float x, float y, float z) {
+        WrF(base + f + 288, x), WrF(base + f + 292, y), WrF(base + f + 296, z);
+        if (const uint32_t body = Rd32(base + f + 304)) {  // (+704 / +768: the body's other copies, hctp_room)
+          WrF(base + body, x), WrF(base + body + 4, y), WrF(base + body + 8, z);
+          for (uint32_t at : {704u, 768u}) WrF(base + body + at, x), WrF(base + body + at + 4, y), WrF(base + body + at + 8, z);
+        }
+        base[f + 444] = 0;
+      };
+      if (phase == 0 && frames >= phase_at + every) {
+        phase_at = frames, phase = 1;
+        put(att, 0.0f, -12.0f, 0.0f);
+        ctx.r3.u64 = att, ctx.r4.u64 = tgt, ctx.r5.u64 = dive[1];
+        sub_82191AA8(ctx, base);
+        REXLOG_INFO("match types: test dive - set-up {} on person 1 ({})", dive[1], frames);
+      } else if (phase == 1 && frames >= phase_at + 600) {
+        phase = 0;
+        const uint32_t motion = dive[2 + next++ % (dive.size() - 2)];
+        const float ax = 28.8f, ay = -21.9f, az = -28.8f;
+        const float vx = ax - 14.1f, vz = az + 14.1f;  // (20 units toward the ring's middle)
+        // (facing him: through the one-person setter a turned yaw faced in; through the paired start - below - the
+        // turned yaw dove out of the ring)
+        const float yaw = std::atan2(vx - ax, vz - az);
+        // Places written before the one-person setter alone (sub_82396E80(fighter, motion, x, y)) didn't hold, with or
+        // without sub_8217C2B8; through the paired start they do (FORCE_PLACE). So the dive goes through the paired
+        // start - its links (+96) both valid here - and person 1 then gets his own lying motion back at once (a dive
+        // has no track of his: in it he'd wait for good).
+        const uint32_t lying = Rd32(base + tgt + 212), lx = Rd32(base + tgt + 216), ly = Rd32(base + tgt + 220);
+        put(att, ax, ay, az);
+        WrF(base + att + 276, yaw);
+        put(tgt, vx, -12.0f, vz);
+        ctx.r3.u64 = att, ctx.r4.u64 = tgt, ctx.r5.u64 = motion;
+        sub_82191AA8(ctx, base);
+        ctx.r3.u64 = tgt, ctx.r4.u64 = lying, ctx.r5.u64 = lx, ctx.r6.u64 = ly;
+        sub_82396E80(ctx, base);
+        REXLOG_INFO("match types: test dive - person 0 dives with {} from the top rope onto person 1 ({} -> state {})",
+                    motion, frames, Rd32(base + att + 212));
+      }
       ctx = saved;
     }
   }
