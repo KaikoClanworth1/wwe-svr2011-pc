@@ -1598,13 +1598,13 @@ void SetModEntrances(const std::vector<Packs::EntryLine>& lines) {
       continue;
     const int n = std::atoi(l.name.c_str());
     scripts.insert(n);
-    if (n < 10000 && !ents.count(n)) per_dir[l.dir]++;
+    if (n < 6000 && !ents.count(n)) per_dir[l.dir]++;
   }
   for (const auto& l : lines) {
     if (l.group.rfind("EVP", 0) != 0 || l.name.empty() || l.name.find_first_not_of("0123456789") != std::string::npos)
       continue;
     const int n = std::atoi(l.name.c_str());
-    if (n >= 10000 || ents.count(n)) continue;
+    if (n >= 6000 || ents.count(n)) continue;  // (6000-9999: victory scenes, docs/VICTORY_SCENES.md; 10000+ parts)
     ModEntrance e;
     e.number = n;
     const std::string script = ScriptName(l.file);

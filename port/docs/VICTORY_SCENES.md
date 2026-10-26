@@ -26,7 +26,8 @@ move pack's `pacentry <pac> EVPx <n> <file>` adds a scene of any number.
   victory scene by its number (6000-9999).
 - [C] John Cena (139) winning a singles match: 6139. [L] a superstar without a scene of his own gets a generic
   one; title and match-type wins use 8000+ / 9000+.
-- Not traced: where +416 is written. In the test matches (SVR2011_TEST_LOSE, an attract match before) Matt
+- Not traced: where +416 is written (26 Oct: not in the 65 callers of the queue getter sub_82573EF8, not stored
+  at *(0x82E3DDFC) + 6288 directly; the 6288 stores in sub_824324C0 / sub_82431A40 are another object). In the test matches (SVR2011_TEST_LOSE, an attract match before) Matt
   Striker (149) winning also got 6139 - probably a stale value from the attract match's Cena, not a rule.
 
 ## 3. `victory=<n>` [C]
@@ -42,12 +43,30 @@ who lost (`+447`) names the winner's person (`+448`); the person's match slot (`
 Proof (26 Oct, hidden match, `runs\vic4_sheet.png`): the test Matt Striker mod with `victory=6176` beat Cena
 (`SVR2011_TEST_LOSE=1,12`) and did Kofi Kingston's celebration; with 6139 (vic2) John Cena's rope climb.
 
-## 4. Custom victories (open)
+## 4. Victories from other games [C]
 
-Any EVP / EVT pair a pack adds with a number 6000-7999 is listed by the Mod Maker and can be picked. Other
-games' victory scenes are the same format as their entrances (SvR 2007 evt4-8 are season and win scenes;
-2008-2010 likely the same), so `tools/entrance_port.py`'s converters could bring them over with a 6xxx number -
-not done yet.
+SvR 2008, 2009, 2010 and Legends of WrestleMania keep their win scenes as 2011 does (`pac/evt/Winning0-3.pac`,
+6000 + their own ids: SvR 2008 has WIN_Sabu 6070 and WIN_Sandman 6071, SvR 2010 Jeff Hardy 6111). The entrance
+converters convert them unchanged with `--kind victory`:
+
+    python tools/entrance_port.py list --kind victory --game svr08 --src <SvR 2008 disc or folder>
+    python tools/entrance_port.py free-numbers --kind victory            (6300-6999 not taken)
+    python tools/entrance_port.py convert --kind victory --game svr08 --src <...> --entrance 6070 --number 6300 --out <dir>
+
+- The list keeps the singles scenes (below 7150); the pack is `pacentry evt\Winning0.pac EVPA|EVTA <n>` with
+  `victory/<n>_evp.bin` / `_evt.bin`, for a superstar mod's moves\ or Mods\Moves.
+- Every character object gets the generic model 13902, as in 2011's own scenes (the game puts the winner,
+  loser and referee in; the entrance rule's converted ids name other superstars). No CAE parts, pyro or
+  titantron.
+- Only the asked scene is BPE-decoded (a convert ~2.5 s, a list ~3 s; decoding every entry took ~20 s).
+- The game counts pack scripts 6000-9999 as scenes, not as mod entrances (Create An Entrance lists stay as they
+  were; move_packs.cpp SetModEntrances).
+- Mod Maker: the Victory list's "From another game" part lists the scenes of the discs in My game discs;
+  picking one converts it into the mod's moves (a free 6300+ number) and sets victory=; Preview plays it from
+  the mod's pack. Test aid `--star-victory-port <game>,<n>`.
+- WWE '12 / '13 / 2K14+ (YANM scenes) aren't converted yet.
+
+Proof (26 Oct, hidden, `runsic6_sheet.png`): Matt Striker with SvR 2008's WIN_Sabu as 6300 beat Cena.
 
 ## Test aids
 

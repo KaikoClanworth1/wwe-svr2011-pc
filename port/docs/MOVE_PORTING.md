@@ -144,7 +144,7 @@ page (`port/docs/MOVE_MODDING.md`).
   Results 26 Oct: the stock Frog Splash 3555 dives into the ring onto the victim (the control); 2K15's Superfly
   Splash lands on him, WWE '12's Shooting Star Press across his legs; WWE '12's Springboard Moonsault 5094 rises
   and flips but lands about 2 m past the victim, who isn't hit (a springboard starts from the side ropes - the
-  aid's corner start may not be its place; not fixed).
+  aid's corner start may not be its place; later: a side-rope start for springboards in the aid, then judge the landing again).
 - **Ending a match**: `SVR2011_TEST_LOSE=<person>,<s>` - at <s> seconds the person loses to person 0 (victory
   scenes). `SVR2011_TEST_EVP_LOG=1` logs every scene script the game opens (`/EVPx/<n>`, with the caller).
 - **Hidden test games**: `SVR2011_WINDOW_HIDDEN=1` (tools/test_guard.ps1 sets it) - the window is never shown;
