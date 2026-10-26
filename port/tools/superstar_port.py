@@ -1994,6 +1994,10 @@ def build_single(cid, outdir, o, rep):
         with contextlib.redirect_stdout(sys.stderr):
             kept7, extra = svr07_char.convert(pac, out, template104(pac11), cid, None)
         note('attires %s (svr07_char)' % ', '.join('%s -> %s' % k[:2] for k in kept7))
+        for s7, _n, parts in kept7:   # (each attire's parts: a modded pac's own show in the report)
+            note('attire %s: %s' % (s7, parts))
+            if 'NOT IN THE PAC' in parts:
+                warn('attire %s names textures the pac does not carry - those parts are plain grey (a modded file?)' % s7)
         if getattr(svr07_char.convert, 'skeleton', None):
             note('skeleton: ch%d (a diva)' % svr07_char.convert.skeleton)
         for e in extra:

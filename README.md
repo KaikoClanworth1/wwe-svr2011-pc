@@ -466,6 +466,7 @@ See [CONTRIBUTORS.md](CONTRIBUTORS.md).
 ## Legal and credits
 
 - [Privacy policy](docs/PRIVACY.md) · [Terms](docs/TERMS.md)
+- **Licence**: the port's own code and docs are under the [MIT licence](LICENSE) (keep the copyright notice; please credit the port if you adapt it). Third-party code, the patches and the Bink reader keep their own licences, and no game material is covered.
 - This is an unofficial fan project. It isn't affiliated with or endorsed by WWE, THQ, Yuke's or Microsoft. *WWE SmackDown vs. Raw 2011* and all related names belong to their respective owners.
 - **No game material is included**: no disc image, XEX, data, audio, video or recompiled game code. You must own the game and supply your own disc image. The screenshots in `docs/screenshots/` were taken of the port running. They're used only to show the port, and they belong to the game's owners.
 - **Recompiler and runtime**: the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk), which is derived from [Xenia](https://github.com/xenia-project/xenia). See their licenses.
