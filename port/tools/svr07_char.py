@@ -36,6 +36,7 @@ COLOR = (2048, 1024)
 NORMAL = (1024, 1024)
 MK = (512, 256)
 PAD = 4
+MISSING = '\0missing'   # (the box for meshes whose texture the pac doesn't carry)
 
 
 def slot_names(m8, s8):
@@ -80,18 +81,24 @@ def bake(kids):
     """-> ({child: m8 with sheet UVs}, color DDS, normal DDS, Mk DDS, notes)"""
     tex = {n.lower(): d for n, d in S8.tex_read(kids[0xa])}
     m8s = {k: S8.read08(kids[k]) for k in (0, 0x2710, 0x4e20) if k in kids and kids[k][:4] == b'JBOY'}
-    diffuse_of, normal_of = {}, {}
+    diffuse_of, normal_of, missing = {}, {}, []
     for k, m8 in m8s.items():
         for i, s8 in enumerate(m8['meshes']):
             sl = slot_names(m8, s8)
             d = sl.get('texDiffuse')
             if d not in tex:
+                # (a modded pac can name a texture it doesn't carry: left as it was, the mesh's UVs spanned the whole
+                # baked sheet - every part's colours as specks; it gets a plain grey box instead, and a note)
+                missing.append('%s mesh %d (%s)' % ({0: 'body', 0x2710: 'hair', 0x4e20: 'gear'}[k], i, d or 'no texture'))
+                diffuse_of[(k, i)] = MISSING
                 continue
             diffuse_of[(k, i)] = d
             n = sl.get('texNormal')
             if n in tex and not n.startswith('dummy'):
                 normal_of.setdefault(d, n)
-    images = {d: Image.open(io.BytesIO(tex[d])).convert('RGBA') for d in sorted(set(diffuse_of.values()))}   # (sorted: a set's order follows the hash seed - the packed sheet changed every run)
+    images = {d: Image.open(io.BytesIO(tex[d])).convert('RGBA') for d in sorted(set(diffuse_of.values()) - {MISSING})}
+    if missing:
+        images[MISSING] = Image.new('RGBA', (8, 8), (128, 128, 128, 0))   # (sorted: a set's order follows the hash seed - the packed sheet changed every run)
     scale, boxes = pack({d: im.size for d, im in images.items()}, *COLOR)
     color = Image.new('RGBA', COLOR, (128, 128, 128, 255))
     normal = Image.new('RGBA', NORMAL, (128, 128, 255, 255))
@@ -111,7 +118,9 @@ def bake(kids):
                      for u, v in s8['uvs']]
     ao = Image.new('L', MK, 255)
     mk = Image.merge('RGBA', (Image.new('L', MK, 0), ao, ao, Image.new('L', MK, 255)))
-    notes = '%d part textures baked at %.0f%%' % (len(boxes), scale * 100)
+    notes = '%d part textures baked at %.0f%% (%s)' % (len(boxes), scale * 100, ', '.join(sorted(set(diffuse_of.values()) - {MISSING})))
+    if missing:
+        notes += '; NOT IN THE PAC, drawn grey: ' + ', '.join(missing)
     return m8s, S8.dds_encode(color, 'DXT5'), S8.dds_encode(normal, 'DXT5'), S8.dds_encode(mk, 'DXT5'), notes
 
 
