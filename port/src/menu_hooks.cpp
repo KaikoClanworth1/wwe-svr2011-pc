@@ -46,6 +46,7 @@
 #include "weapons_page.h"
 #include "discord_presence.h"
 #include "online.h"
+#include "match_record.h"
 #include "match_types.h"
 #include "mystery_opponent.h"
 #include "superstar_mods.h"
@@ -586,6 +587,7 @@ REX_HOOK_RAW(sub_823EEB98) {
     svr2011::SetFrameRateInMatch(true);  // (the chosen frame rate)
     svr2011::MysteryOpponentReveal("the match runs");  // (mystery_opponent.h)
   });
+  svr2011::MatchRecordMatchLoads();  // (the match's rand() seed: match_record.h)
   __imp__sub_823EEB98(ctx, base);
 }
 

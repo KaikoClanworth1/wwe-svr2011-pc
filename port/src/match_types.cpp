@@ -3381,6 +3381,12 @@ REX_HOOK_RAW(sub_828C48E8) {
     REXLOG_INFO("match types: WEAPONS EVERYWHERE - rule {:02X} with the Extreme Rules options", rule);
   }
   svr2011::MysteryOpponentLive(base, live);  // (entrances on: mystery_opponent.h)
+  // Test aid (match replays, docs/MATCH_RECORDINGS.md): SVR2011_TEST_ENTRANCES=0|1 - the live rules' ENTRANCES
+  // (+38) for this match: off, the people start in their in-ring places at the bell.
+  if (const char* v = std::getenv("SVR2011_TEST_ENTRANCES"); v && live) {
+    base[live + 38] = uint8_t(*v == '1');
+    REXLOG_INFO("match types: test - entrances {} (live rules {:08X})", *v == '1' ? "on" : "off", live);
+  }
 }
 
 // Research aid (online match types): SVR2011_TEST_ONLINE_TRACE=1 - the

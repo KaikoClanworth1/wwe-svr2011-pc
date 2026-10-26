@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -63,6 +64,19 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr uint32_t kChars = 0x82E3CC50, kMatchFrames = 0x82E3CD0C, kLive = 0x82E3DE00;
+constexpr uint32_t kTableIndexes = 0x82E3689C;  // (the random table's four draw indexes: sub_821C6BE0 zeroes them)
+
+// rand() per call site in a match (see sub_828F2430 below)
+std::mutex g_rand_mutex;
+std::map<uint32_t, uint32_t> g_rand_callers;
+thread_local bool t_logic = false;  // (the world update's thread: MatchRecordUpdate runs on it every frame)
+std::atomic<bool> g_match_rand_on{false};
+uint32_t g_match_seed = 0;                     // (under g_rand_mutex)
+std::map<uint32_t, uint32_t> g_site_rand;     // (call site -> its state, under g_rand_mutex)
+std::map<uint32_t, uint32_t> g_site_draws;    // (call site -> draws since the bell, under g_rand_mutex)
+uint8_t* g_base = nullptr;                    // (the guest memory: MatchRecordUpdate's)
+uint64_t g_load_frame = 0;                    // (the frame of the last match load)
+std::array<uint8_t, 4> g_load_table{};        // (the random table's indexes then)
 constexpr uint32_t kObjects = 0x82DE0220, kObjectSlots = 72;
 constexpr uint32_t kSeedCounters = 0x82EC6A2C;  // (u8 x2: the seed table's next index, by caller kind)
 constexpr uint32_t kInputsVersion = 0;
@@ -137,6 +151,14 @@ struct Recording {
   bool on = false;
   fs::path dir;
   uint64_t bell = 0;  // (the world update at the bell: inputs.bin counts from it)
+  // match.json "seeds" (exact replays later): the rand() seed, the random table's four draw indexes at the match's
+  // load and at the bell, the frames between them, and each index's first steps after the bell (its timer's phase)
+  uint32_t seed = 0;
+  std::array<uint8_t, 4> table_load{}, table_bell{};
+  uint64_t frames_load_to_bell = 0;
+  std::array<std::vector<uint64_t>, 4> table_steps;
+  std::array<uint8_t, 4> last_table{};
+  uint32_t trail_second = ~0u;
   std::string start;
   std::chrono::steady_clock::time_point started;
   uint32_t rule = 0, arena = 0;
@@ -182,6 +204,25 @@ std::string ModJson(const std::string& type, const std::string& id) {
   return fmt::format("{{\"type\": {}, \"id\": {}}}", Json(type), Json(id));
 }
 
+std::string SeedsJson() {  // (under g_rec)
+  const auto list = [](const auto& a) {
+    std::string t;
+    for (const auto& v : a) t += (t.empty() ? "" : ", ") + std::to_string(uint64_t(v));
+    return "[" + t + "]";
+  };
+  std::string steps, sites;
+  for (const auto& v : g.table_steps) steps += (steps.empty() ? "" : ", ") + list(v);
+  {
+    std::lock_guard lock(g_rand_mutex);
+    for (const auto& [lr, n] : g_site_draws)
+      sites += fmt::format("{}\"{:08X}{}\": {}", sites.empty() ? "" : ", ", lr & ~1u, lr & 1 ? "+" : "", n);
+  }
+  // (rand_sites: draws per call site since the bell - "+": another thread's than the logic thread's)
+  return fmt::format("{{\"rand\": \"{:08X}\", \"rand_sites\": {{{}}}, \"table_load\": {}, \"table_bell\": {}, "
+                     "\"table_steps\": [{}], \"frames_load_to_bell\": {}}}",
+                     g.seed, sites, list(g.table_load), list(g.table_bell), steps, g.frames_load_to_bell);
+}
+
 void WriteJson(bool complete) {  // (under g_rec)
   const auto len = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - g.started).count();
   std::string people;
@@ -203,14 +244,14 @@ void WriteJson(bool complete) {  // (under g_rec)
       "  \"arena\": {{\"id\": {}, \"name\": {}, \"mod\": {}}},\n  \"people\": [\n    {}\n  ],\n  \"frame_rate\": {},\n"
       "  \"online\": {},\n  \"renderer\": {},\n  \"cpu_tab\": {{\"reversal_chance\": {}, \"reversal_rates\": {}, "
       "\"damage_level\": {}, \"pin_level\": {}, \"momentum_level\": {}}},\n  \"weapons\": {{\"picks\": {}}},\n"
-      "  \"inputs\": {{\"file\": \"inputs.bin\", \"version\": {}}}\n}}\n",
+      "  \"inputs\": {{\"file\": \"inputs.bin\", \"version\": {}}},\n  \"seeds\": {}\n}}\n",
       complete ? "true" : "false", Json(SVR2011_PORT_VERSION), Json(SVR2011_BUILD_COMMIT), Json(g.start), len, Json(g.result),
       g.rule, Json(g.rule_name), g.arena, Json(g.arena_name),
       arena_id.empty() ? std::string("null") : ModJson("Arenas", arena_id), people, REXCVAR_GET(frame_rate),
       svr2011::P2POnlineMode() ? "true" : "false", Json(rex::cvar::Query<std::string>("gpu_backend")),
       REXCVAR_GET(cpu_reversal_chance), REXCVAR_GET(cpu_reversal_rates), REXCVAR_GET(cpu_damage_level),
       REXCVAR_GET(cpu_pin_level), REXCVAR_GET(cpu_momentum_level),
-      Json(rex::cvar::Query<std::string>("extreme_weapons")), kInputsVersion);
+      Json(rex::cvar::Query<std::string>("extreme_weapons")), kInputsVersion, SeedsJson());
   if (FILE* f = std::fopen((g.dir / "match.json").string().c_str(), "wb")) std::fwrite(s.data(), 1, s.size(), f), std::fclose(f);
 }
 
@@ -298,6 +339,14 @@ void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
     return;
   }
   g.on = true, g.bell = g_updates, g.started = std::chrono::steady_clock::now();
+  {
+    std::lock_guard lock(g_rand_mutex);
+    g.seed = g_match_seed;
+  }
+  g.table_load = g_load_table;
+  std::memcpy(g.table_bell.data(), base + kTableIndexes, 4);
+  g.last_table = g.table_bell;
+  g.frames_load_to_bell = g_load_frame ? g_updates - g_load_frame : 0;
   g.rule = base[kLive], g.arena = Rd32(base + kLive + 64);
   g.arena_manifest = svr2011::ArenaModManifest();
   // The names as the game shows them (port/server/match_names.py has the English ones): the rule record's +56 is
@@ -349,23 +398,27 @@ REX_HOOK_RAW(sub_821C6BE0) {
                 base[kSeedCounters], base[kSeedCounters + 1], lr, g_updates);
 }
 
-// Replay research: SVR2011_TEST_RAND_LOG=1 - who calls the CRT rand() in a match, every 10 s; SVR2011_TEST_RAND_FIXED=1
-// - one rand() state for every thread, reset when a match's clock starts.
-std::mutex g_rand_mutex;
-std::map<uint32_t, uint32_t> g_rand_callers;
-uint32_t g_rand_state = 1;
+// The CRT rand() keeps a state per thread, seeded from the clock: a match's draws (who starts how, the AI - on the
+// logic thread and the characters' job threads) differ run to run. From each match's load (sub_823EEB98,
+// MatchRecordMatchLoads) every call site draws from a state of its own (the same generator: x 0x343FD + 0x269EC3,
+// bits 16-30), seeded from the match's seed and the site - so the order the threads call in doesn't matter. The
+// seed goes into match.json, so a replay draws the same.
+// Replay research: SVR2011_TEST_RAND_LOG=1 - who calls rand() in a match, every 10 s (logic thread or not).
 REX_EXTERN(__imp__sub_828F2430);
 REX_HOOK_RAW(sub_828F2430) {
   static const bool log = std::getenv("SVR2011_TEST_RAND_LOG") != nullptr;
-  static const bool fixed = std::getenv("SVR2011_TEST_RAND_FIXED") != nullptr;
   if (log) {
     std::lock_guard lock(g_rand_mutex);
-    ++g_rand_callers[uint32_t(ctx.lr)];
+    ++g_rand_callers[uint32_t(ctx.lr) | (t_logic ? 0u : 1u)];  // (bit 0: another thread's call)
   }
-  if (fixed) {
+  if (g_match_rand_on.load(std::memory_order_relaxed)) {
     std::lock_guard lock(g_rand_mutex);
-    g_rand_state = g_rand_state * 0x343FD + 0x269EC3;
-    ctx.r3.u64 = (g_rand_state >> 16) & 0x7FFF;
+    const uint32_t lr = uint32_t(ctx.lr) | (t_logic ? 0u : 1u);  // (a site's logic-thread calls: a stream of their own)
+    auto [it, fresh] = g_site_rand.try_emplace(lr, 0);
+    if (fresh) it->second = g_match_seed ^ (lr * 2654435761u);
+    it->second = it->second * 0x343FD + 0x269EC3;
+    ctx.r3.u64 = (it->second >> 16) & 0x7FFF;
+    ++g_site_draws[lr];
     return;
   }
   __imp__sub_828F2430(ctx, base);
@@ -373,8 +426,30 @@ REX_HOOK_RAW(sub_828F2430) {
 
 namespace svr2011 {
 
+void MatchRecordMatchLoads() {
+  if (!t_logic) {
+    REXLOG_WARN("[svr2011] record: a match loads off the logic thread - its rand() stays the CRT's");
+    return;
+  }
+  // (test aid: SVR2011_TEST_RAND_SEED=<n> - this seed for every match)
+  static const char* test = std::getenv("SVR2011_TEST_RAND_SEED");
+  const uint32_t seed = test ? uint32_t(std::strtoul(test, nullptr, 0))
+                             : uint32_t(std::chrono::steady_clock::now().time_since_epoch().count() * 2654435761u);
+  {
+    std::lock_guard lock(g_rand_mutex);
+    g_match_seed = seed;
+    g_site_rand.clear();
+  }
+  g_match_rand_on = true;
+  g_load_frame = g_updates;
+  if (g_base) std::memcpy(g_load_table.data(), g_base + kTableIndexes, 4);
+  REXLOG_INFO("[svr2011] record: a match loads - its rand() seed {:08X}", seed);
+}
+
 void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
   (void)ctx;
+  t_logic = true;
+  g_base = base;
   ++g_updates;
   const uint32_t clock = Rd32(base + kMatchFrames);
   const uint32_t c0 = Rd32(base + kChars);
@@ -385,9 +460,14 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
     if (!s.empty()) REXLOG_INFO("[svr2011] record: rand() callers in the last 10 s:{}", s);
     g_rand_callers.clear();
   }
-  if (static const bool fixed = std::getenv("SVR2011_TEST_RAND_FIXED") != nullptr; fixed && clock == 1) {
+  // The bell: the draws start again from the match's seed (before it, the people's loading - its pace the disk's -
+  // decides how many frames the intro gets, so a replay is anchored here).
+  if (static uint32_t last_clock = 0; clock == 1 && last_clock != 1 && g_match_rand_on) {
     std::lock_guard lock(g_rand_mutex);
-    g_rand_state = 1;
+    g_site_rand.clear(), g_site_draws.clear();
+    last_clock = clock;
+  } else {
+    last_clock = clock;
   }
   {
     std::lock_guard lock(g_rec);
@@ -401,8 +481,14 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
     }
     if (g.on && match) {
       g.fallback_peak = std::max(g.fallback_peak, FallbackBytesInUse());
-      if (g.trail && (g_updates - g.bell) % 60 == 0) {
-        std::string line = fmt::format("{}", (g_updates - g.bell) / 60);
+      for (size_t i = 0; i < 4; ++i)  // (each index's first steps after the bell: its timer's phase)
+        if (g.table_steps[i].size() < 8 && base[kTableIndexes + i] != g.last_table[i])
+          g.table_steps[i].push_back(g_updates - g.bell);
+      std::memcpy(g.last_table.data(), base + kTableIndexes, 4);
+      // (once a second of the match's clock - 60 world updates; frames can hold 2 at 30 fps or when slow)
+      if (g.trail && clock / 60 != g.trail_second) {
+        g.trail_second = clock / 60;
+        std::string line = fmt::format("{}", clock / 60);
         for (uint32_t i = 0; i < 10; ++i) {
           const uint32_t c = Rd32(base + kChars + i * 4);
           if (c < 0x40000000u || (c & 3)) continue;
@@ -417,10 +503,18 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
   // Test aid: SVR2011_TEST_TRAIL=<file> - every world update of a match: the clock and each person's position, motion
   // and motion frame (two runs of one match compared line by line: does the game play it the same?)
   static const char* trail = std::getenv("SVR2011_TEST_TRAIL");
-  if (!trail || !clock || !c0) return;
+  // (before the bell - the clock at 0 - its lines are "pre <frame>", the frames counted from the characters' coming)
+  static uint32_t pre = 0;
+  if (!trail || !c0 || c0 < 0x40000000u) {
+    pre = 0;
+    return;
+  }
   if (!g_trail_test) g_trail_test = std::fopen(trail, "w");
   if (!g_trail_test) return;
-  std::string line = fmt::format("{}", clock);
+  std::string line = clock ? fmt::format("{}", clock) : fmt::format("pre {}", ++pre);
+  if (clock) pre = 0;
+  // (the random table's four draw indexes, 0x82E3689C: inlined draws all over the game advance them)
+  line += fmt::format(" | r {} {} {} {}", base[0x82E3689C], base[0x82E3689D], base[0x82E3689E], base[0x82E3689F]);
   for (uint32_t i = 0; i < 10; ++i) {
     const uint32_t c = Rd32(base + kChars + i * 4);
     if (c < 0x40000000u || (c & 3)) continue;

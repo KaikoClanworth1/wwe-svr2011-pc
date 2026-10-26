@@ -24,7 +24,7 @@ Code: `port/src/match_record.cpp` (`match_record.h`).
 | `match.json` | What the match was: enough to set it up again (below). `complete:false` until the end. |
 | `inputs.bin` | Every pad's state as the game read it, one record each time a pad changes. |
 | `box.txt` | The black box (`docs/LOG_DIAGNOSTICS.md`): each case as it is logged, then the full box at the end. |
-| `trail.txt` | Once a second from the bell: each person's position and motion. |
+| `trail.txt` | Once a second of the match clock (60 world updates) from the bell: each person's position and motion. |
 | `loaded.txt` | At the bell: fallback memory, weapon slots (slot:model), the random table counters. At the end: fallback memory and its peak. |
 | `mods.txt` | All installed mods, in load order, with on/off, used in this match, and a files hash. |
 | `done.txt` | Empty. Written last: the folder is complete. |
@@ -52,7 +52,9 @@ with `inputs.bin` at 192 bytes.
   "renderer": "any",
   "cpu_tab": {"reversal_chance": -1, "reversal_rates": -1, "damage_level": -1, "pin_level": -1, "momentum_level": -1},
   "weapons": {"picks": "mod:light_tube:3,4:1"},
-  "inputs": {"file": "inputs.bin", "version": 0}
+  "inputs": {"file": "inputs.bin", "version": 0},
+  "seeds": {"rand": "AC303B9C", "rand_sites": {"82302C40": 578, "82C2E2F4+": 85}, "table_load": [0, 0, 0, 0],
+            "table_bell": [0, 0, 1, 60], "table_steps": [[], [87, 117, 147], [], [380, 385, 390]], "frames_load_to_bell": 857}
 }
 ```
 
@@ -100,9 +102,9 @@ The list is built on a thread of its own, so a large Mods folder does not hold u
 
 All values are little-endian.
 
-- Head, 16 bytes: `"SVRI"`, u32 version (0), u32 the world update at the bell, u32 0.
+- Head, 16 bytes: `"SVRI"`, u32 version (0), u32 the frame at the bell (counted from the game's start), u32 0.
 - Records, 22 bytes each:
-  - u32: world updates since the bell;
+  - u32: frames since the bell. A frame runs one world update, or two at 30 fps or on a slow PC;
   - u8: the user (0-7);
   - u8: 0 if the pad is connected, 1 if not;
   - 16 bytes: the XINPUT_STATE as the game got it (guest byte order).
@@ -112,6 +114,22 @@ All values are little-endian.
 
 A record is written only when a pad's state changes. Every user gets one record at the bell. Extra world updates
 at 30 fps or on slow frames reuse the cached state, so they add nothing.
+
+## seeds
+
+What an exact replay will need (see Replay below). Nothing reads it yet.
+
+- `rand`: the match's rand() seed. From the match's load, every rand() call site draws from a stream of its own,
+  seeded from this seed and the site, so the order threads call in doesn't change the draws. The streams start
+  again from the seed at the bell.
+- `rand_sites`: draws per call site since the bell. A `+` marks calls from a thread other than the logic thread
+  (those sites have a second stream of their own).
+- `table_load` and `table_bell`: the game's random table's four draw indexes (0x82E3689C) at the match's load and
+  at the bell. Inlined draws all over the game advance them.
+- `table_steps`: for each index, the frames after the bell of its first eight steps. Index 1 steps on a timer
+  (about every 30 frames) that starts before the bell, so its phase shows here.
+- `frames_load_to_bell`: frames from the match's load to the bell. The people load at disk speed, so this differs
+  from run to run, and so does the pre-bell intro (a sneak attack or standing).
 
 ## The crash report
 
@@ -142,8 +160,10 @@ Research switches already in the build:
 |---|---|
 | `SVR2011_TEST_SEED_LOG` | Logs each time the random table is seeded. |
 | `SVR2011_TEST_RAND_LOG` | Logs who calls rand(), every 10 s. |
-| `SVR2011_TEST_RAND_FIXED` | Uses one rand() state, reset at the bell. |
-| `SVR2011_TEST_TRAIL=<file>` | Writes a line per world update: the clock, then each person's position and motion. |
+| `SVR2011_TEST_RAND_SEED=<n>` | Uses this rand() seed for every match. |
+| `SVR2011_TEST_ENTRANCES=0\|1` | Turns the match's entrances off or on (live rules +38). |
+| `SVR2011_TEST_MATCH=... exact=1` | Only the listed people: empties a later slot that the route's presses picked. |
+| `SVR2011_TEST_TRAIL=<file>` | Writes a line per frame: the clock (`pre N` before the bell), the random table's indexes, then each person's position, motion and motion frame. |
 
 ## Testing
 

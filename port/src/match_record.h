@@ -12,6 +12,9 @@ struct PPCContext;
 
 namespace svr2011 {
 
+// A match loads (menu_hooks.cpp sub_823EEB98, on the logic thread): its rand() seed (match.json "seeds").
+void MatchRecordMatchLoads();
+
 // Each world update (match_types.cpp MatchTypesUpdate, after the update's jobs): the folder at the bell, the trail.
 void MatchRecordUpdate(PPCContext& ctx, uint8_t* base);
 
