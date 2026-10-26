@@ -51,9 +51,10 @@ def report_zip(crash=None, log=None):
 def multipart(parts):
     boundary = "----svr" + secrets.token_hex(8)
     body = io.BytesIO()
-    for name, data, ctype in parts:
+    for part in parts:  # ((name, data, type), or (name, file name, type, data))
+        name, filename, ctype, data = part if len(part) == 4 else (part[0], part[0], part[2], part[1])
         body.write(("--%s\r\nContent-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\nContent-Type: %s\r\n\r\n" %
-                    (boundary, name, name, ctype)).encode())
+                    (boundary, name, filename, ctype)).encode())
         body.write(data)
         body.write(b"\r\n")
     body.write(("--%s--\r\n" % boundary).encode())
@@ -265,6 +266,88 @@ def main():
     check("CLI list --fixed: the fixed ones", out.returncode == 0 and r6["id"] in out.stdout and r1["id"] in out.stdout)
     out = subprocess.run(cli + ["mark", "nope", "--done"], capture_output=True, text=True)
     check("CLI mark an unknown id: an error", out.returncode != 0)
+
+    # the match folder and its mods (the launcher's check, then only the missing mods with the report)
+    import hashlib
+
+    def client_hash(files):  # (HCTP's rule, written again here: files {relative path: bytes})
+        h = hashlib.sha256()
+        keep = {p.encode("utf-8").lower(): b for p, b in files.items()
+                if not any(x.startswith(".") for x in p.split("/")) and p.split("/")[-1].lower() != "disabled"}
+        for path in sorted(keep):
+            h.update(path + b"\0" + len(keep[path]).to_bytes(8, "little") + keep[path])
+        return h.hexdigest()
+
+    def mod_zip(files):
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+            for p_, b in files.items():
+                z.writestr(p_, b)
+        return out.getvalue()
+    mod1 = {"manifest.txt": b"type=superstar\nid=test_" + tag.encode() + b"\nname=TEST ONE\n",
+            "Ch.pac": os.urandom(200000), "renders/Big.dds": os.urandom(50000), ".svr2011_marker": b"x", "disabled": b""}
+    mod2 = {"manifest.txt": b"type=arena\nid=arena_" + tag.encode() + b"\n", "arena.pac": os.urandom(120000)}
+    h1, h2 = client_hash(mod1), client_hash(mod2)
+    check("the server's content hash = the launcher's (dot files and 'disabled' left out, paths lower-cased)",
+          reports.content_hash(io.BytesIO(mod_zip(mod1))) == h1)
+    req = urllib.request.Request(url + "/api/reports/mods/check", method="POST", headers={"Content-Type": "application/json"},
+                                 data=json.dumps({"mods": [{"hash": h1, "size": 1}, {"hash": h2, "size": 1}]}).encode())
+    with urllib.request.urlopen(req, timeout=30) as f:
+        chk = json.loads(f.read())
+    check("mods check: both missing, the caps given (%s)" % {k: chk.get(k) for k in ("max_upload", "max_mod", "mods_off")},
+          sorted(chk.get("missing", [])) == sorted([h1, h2]) and chk.get("max_mod") == reports.MAX_MOD and not chk.get("mods_off"))
+    match_json = {"format": 1, "complete": True, "game": {"version": "2.1.6", "commit": "abc"}, "start": "2026-10-26T10:00:00",
+                  "length_s": 312, "result": "won: JEFF HARDY", "rule": {"id": 0x4D, "name": "SINGLE EXTREME RULES MATCH"},
+                  "arena": {"id": 9, "name": "ROYAL RUMBLE", "mod": {"type": "Arenas", "id": "arena_" + tag}},
+                  "people": [{"index": 0, "name": "JEFF HARDY", "cpu": False, "mod": {"type": "Superstars", "id": "test"}, "caw": None},
+                             {"index": 1, "name": "RANDY ORTON", "cpu": True, "mod": None, "caw": None}],
+                  "frame_rate": 60, "online": False}
+    mz = io.BytesIO()
+    with zipfile.ZipFile(mz, "w") as z:
+        z.writestr("20261026-100000_JEFF HARDY vs RANDY ORTON/match.json", json.dumps(match_json))
+        z.writestr("20261026-100000_JEFF HARDY vs RANDY ORTON/inputs.bin", os.urandom(3000))
+    rep_meta = meta(version=ver, problem="Match", what="mods report")
+    rep_meta["match"] = "20261026-100000_JEFF HARDY vs RANDY ORTON"
+    rep_meta["mods"] = [{"hash": h1, "name": "TEST ONE", "type": "Superstars", "id": "test", "size": 250000, "sent": True},
+                        {"hash": h2, "name": "ARENA", "type": "Arenas", "id": "arena", "size": 120000, "sent": True}]
+    sent1 = mod_zip(mod1)
+    parts = [("report", "report.json", "application/json", json.dumps(rep_meta).encode()),
+             ("match", "match.zip", "application/zip", mz.getvalue()),
+             ("mod0", h1 + ".zip", "application/zip", sent1),
+             ("mod1", h2 + ".zip", "application/zip", mod_zip(dict(mod2, extra=b"changed")))]  # (not its hash)
+    st, rm = post(url, None, raw_parts=parts, ip="10.9.77.%d" % (int(tag[:2], 16) % 250))
+    check("report with a match and two mods: 200, one stored, one refused for its hash (%s)" % rm.get("mods_refused"),
+          st == 200 and rm.get("match") and rm.get("mods_stored") == [h1] and rm.get("mods_refused", {}).get(h2) == "hash mismatch")
+    with urllib.request.urlopen(urllib.request.Request(url + "/api/reports/mods/check", method="POST",
+                                                       headers={"Content-Type": "application/json"},
+                                                       data=json.dumps({"mods": [{"hash": h1}, {"hash": h2}]}).encode()),
+                                timeout=30) as f:
+        chk = json.loads(f.read())
+    check("mods check again: only the refused one still missing", chk.get("missing") == [h2])
+    st, body = get(url, "/api/admin/reports")
+    d = json.loads(body)
+    one = next((x for x in d["reports"] if x["id"] == rm.get("id")), {})
+    m = one.get("match") or {}
+    check("admin list: the match summary (people, rule, arena, version) (%s)" % {k: m.get(k) for k in ("rule", "arena_mod", "version")},
+          [p["name"] for p in m.get("people", [])] == ["JEFF HARDY", "RANDY ORTON"] and m.get("rule") == "4D"
+          and m.get("arena_mod") == "arena_" + tag and m.get("version") == "2.1.6" and m.get("people")[0]["mod"])
+    check("admin list: the mods, stored or not",
+          [(x["hash"], x["stored"]) for x in one.get("mods", [])] == [(h1, True), (h2, False)])
+    check("admin list: the mod store's use (%s)" % d.get("mod_store"), (d.get("mod_store") or {}).get("bytes", 0) >= len(sent1))
+    st, body = get(url, "/api/admin/report-mod/%s?name=test" % h1)
+    check("admin mod download: the bytes sent", st == 200 and body == sent1)
+    st, body = get(url, "/api/admin/report/%s/match.zip" % rm.get("id"))
+    check("admin match zip: the bytes sent", st == 200 and body == mz.getvalue())
+    st, body = get(url, "/api/admin/report/%s/replay.zip" % rm.get("id"))
+    names = zipfile.ZipFile(io.BytesIO(body)).namelist() if st == 200 else []
+    check("replay pack: match folder, the stored mod, mods.txt, report.json (%d files)" % len(names),
+          any(n.endswith("/match.json") and n.startswith("match/") for n in names) and
+          sum(1 for n in names if n.startswith("mods/") and n.endswith(".svrmod")) == 1 and "mods.txt" in names and "report.json" in names)
+    mod_file = os.path.join(a.node_data, "reports", "mods", h1 + ".svrmod")
+    req = urllib.request.Request(url + "/api/admin/report/%s/delete" % rm.get("id"), method="POST")
+    with urllib.request.urlopen(req, timeout=30) as f:
+        pass
+    check("delete the report: its mod (no other report has it) goes too", not os.path.exists(mod_file))
 
     # arena names (match_names.py: the live sessions' arena)
     import match_names

@@ -99,7 +99,9 @@ switch ($Action) {
         }
         $env:SVR2011_USER_DATA = $UserData
         $a = @("--log_file=`"$log`"", "--log_level=$LogLevel", "--audio_mute=true", "--fullscreen=false", "--monitor=2") + $Rest
+        Use-SvrTestServer -GameDir $game -GameArgs $a | Out-Null
         $p = Start-Process (Join-Path $game "svr2011.exe") -WorkingDirectory $game -ArgumentList $a -PassThru -WindowStyle Minimized
+        Set-SvrTestPriority $p
         for ($t = 0; $t -lt 100 -and -not $p.HasExited; $t++) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 100 }
         if ($p.MainWindowHandle -ne 0) {
             [void][OW]::SetWindowPos($p.MainWindowHandle, [IntPtr]1, $SvrParkX, 0, 0, 0, $SvrParkFlags)  # (screen 2, behind every window)

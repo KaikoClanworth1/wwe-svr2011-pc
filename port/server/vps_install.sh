@@ -264,7 +264,8 @@ location ~ ^/svr/api/mods/[0-9]+/file$ {
     client_max_body_size 260m;
 }
 
-# problem reports: a 25 MB zip and up to five 8 MB pictures (reports.py)
+# problem reports: a 25 MB zip, up to five 8 MB pictures, the match folder (5 MB) and the mods the check asked
+# for (300 MB a report) - streamed to the core, which writes the mods to disk as they come (reports.py)
 location = /svr/api/reports {
     proxy_pass http://127.0.0.1:8101;
     proxy_http_version 1.1;
@@ -276,9 +277,9 @@ location = /svr/api/reports {
     proxy_set_header X-Portal-User "";
     proxy_buffering off;
     proxy_request_buffering off;
-    proxy_read_timeout 300s;
-    proxy_send_timeout 300s;
-    client_max_body_size 70m;
+    proxy_read_timeout 1800s;
+    proxy_send_timeout 1800s;
+    client_max_body_size 400m;
 }
 
 # entrance songs and movies are larger (--max-music-mb 512, --max-movie-mb 1024)

@@ -6,7 +6,14 @@ there as plain files:
     <data>/reports/index.jsonl     (one line per report: the dashboard's list, and the duplicates' counts)
     <data>/reports/status.json     (id -> done / duplicate, or {status: fixed, note, commit, version, date}: the
                                     dashboard's marks; `python reports.py mark ...` writes them too - see main())
+    <data>/reports/<yyyy-mm-dd>/<id>/match.zip   (the game's match folder: logs/matches/<date>_<people>/)
+    <data>/reports/mods/<content hash>.svrmod    (the mods used in that match, each kept once for every report)
 The sender's address is never stored (the core keeps it in memory for its rate limit only).
+
+Mods: the client asks first which it needs to send (POST /api/reports/mods/check), then sends only those, each as
+a zip of its folder (an .svrmod) named by its CONTENT hash: SHA-256 over the folder's files sorted by their
+lower-cased relative path ('/'), each file as path (UTF-8, lower case), a 0 byte, its size (8 bytes little-endian)
+and its bytes - the same folder gives the same hash however it was zipped. The server checks the hash on arrival.
 
 Duplicates: a signature from app + version + problem + the first crash / error line in the zip's logs, made
 general (times, addresses, thread ids and other numbers taken out); the client's own hint stands in when the
@@ -28,6 +35,11 @@ MAX_ZIP = 25 << 20
 MAX_IMAGE = 8 << 20
 MAX_IMAGES = 5
 TEXT_CAP = {"what": 4000, "before": 4000}  # (every other text field: 200)
+MAX_MATCH = 5 << 20          # the match folder's zip
+MAX_MOD = 300 << 20          # one mod
+MAX_NEW_MOD_BYTES = 300 << 20  # the mods sent with one report
+MAX_MODS = 64                # mods listed in one report
+MOD_QUOTA = 20 << 30         # every report's mods together (the node's --report-mod-quota-gb)
 FIELDS = ("format", "app", "version", "platform", "os", "problem", "happens", "what", "before", "contact")
 STATUSES = ("", "done", "duplicate", "fixed")
 FIX_FIELDS = {"note": 1000, "commit": 40, "version": 20, "date": 10}
@@ -173,6 +185,96 @@ def signature(meta, zip_bytes):
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16], line
 
 
+# -- mods and the match folder ---------------------------------------------------------------------------------
+
+def content_hash(zip_file):
+    """The clients' content hash of a mod zip (a path or a file): its files (a single top folder taken off), sorted
+    by the lower-cased relative path, each as path + 0 byte + 8-byte little-endian size + bytes. None: not a zip."""
+    try:
+        z = zipfile.ZipFile(zip_file)
+    except (zipfile.BadZipFile, ValueError, OSError):
+        return None
+    with z:
+        files = [i for i in z.infolist() if not i.is_dir()]
+        names = [i.filename.replace("\\", "/") for i in files]
+        tops = {n.split("/", 1)[0] for n in names}
+        strip = len(tops) == 1 and all("/" in n for n in names)
+        entries = []
+        for n, info in zip(names, files):
+            rel = n.split("/", 1)[1] if strip else n
+            parts = rel.split("/")
+            # (as the launcher: no file or folder starting with '.', no "disabled" file)
+            if any(p.startswith(".") for p in parts) or parts[-1].lower() == "disabled":
+                continue
+            entries.append((rel.encode("utf-8").lower(), info))  # (bytes.lower(): ASCII letters only, as the launcher)
+        entries.sort(key=lambda e: e[0])
+        h = hashlib.sha256()
+        for rel, info in entries:
+            h.update(rel + b"\0" + info.file_size.to_bytes(8, "little"))
+            with z.open(info) as src:
+                while True:
+                    chunk = src.read(1 << 20)
+                    if not chunk:
+                        break
+                    h.update(chunk)
+        return h.hexdigest()
+
+
+def clean_mods(raw):
+    """The report's "mods" list -> [{hash, name, type, id, version, size, sent}] (64 at most, bad entries out)."""
+    out, seen = [], set()
+    for m in raw if isinstance(raw, list) else []:
+        if not isinstance(m, dict):
+            continue
+        h = str(m.get("hash") or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", h) or h in seen:
+            continue
+        seen.add(h)
+        try:
+            size = max(0, int(m.get("size") or 0))
+        except (TypeError, ValueError):
+            size = 0
+        out.append({"hash": h, "name": str(m.get("name") or "")[:80], "type": str(m.get("type") or "")[:20],
+                    "id": str(m.get("id") or "")[:80], "version": str(m.get("version") or "")[:20], "size": size,
+                    "sent": bool(m.get("sent"))})
+        if len(out) >= MAX_MODS:
+            break
+    return out
+
+
+def match_summary(match_bytes):
+    """The dashboard's line for a match folder zip (match.json, Arena Porting's format 1) -> dict or None."""
+    try:
+        z = zipfile.ZipFile(io.BytesIO(match_bytes))
+        name = next((n for n in z.namelist() if re.fullmatch(r"(?:[^/]+/)?match\.json", n.replace("\\", "/"))), None)
+        if not name or z.getinfo(name).file_size > (4 << 20):
+            return None
+        m = json.loads(z.read(name).decode("utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(m, dict):
+        return None
+    d = lambda v: v if isinstance(v, dict) else {}
+    rule, arena = d(m.get("rule")), d(m.get("arena"))
+    try:
+        rule_hex = "%02X" % int(rule.get("id"))
+    except (TypeError, ValueError):
+        rule_hex = ""
+    people = []
+    for p in m.get("people") if isinstance(m.get("people"), list) else []:
+        p = d(p)
+        mod = d(p.get("mod"))
+        people.append({"name": str(p.get("name") or p.get("superstar") or "?")[:60], "cpu": bool(p.get("cpu")),
+                       "mod": str(mod.get("id") or "")[:80] if p.get("mod") else "", "caw": p.get("caw") is not None})
+    amod = d(arena.get("mod"))
+    t = lambda v, n=60: str(v if v is not None else "")[:n]
+    return {"version": t(d(m.get("game")).get("version"), 20), "rule": rule_hex, "rule_name": t(rule.get("name")),
+            "arena": t(arena.get("id"), 10), "arena_name": t(arena.get("name")),
+            "arena_mod": t(amod.get("id"), 80) if arena.get("mod") else "", "people": people[:16],
+            "fps": t(m.get("frame_rate"), 4), "online": bool(m.get("online")), "started": t(m.get("start"), 30),
+            "length_s": t(m.get("length_s"), 10), "result": t(m.get("result"), 120), "complete": bool(m.get("complete"))}
+
+
 # -- where they are kept ---------------------------------------------------------------------------------------
 
 def _day(rid):
@@ -192,9 +294,13 @@ class LocalReports:
         self.index_path = os.path.join(self.dir, "index.jsonl")
         self.status_path = os.path.join(self.dir, "status.json")
         self.lock = threading.Lock()
+        self.mods_dir = os.path.join(self.dir, "mods")
+        os.makedirs(self.mods_dir, exist_ok=True)
+        self.mod_quota = MOD_QUOTA
         self.counts = {}
         for row in self._rows():
             self.counts[row.get("signature", "")] = self.counts.get(row.get("signature", ""), 0) + 1
+        self.mod_bytes = sum(e.stat().st_size for e in os.scandir(self.mods_dir) if e.name.endswith(".svrmod"))
 
     def _rows(self):
         try:
@@ -210,8 +316,9 @@ class LocalReports:
         except (FileNotFoundError, ValueError):
             return {}
 
-    def add(self, meta, zip_bytes, images):
-        """meta: clean_meta's; images: [bytes] (checked) -> {id, signature, seen_before}"""
+    def add(self, meta, zip_bytes, images, match_bytes=b""):
+        """meta: clean_meta's (its "mods": clean_mods', each marked stored here or not); images: [bytes] (checked);
+        match_bytes: the match folder's zip -> {id, signature, seen_before}"""
         sig, line = signature(meta, zip_bytes)
         received = time.time()
         with self.lock:
@@ -228,14 +335,23 @@ class LocalReports:
             if zip_bytes:
                 with open(os.path.join(folder, "report.zip"), "wb") as f:
                     f.write(zip_bytes)
+            summary = None
+            if match_bytes:
+                with open(os.path.join(folder, "match.zip"), "wb") as f:
+                    f.write(match_bytes)
+                summary = match_summary(match_bytes) or {}
+            mods = [dict(m, stored=self.has_mod(m["hash"])) for m in meta.get("mods", [])]
+            meta = dict(meta, mods=mods)
             rec = dict(meta, id=rid, received=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(received)),
                        received_at=round(received), signature=sig, signature_line=line, seen_before=seen,
-                       zip_size=len(zip_bytes or b""), images=names)
+                       zip_size=len(zip_bytes or b""), images=names, match=summary,
+                       match_size=len(match_bytes or b""))
             with open(os.path.join(folder, "report.json"), "w", encoding="utf-8") as f:
                 json.dump(rec, f, indent=2, ensure_ascii=False)
             row = {k: rec.get(k) for k in ("id", "received", "received_at", "app", "version", "platform", "problem",
                                            "happens", "signature", "signature_line", "seen_before", "zip_size",
-                                           "images", "account")}
+                                           "images", "account", "match", "match_size")}
+            row["mods"] = [{k: m[k] for k in ("hash", "name", "type", "id", "size", "stored")} for m in mods]
             row["what"] = meta.get("what", "")[:200]
             with open(self.index_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -256,13 +372,105 @@ class LocalReports:
 
     def file(self, rid, name):
         """One of a report's files (report.json, report.zip, imageN.ext) -> bytes or None."""
-        if not _valid_id(rid) or not re.fullmatch(r"report\.(json|zip)|image[0-4]\.(png|jpg|webp)", name or ""):
+        if not _valid_id(rid) or not re.fullmatch(r"(report|match)\.zip|report\.json|image[0-4]\.(png|jpg|webp)",
+                                                  name or ""):
             return None
         try:
             with open(os.path.join(self.dir, _day(rid), rid, name), "rb") as f:
                 return f.read()
         except OSError:
             return None
+
+    # (the mods: each kept once, named by its content hash)
+    def mod_path(self, h):
+        return os.path.join(self.mods_dir, h + ".svrmod") if re.fullmatch(r"[0-9a-f]{64}", h or "") else None
+
+    def has_mod(self, h):
+        path = self.mod_path(h)
+        return bool(path) and os.path.isfile(path)
+
+    def has_mods(self, hashes):
+        return [h for h in hashes if self.has_mod(h)]
+
+    def mod_usage(self):
+        return {"bytes": self.mod_bytes, "quota": self.mod_quota,
+                "count": sum(1 for e in os.scandir(self.mods_dir) if e.name.endswith(".svrmod"))}
+
+    def put_mod(self, h, src_path):
+        """A mod sent with a report (a zip at src_path, taken) -> (stored, why not)."""
+        path = self.mod_path(h)
+        try:
+            size = os.path.getsize(src_path)
+            if not path:
+                return False, "bad hash"
+            if self.has_mod(h):
+                return True, ""
+            if size > MAX_MOD:
+                return False, "too large"
+            if self.mod_bytes + size > self.mod_quota:
+                return False, "server mod store full"
+            got = content_hash(src_path)
+            if got is None:
+                return False, "not a zip"
+            if got != h:
+                return False, "hash mismatch"
+            with self.lock:
+                if not self.has_mod(h):
+                    shutil.move(src_path, path)
+                    self.mod_bytes += size
+            return True, ""
+        finally:
+            if os.path.exists(src_path):
+                os.remove(src_path)
+
+    def open_mod(self, h):
+        """-> (an open file, its size, None) or None"""
+        path = self.mod_path(h)
+        if not path or not os.path.isfile(path):
+            return None
+        return open(path, "rb"), os.path.getsize(path), None
+
+    def open_replay(self, rid):
+        """-> (the replay pack open, its size, its temporary path: the caller removes it once sent) or None"""
+        path = self.replay_pack(rid)
+        return (open(path, "rb"), os.path.getsize(path), path) if path else None
+
+    def replay_pack(self, rid):
+        """One zip for replaying a report's match: match/ (the match folder), mods/<type>_<id>_<hash>.svrmod (each
+        stored mod), report.json and mods.txt -> the path of a temporary file (the caller removes it), or None."""
+        if not _valid_id(rid):
+            return None
+        folder = os.path.join(self.dir, _day(rid), rid)
+        try:
+            with open(os.path.join(folder, "report.json"), encoding="utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            return None
+        tmp_dir = os.path.join(self.dir, "tmp")
+        os.makedirs(tmp_dir, exist_ok=True)
+        out = os.path.join(tmp_dir, "replay_%s_%s.zip" % (rid, secrets.token_hex(4)))
+        lines = []
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
+            z.writestr("report.json", json.dumps(rec, indent=2, ensure_ascii=False))
+            match = os.path.join(folder, "match.zip")
+            if os.path.isfile(match):
+                try:
+                    with zipfile.ZipFile(match) as m:
+                        for info in m.infolist():
+                            if not info.is_dir() and ".." not in info.filename.replace("\\", "/").split("/"):
+                                z.writestr("match/" + info.filename.replace("\\", "/"), m.read(info))
+                except zipfile.BadZipFile:
+                    z.write(match, "match.zip")
+            for m in rec.get("mods", []):
+                path = self.mod_path(m.get("hash", ""))
+                if path and os.path.isfile(path):
+                    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", "%s_%s" % (m.get("type") or "mod", m.get("id") or m.get("name") or "mod"))
+                    z.write(path, "mods/%s_%s.svrmod" % (name, m["hash"][:12]))
+                    lines.append("%s\t%s\t%s\t%s\tincluded" % (m.get("type"), m.get("id"), m.get("version"), m["hash"]))
+                else:
+                    lines.append("%s\t%s\t%s\t%s\tnot sent" % (m.get("type"), m.get("id"), m.get("version"), m.get("hash")))
+            z.writestr("mods.txt", "\n".join(lines) + "\n")
+        return out
 
     def _write_status(self, marks):
         tmp = self.status_path + ".tmp"
@@ -323,10 +531,18 @@ class LocalReports:
             self.counts = {}
             for r in keep:
                 self.counts[r.get("signature", "")] = self.counts.get(r.get("signature", ""), 0) + 1
+            # (its mods, when no other report has them)
+            used = {m.get("hash") for r in keep for m in r.get("mods") or []}
+            gone = [m.get("hash") for r in rows if r.get("id") == rid for m in r.get("mods") or []]
+            for h in gone:
+                path = self.mod_path(h or "")
+                if path and h not in used and os.path.isfile(path):
+                    self.mod_bytes -= os.path.getsize(path)
+                    os.remove(path)
         return True
 
 
-def pack(meta, zip_bytes, images):
+def pack(meta, zip_bytes, images, match_bytes=b""):
     """The core -> storage node body: a stored zip of report.json + report.zip + imageN.ext."""
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
@@ -335,6 +551,8 @@ def pack(meta, zip_bytes, images):
             z.writestr("report.zip", zip_bytes)
         for n, img in enumerate(images):
             z.writestr("image%d" % n, img)
+        if match_bytes:
+            z.writestr("match.zip", match_bytes)
     return out.getvalue()
 
 
@@ -344,7 +562,8 @@ def unpack(body):
         meta = json.loads(z.read("meta.json").decode("utf-8"))
         zip_bytes = z.read("report.zip") if "report.zip" in names else b""
         images = [z.read("image%d" % n) for n in range(MAX_IMAGES) if "image%d" % n in names]
-    return meta, zip_bytes, images
+        match_bytes = z.read("match.zip") if "match.zip" in names else b""
+    return meta, zip_bytes, images, match_bytes
 
 
 class RemoteReports:
@@ -364,9 +583,49 @@ class RemoteReports:
         r = urllib.request.Request(self.url + path, data=data, method=method, headers=headers)
         return urllib.request.urlopen(r, timeout=self.timeout)
 
-    def add(self, meta, zip_bytes, images):
-        with self._req("POST", "/reports", pack(meta, zip_bytes, images), "application/zip") as f:
+    def add(self, meta, zip_bytes, images, match_bytes=b""):
+        with self._req("POST", "/reports", pack(meta, zip_bytes, images, match_bytes), "application/zip") as f:
             return json.loads(f.read())
+
+    def has_mods(self, hashes):
+        with self._req("POST", "/reports/mods/check", json.dumps({"hashes": hashes}).encode(), "application/json") as f:
+            return json.loads(f.read()).get("have", [])
+
+    def mod_usage(self):
+        with self._req("GET", "/reports/mods/usage") as f:
+            return json.loads(f.read())
+
+    def put_mod(self, h, src_path):
+        """Streams the file to the node (it checks the hash and the quota) -> (stored, why not)."""
+        import urllib.request
+        try:
+            size = os.path.getsize(src_path)
+            with open(src_path, "rb") as body:
+                r = urllib.request.Request(self.url + "/reports/mods/" + h, data=body, method="POST",
+                                           headers={"X-Storage-Key": self.key, "Content-Length": str(size),
+                                                    "Content-Type": "application/zip"})
+                with urllib.request.urlopen(r, timeout=max(self.timeout, 600)) as f:
+                    d = json.loads(f.read())
+            return bool(d.get("ok")), d.get("why", "")
+        except Exception as e:
+            return False, "the storage node didn't take it (%s)" % e.__class__.__name__
+        finally:
+            if os.path.exists(src_path):
+                os.remove(src_path)
+
+    def open_mod(self, h):
+        try:
+            f = self._req("GET", "/reports/mods/" + h)
+            return f, int(f.headers.get("Content-Length") or 0), None
+        except Exception:
+            return None
+
+    def open_replay(self, rid):
+        try:
+            f = self._req("GET", "/reports/%s/replay.zip" % rid)
+            return f, int(f.headers.get("Content-Length") or 0), None
+        except Exception:
+            return None
 
     def list(self, limit=500):
         with self._req("GET", "/reports?limit=%d" % limit) as f:
@@ -398,11 +657,85 @@ class RemoteReports:
             return False
 
 
-def node_routes(app, folder, key_ok):
+def node_routes(app, folder, key_ok, mod_quota=MOD_QUOTA):
     """The storage node's side (server.py storage_app)."""
     import asyncio
     from aiohttp import web
     reports = LocalReports(folder)
+    reports.mod_quota = mod_quota
+
+    async def mods_check(request):
+        if not key_ok(request):
+            return web.Response(status=403)
+        try:
+            hashes = [str(h) for h in (await request.json()).get("hashes", [])][:MAX_MODS]
+        except (ValueError, AttributeError):
+            return web.Response(status=400)
+        return web.json_response({"have": reports.has_mods(hashes)})
+
+    async def mods_usage(request):
+        if not key_ok(request):
+            return web.Response(status=403)
+        return web.json_response(reports.mod_usage())
+
+    async def mod_put(request):
+        if not key_ok(request):
+            return web.Response(status=403)
+        h = request.match_info["hash"]
+        if not reports.mod_path(h):
+            return web.json_response({"ok": False, "why": "bad hash"}, status=400)
+        if (request.content_length or 0) > MAX_MOD:
+            return web.json_response({"ok": False, "why": "too large"}, status=413)
+        tmp_dir = os.path.join(reports.dir, "tmp")
+        os.makedirs(tmp_dir, exist_ok=True)
+        tmp = os.path.join(tmp_dir, "in_%s_%s.zip" % (h[:16], secrets.token_hex(4)))
+        got = 0
+        try:
+            with open(tmp, "wb") as f:
+                while True:
+                    chunk = await request.content.read(1 << 20)
+                    if not chunk:
+                        break
+                    got += len(chunk)
+                    if got > MAX_MOD:
+                        return web.json_response({"ok": False, "why": "too large"}, status=413)
+                    f.write(chunk)
+        except Exception:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
+        if got > MAX_MOD:
+            os.remove(tmp)
+        ok, why = await asyncio.get_running_loop().run_in_executor(None, reports.put_mod, h, tmp)
+        return web.json_response({"ok": ok, "why": why})
+
+    async def mod_get(request):
+        if not key_ok(request):
+            return web.Response(status=403)
+        path = reports.mod_path(request.match_info["hash"])
+        if not path or not os.path.isfile(path):
+            return web.Response(status=404)
+        return web.FileResponse(path, headers={"Content-Type": "application/zip"})
+
+    async def replay(request):
+        if not key_ok(request):
+            return web.Response(status=403)
+        path = await asyncio.get_running_loop().run_in_executor(None, reports.replay_pack, request.match_info["id"])
+        if not path:
+            return web.Response(status=404)
+        resp = web.StreamResponse(headers={"Content-Type": "application/zip",
+                                           "Content-Length": str(os.path.getsize(path))})
+        await resp.prepare(request)
+        try:
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(1 << 20)
+                    if not chunk:
+                        break
+                    await resp.write(chunk)
+        finally:
+            os.remove(path)
+        return resp
 
     async def add(request):
         if not key_ok(request):
@@ -410,11 +743,11 @@ def node_routes(app, folder, key_ok):
         body = await request.read()
         loop = asyncio.get_running_loop()
         try:
-            meta, zip_bytes, images = unpack(body)
+            meta, zip_bytes, images, match_bytes = unpack(body)
         except Exception:
             return web.json_response({"ok": False, "error": "bad body"}, status=400)
         return web.json_response(dict({"ok": True}, **await loop.run_in_executor(None, reports.add, meta, zip_bytes,
-                                                                                  images)))
+                                                                                  images, match_bytes)))
 
     async def listing(request):
         if not key_ok(request):
@@ -447,6 +780,11 @@ def node_routes(app, folder, key_ok):
         done = await asyncio.get_running_loop().run_in_executor(None, reports.delete, request.match_info["id"])
         return web.Response(status=200 if done else 404)
 
+    app.router.add_post("/reports/mods/check", mods_check)
+    app.router.add_get("/reports/mods/usage", mods_usage)
+    app.router.add_post("/reports/mods/{hash}", mod_put)
+    app.router.add_get("/reports/mods/{hash}", mod_get)
+    app.router.add_get("/reports/{id}/replay.zip", replay)
     app.router.add_post("/reports", add)
     app.router.add_get("/reports", listing)
     app.router.add_post("/reports/{id}/mark", mark)

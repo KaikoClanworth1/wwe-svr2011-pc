@@ -754,11 +754,17 @@ void Tick() {
   }
   if (g_test_pending && ++g_test_frames > 30) {
     g_test_pending = false;
-    if (g_send_test) {  // (--test-report-send: the answers file - what= before= contact= problem=<n> image=<path>)
+    if (g_send_test && !std::getenv("SVR2011_REPORT_SERVER")) {
+      // (a test never goes to the live server by default: SVR2011_REPORT_SERVER names the test server - 26 Oct a
+      // launcher test report reached the live one)
+      Log("report test: not sent - SVR2011_REPORT_SERVER isn't set (give the test server)");
+      PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    } else if (g_send_test) {  // (--test-report-send: the answers file - what= before= contact= problem=<n> image=<path>)
       if (FILE* f = _wfsopen(Wide(g_send_file).c_str(), L"rb", _SH_DENYNO)) {
         char line[4096];
         while (std::fgets(line, sizeof line, f)) {
           std::string l = line;
+          if (l.rfind("\xEF\xBB\xBF", 0) == 0) l.erase(0, 3);  // (a BOM)
           while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
           const size_t eq = l.find('=');
           if (eq == std::string::npos) continue;

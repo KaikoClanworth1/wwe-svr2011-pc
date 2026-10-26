@@ -141,6 +141,7 @@ function Start-Scenario($s, [int]$w) {
     $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"; $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED = "0"
     $args_ = @("--log_file=`"$log`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false", "--monitor=2",
                "--show_fps=false") + @($s.args)
+    Use-SvrTestServer -GameDir $d -GameArgs $args_ | Out-Null
     $p = Start-Process (Join-Path $d "svr2011.exe") -WorkingDirectory $d -ArgumentList $args_ -PassThru -WindowStyle Minimized
     return @{ proc = $p; s = $s; w = $w; log = $log; start = Get-Date; pos = 0; text = ""; tmStarted = $false;
               passed = $false; needsSeen = (-not $s.needs); err = @(); stuckMax = 0; fps = @(); worst = @(); shots = @(); parked = $false;

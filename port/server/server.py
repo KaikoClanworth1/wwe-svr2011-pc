@@ -633,7 +633,11 @@ class Service:
         # (problem reports: where the blobs are - the storage node's reports folder, readable on the PC)
         self.reports = (reports.RemoteReports(args.storage_url, read_key(args.storage_key)) if blobs is not None
                         else reports.LocalReports(args.data))
+        if isinstance(self.reports, reports.LocalReports):
+            self.reports.mod_quota = int(args.report_mod_quota_gb * (1 << 30))
+        self.report_tmp = os.path.join(args.data, "tmp", "reports")  # (mods sent with a report, on their way)
         self.report_times = collections.defaultdict(collections.deque)  # ip / account -> report times (memory only)
+        self.check_times = collections.defaultdict(collections.deque)   # ip -> mod checks (memory only)
         self.sake = gs.Sake(self.store)
         discovery.init(self.store)
         self.mod_upload = asyncio.Lock()  # (one .svrmod stored at a time: they are up to 250 MB, held in memory)
@@ -1620,75 +1624,160 @@ class Service:
             self.report_times[key].append(t)
         return False
 
+    CHECK_LIMIT = (600, 30)  # mod checks per IP: 30 in 10 minutes
+    MAX_REPORT_BODY = (reports.MAX_ZIP + reports.MAX_IMAGES * reports.MAX_IMAGE + reports.MAX_MATCH +
+                       reports.MAX_NEW_MOD_BYTES + (8 << 20))
+
+    async def api_report_mods_check(self, request):
+        """{"mods": [{"hash", "size", ...}]} -> {ok, missing: [the hashes to send], max_upload, max_mod, mods_off}"""
+        t, q = now(), self.check_times["ip:" + self.client_ip(request)]
+        while q and q[0] < t - self.CHECK_LIMIT[0]:
+            q.popleft()
+        if len(q) >= self.CHECK_LIMIT[1]:
+            return web.json_response({"ok": False, "error": "Too many checks from here - try again later."}, status=429)
+        q.append(t)
+        try:
+            mods = reports.clean_mods((await request.json()).get("mods"))
+        except (ValueError, AttributeError):
+            return web.json_response({"ok": False, "error": "Send {\"mods\": [...]} as JSON."}, status=400)
+        loop = asyncio.get_running_loop()
+        try:
+            have = set(await loop.run_in_executor(None, self.reports.has_mods, [m["hash"] for m in mods]))
+            usage = await loop.run_in_executor(None, self.reports.mod_usage)
+        except Exception:
+            return web.json_response({"ok": False, "error": "The report store didn't answer - send the report "
+                                                            "without mods."}, status=503)
+        room = max(0, usage["quota"] - usage["bytes"])
+        off = room < (16 << 20)
+        return web.json_response({"ok": True, "missing": [] if off else [m["hash"] for m in mods if m["hash"] not in have],
+                                  "max_upload": min(reports.MAX_NEW_MOD_BYTES, room), "max_mod": reports.MAX_MOD,
+                                  "mods_off": off})
+
     async def api_report(self, request):
-        """multipart: report (JSON), zip (optional), image0-image4 (optional png / jpg / webp)
-        -> {ok, id, signature, seen_before}"""
+        """multipart: report (JSON), zip (optional), image0-image4 (optional png / jpg / webp), match (the match
+        folder's zip, optional), mod0..modN (a mod's zip each, named <content hash>.zip: only those the check
+        asked for) -> {ok, id, signature, seen_before, match, mods_stored, mods_refused}"""
         def no(status, why):
             return web.json_response({"ok": False, "error": why}, status=status)
         length = request.content_length
-        if length and length > reports.MAX_ZIP + reports.MAX_IMAGES * reports.MAX_IMAGE + (1 << 20):
-            return no(413, "The report is too large (the zip: %d MB at most, pictures: %d MB each)." % (
-                reports.MAX_ZIP >> 20, reports.MAX_IMAGE >> 20))
+        if length and length > self.MAX_REPORT_BODY:
+            return no(413, "The report is too large (the zip: %d MB at most, pictures: %d MB each, the mods: %d MB)." % (
+                reports.MAX_ZIP >> 20, reports.MAX_IMAGE >> 20, reports.MAX_NEW_MOD_BYTES >> 20))
         ip = self.client_ip(request)
         account = self.token_account(request)
-        meta, zip_bytes, images = None, b"", {}
+        meta, zip_bytes, images, match_bytes = None, b"", {}, b""
+        mod_files = {}  # hash -> temporary file (a mod part, streamed to disk)
+        tmp_dir = self.report_tmp
         try:
-            reader = await request.multipart()
-            while True:
-                part = await reader.next()
-                if part is None:
-                    break
-                name = part.name or ""
-                cap = (64 << 10 if name in ("report", "report.json") else reports.MAX_ZIP if name == "zip"
-                       else reports.MAX_IMAGE if re.fullmatch(r"image\d+", name) else 0)
-                if not cap:
-                    await part.release()
-                    continue
-                data = bytearray()
+            try:
+                reader = await request.multipart()
+                mod_total = 0
                 while True:
-                    chunk = await part.read_chunk(1 << 16)
-                    if not chunk:
+                    part = await reader.next()
+                    if part is None:
                         break
-                    data += chunk
-                    if len(data) > cap:
-                        return no(413, "%s is too large (%d MB at most)." % (name, max(1, cap >> 20)))
-                if name in ("report", "report.json"):
-                    try:
-                        meta = json.loads(bytes(data).decode("utf-8-sig"))
-                    except ValueError:
-                        return no(400, "report: not valid JSON")
-                elif name == "zip":
-                    zip_bytes = bytes(data)
-                else:
-                    n = int(name[5:])
-                    if n >= reports.MAX_IMAGES:
-                        return no(400, "%d pictures at most." % reports.MAX_IMAGES)
-                    images[n] = bytes(data)
-        except (ValueError, AssertionError, KeyError):
-            return no(400, "Send it as multipart/form-data.")
-        meta, why = reports.clean_meta(meta)
-        if why:
-            return no(400, why)
-        if zip_bytes and zip_bytes[:2] != b"PK":
-            return no(400, "zip: not a zip file")
-        for n, img in sorted(images.items()):
-            if not reports.image_ext(img):
-                return no(400, "image%d: only PNG, JPEG or WebP pictures." % n)
-        if self.report_throttled(["ip:" + ip] + (["acc:%d" % account["id"]] if account else [])):
-            return no(429, "Too many reports from here - try again later.")
-        if account:
-            meta["account"] = account["name"]
-        try:
-            got = await asyncio.get_running_loop().run_in_executor(
-                None, self.reports.add, meta, zip_bytes, [images[n] for n in sorted(images)])
-        except Exception as e:
-            gs.log("reports: storing one failed: %s" % e)
-            return no(503, "The report couldn't be stored right now - try again later.")
-        gs.log("reports: %s from %s %s (%s, %d KB zip, %d pictures): %s, seen %d before" % (
-            got["id"], meta["app"], meta["version"], meta["problem"], len(zip_bytes) >> 10, len(images),
-            got["signature"], got["seen_before"]))
-        return web.json_response({"ok": True, "id": got["id"], "signature": got["signature"],
-                                  "seen_before": got["seen_before"]})
+                    name = part.name or ""
+                    if re.fullmatch(r"mod\d+", name):
+                        h = re.sub(r"\.zip$", "", os.path.basename(part.filename or "")).lower()
+                        if not re.fullmatch(r"[0-9a-f]{64}", h) or h in mod_files:
+                            await part.release()
+                            continue
+                        os.makedirs(tmp_dir, exist_ok=True)
+                        path = os.path.join(tmp_dir, "%s_%s.zip" % (h[:16], secrets.token_hex(4)))
+                        mod_files[h] = path
+                        got = 0
+                        with open(path, "wb") as f:
+                            while True:
+                                chunk = await part.read_chunk(1 << 20)
+                                if not chunk:
+                                    break
+                                got += len(chunk)
+                                mod_total += len(chunk)
+                                if got > reports.MAX_MOD or mod_total > reports.MAX_NEW_MOD_BYTES:
+                                    return no(413, "The mods are too large (%d MB each, %d MB a report at most)."
+                                              % (reports.MAX_MOD >> 20, reports.MAX_NEW_MOD_BYTES >> 20))
+                                f.write(chunk)
+                        continue
+                    cap = (64 << 10 if name in ("report", "report.json") else reports.MAX_ZIP if name == "zip"
+                           else reports.MAX_MATCH if name == "match"
+                           else reports.MAX_IMAGE if re.fullmatch(r"image\d+", name) else 0)
+                    if not cap:
+                        await part.release()
+                        continue
+                    data = bytearray()
+                    while True:
+                        chunk = await part.read_chunk(1 << 16)
+                        if not chunk:
+                            break
+                        data += chunk
+                        if len(data) > cap:
+                            return no(413, "%s is too large (%d MB at most)." % (name, max(1, cap >> 20)))
+                    if name in ("report", "report.json"):
+                        try:
+                            raw = json.loads(bytes(data).decode("utf-8-sig"))
+                        except ValueError:
+                            return no(400, "report: not valid JSON")
+                        meta = raw
+                    elif name == "zip":
+                        zip_bytes = bytes(data)
+                    elif name == "match":
+                        match_bytes = bytes(data)
+                    else:
+                        n = int(name[5:])
+                        if n >= reports.MAX_IMAGES:
+                            return no(400, "%d pictures at most." % reports.MAX_IMAGES)
+                        images[n] = bytes(data)
+            except (ValueError, AssertionError, KeyError):
+                return no(400, "Send it as multipart/form-data.")
+            mods_listed = reports.clean_mods(meta.get("mods")) if isinstance(meta, dict) else []
+            match_name = str(meta.get("match") or "")[:120] if isinstance(meta, dict) else ""
+            meta, why = reports.clean_meta(meta)
+            if why:
+                return no(400, why)
+            if zip_bytes and zip_bytes[:2] != b"PK":
+                return no(400, "zip: not a zip file")
+            if match_bytes and match_bytes[:2] != b"PK":
+                return no(400, "match: not a zip file")
+            for n, img in sorted(images.items()):
+                if not reports.image_ext(img):
+                    return no(400, "image%d: only PNG, JPEG or WebP pictures." % n)
+            if self.report_throttled(["ip:" + ip] + (["acc:%d" % account["id"]] if account else [])):
+                return no(429, "Too many reports from here - try again later.")
+            if account:
+                meta["account"] = account["name"]
+            loop = asyncio.get_running_loop()
+            # the mods first (each checked against its hash, within the quota), then the report that lists them
+            listed = {m["hash"] for m in mods_listed}
+            stored, refused = [], {}
+            for h, path in list(mod_files.items()):
+                if h not in listed:
+                    refused[h] = "not in the report's mod list"
+                    continue
+                try:
+                    ok, why = await loop.run_in_executor(None, self.reports.put_mod, h, path)
+                except Exception as e:
+                    ok, why = False, "the report store didn't take it (%s)" % e.__class__.__name__
+                (stored.append(h) if ok else refused.__setitem__(h, why))
+            meta["mods"] = mods_listed
+            if match_name:
+                meta["match_folder"] = match_name
+            try:
+                got = await loop.run_in_executor(None, self.reports.add, meta, zip_bytes,
+                                                 [images[n] for n in sorted(images)], match_bytes)
+            except Exception as e:
+                gs.log("reports: storing one failed: %s" % e)
+                return no(503, "The report couldn't be stored right now - try again later.")
+            gs.log("reports: %s from %s %s (%s, %d KB zip, %d pictures, match %d KB, %d mods sent, %d stored): %s, "
+                   "seen %d before" % (got["id"], meta["app"], meta["version"], meta["problem"], len(zip_bytes) >> 10,
+                                       len(images), len(match_bytes) >> 10, len(mod_files), len(stored),
+                                       got["signature"], got["seen_before"]))
+            return web.json_response({"ok": True, "id": got["id"], "signature": got["signature"],
+                                      "seen_before": got["seen_before"], "match": bool(match_bytes),
+                                      "mods_stored": stored, "mods_refused": refused})
+        finally:
+            for path in mod_files.values():
+                if os.path.exists(path):
+                    os.remove(path)
 
     @admin_only
     async def admin_reports(self, request):
@@ -1696,7 +1785,52 @@ class Service:
             rows = await asyncio.get_running_loop().run_in_executor(None, self.reports.list, 1000)
         except Exception as e:
             return web.json_response({"ok": False, "error": "The storage node didn't answer (%s)." % e}, status=503)
-        return web.json_response({"ok": True, "reports": rows}, headers=ADMIN_HEADERS)
+        try:
+            usage = await asyncio.get_running_loop().run_in_executor(None, self.reports.mod_usage)
+        except Exception:
+            usage = None
+        return web.json_response({"ok": True, "reports": rows, "mod_store": usage}, headers=ADMIN_HEADERS)
+
+    async def stream_opened(self, request, opened, filename):
+        """(file, size, temporary path or None) -> the download, read in pieces; the file closed (and removed)."""
+        f, size, tmp = opened
+        loop = asyncio.get_running_loop()
+        try:
+            response = web.StreamResponse(headers=dict(ADMIN_HEADERS, **{
+                "Content-Type": "application/zip", "Content-Disposition": 'attachment; filename="%s"' % filename}))
+            if size:
+                response.content_length = size
+            await response.prepare(request)
+            while True:
+                chunk = await loop.run_in_executor(None, f.read, 1 << 20)
+                if not chunk:
+                    break
+                await response.write(chunk)
+            await response.write_eof()
+            return response
+        finally:
+            await loop.run_in_executor(None, f.close)
+            if tmp and os.path.exists(tmp):
+                os.remove(tmp)
+
+    @admin_only
+    async def admin_report_mod(self, request):
+        h = request.match_info["hash"].lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", h):
+            return web.Response(status=404)
+        opened = await asyncio.get_running_loop().run_in_executor(None, self.reports.open_mod, h)
+        if not opened:
+            return web.Response(status=404)
+        name = re.sub(r"[^A-Za-z0-9_.-]+", "_", request.query.get("name", "") or "mod")[:60]
+        return await self.stream_opened(request, opened, "%s_%s.svrmod" % (name, h[:12]))
+
+    @admin_only
+    async def admin_report_replay(self, request):
+        rid = request.match_info["id"]
+        opened = await asyncio.get_running_loop().run_in_executor(None, self.reports.open_replay, rid)
+        if not opened:
+            return web.Response(status=404)
+        return await self.stream_opened(request, opened, "replay_%s.zip" % rid)
 
     @admin_only
     async def admin_report_file(self, request):
@@ -2347,6 +2481,7 @@ class Service:
         app.router.add_put(b + "/api/mods/{id}/pictures/{n}", self.api_mod_update_picture)  # (its owner)
         app.router.add_get(b + "/api/mods/{id}/img/{n}", self.api_mod_image)
         app.router.add_post(b + "/api/reports", self.api_report)
+        app.router.add_post(b + "/api/reports/mods/check", self.api_report_mods_check)
         self.relay.routes(app, b)
         app.router.add_get("/__health", self.health)
         # the dashboard: at / (the portal, --local-admin) and again under /svr-admin/ (its own
@@ -2370,6 +2505,8 @@ class Service:
             app.router.add_post(p + "/api/admin/mod/{id}/{action}", self.admin_mod_action)
             app.router.add_get(p + "/api/admin/users", self.admin_users)
             app.router.add_get(p + "/api/admin/reports", self.admin_reports)
+            app.router.add_get(p + "/api/admin/report/{id}/replay.zip", self.admin_report_replay)
+            app.router.add_get(p + "/api/admin/report-mod/{hash}", self.admin_report_mod)
             app.router.add_get(p + "/api/admin/report/{id}/{name}", self.admin_report_file)
             app.router.add_post(p + "/api/admin/report/{id}/mark", self.admin_report_mark)
             app.router.add_post(p + "/api/admin/report/{id}/delete", self.admin_report_delete)
@@ -2435,7 +2572,7 @@ def storage_app(args):
     app.router.add_route("*", "/blob/{sha}", blob)
     app.router.add_get("/__health", health)
     app.router.add_get("/blobs", blob_list)
-    reports.node_routes(app, args.data, ok)  # (problem reports: <data>/reports)
+    reports.node_routes(app, args.data, ok, int(args.report_mod_quota_gb * (1 << 30)))  # (problem reports: <data>/reports)
     return app
 
 
@@ -2503,6 +2640,8 @@ def main():
     # Project Index passes its own (8101, its public mount /svr).
     ap.add_argument("--port", type=int, default=8411)
     ap.add_argument("--data", default=str(HERE / "data"))
+    ap.add_argument("--report-mod-quota-gb", type=float, default=20,
+                    help="(where reports are kept) the mods sent with problem reports, all together")
     ap.add_argument("--base", default="", help="where the game's half is (Project Index: its public mount)")
     ap.add_argument("--log", default=None, help="also write every event to this file")
     ap.add_argument("--max-connections", type=int, default=100, help="game requests at once")

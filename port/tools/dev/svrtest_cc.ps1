@@ -130,6 +130,7 @@ try {
     foreach ($e in $o.env) { $n, $v = $e -split '=', 2; [Environment]::SetEnvironmentVariable($n, $v, "Process") }
     $gameArgs = @("--log_file=`"$log`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false", "--monitor=2", "--mnk_mode=false",
                   "--p2p_port_mapping=false", "--p2p_relay=false", "--p2p_port=$p2p", "--dbg_out=`"$out`"")
+    Use-SvrTestServer -GameDir $game -GameArgs $gameArgs | Out-Null
     $proc = Start-Process $exe -WorkingDirectory $game -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
     foreach ($e in $o.env) { [Environment]::SetEnvironmentVariable(($e -split '=', 2)[0], $null, "Process") }
     foreach ($v in "SVR2011_INPUT_FILE", "SVR2011_CONFIG", "SVR2011_USER_DATA") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
