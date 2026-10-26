@@ -31,6 +31,7 @@
 
 #include "backgrounds.h"
 #include "movie_maker.h"
+#include "music_level.h"
 #include "unzip.h"
 
 enum { MODS_MAX = 512 };
@@ -52,7 +53,7 @@ static HWND s_list, s_status, s_wnd;
 static WCHAR s_game[MAX_PATH];
 static int s_filling;              /* (checkbox notifications while filling the list) */
 
-enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS, M_BACKGROUND, M_ON, M_OFF, M_SHRINK };
+enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS, M_BACKGROUND, M_ON, M_OFF, M_SHRINK, M_LEVEL };
 
 static void status(const WCHAR *t)
 {
@@ -1013,6 +1014,35 @@ static void rec_set_files(BundleRec *r, const WCHAR *dir)
     record_files(r, dir, L"", 1);
 }
 
+static volatile LONG s_bundled_running;   /* (mods_install_bundled: its record in use - Level music waits) */
+
+/* A bundled mod's manifest.txt changed by the launcher itself (Level music's theme_gain=): its record takes the new
+   file, so the copy still counts as unedited (updated at the next version, not asked about). */
+static void bundle_rerecord_manifest(const WCHAR *game, const WCHAR *dir)
+{
+    WCHAR mods[MAX_PATH], full[MAX_PATH];
+    const WCHAR *rel = wcsstr(dir, L"\\Mods\\");
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    int i, k;
+    if (!rel || !GetFileAttributesExW((swprintf_s(full, MAX_PATH, L"%s\\manifest.txt", dir), full), GetFileExInfoStandard, &a))
+        return;
+    swprintf_s(mods, MAX_PATH, L"%s\\Mods", game);
+    state_load(mods);
+    for (i = 0; i < s_n_recs; ++i) {
+        BundleRec *r = &s_recs[i];
+        if (_wcsicmp(r->folder, rel + 6)) continue;
+        for (k = 0; k < r->n_files; ++k)
+            if (!_wcsicmp(r->files[k].rel, L"manifest.txt")) {
+                r->files[k].size = (unsigned long long)a.nFileSizeHigh << 32 | a.nFileSizeLow;
+                r->files[k].time = (unsigned long long)a.ftLastWriteTime.dwHighDateTime << 32 | a.ftLastWriteTime.dwLowDateTime;
+                r->files[k].hash = file_hash(full);
+            }
+        state_save(mods);
+        break;
+    }
+    recs_free();
+}
+
 /* dir against r's files: *edited - a file changed, or one added (the Mod Maker's save, the player's own);
    *missing - files gone. A file whose size and time are the same is taken as unchanged (no rehash at every
    start); one whose time changed but not its content is too (its time is updated in r). */
@@ -1172,7 +1202,15 @@ static int bundle_install(const WCHAR *game_dir, const WCHAR *zip, const WCHAR *
  * - files missing from an unedited copy (a damaged install): asked about (fix / not now) - never fixed silently;
  * - the player's copy a newer version than the shipped one: left alone.
  * The questions are answered (mods_bundled_answer) and acted on at the next call. */
+static void install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir);
 void mods_install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
+{
+    InterlockedIncrement(&s_bundled_running);
+    install_bundled(game_dir, bundle_dir);
+    InterlockedDecrement(&s_bundled_running);
+}
+
+static void install_bundled(const WCHAR *game_dir, const WCHAR *bundle_dir)
 {
     WCHAR pat[MAX_PATH], zip[MAX_PATH], list[MAX_PATH], mods[MAX_PATH], *legacy = NULL;
     WIN32_FIND_DATAW fd;
@@ -1601,6 +1639,88 @@ int mods_shrink(const WCHAR *game_dir)
     return 1;
 }
 
+/* Level music: every superstar / media mod's theme whose gain the author left out (music_level.h; a bundled mod's
+   record takes its new manifest), then the Music folder's own songs. The dB per song in a window (and the log). */
+static volatile LONG s_level_busy;
+static WCHAR s_level_report[16384];
+
+static void level_run(void)
+{
+    static const WCHAR *const kinds[] = { L"Superstars", L"Media" };
+    WCHAR pat[MAX_PATH], sub[MAX_PATH], music[MAX_PATH], t[400];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int k, mods = 0, songs = 0, failed = 0, n;
+    s_level_report[0] = 0;
+    for (k = 0; k < 2; k++) {
+        swprintf_s(pat, MAX_PATH, L"%s\\Mods\\%s\\*", s_game, kinds[k]);
+        if ((h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.') continue;
+            swprintf_s(sub, MAX_PATH, L"%s\\Mods\\%s\\%s", s_game, kinds[k], fd.cFileName);
+            n = level_mod(sub, s_level_report, 16384);
+            if (n > 0) {
+                mods++;
+                songs += n;
+                if (is_bundled(s_game, sub)) bundle_rerecord_manifest(s_game, sub);
+            }
+            if (n < 0) failed++;
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    swprintf_s(music, MAX_PATH, L"%s\\Music", s_game);
+    n = level_music_folder(music, s_level_report, 16384);
+    if (n > 0) songs += n;
+    if (n < 0) failed++;
+    if (songs)
+        swprintf_s(t, 400, L"Music levelled: %d song%s (%d mod%s) at the Mod Maker's volume, -24 LUFS - the game "
+                           L"applies it, the files stay as they were.%s", songs, songs == 1 ? L"" : L"s", mods,
+                   mods == 1 ? L"" : L"s", failed ? L" Some manifests couldn't be written." : L"");
+    else
+        wcscpy_s(t, 400, L"Nothing to level: every theme and song has its volume already (an author's own is kept).");
+    status(t);
+    if (s_level_report[0]) {
+        for (n = (int)wcslen(s_level_report); n && (s_level_report[n - 1] == L'\n' || s_level_report[n - 1] == L'\r'); --n)
+            s_level_report[n - 1] = 0;
+        install_log(s_game, s_level_report);
+        if (s_wnd) MessageBoxW(s_wnd, s_level_report, L"Level music - the gain per song", MB_OK | MB_ICONINFORMATION);
+        else wprintf(L"%s\n", s_level_report);
+    }
+}
+
+static DWORD WINAPI level_thread(LPVOID arg)
+{
+    (void)arg;
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    level_run();
+    CoUninitialize();
+    InterlockedExchange(&s_level_busy, 0);
+    return 0;
+}
+
+/* With a window: on a worker (not while movies are shrunk: both write manifests); without (--mods-level): here. */
+static void level_start(void)
+{
+    if (!s_wnd) {
+        CoInitializeEx(NULL, COINIT_MULTITHREADED);
+        level_run();
+        return;
+    }
+    if (s_shrink_busy) { status(L"Movies are being shrunk - level the music when that's done."); return; }
+    if (s_bundled_running) { status(L"The bundled mods are being checked - level the music when that's done."); return; }
+    if (InterlockedCompareExchange(&s_level_busy, 1, 0)) { status(L"The music is being levelled already."); return; }
+    status(L"Measuring the mods' themes and the Music folder's songs\x2026");
+    CloseHandle(CreateThread(NULL, 0, level_thread, NULL, 0, NULL));
+}
+
+int mods_level(const WCHAR *game_dir)
+{
+    wcsncpy_s(s_game, MAX_PATH, game_dir ? game_dir : L"", _TRUNCATE);
+    if (!s_game[0]) return 0;
+    level_start();
+    return 1;
+}
+
 /* A line in <game>\Mods\.install.log (UTF-8): what an install or the bundle
    repair did when it didn't simply work - the launcher may have no window to
    say it in (installs at start-up, after an update, --bundled). */
@@ -1843,6 +1963,17 @@ place:
     wcscpy_s(s_installed, MAX_PATH, dst);
     /* (its .bik movies -> .mp4, after the status below; not a bundled mod's - they come shrunk) */
     shrink_now = !s_bundle_install && (!wcscmp(kind, L"Superstars") || !wcscmp(kind, L"Media"));
+    if (!wcscmp(kind, L"Superstars") || !wcscmp(kind, L"Media")) {
+        /* its theme's volume levelled (a gain the author left out: theme_gain=), before the shrink - both write its
+           manifest; a bundled mod's too (its files are recorded after this: the levelled manifest is the shipped one) */
+        static WCHAR rep[2048];
+        size_t n;
+        rep[0] = 0;
+        if (level_mod(dst, rep, 2048) > 0) {
+            for (n = wcslen(rep); n && (rep[n - 1] == L'\n' || rep[n - 1] == L'\r'); --n) rep[n - 1] = 0;
+            install_log(s_game, rep);
+        }
+    }
     scan();
     fill();
     swprintf_s(t, 512, !wcscmp(kind, L"Backstage") ? L"Installed \"%s\". It is played in that room's backstage brawls."
@@ -2042,16 +2173,19 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
     add(tab, L"Button", L"On", BS_PUSHBUTTON | WS_TABSTOP, 548, 214, 40, 34, id_base + M_ON);
     add(tab, L"Button", L"Off", BS_PUSHBUTTON | WS_TABSTOP, 548, 254, 40, 34, id_base + M_OFF);
     /* (Shrink movies: the mods' and Custom Movies' .bik movies -> .mp4, shrink_start) */
+    /* (Level music: the mods' themes and the Music folder's songs at the Mod Maker's volume, level_start) */
     if (maker_present()) {
-        add(tab, L"Button", L"Open Mod Maker", BS_PUSHBUTTON | WS_TABSTOP, 28, 386, 140, 32, id_base + M_MAKER);
-        add(tab, L"Button", L"Open Mods folder", BS_PUSHBUTTON | WS_TABSTOP, 174, 386, 136, 32, id_base + M_FOLDER);
-        add(tab, L"Button", L"Add background\x2026", BS_PUSHBUTTON | WS_TABSTOP, 316, 386, 136, 32, id_base + M_BACKGROUND);
-        add(tab, L"Button", L"Shrink movies", BS_PUSHBUTTON | WS_TABSTOP, 458, 386, 130, 32, id_base + M_SHRINK);
+        add(tab, L"Button", L"Open Mod Maker", BS_PUSHBUTTON | WS_TABSTOP, 28, 386, 110, 32, id_base + M_MAKER);
+        add(tab, L"Button", L"Open Mods folder", BS_PUSHBUTTON | WS_TABSTOP, 142, 386, 112, 32, id_base + M_FOLDER);
+        add(tab, L"Button", L"Add background\x2026", BS_PUSHBUTTON | WS_TABSTOP, 258, 386, 112, 32, id_base + M_BACKGROUND);
+        add(tab, L"Button", L"Shrink movies", BS_PUSHBUTTON | WS_TABSTOP, 374, 386, 104, 32, id_base + M_SHRINK);
+        add(tab, L"Button", L"Level music", BS_PUSHBUTTON | WS_TABSTOP, 482, 386, 106, 32, id_base + M_LEVEL);
     } else {
-        add(tab, L"Button", L"Open Mods folder", BS_PUSHBUTTON | WS_TABSTOP, 28, 386, 150, 32, id_base + M_FOLDER);
-        add(tab, L"Button", L"Add background picture\x2026", BS_PUSHBUTTON | WS_TABSTOP, 186, 386, 224, 32,
+        add(tab, L"Button", L"Open Mods folder", BS_PUSHBUTTON | WS_TABSTOP, 28, 386, 130, 32, id_base + M_FOLDER);
+        add(tab, L"Button", L"Add background picture\x2026", BS_PUSHBUTTON | WS_TABSTOP, 164, 386, 176, 32,
             id_base + M_BACKGROUND);
-        add(tab, L"Button", L"Shrink movies", BS_PUSHBUTTON | WS_TABSTOP, 418, 386, 170, 32, id_base + M_SHRINK);
+        add(tab, L"Button", L"Shrink movies", BS_PUSHBUTTON | WS_TABSTOP, 346, 386, 118, 32, id_base + M_SHRINK);
+        add(tab, L"Button", L"Level music", BS_PUSHBUTTON | WS_TABSTOP, 470, 386, 118, 32, id_base + M_LEVEL);
     }
     s_status = add(tab, L"Static", L"", SS_LEFT, 28, 428, 560, 40, id_base + M_STATUS);
 }
@@ -2066,6 +2200,7 @@ int mods_command(int id, int code)
     if (id == s_base + M_MAKER) { open_maker(); return 1; }
     if (id == s_base + M_BACKGROUND) { add_background(); return 1; }
     if (id == s_base + M_SHRINK) { shrink_start(L""); return 1; }
+    if (id == s_base + M_LEVEL) { level_start(); return 1; }
     return 0;
 }
 

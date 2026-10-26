@@ -9447,6 +9447,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         LocalFree(argv);
         return ok ? 0 : 1;
     }
+    /* Tests: --mods-level <game folder> - the Mods tab's Level music (the gain per song printed). */
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--mods-level")) {
+        int ok;
+        console_setup();
+        ok = mods_level(argv[2]);
+        LocalFree(argv);
+        return ok ? 0 : 1;
+    }
     /* Tests: --bg-add <game folder> <picture> [logo] makes a main menu
        background as the Mods tab's "Add background picture" does. */
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--bg-add")) {

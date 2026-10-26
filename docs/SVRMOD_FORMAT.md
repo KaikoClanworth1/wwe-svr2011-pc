@@ -235,7 +235,8 @@ Manifest keys (in the order the converters write them,
 | `height=<scale>` | optional | the size against the base's, 0.80-1.25 (clamped; missing or 0 = the base's). The game scales the skeleton (record +28, 4.12 fixed point: 4096 = 1.0, kept within 3300-4900). From 4139 on, the game counts the wrestler as "big". About 0.90-1.15 plays best |
 | `pose=<id>` | optional | the select / VS screen pose: a pose motion id (32500 and up: 32500-32505 generic men, 32510-32515 women, 32520-32591 the superstars' own), or a superstar id below 512 for that superstar's pose |
 | `song=<file>` | optional | the entrance theme (.mp3 .m4a .aac .wav .flac .wma .ogg). It plays at full level, so make it about -24 LUFS or use `theme_gain=` |
-| `theme_gain=<dB>` | optional | -20.0..+6.0 dB (clamped) |
+| `theme_gain=<dB>` | optional | -20.0..+6.0 dB (clamped). Left out, the PC launcher measures the song at install (or with Installed Mods -> Level music) and writes it, to -24 LUFS like the Mod Maker's meter (`launcher/music_level.c`) |
+| `theme_gain_auto=<size>:<time>` | written by the launcher | marks a `theme_gain=` the launcher measured (the song's size and time then): measured again when the song changes. Without it, `theme_gain=` is the author's and is never changed |
 | `music=<1-253>` | optional | instead of `song=`: one of the game's own themes by music id. 254 (the user playlist) and 255 (none) are not accepted. `song=` wins when both are given |
 | `movie=<file>` | optional | the entrance (titantron) movie: a 320 x 320 Bink `.bik`, or an `.mp4` ([5.8](#58-media-theme-titantron)) |
 | `attire<N>=<file>` | optional | N 1-4: another model pac whose first attire becomes attire N. When it is over the model budget, that attire alone is left out |
@@ -379,7 +380,7 @@ Replaces the game's own media. Later packs (by folder name) win.
 |---|---|
 | `video.<id>=<file>` | that superstar's entrance (titantron) video: a 320 x 320 `.bik`, or an `.mp4` played HD ([5.8](#58-media-theme-titantron)) |
 | `theme.<id>=<file>` | the entrance theme |
-| `theme_gain.<id>=<dB>` | that theme's level, -20..+6 |
+| `theme_gain.<id>=<dB>` | that theme's level, -20..+6 (left out: the PC launcher measures and writes it, as `theme_gain=`, with `theme_gain_auto.<id>=`) |
 | `render.<id>=`, `bust.<id>=`, `icon.<id>=` | the 512 x 512 render, 256 x 256 bust, 64 x 64 face icon (DDS, DXT5) |
 | `arena.<nn>=<bgNN.pac>` | arena nn's own file with its screens' flip-book retextured (the Mod Maker's Media page) |
 | `sound.<event>=<file>` | any game sound by its event name without `Play_` (e.g. `Menu_Music`, `MUS_0161_0_0`) |
