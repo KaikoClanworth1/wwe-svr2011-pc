@@ -225,6 +225,12 @@ uint32_t G32(uint8_t* base, uint32_t a) { return Rd32(base + a); }
 
 int svr2011::WorldPassesThisFrame() { return g_world_passes; }
 
+bool svr2011::GuestReadable(uint32_t a) {
+  if (!g_memory) return false;
+  auto* heap = g_memory->LookupHeap(a);
+  return heap && heap->QueryRangeAccess(a, a + 3) != rex::memory::PageAccess::kNoAccess;
+}
+
 namespace {
 void P32(uint8_t* base, uint32_t a, uint32_t v) { Wr32(base + a, v); }
 

@@ -68,6 +68,8 @@ namespace {
 
 constexpr uint32_t kChars = 0x82E3CC50, kMatchFrames = 0x82E3CD0C, kLive = 0x82E3DE00;
 constexpr uint32_t kTableIndexes = 0x82E3689C;  // (the random table's four draw indexes: sub_821C6BE0 zeroes them)
+constexpr uint32_t kRandomTable = 0x82D9DB10;   // (the random table: 256 bytes, sub_821C6BE0 fills it)
+constexpr uint32_t kBellChar = 8192;            // (bell.bin: each character's first 8 KB)
 
 // rand() per call site in a match (see sub_828F2430 below)
 std::mutex g_rand_mutex;
@@ -321,6 +323,7 @@ struct Replay {
   std::map<uint32_t, int> passes;       // (frame -> world updates from then on)
 };
 Replay g_replay;  // (under g_rec)
+void RestoreBell(uint8_t* base);  // (bell.bin: below)
 
 void ReplayLoad() {  // (under g_rec)
   g_replay.loaded = true;
@@ -354,10 +357,11 @@ void ReplayLoad() {  // (under g_rec)
               head[1], g_replay.frames);
 }
 
-void ReplayBell() {  // (under g_rec: this run's bell - the recording's frame 0 from the next frame)
+void ReplayBell(uint8_t* base) {  // (under g_rec: this run's bell - the recording's frame 0 from the next frame)
   if (!g_replay.loaded) ReplayLoad();
   if (g_replay.from.empty() || g_replay.on || g_replay.done) return;
   g_replay.on = true, g_replay.bell = g_updates, g_replay.at = {};
+  RestoreBell(base);
   REXLOG_INFO("[svr2011] replay: from the bell (frame {}), the recording's pads for {} frames", g_updates,
               g_replay.frames);
 }
@@ -423,6 +427,109 @@ void ReplayFrame(uint8_t* base, uint32_t clock) {  // (under g_rec: each frame, 
   if (g.on) ReplayReport();
 }
 
+// bell.bin (exact replays, docs/MATCH_RECORDINGS.md): the state a replay takes over at its bell - "SVRB", version 1,
+// the block count, then blocks of {u32 kind, u32 index, u32 person, u32 size, the bytes}: kind 1 a character (its
+// slot in the character table, its person, its first 8 KB as in guest memory), kind 2 the random table (256 bytes),
+// kind 3 its four draw indexes, kind 4 the seed table's two counters.
+void WriteBell(uint8_t* base) {  // (under g_rec)
+  std::vector<uint8_t> out;
+  const auto u32 = [&](uint32_t v) { out.insert(out.end(), reinterpret_cast<uint8_t*>(&v), reinterpret_cast<uint8_t*>(&v) + 4); };
+  uint32_t blocks = 0;
+  std::vector<uint8_t> body;
+  const auto block = [&](uint32_t kind, uint32_t index, uint32_t person, const uint8_t* p, uint32_t size) {
+    std::swap(out, body);
+    u32(kind), u32(index), u32(person), u32(size);
+    out.insert(out.end(), p, p + size);
+    std::swap(out, body);
+    ++blocks;
+  };
+  for (uint32_t i = 0; i < 10; ++i)
+    if (const uint32_t c = Rd32(base + kChars + i * 4); c >= 0x40000000u && !(c & 3))
+      block(1, i, Rd32(base + c + 1156), base + c, kBellChar);
+  block(2, 0, 0, base + kRandomTable, 256);
+  block(3, 0, 0, base + kTableIndexes, 4);
+  block(4, 0, 0, base + kSeedCounters, 2);
+  u32(0x42525653u /* "SVRB" */), u32(1), u32(blocks);
+  out.insert(out.end(), body.begin(), body.end());
+  if (FILE* f = std::fopen((g.dir / "bell.bin").string().c_str(), "wb")) std::fwrite(out.data(), 1, out.size(), f), std::fclose(f);
+}
+
+// A replay's bell: bell.bin's state written back - only when this run's bell found the people in the recording's
+// motions (another pre-bell intro: nothing written, the replay tool starts again). Plain data blocks as they are; a
+// character only where its slot holds the same person, word by word where they differ, and only a float on both
+// sides (0, or 1e-9 to 1e7 either sign: positions, blends, timers) or a counter of kBellCounters - never a word that
+// is, or was, a guest pointer (4-aligned, pointing into readable guest memory). Handles and indexes stay this run's
+// (writing every differing word crashed the replay). What was written goes to the log.
+constexpr uint32_t kBellCounters[] = {1484, 1500, 3684};  // (frame counters that part with the pre-bell's length)
+
+bool SaneFloat(uint32_t v) {
+  const uint32_t e = (v >> 23) & 0xFF;
+  return (v & 0x7FFFFFFF) == 0 || (e >= 97 && e <= 150);  // (2^-30 .. 2^23)
+}
+
+void RestoreBell(uint8_t* base) {  // (under g_rec)
+  const std::string data = ReadText(g_replay.from / "bell.bin");
+  const auto rd = [&](size_t at) { uint32_t v = 0; if (at + 4 <= data.size()) std::memcpy(&v, data.data() + at, 4); return v; };
+  if (data.size() < 12 || rd(0) != 0x42525653u) {
+    REXLOG_INFO("[svr2011] replay: no bell.bin - the people stay as this run's bell found them");
+    return;
+  }
+  const auto pointer = [](uint32_t v) { return !(v & 3) && v >= 0x10000u && svr2011::GuestReadable(v); };
+  // (the gate: each wrestler's and the referee's motion, +212, as recorded)
+  for (size_t at = 12, n = rd(8); n-- && at + 16 <= data.size();) {
+    const uint32_t kind = rd(at), index = rd(at + 4), person = rd(at + 8), size = rd(at + 12);
+    const uint8_t* rec = reinterpret_cast<const uint8_t*>(data.data()) + at + 16;
+    at += 16 + size;
+    if (kind != 1 || person > 6 || size < 216 || at > data.size() || index >= 10) continue;
+    const uint32_t c = Rd32(base + kChars + index * 4);
+    const uint32_t was = uint32_t(rec[212]) << 24 | uint32_t(rec[213]) << 16 | uint32_t(rec[214]) << 8 | rec[215];
+    if (c < 0x40000000u || (c & 3) || Rd32(base + c + 1156) != person || Rd32(base + c + 212) != was) {
+      REXLOG_INFO("[svr2011] replay: this bell isn't the recording's (person {} in motion {}, recorded {}) - bell.bin "
+                  "not written back", person, c >= 0x40000000u ? Rd32(base + c + 212) : 0, was);
+      return;
+    }
+  }
+  std::string told;
+  size_t at = 12;
+  for (uint32_t n = rd(8); n-- && at + 16 <= data.size();) {
+    const uint32_t kind = rd(at), index = rd(at + 4), person = rd(at + 8), size = rd(at + 12);
+    const uint8_t* rec = reinterpret_cast<const uint8_t*>(data.data()) + at + 16;
+    at += 16 + size;
+    if (at > data.size()) break;
+    if (kind >= 2 && kind <= 4) {
+      const uint32_t addr = kind == 2 ? kRandomTable : kind == 3 ? kTableIndexes : kSeedCounters;
+      const uint32_t want = kind == 2 ? 256 : kind == 3 ? 4 : 2;
+      if (size != want) continue;
+      const int changed = std::memcmp(base + addr, rec, size) != 0;
+      std::memcpy(base + addr, rec, size);
+      told += fmt::format(" {}{}", kind == 2 ? "table" : kind == 3 ? "indexes" : "counters", changed ? "*" : "");
+      continue;
+    }
+    if (kind != 1 || index >= 10 || size != kBellChar) continue;
+    const uint32_t c = Rd32(base + kChars + index * 4);
+    if (c < 0x40000000u || (c & 3) || Rd32(base + c + 1156) != person) {
+      told += fmt::format(" slot {} (person {}): not here", index, person);
+      continue;
+    }
+    int written = 0, skipped = 0;
+    std::string first;
+    for (uint32_t o = 0; o < size; o += 4) {
+      const uint32_t now = Rd32(base + c + o), was = uint32_t(rec[o]) << 24 | uint32_t(rec[o + 1]) << 16 | uint32_t(rec[o + 2]) << 8 | rec[o + 3];
+      if (now == was) continue;
+      const bool counter = std::find(std::begin(kBellCounters), std::end(kBellCounters), o) != std::end(kBellCounters);
+      if (pointer(now) || pointer(was) || !(counter || (SaneFloat(now) && SaneFloat(was)))) {
+        ++skipped;
+        continue;
+      }
+      std::memcpy(base + c + o, rec + o, 4);
+      if (++written <= 6) first += fmt::format(" +{}", o);
+    }
+    told += fmt::format(" | person {}: {} words written ({}{}), {} left (pointers, handles)", person, written, first,
+                        written > 6 ? " ..." : "", skipped);
+  }
+  REXLOG_INFO("[svr2011] replay: bell.bin written back -{}", told);
+}
+
 void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
   const int keep = REXCVAR_GET(match_recordings);
   if (keep <= 0) return;
@@ -484,6 +591,7 @@ void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
   g.table_load = g_load_table;
   std::memcpy(g.table_bell.data(), base + kTableIndexes, 4);
   g.last_table = g.table_bell;
+  WriteBell(base);
   g.frames_load_to_bell = g_load_frame ? g_updates - g_load_frame : 0;
   g.rule = base[kLive], g.arena = Rd32(base + kLive + 64);
   g.arena_manifest = svr2011::ArenaModManifest();
@@ -621,7 +729,7 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
       for (uint32_t i = 0; i < 10; ++i)
         if (const uint32_t c = Rd32(base + kChars + i * 4); c >= 0x40000000u && !(c & 3) && Rd32(base + c + 1156) == 6)
           referee = true;
-      if (referee && g_loaded.exchange(false)) Start(ctx, base, clock), ReplayBell();
+      if (referee && g_loaded.exchange(false)) Start(ctx, base, clock), ReplayBell(base);
     }
     if (g.on && g.bell < g_updates)
       if (const int passes = svr2011::WorldPassesThisFrame(); passes != g.last_passes) {

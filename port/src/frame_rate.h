@@ -56,6 +56,9 @@ bool Lockstep();
 // The world updates the frame running now got (1; 2 at 30 fps or a slow frame; 0 while the free camera holds it).
 int WorldPassesThisFrame();
 
+// A guest address in readable memory (a mapped, accessible page) - is a word a pointer?
+bool GuestReadable(uint32_t address);
+
 // Chooses the frame rate, at once (GRAPHICS -> FRAME RATE).
 void SetTargetFrameRate(int fps);
 
