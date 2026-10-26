@@ -3443,7 +3443,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-gear-from") && more) star_page::TestGearFrom(Utf8(argv[++i]));  // <attire>:<donor id>: fit the donor's entrance gear, log, quit
     else if (!wcscmp(argv[i], L"--star-gear") && more) star_page::TestGear(Utf8(argv[++i]));  // <attire>:<off|from<k>>[,...]
     else if (!wcscmp(argv[i], L"--hits")) char_preview::SetHits(true);
-    else if (!wcscmp(argv[i], L"--attire") && more) {  // <star id>,<slot 0=new>,<model pac>[,<save .svrmod>]
+    else if (!wcscmp(argv[i], L"--attire-keep-entrance")) attire_page::TestKeepEntrance();  // (--attire from a superstar mod: its entrance too)
+    else if (!wcscmp(argv[i], L"--attire") && more) {  // <star id>,<slot 0=new>,<model pac | superstar mod folder / .svrmod / .svrproj>[,<save .svrmod>]
       const std::wstring a = argv[++i];
       const size_t c1 = a.find(L','), c2 = a.find(L',', c1 + 1), c3 = a.find(L',', c2 + 1);
       attire_page::TestStart(_wtoi(a.c_str()), a.substr(c2 + 1, c3 == std::wstring::npos ? std::wstring::npos : c3 - c2 - 1),
