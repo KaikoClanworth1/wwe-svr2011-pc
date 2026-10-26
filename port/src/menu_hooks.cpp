@@ -353,6 +353,8 @@ void InstallMenuHooks(rex::memory::Memory* memory) {
   std::memcpy(memory->TranslateVirtual<char*>(g_weapons_label), l->weapons, n_weapons);
 }
 
+std::string GameString(PPCContext& ctx, uint8_t* base, uint32_t id) { return LabelText(ctx, base, id); }
+
 }  // namespace svr2011
 
 // String lookup: sub_82153EF8(manager, id) -> (r3) the string.
