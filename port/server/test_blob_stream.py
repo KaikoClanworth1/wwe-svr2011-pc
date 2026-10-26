@@ -92,6 +92,31 @@ def download(url, mid):
     return h.hexdigest(), ttfb, time.time() - t0, n
 
 
+def ranged(url, mid, rng):
+    """GET the mod's file with "Range: <rng>" -> (status, headers, body)."""
+    r = urllib.request.Request(url + "/api/mods/%d/file" % mid, headers={"Range": rng})
+    try:
+        with urllib.request.urlopen(r, timeout=600) as f:
+            return f.status, dict(f.headers), f.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
+
+
+def range_checks(url, mid, data, what):
+    """A resumed download (the launcher's Discovery): from N, N-M, and past the end."""
+    n = len(data)
+    for a, b in ((n // 3, None), (n // 2 + 7, n // 2 + 7 + 99999), (n - 10, None)):
+        st, h, body = ranged(url, mid, "bytes=%d-%s" % (a, "" if b is None else b))
+        want = data[a:] if b is None else data[a:b + 1]
+        check("%s: Range %d-%s -> %d, Content-Range %s, %d bytes, the right ones" % (
+            what, a, "" if b is None else b, st, h.get("Content-Range"), len(body)),
+            st == 206 and body == want and h.get("Content-Range") == "bytes %d-%d/%d" % (a, a + len(want) - 1, n)
+            and h.get("Accept-Ranges") == "bytes")
+    st, h, body = ranged(url, mid, "bytes=%d-" % n)
+    check("%s: Range past the end -> 416 (%d, %s)" % (what, st, h.get("Content-Range")),
+          st == 416 and h.get("Content-Range") == "bytes */%d" % n)
+
+
 def blob_path(node_data, sha, packed):
     return os.path.join(node_data, "blobs", sha[:2], sha + (".xz" if packed else ".bin"))
 
@@ -135,6 +160,8 @@ def main():
         len(mid_mod) >> 20, len(packed) / 1048576, ttfb), sha == msha and ttfb < 2.0)
     sha, ttfb, total, n = download(url, up2["id"])
     check("packed mod again: the same", sha == msha)
+    range_checks(url, up["id"], big, "big mod (stored)")
+    range_checks(url, up2["id"], mid_mod, "packed mod (xz)")
 
     # a broken packed blob: the client sees a short download, not a wrong one
     with open(blob_path(a.node_data, msha, True), "wb") as f:
@@ -153,10 +180,17 @@ def main():
     up3 = upload(url, token, small, "Stream small")
     sha, ttfb, total, n = download(url, up3["id"])
     check("small mod: the same bytes back", sha == hashlib.sha256(small).hexdigest())
+    range_checks(url, up3["id"], small, "small mod")
+    st, h, body = ranged(url, up3["id"], "bytes=0-")
+    check("a plain download says Accept-Ranges: bytes", h.get("Accept-Ranges") == "bytes")
 
-    # the download counts still go up
+    # the download counts still go up - once per download: a resume (Range not from 0) isn't another
     st, out = call(url + "/api/mods/%d" % up["id"])
-    check("big mod's downloads counted (%s)" % json.loads(out).get("downloads"), json.loads(out).get("downloads") == 1)
+    check("big mod's downloads counted (%s), its Range resumes not" % json.loads(out).get("downloads"),
+          json.loads(out).get("downloads") == 1)
+    ranged(url, up["id"], "bytes=0-1023")
+    st, out = call(url + "/api/mods/%d" % up["id"])
+    check("a Range from 0 counts (%s)" % json.loads(out).get("downloads"), json.loads(out).get("downloads") == 2)
     try:
         call(url + "/api/mods/999999/file")
         check("a missing mod: 404", False)

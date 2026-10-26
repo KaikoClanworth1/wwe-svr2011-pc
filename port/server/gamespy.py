@@ -207,13 +207,18 @@ class LocalBlobs:
                 pass
         return None
 
-    def open(self, sha):
-        """-> (a file of the bytes as stored, packed) or None: a big blob read as it is sent."""
+    def open(self, sha, start=0):
+        """-> (a file of the bytes as stored, packed, where it starts) or None: a big blob read as it is sent.
+        A stored one (not packed) starts at `start` (a download's Range); a packed one at 0 (unpacked, then skipped)."""
         for packed in (False, True):
             try:
-                return open(self.path(sha, packed), "rb"), packed
+                f = open(self.path(sha, packed), "rb")
             except OSError:
-                pass
+                continue
+            if start and not packed:
+                f.seek(start)
+                return f, packed, start
+            return f, packed, 0
         return None
 
     def delete(self, sha):
@@ -277,10 +282,13 @@ class RemoteBlobs:
         self.key = key
         self.timeout = timeout
 
-    def _req(self, method, sha, data=None, packed=True):
+    def _req(self, method, sha, data=None, packed=True, start=0):
         import urllib.request
+        headers = {"X-Storage-Key": self.key}
+        if start:
+            headers["Range"] = "bytes=%d-" % start
         r = urllib.request.Request("%s/blob/%s?packed=%d" % (self.url, sha, 1 if packed else 0), data=data,
-                                   method=method, headers={"X-Storage-Key": self.key})
+                                   method=method, headers=headers)
         return urllib.request.urlopen(r, timeout=self.timeout)
 
     def exists(self, sha):
@@ -302,13 +310,31 @@ class RemoteBlobs:
         except Exception:
             return None
 
-    def open(self, sha):
-        """-> (the node's answer, read as it comes, packed) or None."""
+    def open(self, sha, start=0):
+        """-> (the node's answer, read as it comes, packed, where it starts) or None. A stored blob starts at
+        `start` when the node answers its Range (206: aiohttp's FileResponse); a packed one is asked for whole
+        (its packed bytes from an offset are no use - past a small packed file's end the node says 416) and
+        starts at 0."""
         try:
-            f = self._req("GET", sha)
+            f = self._req("GET", sha, start=start)
         except Exception:
-            return None
-        return f, f.headers.get("X-Packed") == "1"
+            if not start:
+                return None
+            try:
+                f = self._req("GET", sha)
+            except Exception:
+                return None
+            return f, f.headers.get("X-Packed") == "1", 0
+        packed = f.headers.get("X-Packed") == "1"
+        if f.status == 206 and not packed:
+            return f, packed, start
+        if f.status == 206:
+            f.close()
+            try:
+                f = self._req("GET", sha)
+            except Exception:
+                return None
+        return f, packed, 0
 
     def delete(self, sha):
         try:
@@ -586,19 +612,38 @@ class Store:
             row = self.db.execute("SELECT size FROM blobs WHERE sha = ?", (sha,)).fetchone()
         return row[0] if row else None
 
-    def blob_chunks(self, sha, chunk=1 << 20):
+    def blob_chunks(self, sha, chunk=1 << 20, start=0):
         """The content in pieces as it is read (from the disk or the storage node) and unpacked: an iterator,
         or None when it isn't there. A big download starts at once instead of after the whole file (a 217 MB
-        mod: 40 s+ before its first byte); a broken stream raises OSError / LZMAError part way."""
+        mod: 40 s+ before its first byte); a broken stream raises OSError / LZMAError part way.
+        start: from that byte (a download's Range) - a stored blob seeks there, a packed one is unpacked and
+        the bytes before it dropped."""
         with self.lock:
             data = self.cache.get(sha)
         if data is not None:
-            return iter([data[i:i + chunk] for i in range(0, len(data), chunk)] or [b""])
-        src = self.blobs.open(sha)
+            return iter([data[i:i + chunk] for i in range(start, len(data), chunk)] or [b""])
+        src = self.blobs.open(sha, start)
         if src is None:
             return None
-        f, packed = src
+        f, packed, at = src
+        if at >= start:
+            return self._pieces(sha, f, packed, chunk)
+        whole = self._pieces(sha, f, packed, chunk)
 
+        def skipped():   # (the bytes before start dropped as they come)
+            skip = start - at
+            try:
+                for piece in whole:
+                    if skip >= len(piece):
+                        skip -= len(piece)
+                        continue
+                    yield piece[skip:]
+                    skip = 0
+            finally:
+                whole.close()
+        return skipped()
+
+    def _pieces(self, sha, f, packed, chunk):
         def pieces():
             try:
                 d = lzma.LZMADecompressor() if packed else None
