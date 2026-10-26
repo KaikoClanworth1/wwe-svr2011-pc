@@ -67,6 +67,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 #include "roster_tab.h"
 #include "ui_theme.h"
 #include "report.h"
+#include "report_match.h"
 #include "report_send.h"
 #include "movie_maker.h"
 #include "ascii_fold.h"
@@ -3120,6 +3121,142 @@ static HWND pt_setup_grid(void);
 static void mv_setup(void);
 static void up_setup(void);
 
+/* ── Report a problem: a recorded match and its mods (report_match.h) - shared by the window and --report-send ── */
+
+typedef struct {
+    ReportMatch match;       /* the match picked */
+    int has_match;
+    ReportMod mods[REPORT_MAX_MODS];  /* the mods it used */
+    int n_mods;
+    int checked;             /* the server said which it has */
+    uint64_t max_upload;     /* the server's limit for new mod bytes (0: not said) */
+    WCHAR check_why[200];    /* why the check didn't work, or the server's "no mods now" */
+    WCHAR match_zip[MAX_PATH];
+    WCHAR mod_zip[REPORT_MAX_MODS][MAX_PATH];
+} RepMatch;
+
+static void rep_cli_progress(void *ctx, uint64_t sent, uint64_t total)
+{
+    static int last = -1;
+    const int pct = total ? (int)(sent * 100 / total) : 0;
+    (void)ctx;
+    if (pct / 10 != last / 10 || sent == total) wprintf(L"progress %d%% (%.1f of %.1f MB)\n", pct, sent / 1048576.0, total / 1048576.0);
+    last = pct;
+}
+
+#define REP_MOD_MAX (300ull << 20)   /* (the server's cap per mod and per report) */
+
+/* The mods the match used, hashed, and (online) which the server lacks. */
+static void rep_match_load(RepMatch *m, const WCHAR *server)
+{
+    int i;
+    m->n_mods = m->has_match ? report_match_mods(s_game_dir, m->match.dir, m->mods, REPORT_MAX_MODS) : 0;
+    m->checked = 0, m->max_upload = 0, m->check_why[0] = 0;
+    for (i = 0; i < m->n_mods; i++)
+        if (m->mods[i].size > REP_MOD_MAX) m->mods[i].send = 0;   /* (too big for the server) */
+    if (m->n_mods && server && server[0])
+        m->checked = report_mods_check(server, m->mods, m->n_mods, &m->max_upload, m->check_why, 200);
+}
+
+/* Bytes to send / already on the server (the tick on: the mods the server lacks, in the server's limit). */
+static void rep_match_sizes(const RepMatch *m, uint64_t *to_send, uint64_t *have, int *too_big)
+{
+    const uint64_t limit = m->max_upload ? m->max_upload : REP_MOD_MAX;
+    int i;
+    *to_send = *have = 0, *too_big = 0;
+    for (i = 0; i < m->n_mods; i++) {
+        const ReportMod *d = &m->mods[i];
+        if (d->on_server) { *have += d->size; continue; }
+        if (!d->hash[0]) continue;                        /* (not installed any more) */
+        if (!d->send || *to_send + d->size > limit) { ++*too_big; continue; }
+        *to_send += d->size;
+    }
+}
+
+static void rep_mb(WCHAR *out, int n, uint64_t bytes)
+{
+    swprintf_s(out, n, bytes >= (10ull << 20) ? L"%.0f MB" : L"%.1f MB", bytes / 1048576.0);
+}
+
+/* "Mods used in this match: N (X MB to send, Y MB already on the server)". */
+static void rep_match_mods_text(const RepMatch *m, WCHAR *out, int n)
+{
+    uint64_t to_send, have;
+    int too_big, gone = 0, i;
+    WCHAR a[32], b[32], extra[200] = L"";
+    if (!m->has_match) { wcscpy_s(out, n, L"No match picked: the report goes without one."); return; }
+    if (!m->n_mods) { wcscpy_s(out, n, L"Mods used in this match: none."); return; }
+    if (m->checked && m->check_why[0]) {   /* (the server's "no mods now": nothing about sizes) */
+        swprintf_s(out, n, L"Mods used in this match: %d. %s", m->n_mods, m->check_why);
+        return;
+    }
+    rep_match_sizes(m, &to_send, &have, &too_big);
+    for (i = 0; i < m->n_mods; i++) gone += !m->mods[i].hash[0];
+    rep_mb(a, 32, to_send);
+    rep_mb(b, 32, have);
+    if (too_big) swprintf_s(extra, 200, L"; %d too big to send", too_big);
+    if (gone) swprintf_s(extra + wcslen(extra), 200 - wcslen(extra), L"; %d not installed any more", gone);
+    if (m->checked)
+        swprintf_s(out, n, L"Mods used in this match: %d (%s to send, %s already on the server%s).%s%s", m->n_mods, a, b,
+                   extra, m->check_why[0] ? L" " : L"", m->check_why);
+    else
+        swprintf_s(out, n, L"Mods used in this match: %d (%s to send%s; the server couldn't be asked which it has%s%s).",
+                   m->n_mods, a, extra, m->check_why[0] ? L": " : L"", m->check_why);
+}
+
+/* The upload's match and mod parts into u: zips in <game>\Reports\.upload (rep_match_done deletes them). */
+static void rep_match_parts(RepMatch *m, int with_mods, ReportUpload *u, char *name_utf8, int name_n)
+{
+    WCHAR dir[MAX_PATH];
+    const uint64_t limit = m->max_upload ? m->max_upload : REP_MOD_MAX;
+    uint64_t total = 0;
+    int i;
+    if (!m->has_match) return;
+    swprintf_s(dir, MAX_PATH, L"%s\\Reports", s_game_dir);
+    CreateDirectoryW(dir, NULL);
+    wcscat_s(dir, MAX_PATH, L"\\.upload");
+    CreateDirectoryW(dir, NULL);
+    swprintf_s(m->match_zip, MAX_PATH, L"%s\\match.zip", dir);
+    if (report_zip_dir(m->match.dir, m->match_zip, "")) {
+        const WCHAR *name = wcsrchr(m->match.dir, L'\\');
+        WideCharToMultiByte(CP_UTF8, 0, name ? name + 1 : m->match.dir, -1, name_utf8, name_n, NULL, NULL);
+        u->match_zip = m->match_zip;
+        u->match_name = name_utf8;
+    }
+    u->mods = m->mods;
+    u->n_mods = m->n_mods;
+    for (i = 0; with_mods && i < m->n_mods; i++) {
+        ReportMod *d = &m->mods[i];
+        if (d->on_server || !d->hash[0] || !d->send || total + d->size > limit) continue;
+        swprintf_s(m->mod_zip[i], MAX_PATH, L"%s\\%S.zip", dir, d->hash);
+        if (report_zip_dir(d->folder, m->mod_zip[i], "")) {
+            u->mod_zips[i] = m->mod_zip[i];
+            total += d->size;
+        } else {
+            m->mod_zip[i][0] = 0;
+        }
+    }
+}
+
+static void rep_match_done(RepMatch *m)
+{
+    int i;
+    if (m->match_zip[0]) DeleteFileW(m->match_zip), m->match_zip[0] = 0;
+    for (i = 0; i < REPORT_MAX_MODS; i++)
+        if (m->mod_zip[i][0]) DeleteFileW(m->mod_zip[i]), m->mod_zip[i][0] = 0;
+}
+
+/* What the result page / the CLI says about the match and mods after a send. */
+static void rep_match_result_text(const RepMatch *m, const ReportResult *r, WCHAR *out, int n)
+{
+    out[0] = 0;
+    if (!m->has_match) return;
+    swprintf_s(out, n, L"Match: %s.", r->match_stored ? L"sent" : L"not kept by the server");
+    if (r->mods_sent || r->mods_dropped)
+        swprintf_s(out + wcslen(out), n - wcslen(out), L" Mods: %d sent, %d kept%s%s.", r->mods_sent, r->mods_stored,
+                   r->mods_why[0] ? L" - " : L"", r->mods_why);
+}
+
 #define X0 28
 /* Report a problem: a window asks what happened (kind, how often, what and
    what just before), then the zip (report.c) is made with that description in
@@ -3128,8 +3265,17 @@ static void up_setup(void);
 #define DISCORD_INVITE L"https://discord.com/invite/QhGSuDKHwk"
 #define DISCORD_FORUM L"bug-svr11"
 enum { REP_KIND = 300, REP_AGAIN, REP_WHAT, REP_BEFORE, REP_STATUS, REP_CREATE, REP_DISCORD, REP_SHOW, REP_COPY,
-       REP_CONTACT, REP_ADDPIC, REP_SUMMARY, REP_SEND, REP_COPYID, REP_PIC0 = 340, REP_DEL0 = 350 };
+       REP_CONTACT, REP_ADDPIC, REP_SUMMARY, REP_SEND, REP_COPYID, REP_MATCH, REP_MODS, REP_INCMODS, REP_PROGRESS,
+       REP_PIC0 = 340, REP_DEL0 = 350 };
 #define WM_APP_REP_SENT (WM_APP + 70)   /* the report window's own: the send finished (s_rep_result) */
+#define WM_APP_REP_MODS (WM_APP + 71)   /* ... the picked match's mods are hashed and checked (lParam: a RepMatch) */
+#define WM_APP_REP_PROGRESS (WM_APP + 72)   /* ... the upload: wParam percent, lParam MB sent x10 */
+#define REP_DY 96                       /* (page 1's rows below the match rows) */
+static ReportMatch s_rep_matches[REPORT_MAX_MATCHES];   /* the picker's matches, newest first */
+static int s_rep_nmatches;
+static RepMatch s_rep_rm;          /* the picked match and its mods (checked) */
+static int s_rep_mods_gen;         /* (a newer pick replaces an older check's result) */
+static volatile LONG s_rep_mods_busy;
 static WCHAR s_rep_pics[REPORT_MAX_IMAGES][MAX_PATH];  /* the pictures to send */
 static int s_rep_npics;
 static ReportResult s_rep_result;
@@ -3242,6 +3388,44 @@ static void rep_pics_pick(HWND w)
     rep_pics_show(w);
 }
 
+/* The match picked (REP_MATCH): its mods hashed and checked with the server on a worker (a few seconds for big
+   mods the first time - the hashes are kept in Reports\.modhash); Send waits for it. */
+typedef struct { HWND w; int gen; RepMatch m; } RepModsJob;
+static DWORD WINAPI rep_mods_thread(LPVOID p)
+{
+    RepModsJob *j = (RepModsJob *)p;
+    WCHAR server[260];
+    online_server_text(server, 260);
+    rep_match_load(&j->m, server);
+    if (!PostMessageW(j->w, WM_APP_REP_MODS, (WPARAM)j->gen, (LPARAM)j)) free(j);
+    return 0;
+}
+
+static void rep_match_pick(HWND w)
+{
+    const int sel = (int)SendDlgItemMessageW(w, REP_MATCH, CB_GETCURSEL, 0, 0);
+    RepModsJob *j;
+    HANDLE t;
+    ++s_rep_mods_gen;
+    ZeroMemory(&s_rep_rm, sizeof s_rep_rm);
+    if (sel < 0 || sel >= s_rep_nmatches) {
+        WCHAR line[600];
+        rep_match_mods_text(&s_rep_rm, line, 600);
+        SetDlgItemTextW(w, REP_MODS, line);
+        EnableWindow(GetDlgItem(w, REP_INCMODS), FALSE);
+        InterlockedExchange(&s_rep_mods_busy, 0);
+        return;
+    }
+    s_rep_rm.match = s_rep_matches[sel];
+    s_rep_rm.has_match = 1;
+    SetDlgItemTextW(w, REP_MODS, L"Mods used in this match: checking\x2026");
+    if (!(j = (RepModsJob *)calloc(1, sizeof *j))) return;
+    j->w = w, j->gen = s_rep_mods_gen, j->m = s_rep_rm;
+    InterlockedExchange(&s_rep_mods_busy, 1);
+    if ((t = CreateThread(NULL, 0, rep_mods_thread, j, 0, NULL)) != NULL) CloseHandle(t);
+    else { free(j); InterlockedExchange(&s_rep_mods_busy, 0); }
+}
+
 /* Page 1: the questions. */
 static void rep_page1(HWND w)
 {
@@ -3276,19 +3460,35 @@ static void rep_page1(HWND w)
     rep_add(w, L"Static", L"Your Discord name (optional - so we can ask you):", SS_NOPREFIX, 20, 398, 290, 20, 0, NULL);
     c = rep_add(w, L"Edit", L"", ES_AUTOHSCROLL | WS_TABSTOP, 310, 394, 190, 24, REP_CONTACT, NULL);
     SendMessageW(c, EM_LIMITTEXT, 60, 0);
-    rep_add(w, L"Static", L"Pictures (up to 5): screenshots of the problem help a lot.", SS_NOPREFIX, 20, 432, 360, 20, 0,
+    /* the match (the game's recordings, logs\matches: report_match.h) - the newest picked - and its mods */
+    rep_add(w, L"Static", L"Match:", 0, 20, 432, 60, 20, 0, NULL);
+    c = rep_add(w, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 84, 428, 416, 300, REP_MATCH, NULL);
+    s_rep_nmatches = report_match_list(s_game_dir, s_rep_matches, REPORT_MAX_MATCHES);
+    for (i = 0; i < s_rep_nmatches; i++) SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)s_rep_matches[i].label);
+    SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)(s_rep_nmatches ? L"None - send the report without a match"
+                                                              : L"None (no recorded matches)"));
+    SendMessageW(c, CB_SETCURSEL, 0, 0);
+    rep_add(w, L"Static", L"", SS_LEFT | SS_NOPREFIX, 20, 458, 480, 34, REP_MODS, NULL);
+    c = rep_add(w, L"Button", L"Include the mods used in this match (helps us reproduce it)",
+                BS_AUTOCHECKBOX | WS_TABSTOP, 20, 494, 480, 22, REP_INCMODS, NULL);
+    SendMessageW(c, BM_SETCHECK, BST_CHECKED, 0);   /* (on unless the player turns it off) */
+    rep_add(w, L"Static", L"Pictures (up to 5): screenshots of the problem help a lot.", SS_NOPREFIX, 20, 432 + REP_DY, 360, 20, 0,
             NULL);
-    rep_add(w, L"Button", L"Add pictures\x2026", WS_TABSTOP, 390, 428, 110, 26, REP_ADDPIC, NULL);
+    rep_add(w, L"Button", L"Add pictures\x2026", WS_TABSTOP, 390, 428 + REP_DY, 110, 26, REP_ADDPIC, NULL);
     for (i = 0; i < REPORT_MAX_IMAGES; i++) {
-        rep_add(w, L"Static", L"", SS_NOPREFIX | SS_PATHELLIPSIS, 20, 462 + i * 26, 380, 20, REP_PIC0 + i, NULL);
-        rep_add(w, L"Button", L"Remove", WS_TABSTOP, 410, 458 + i * 26, 90, 24, REP_DEL0 + i, NULL);
+        rep_add(w, L"Static", L"", SS_NOPREFIX | SS_PATHELLIPSIS, 20, 462 + REP_DY + i * 26, 380, 20, REP_PIC0 + i, NULL);
+        rep_add(w, L"Button", L"Remove", WS_TABSTOP, 410, 458 + REP_DY + i * 26, 90, 24, REP_DEL0 + i, NULL);
     }
-    rep_add(w, L"Static", L"", SS_LEFT | SS_NOPREFIX, 20, 594, 480, 34, REP_SUMMARY, NULL);
-    rep_add(w, L"Static", L"", SS_LEFT, 20, 640, 180, 36, REP_STATUS, NULL);
-    rep_add(w, L"Button", L"Send report", BS_DEFPUSHBUTTON | WS_TABSTOP, 200, 636, 110, 32, REP_SEND, NULL);
-    rep_add(w, L"Button", L"Save zip", WS_TABSTOP, 318, 636, 92, 32, REP_CREATE, NULL);
-    rep_add(w, L"Button", L"Cancel", WS_TABSTOP, 420, 636, 80, 32, IDCANCEL, NULL);
+    rep_add(w, L"Static", L"", SS_LEFT | SS_NOPREFIX, 20, 594 + REP_DY, 480, 22, REP_SUMMARY, NULL);
+    c = rep_add(w, PROGRESS_CLASSW, L"", 0, 20, 618 + REP_DY, 480, 12, REP_PROGRESS, NULL);
+    SendMessageW(c, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
+    ShowWindow(c, SW_HIDE);
+    rep_add(w, L"Static", L"", SS_LEFT, 20, 640 + REP_DY, 180, 36, REP_STATUS, NULL);
+    rep_add(w, L"Button", L"Send report", BS_DEFPUSHBUTTON | WS_TABSTOP, 200, 636 + REP_DY, 110, 32, REP_SEND, NULL);
+    rep_add(w, L"Button", L"Save zip", WS_TABSTOP, 318, 636 + REP_DY, 92, 32, REP_CREATE, NULL);
+    rep_add(w, L"Button", L"Cancel", WS_TABSTOP, 420, 636 + REP_DY, 80, 32, IDCANCEL, NULL);
     rep_pics_show(w);
+    rep_match_pick(w);
     SetFocus(GetDlgItem(w, REP_WHAT));
 }
 
@@ -3354,11 +3554,20 @@ static int rep_describe(HWND w, char *utf8, int n)
 /* The send (a worker: it can take a while on a slow line): report.json from the answers, the zip, the pictures,
    to the configured online server. The window gets WM_APP_REP_SENT. */
 static WCHAR s_rep_server[260];
+static int s_rep_with_mods;
+static void rep_win_progress(void *ctx, uint64_t sent, uint64_t total)
+{
+    static DWORD last;
+    const DWORD now = GetTickCount();
+    if (now - last < 200 && sent < total) return;   /* (5 a second is plenty) */
+    last = now;
+    PostMessageW((HWND)ctx, WM_APP_REP_PROGRESS, (WPARAM)(total ? sent * 100 / total : 0), (LPARAM)(total / 104858));
+}
 static DWORD WINAPI rep_send_thread(LPVOID p)
 {
     HWND w = (HWND)p;
     ReportUpload u;
-    char sig[400], ver[40];
+    char sig[400], ver[40], match_name[300] = "";
     char *json;
     int i;
     WideCharToMultiByte(CP_UTF8, 0, PORT_VERSION, -1, ver, sizeof ver, NULL, NULL);
@@ -3370,7 +3579,11 @@ static DWORD WINAPI rep_send_thread(LPVOID p)
     u.zip = s_rep_zip;
     for (i = 0; i < s_rep_npics; i++) u.images[i] = s_rep_pics[i];
     u.n_images = s_rep_npics;
+    rep_match_parts(&s_rep_rm, s_rep_with_mods, &u, match_name, sizeof match_name);
+    u.progress = rep_win_progress;
+    u.ctx = w;
     report_send(s_rep_server, &u, &s_rep_result);
+    rep_match_done(&s_rep_rm);
     free(json);
     PostMessageW(w, WM_APP_REP_SENT, 0, 0);
     return 0;
@@ -3385,10 +3598,15 @@ static void rep_page3(HWND w)
     rep_clear(w);
     MultiByteToWideChar(CP_UTF8, 0, s_rep_result.id, -1, id, 64);
     if (ok) {
-        WCHAR seen[160] = L"";
+        WCHAR seen[600] = L"";
         if (s_rep_result.seen_before > 0)
-            swprintf_s(seen, 160, L"\n\nThis problem was already reported %d time%s - yours adds to it, thank you.",
+            swprintf_s(seen, 600, L"\n\nThis problem was already reported %d time%s - yours adds to it, thank you.",
                        s_rep_result.seen_before, s_rep_result.seen_before == 1 ? L"" : L"s");
+        {
+            WCHAR mm[400];
+            rep_match_result_text(&s_rep_rm, &s_rep_result, mm, 400);
+            if (mm[0]) swprintf_s(seen + wcslen(seen), 600 - wcslen(seen), L"\n\n%.150s", mm);
+        }
         swprintf_s(t, MAX_PATH + 1200,
                    L"Your report reached us.\n\nReport id:  %s%s\n\nIf you post about it on our Discord (" DISCORD_FORUM
                    L" forum), give this id. A copy of the report is also kept here:\n%s",
@@ -3419,7 +3637,8 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 SetFocus(GetDlgItem(w, REP_WHAT));
                 return 0;
             }
-            if (!report_make_ex(s_game_dir, PORT_VERSION, utf8, s_rep_zip, MAX_PATH, &logs, &crashes)) {
+            if (!report_make_match(s_game_dir, PORT_VERSION, utf8, s_rep_rm.has_match ? s_rep_rm.match.dir : NULL,
+                                   s_rep_zip, MAX_PATH, &logs, &crashes)) {
                 SetDlgItemTextW(w, REP_STATUS, L"The report could not be written (is the game folder read-only?).");
                 return 0;
             }
@@ -3430,6 +3649,11 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case REP_SEND: {
             static char utf8[8192];
             int logs = 0, crashes = 0;
+            if (s_rep_mods_busy) {
+                SetDlgItemTextW(w, REP_STATUS, L"One moment - the match's mods are still being checked.");
+                return 0;
+            }
+            s_rep_with_mods = IsDlgButtonChecked(w, REP_INCMODS) == BST_CHECKED;
             if (!rep_describe(w, utf8, sizeof utf8)) {
                 SetDlgItemTextW(w, REP_STATUS, L"Please say what happened first.");
                 SetFocus(GetDlgItem(w, REP_WHAT));
@@ -3444,6 +3668,9 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             SetDlgItemTextW(w, REP_STATUS, L"Sending\x2026");
             EnableWindow(GetDlgItem(w, REP_SEND), FALSE);
             EnableWindow(GetDlgItem(w, REP_CREATE), FALSE);
+            EnableWindow(GetDlgItem(w, REP_MATCH), FALSE);
+            EnableWindow(GetDlgItem(w, REP_INCMODS), FALSE);
+            ShowWindow(GetDlgItem(w, REP_PROGRESS), SW_SHOW);
             {
                 HANDLE t = CreateThread(NULL, 0, rep_send_thread, w, 0, NULL);
                 if (t) CloseHandle(t);
@@ -3453,6 +3680,9 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         }
         case REP_ADDPIC:
             rep_pics_pick(w);
+            return 0;
+        case REP_MATCH:
+            if (HIWORD(wp) == CBN_SELCHANGE) rep_match_pick(w);
             return 0;
         case REP_COPYID: {
             WCHAR id[64];
@@ -3494,6 +3724,27 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         rep_page3(w);
         return 0;
     }
+    if (m == WM_APP_REP_MODS) {   /* (a picked match's mods checked: shown, unless a newer pick is on its way) */
+        RepModsJob *j = (RepModsJob *)lp;
+        if ((int)wp == s_rep_mods_gen && s_rep_page == 1) {
+            WCHAR line[600];
+            s_rep_rm = j->m;
+            rep_match_mods_text(&s_rep_rm, line, 600);
+            SetDlgItemTextW(w, REP_MODS, line);
+            EnableWindow(GetDlgItem(w, REP_INCMODS), s_rep_rm.n_mods > 0);
+            InterlockedExchange(&s_rep_mods_busy, 0);
+        }
+        free(j);
+        return 0;
+    }
+    if (m == WM_APP_REP_PROGRESS) {
+        WCHAR t[120];
+        const double mb = (double)lp / 10.0;
+        SendDlgItemMessageW(w, REP_PROGRESS, PBM_SETPOS, wp, 0);
+        swprintf_s(t, 120, L"Sending\x2026 %d%% of %.1f MB", (int)wp, mb);
+        SetDlgItemTextW(w, REP_STATUS, t);
+        return 0;
+    }
     if (m == WM_CTLCOLORSTATIC && GetDlgCtrlID((HWND)lp) == REP_STATUS) {
         SetTextColor((HDC)wp, s_rep_page == 1 || (s_rep_page == 2 && s_rep_result.why[0]) ? RGB(190, 30, 45)
                                                                                  : RGB(30, 120, 60));
@@ -3531,7 +3782,7 @@ static void report_window(int page, const WCHAR *capture_file)
         registered = 1;
     }
     r.right = S(520);
-    r.bottom = S(684);
+    r.bottom = S(684 + REP_DY);
     AdjustWindowRectEx(&r, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
     GetWindowRect(s_wnd, &pr);
     w = CreateWindowExW(WS_EX_DLGMODALFRAME, L"SvR2011Report", L"Report a problem", WS_POPUP | WS_CAPTION | WS_SYSMENU,
@@ -9014,8 +9265,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return ok ? 0 : 1;
     }
     /* --report-send <game folder> <answers file>: Report a problem's Send, no window (tests). The file: UTF-8 lines
-       server= problem= happens= what= before= contact= image=<path> (up to 5). Prints "sent <id> seen_before <n>"
-       or "not sent: <why>", and the zip. */
+       server= problem= happens= what= before= contact= image=<path> (up to 5), match=<folder | latest | none>
+       (default latest: as the window preselects), mods=1|0 (the tick, default 1). Prints the match, the mods line,
+       progress, "sent <id> seen_before <n>" or "not sent: <why>", what happened to the match and mods, and the zip. */
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--report-send")) {
         static char what[4096], line[4096], problem[120] = "Something else", happens[40] = "Every time", before[4096],
                     contact[200], server[300], sig[400], ver[40], desc[16384];
@@ -9023,13 +9275,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         ReportUpload u;
         ReportResult r;
         FILE *f = NULL;
-        int logs = 0, crashes = 0, npics = 0, i;
-        char *json;
+        int logs = 0, crashes = 0, npics = 0, i, with_mods = 1;
+        char *json, match_name[300] = "";
+        static WCHAR wmatch[MAX_PATH] = L"latest", line16[600];
+        static RepMatch rm;
         console_setup();
         if (_wfopen_s(&f, argv[3], L"rb") || !f) { wprintf(L"not sent: can't read %s\n", argv[3]); return 1; }
         while (fgets(line, sizeof line, f)) {
-            char *v = strchr(line, '=');
-            size_t n = strlen(line);
+            char *v;
+            size_t n;
+            if (!memcmp(line, "\xEF\xBB\xBF", 3)) memmove(line, line + 3, strlen(line + 3) + 1);   /* (a BOM) */
+            v = strchr(line, '=');
+            n = strlen(line);
             while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
             if (!v) continue;
             *v++ = 0;
@@ -9041,8 +9298,38 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             else if (!strcmp(line, "contact")) strcpy_s(contact, sizeof contact, v);
             else if (!strcmp(line, "image") && npics < REPORT_MAX_IMAGES)
                 MultiByteToWideChar(CP_UTF8, 0, v, -1, pics[npics++], MAX_PATH);
+            else if (!strcmp(line, "match")) MultiByteToWideChar(CP_UTF8, 0, v, -1, wmatch, MAX_PATH);
+            else if (!strcmp(line, "mods")) with_mods = atoi(v) != 0;
         }
         fclose(f);
+        /* (a test aid: never the live server by default - server= must be given; 26 Oct a BOM hid it and a test
+           report went live) */
+        if (!server[0]) { wprintf(L"not sent: no server= line in %s (give the test server)\n", argv[3]); return 1; }
+        wcscpy_s(s_game_dir, MAX_PATH, argv[2]);
+        MultiByteToWideChar(CP_UTF8, 0, server, -1, wserver, 300);
+        ZeroMemory(&rm, sizeof rm);
+        if (!_wcsicmp(wmatch, L"latest")) {
+            static ReportMatch list[REPORT_MAX_MATCHES];
+            if (report_match_list(argv[2], list, REPORT_MAX_MATCHES) > 0) rm.match = list[0], rm.has_match = 1;
+        } else if (wmatch[0] && _wcsicmp(wmatch, L"none")) {
+            const WCHAR *nm = wcsrchr(wmatch, L'\\');
+            ReportMatch list[1];
+            wcscpy_s(rm.match.dir, MAX_PATH, wmatch);
+            wcscpy_s(rm.match.label, 200, nm ? nm + 1 : wmatch);
+            (void)list;
+            rm.has_match = GetFileAttributesW(wmatch) != INVALID_FILE_ATTRIBUTES;
+        }
+        if (rm.has_match) {
+            rep_match_load(&rm, wserver);
+            rep_match_mods_text(&rm, line16, 600);
+            wprintf(L"match: %s\n%s\n", rm.match.label, line16);
+            for (i = 0; i < rm.n_mods; i++)
+                wprintf(L"  mod %s\\%s %S %.1f MB %S%s\n", rm.mods[i].type, rm.mods[i].id, rm.mods[i].version,
+                        rm.mods[i].size / 1048576.0, rm.mods[i].hash[0] ? rm.mods[i].hash : "(not installed)",
+                        rm.mods[i].on_server ? L" (on the server)" : L"");
+        } else {
+            wprintf(L"match: none\n");
+        }
         snprintf(desc, sizeof desc, "Problem: %s\r\nHappens: %s\r\n\r\nWhat happened:\r\n%s\r\n\r\nJust before:\r\n%s\r\n",
                  problem, happens, what, before[0] ? before : "(not said)");
         if (!report_make_ex(argv[2], PORT_VERSION, desc, zip, MAX_PATH, &logs, &crashes)) {
@@ -9057,13 +9344,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         u.zip = zip;
         for (i = 0; i < npics; i++) u.images[i] = pics[i];
         u.n_images = npics;
-        MultiByteToWideChar(CP_UTF8, 0, server[0] ? server : "https://sho-ti.me/svr", -1, wserver, 300);
+        rep_match_parts(&rm, with_mods, &u, match_name, sizeof match_name);
+        u.progress = rep_cli_progress;
         report_send_summary(&u, summary, 300);
         wprintf(L"%s\n", summary);
         i = report_send(wserver, &u, &r);
+        rep_match_done(&rm);
         free(json);
         if (i) wprintf(L"sent %S seen_before %d (zip %s)\n", r.id, r.seen_before, zip);
         else wprintf(L"not sent: %s (HTTP %d; the zip is kept: %s)\n", r.why, r.status, zip);
+        rep_match_result_text(&rm, &r, line16, 600);
+        if (line16[0]) wprintf(L"%s\n", line16);
         return i ? 0 : 1;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--import-360")) {   /* <360 save folder> <saves folder> */
