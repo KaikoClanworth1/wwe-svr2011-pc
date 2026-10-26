@@ -100,6 +100,10 @@ h2 .note, h2 .filter, h2 .btn { text-transform: none; letter-spacing: 0; font-we
 .btn:disabled { opacity: .5; cursor: default; }
 #reports h3 { font-size: 14px; margin: 20px 0 6px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 #reports code { white-space: pre-wrap; word-break: break-all; }
+tr.match td { border-top: 0; padding-top: 0; font-size: 13px; color: var(--dim); }
+tr.match b { color: var(--text); font-weight: 600; }
+tr.match .modl { display: inline-block; margin: 2px 10px 2px 0; white-space: nowrap; }
+#modstore.warn { color: var(--bad); }
 #fixed { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 4px 16px 10px; margin: 0 0 22px; }
 #fixed h3 { font-size: 15px; margin: 12px 0 4px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .fx { border-top: 1px solid var(--line); padding: 12px 0; display: grid; grid-template-columns: 1fr auto; gap: 6px 14px; }
@@ -320,6 +324,7 @@ td.acts { text-align: right; white-space: nowrap; }
       <input class="filter" id="f-rp" placeholder="Filter" aria-label="Filter reports"></h2>
     <div id="fixed" hidden></div>
     <p class="intro">Sent from Report a problem (launcher, Mod Maker, game, Android). Grouped by signature: the app, version, problem and the first crash / error line in the logs. The files are in the storage node's reports folder.</p>
+    <p class="note" id="modstore"></p>
     <div id="reports"><span class="empty">Loading&hellip;</span></div>
   </section>
 
@@ -744,7 +749,45 @@ td.acts { text-align: right; white-space: nowrap; }
   }
 
   // ---- problem reports, grouped by signature (newest group first)
-  var reportRows = [], reportError = '';
+  var reportRows = [], reportError = '', modStore = null;
+  // (a report's match: the match folder's summary, its zip, the mods with it, and the replay pack of both)
+  function matchRow(r) {
+    var m = r.match, mods = r.mods || [];
+    if (!m && !r.match_size && !mods.length) return '';
+    var line = [];
+    if (m) {
+      var people = (m.people || []).map(function (p) {
+        return esc(p.name) + (p.mod ? ' <span class="tag">mod</span>' : '') + (p.caw ? ' <span class="tag">CAW</span>' : '') +
+          (p.cpu ? ' <span class="note">(CPU)</span>' : '');
+      }).join(' vs ');
+      line.push('<b>Match:</b> ' + (people || '?') + ' &middot; ' + esc(m.rule_name || (m.rule ? 'rule ' + m.rule : '')) +
+        (m.rule ? '<span class="id">' + esc(m.rule) + '</span>' : '') + ' &middot; ' +
+        esc(m.arena_mod ? m.arena_mod + ' (custom)' : m.arena_name || (m.arena ? 'arena ' + m.arena : '')) +
+        (m.version ? ' &middot; ' + esc(m.version) : '') + (m.fps ? ' &middot; ' + esc(m.fps) + ' fps' : '') +
+        (m.online ? ' &middot; online' : '') + (m.result ? ' &middot; ' + esc(m.result) : '') +
+        (m.complete === false ? ' <span class="tag bad">unfinished</span>' : ''));
+    } else if (r.match_size) line.push('<b>Match:</b> <span class="note">no match.json in it</span>');
+    var acts = (r.match_size ? '<a class="btn" href="' + reportFile(r, 'match.zip') + '">Match zip ' + bytes(r.match_size) + '</a>' : '') +
+      ((r.match_size || mods.length) ? '<a class="btn primary" href="api/admin/report/' + encodeURIComponent(r.id) + '/replay.zip">Get replay pack</a>' : '');
+    var modList = mods.map(function (x) {
+      var label = esc(x.name || x.id || x.hash.slice(0, 12)) + (x.type ? ' <span class="note">' + esc(x.type) + '</span>' : '') +
+        ' <span class="note">' + bytes(x.size) + '</span>';
+      return '<span class="modl">' + (x.stored ? '<a href="api/admin/report-mod/' + x.hash + '?name=' + encodeURIComponent(x.id || x.name || 'mod') +
+        '" title="' + esc(x.hash) + '">' + label + '</a>' : '<span title="not sent: ' + esc(x.hash) + '">' + label + ' <span class="tag">not sent</span></span>') + '</span>';
+    }).join('');
+    return '<tr class="match"><td colspan="6">' + line.join('') +
+      (mods.length ? '<div><b>Mods (' + mods.length + '):</b> ' + modList + '</div>' : '') +
+      (acts ? '<div style="margin-top:6px">' + acts + '</div>' : '') + '</td></tr>';
+  }
+  function renderModStore() {
+    var u = modStore, box = el('modstore');
+    if (!u) { box.textContent = ''; return; }
+    var share = u.quota ? u.bytes / u.quota : 0;
+    box.className = 'note' + (share >= 0.8 ? ' warn' : '');
+    box.textContent = 'Report mods: ' + u.count + ' file' + (u.count === 1 ? '' : 's') + ', ' + bytes(u.bytes) + ' of ' +
+      bytes(u.quota) + ' (' + Math.round(share * 100) + '%)' + (share >= 0.8 ? ' - nearly full: delete fixed reports to free space' +
+      (share >= 1 ? '; new reports come without their mods' : '') : '');
+  }
   function reportFile(r, name) { return 'api/admin/report/' + encodeURIComponent(r.id) + '/' + encodeURIComponent(name); }
   function renderReports() {
     var f = el('f-rp').value.toLowerCase(), open = el('rp-open').checked;
@@ -777,7 +820,7 @@ td.acts { text-align: right; white-space: nowrap; }
             (r.zip_size ? '<a class="btn" href="' + reportFile(r, 'report.zip') + '">Zip ' + bytes(r.zip_size) + '</a>' : '') +
             (r.status ? '<button class="btn" data-rp="' + esc(r.id) + '" data-s="">Reopen</button>' :
               '<button class="btn" data-rp="' + esc(r.id) + '" data-s="done">Done</button>' +
-              '<button class="btn" data-rp="' + esc(r.id) + '" data-s="duplicate">Duplicate</button>') + '</td></tr>';
+              '<button class="btn" data-rp="' + esc(r.id) + '" data-s="duplicate">Duplicate</button>') + '</td></tr>' + matchRow(r);
         }).join('') + '</tbody></table></div>';
     }).join('') : '<p class="empty">No reports' + (open && reportRows.length ? ' left open' : '') + '.</p>';
   }
@@ -835,7 +878,7 @@ td.acts { text-align: right; white-space: nowrap; }
   });
   function loadReports() {
     return api('api/admin/reports').then(function (d) {
-      reportRows = d.reports || []; reportError = '';
+      reportRows = d.reports || []; reportError = ''; modStore = d.mod_store || null; renderModStore();
       el('n-reports').textContent = reportRows.filter(function (r) { return !r.status; }).length || '';
       if (current === 'reports') { renderFixed(); renderReports(); }
     }).catch(function (e) { reportError = 'The reports could not be loaded (' + e.message + ').'; if (current === 'reports') renderReports(); });
