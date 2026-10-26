@@ -24,6 +24,7 @@ Code: `port/src/match_record.cpp` (`match_record.h`).
 |---|---|
 | `match.json` | What the match was: enough to set it up again (below). `complete:false` until the end. |
 | `inputs.bin` | Every pad's state as the game read it, one record each time a pad changes. |
+| `bell.bin` | The state at the bell for exact replays: each character's first 8 KB, the random table and its indexes (about 40-80 KB). |
 | `box.txt` | The black box (`docs/LOG_DIAGNOSTICS.md`): each case as it is logged, then the full box at the end. |
 | `trail.txt` | Once a second of the match clock (60 world updates) from the bell: each person's position and motion. |
 | `loaded.txt` | At the bell: fallback memory, weapon slots (slot:model), the random table counters. At the end: fallback memory and its peak. |
@@ -122,6 +123,34 @@ All values are little-endian.
 A record is written only when a pad's state changes. Every user gets one record at the bell. Extra world updates
 at 30 fps or on slow frames reuse the cached state, so they add nothing.
 
+## bell.bin
+
+All values are little-endian.
+
+- Head: `"SVRB"`, u32 version (1), u32 block count.
+- Each block: u32 kind, u32 index, u32 person, u32 size, then the bytes, which are guest memory as it was (big-endian
+  inside).
+  - Kind 1: a character. The index is its slot in the character table (0x82E3CC50), the person is +1156, and the
+    bytes are its first 8 KB.
+  - Kind 2: the random table (0x82D9DB10, 256 bytes).
+  - Kind 3: its four draw indexes (0x82E3689C).
+  - Kind 4: the seed table's two counters (0x82EC6A2C).
+
+It is written only for real matches, at the same bell the recording starts at. Only a replay reads it.
+
+When a replay's bell finds every wrestler and the referee in the recorded motions, it writes bell.bin back. If they
+are in other motions, the bell came from another pre-bell intro, so nothing is written and the tool tries again.
+
+- The data blocks are written back as they are.
+- A character is written back only where its slot holds the same person. Only the words that differ are written,
+  and only if one of these holds:
+  - the word is a float on both sides (0, or 1e-9 to 1e7, either sign);
+  - it is one of the frame counters in `kBellCounters`.
+- A word that is or was a guest pointer (4-aligned and pointing into readable guest memory) is never written.
+- Handles and indexes stay as this run has them. Writing every differing word crashed a replay.
+- The log line `replay: bell.bin written back` says how many words were written and how many were left, per
+  person.
+
 ## seeds
 
 What an exact replay will need later (see Replay below). The replay tool uses `rand` only.
@@ -171,7 +200,11 @@ The replay records itself like any match. Its folder gets `replay.txt`, and the 
   differs).
 - The frame shots are `shot_NN.png` (`-Shots`, one every `-ShotEvery` seconds of the match).
 
-**Approximate.** Only the player's side is replayed: the pads, the setup and the rand() seed.
+**Approximate.** The player's side is replayed: the pads, the setup and the rand() seed. From format 1 with
+bell.bin, the people's state at the bell is replayed too. Measured on 26 Oct: exact for the first 27 world updates,
+then 0.003 apart at update 28. The next differences are values that are the same in every character: +3040 at
+clock 3 (one float step) and the block +2800-2952 at clock 5. They come from global state outside the characters,
+which still has to be found.
 
 - **The pre-bell intro:** in an entrances-off match it is a sneak attack or a standing start. It comes out either
   way, run to run, because the people load at disk pace. When the bell finds other motions than the recording's,
@@ -191,6 +224,8 @@ Test aids for replays and replay research:
 | `SVR2011_TEST_ENTRANCES=0\|1` | Turns the match's entrances off or on (live rules +38). |
 | `SVR2011_TEST_MATCH=... ports=0,-1` | Each person's controller: a player's 0-3, or -1 for the CPU. |
 | `SVR2011_TEST_MATCH=... exact=1` | Only the listed people: empties a later slot that the route's presses picked. |
+| `SVR2011_TEST_PRE_BELL_SLOW_MS=<ms>` | Makes each frame from a match's load to its bell this much longer. |
+| `SVR2011_TEST_REPLAY_DUMP=<file>` | For the first 40 clock values of a recorded match, writes persons 0, 1 and the referee's first 8 KB in hex, one line each (diff two runs). |
 | `SVR2011_TEST_TRAIL=<file>` | Writes a line per frame: the clock (`pre N` before the bell), the random table's indexes, then each person's position, motion and motion frame. |
 
 ## Testing
