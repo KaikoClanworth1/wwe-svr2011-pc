@@ -273,8 +273,14 @@ def match_summary(match_bytes):
                        "mod": str(mod.get("id") or "")[:80] if p.get("mod") else "", "caw": p.get("caw") is not None})
     amod = d(arena.get("mod"))
     t = lambda v, n=60: str(v if v is not None else "")[:n]
-    return {"version": t(d(m.get("game")).get("version"), 20), "rule": rule_hex, "rule_name": t(rule.get("name")),
-            "arena": t(arena.get("id"), 10), "arena_name": t(arena.get("name")),
+    # (names: the dashboard's English ones by id - match_names.py, as on the other tabs - else the game's own, which
+    # come in the player's language; a custom arena keeps its manifest name)
+    import match_names
+    stock_arena = match_names.ARENAS.get(arena.get("id")) if isinstance(arena.get("id"), int) else None
+    return {"version": t(d(m.get("game")).get("version"), 20), "rule": rule_hex,
+            "rule_name": t((match_names.rule_name(rule_hex) if rule_hex else None) or rule.get("name")),
+            "arena": t(arena.get("id"), 10),
+            "arena_name": t(arena.get("name") if arena.get("mod") else stock_arena or arena.get("name")),
             "arena_mod": t(amod.get("id"), 80) if arena.get("mod") else "", "people": people[:16],
             "fps": t(m.get("frame_rate"), 4), "online": bool(m.get("online")), "started": t(m.get("start"), 30),
             "length_s": t(m.get("length_s"), 10), "result": t(m.get("result"), 120), "complete": bool(m.get("complete"))}
