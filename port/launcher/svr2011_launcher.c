@@ -3265,12 +3265,12 @@ static void rep_match_result_text(const RepMatch *m, const ReportResult *r, WCHA
 #define DISCORD_INVITE L"https://discord.com/invite/QhGSuDKHwk"
 #define DISCORD_FORUM L"bug-svr11"
 enum { REP_KIND = 300, REP_AGAIN, REP_WHAT, REP_BEFORE, REP_STATUS, REP_CREATE, REP_DISCORD, REP_SHOW, REP_COPY,
-       REP_CONTACT, REP_ADDPIC, REP_SUMMARY, REP_SEND, REP_COPYID, REP_MATCH, REP_MODS, REP_INCMODS, REP_PROGRESS,
+       REP_CONTACT, REP_ADDPIC, REP_SUMMARY, REP_SEND, REP_COPYID, REP_MATCH, REP_MODS, REP_INCMODS, REP_PROGRESS, REP_INCSAVE,
        REP_PIC0 = 340, REP_DEL0 = 350 };
 #define WM_APP_REP_SENT (WM_APP + 70)   /* the report window's own: the send finished (s_rep_result) */
 #define WM_APP_REP_MODS (WM_APP + 71)   /* ... the picked match's mods are hashed and checked (lParam: a RepMatch) */
 #define WM_APP_REP_PROGRESS (WM_APP + 72)   /* ... the upload: wParam percent, lParam MB sent x10 */
-#define REP_DY 96                       /* (page 1's rows below the match rows) */
+#define REP_DY 122                      /* (page 1's rows below the match and save rows) */
 static ReportMatch s_rep_matches[REPORT_MAX_MATCHES];   /* the picker's matches, newest first */
 static int s_rep_nmatches;
 static RepMatch s_rep_rm;          /* the picked match and its mods (checked) */
@@ -3339,6 +3339,7 @@ static void rep_pics_show(HWND w)
     ZeroMemory(&u, sizeof u);
     u.zip = L"report.zip";
     u.n_images = s_rep_npics;
+    if (IsDlgButtonChecked(w, REP_INCSAVE) == BST_CHECKED) u.save_bytes = report_main_save_size(s_game_dir);
     if (s_rep_rm.has_match && !s_rep_mods_busy) {   /* (the match and the mods Send would take, as rep_match_parts) */
         const uint64_t limit = s_rep_rm.max_upload ? s_rep_rm.max_upload : REP_MOD_MAX;
         uint64_t total = 0;
@@ -3485,6 +3486,9 @@ static void rep_page1(HWND w)
     rep_add(w, L"Static", L"", SS_LEFT | SS_NOPREFIX, 20, 458, 480, 34, REP_MODS, NULL);
     c = rep_add(w, L"Button", L"Include the mods used in this match (helps us reproduce it)",
                 BS_AUTOCHECKBOX | WS_TABSTOP, 20, 494, 480, 22, REP_INCMODS, NULL);
+    SendMessageW(c, BM_SETCHECK, BST_CHECKED, 0);   /* (on unless the player turns it off) */
+    c = rep_add(w, L"Button", L"Include my main save (story / Universe progress and options - not my created superstars "
+                              L"or Paint Tool)", BS_AUTOCHECKBOX | BS_MULTILINE | WS_TABSTOP, 20, 516, 480, 36, REP_INCSAVE, NULL);
     SendMessageW(c, BM_SETCHECK, BST_CHECKED, 0);   /* (on unless the player turns it off) */
     rep_add(w, L"Static", L"Pictures (up to 5): screenshots of the problem help a lot.", SS_NOPREFIX, 20, 432 + REP_DY, 360, 20, 0,
             NULL);
@@ -3652,7 +3656,8 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 return 0;
             }
             if (!report_make_match(s_game_dir, PORT_VERSION, utf8, s_rep_rm.has_match ? s_rep_rm.match.dir : NULL,
-                                   s_rep_zip, MAX_PATH, &logs, &crashes)) {
+                                   IsDlgButtonChecked(w, REP_INCSAVE) == BST_CHECKED, s_rep_zip, MAX_PATH, &logs,
+                                   &crashes)) {
                 SetDlgItemTextW(w, REP_STATUS, L"The report could not be written (is the game folder read-only?).");
                 return 0;
             }
@@ -3673,7 +3678,9 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 SetFocus(GetDlgItem(w, REP_WHAT));
                 return 0;
             }
-            if (!report_make_ex(s_game_dir, PORT_VERSION, utf8, s_rep_zip, MAX_PATH, &logs, &crashes)) {
+            /* (the match goes as its own part: not in the zip) */
+            if (!report_make_match(s_game_dir, PORT_VERSION, utf8, NULL, IsDlgButtonChecked(w, REP_INCSAVE) == BST_CHECKED,
+                                   s_rep_zip, MAX_PATH, &logs, &crashes)) {
                 SetDlgItemTextW(w, REP_STATUS, L"The report could not be written (is the game folder read-only?).");
                 return 0;
             }
@@ -3700,7 +3707,8 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             if (HIWORD(wp) == CBN_SELCHANGE) rep_match_pick(w);
             return 0;
         case REP_INCMODS:
-            rep_pics_show(w);   /* (the summary: with or without the mods) */
+        case REP_INCSAVE:
+            rep_pics_show(w);   /* (the summary: with or without the mods / the save) */
             return 0;
         case REP_COPYID: {
             WCHAR id[64];
@@ -9285,7 +9293,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     }
     /* --report-send <game folder> <answers file>: Report a problem's Send, no window (tests). The file: UTF-8 lines
        server= problem= happens= what= before= contact= image=<path> (up to 5), match=<folder | latest | none>
-       (default latest: as the window preselects), mods=1|0 (the tick, default 1). Prints the match, the mods line,
+       (default latest: as the window preselects), mods=1|0 (the tick, default 1), save=1|0 (the main save tick, default 1). Prints the match, the mods line,
        progress, "sent <id> seen_before <n>" or "not sent: <why>", what happened to the match and mods, and the zip. */
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--report-send")) {
         static char what[4096], line[4096], problem[120] = "Something else", happens[40] = "Every time", before[4096],
@@ -9294,7 +9302,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         ReportUpload u;
         ReportResult r;
         FILE *f = NULL;
-        int logs = 0, crashes = 0, npics = 0, i, with_mods = 1;
+        int logs = 0, crashes = 0, npics = 0, i, with_mods = 1, with_save = 1;
         char *json, match_name[300] = "";
         static WCHAR wmatch[MAX_PATH] = L"latest", line16[600];
         static RepMatch rm;
@@ -9319,6 +9327,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                 MultiByteToWideChar(CP_UTF8, 0, v, -1, pics[npics++], MAX_PATH);
             else if (!strcmp(line, "match")) MultiByteToWideChar(CP_UTF8, 0, v, -1, wmatch, MAX_PATH);
             else if (!strcmp(line, "mods")) with_mods = atoi(v) != 0;
+            else if (!strcmp(line, "save")) with_save = atoi(v) != 0;
         }
         fclose(f);
         /* (a test aid: never the live server by default - server= must be given; 26 Oct a BOM hid it and a test
@@ -9348,7 +9357,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         }
         snprintf(desc, sizeof desc, "Problem: %s\r\nHappens: %s\r\n\r\nWhat happened:\r\n%s\r\n\r\nJust before:\r\n%s\r\n",
                  problem, happens, what, before[0] ? before : "(not said)");
-        if (!report_make_ex(argv[2], PORT_VERSION, desc, zip, MAX_PATH, &logs, &crashes)) {
+        if (!report_make_match(argv[2], PORT_VERSION, desc, NULL, with_save, zip, MAX_PATH, &logs, &crashes)) {
             wprintf(L"not sent: the zip could not be written\n");
             return 1;
         }
@@ -9362,6 +9371,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         u.n_images = npics;
         rep_match_parts(&rm, with_mods, &u, match_name, sizeof match_name);
         u.progress = rep_cli_progress;
+        if (with_save) u.save_bytes = report_main_save_size(argv[2]);
         report_send_summary(&u, summary, 300);
         wprintf(L"%s\n", summary);
         i = report_send(wserver, &u, &r);
