@@ -9674,6 +9674,25 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         }
         for (k = 0; k < (capture_seq_n ? capture_seq_n : 1); k++) {
             ULONGLONG t0 = GetTickCount64();
+            {   /* SVR2011_CAPTURE_SIGNIN_AT=<k>|<name>|<password>: signed in as that account (name "-": signed out)
+                   before the sequence's k-th tab (Discovery's owner buttons after an account change) */
+                const char *v = getenv("SVR2011_CAPTURE_SIGNIN_AT");
+                WCHAR w[300], *name, *pw;
+                if (v && *v && atoi(v) == k && k) {
+                    MultiByteToWideChar(CP_UTF8, 0, v, -1, w, 300);
+                    if ((name = wcschr(w, L'|')) != NULL) {
+                        *name++ = 0;
+                        if ((pw = wcschr(name, L'|')) != NULL) *pw++ = 0;
+                        if (!wcscmp(name, L"-")) {
+                            online_sign_out();
+                        } else if (pw) {
+                            set_text(ID_ON_NAME, name);
+                            set_text(ID_ON_PASSWORD, pw);
+                            online_sign_in(0);
+                        }
+                    }
+                }
+            }
             if (k) {
                 /* as a click on the tab does */
                 NMHDR n = { s_tab, ID_TAB, TCN_SELCHANGE };
@@ -9687,6 +9706,59 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                     TranslateMessage(&pm);
                     DispatchMessageW(&pm);
                 }
+        }
+        if (s_cur_tab == TAB_DISCOVER) {
+            /* Discovery: a download running (SVR2011_DISCOVER_DOWNLOAD) is waited for (15 minutes at most), its
+               status lines logged with times to <file>.discover.txt, shots <file>.during.bmp (past 30 %) and
+               <file>.reconnect.bmp (the first "connection lost"); then whether Delete shows */
+            WCHAR log[MAX_PATH], line[400], last[400] = L"", shot[MAX_PATH];
+            ULONGLONG t0 = GetTickCount64();
+            int permille = -1, owner = 0, during = 0, lost = 0;
+            FILE *f = NULL;
+            swprintf_s(log, MAX_PATH, L"%s.discover.txt", capture_file);
+            _wfopen_s(&f, log, L"w, ccs=UTF-8");
+            while (getenv("SVR2011_DISCOVER_DOWNLOAD") && !discover_test_state(NULL, NULL, NULL, 0) &&
+                   GetTickCount64() - t0 < 15000)   /* (it starts when the mod's page is in) */
+                if (MsgWaitForMultipleObjects(0, NULL, FALSE, 50, QS_ALLINPUT) == WAIT_OBJECT_0)
+                    while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&pm);
+                        DispatchMessageW(&pm);
+                    }
+            t0 = GetTickCount64();
+            while ((discover_test_state(&permille, &owner, line, 400) || !wcsncmp(line, L"Reconnecting", 12)) &&
+                   GetTickCount64() - t0 < 900000) {   /* (a download, or the list waiting for the server) */
+                if (MsgWaitForMultipleObjects(0, NULL, FALSE, 50, QS_ALLINPUT) == WAIT_OBJECT_0)
+                    while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&pm);
+                        DispatchMessageW(&pm);
+                    }
+                discover_test_state(&permille, &owner, line, 400);
+                if (wcscmp(line, last) && f) {
+                    fwprintf(f, L"%6.1f s  %s\n", (GetTickCount64() - t0) / 1000.0, line);
+                    wcscpy_s(last, 400, line);
+                }
+                if (!during && permille >= 300) {
+                    swprintf_s(shot, MAX_PATH, L"%s.during.bmp", capture_file);
+                    capture(shot);
+                    during = 1;
+                }
+                if (!lost && (wcsstr(line, L"connection lost") || !wcsncmp(line, L"Reconnecting", 12))) {
+                    swprintf_s(shot, MAX_PATH, L"%s.reconnect.bmp", capture_file);
+                    capture(shot);
+                    lost = 1;
+                }
+            }
+            t0 = GetTickCount64();
+            while (GetTickCount64() - t0 < 600)   /* (the answer's install, the page again) */
+                while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&pm);
+                    DispatchMessageW(&pm);
+                }
+            discover_test_state(&permille, &owner, line, 400);
+            if (f) {
+                fwprintf(f, L"end: %s\nDelete shown: %s\n", line, owner ? L"yes" : L"no");
+                fclose(f);
+            }
         }
         if (capture_bundled) {
             WCHAR during[MAX_PATH], times[MAX_PATH];
