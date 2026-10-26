@@ -1,0 +1,61 @@
+WWE SmackDown vs. Raw 2011 PC port
+Copyright (c) 2026 KaikoClanworth1 and the SvR 2011 PC port contributors
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+What this licence covers
+------------------------
+
+It covers the port's own work in this repository: the game hooks and native
+renderer (port/src), the launcher (port/launcher), the Mod Maker
+(port/modmaker), the tools (port/tools), the online server (port/server), the
+Android app (port/android) and the documentation (docs, port/docs).
+
+It does NOT cover:
+
+- Third-party code under port/third_party and port/modmaker/third_party.
+  Each keeps its own licence (see the LICENSE file in its folder and
+  port/dist/Third-party notices.txt).
+- The launcher's Bink reader (port/launcher/bink_decode.c and bink_tables.h).
+  It is ported from FFmpeg's Bink decoder and stays under FFmpeg's licence,
+  the GNU LGPL 2.1 or later.
+- The patches in port/patches. They modify other projects (the ReXGlue SDK,
+  which is BSD-3-Clause and partly derived from Xenia; plume; XenosRecomp)
+  and are under the licences of the projects they patch.
+- The game itself. No game files, game code, art, audio or video from
+  WWE SmackDown vs. Raw 2011 or any other game are in this repository, and
+  none are licensed by it. You need your own legally obtained copy of the
+  game. WWE, SmackDown, Raw and all related names and logos are trademarks of
+  their owners; THQ / Yuke's own the original game. This project is not
+  affiliated with or endorsed by any of them.
+- NVIDIA DLSS. Its SDK is not in this repository and is used under NVIDIA's
+  own terms.
+
+
+Credit
+------
+
+The licence above already requires keeping the copyright notice. If you use
+or adapt this work in another project (for example another game port), please
+also say so where your players can see it, for example: "Parts adapted from
+the WWE SmackDown vs. Raw 2011 PC port by KaikoClanworth1
+(github.com/KaikoClanworth1/wwe-svr2011-pc)."
