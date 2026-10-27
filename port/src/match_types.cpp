@@ -2999,9 +2999,33 @@ REX_HOOK_RAW(sub_828578E8) {
   EventAnswer(cond, ctx);
 }
 
+// Research aid: SVR2011_TEST_AI_LOG=1 - each CPU action made (both factories): person, action id, match frame; the
+// same action again and again folded into one line with its count (a CPU that stands still: what it keeps trying).
+namespace {
+void AiActionLog(uint8_t* base, uint32_t ai, uint32_t id, int factory) {
+  static const bool on = std::getenv("SVR2011_TEST_AI_LOG") != nullptr;
+  if (!on || !ai) return;
+  const uint32_t person = Rd32(base + ai), who = person ? Rd32(base + person + 1156) : 99;
+  if (who >= 8) return;
+  static std::mutex mu;
+  static uint32_t last_id[8] = {}, repeats[8] = {}, since[8] = {};
+  std::lock_guard lock(mu);
+  const uint32_t frames = Rd32(base + 0x82E3CD0C);
+  if (last_id[who] == id) {
+    ++repeats[who];
+    return;
+  }
+  if (repeats[who])
+    REXLOG_INFO("ai: person {} action {} x{} more (frames {}-{})", who, last_id[who], repeats[who], since[who], frames);
+  last_id[who] = id, repeats[who] = 0, since[who] = frames;
+  REXLOG_INFO("ai: person {} action {} (factory {}) frame {}", who, id, factory, frames);
+}
+}  // namespace
+
 REX_EXTERN(__imp__sub_82812838);
 REX_HOOK_RAW(sub_82812838) {
   const uint32_t id = ctx.r4.u32;
+  AiActionLog(base, ctx.r3.u32, id, 1);
   if ((id == 140 || id == 141 || id == 260) && NearWeapon(ctx, base, ctx.r3.u32) >= 0) ctx.r4.u64 = 300;
   // (a weapon action made: this CPU's cooldown starts - WEAPONS EVERYWHERE)
   if (g_weapons && ctx.r3.u32 && (id == 140 || id == 141 || id == 260 || (id >= 300 && id <= 304)))
@@ -3019,6 +3043,7 @@ REX_HOOK_RAW(sub_82812838) {
 // ... and its sibling for actions 146-346: 260, the search itself (sub_82828968).
 REX_EXTERN(__imp__sub_828136D0);
 REX_HOOK_RAW(sub_828136D0) {
+  AiActionLog(base, ctx.r3.u32, ctx.r4.u32, 2);
   if (static const bool item_log = std::getenv("SVR2011_TEST_ITEM_LOG") != nullptr; item_log && ctx.r4.u32 == 260) {
     const uint32_t person = ctx.r3.u32 ? Rd32(base + ctx.r3.u32) : 0;
     REXLOG_INFO("item: person {} action 260 (second factory) frame {}", person ? Rd32(base + person + 1156) : 99,
