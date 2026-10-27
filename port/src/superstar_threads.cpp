@@ -316,6 +316,21 @@ REX_HOOK_RAW(sub_827235D8) {
   }
   svr2011::OnlineTempForSave(base, true);  // (the fetched mods of this run: not in the save)
   __imp__sub_827235D8(ctx, base);
+  // Test aid: SVR2011_TEST_SAVE_DUMP=<folder> - the records, profiles and the built save (guest memory) as files
+  if (const char* dir = std::getenv("SVR2011_TEST_SAVE_DUMP")) {
+    auto dump = [&](const char* name, uint32_t at, uint32_t size) {
+      if (FILE* f = std::fopen((std::string(dir) + "\\" + name).c_str(), "wb")) {
+        std::fwrite(base + at, 1, size, f);
+        std::fclose(f);
+      }
+    };
+    dump("records.bin", 0x82E407C0, 512 * 260);
+    dump("profiles.bin", kProfiles, 512 * kProfileSize);
+    dump("idtoindex.bin", kIdToIndex, 1024);
+    const uint32_t save = uint32_t(base[0x82E407B4] << 24 | base[0x82E407B5] << 16 | base[0x82E407B6] << 8 | base[0x82E407B7]);
+    if (save) dump("save.bin", save, 0x80000);
+    REXLOG_INFO("[svr2011] superstar threads: test - records, profiles and the save dumped to {}", dir);
+  }
   svr2011::OnlineTempForSave(base, false);
 }
 
