@@ -196,7 +196,8 @@ bool SetPortrait(Bytes& pac, const Image& bust) {
 }
 
 // Everything the build needs, copied off the UI thread.
-constexpr int kReduceMax = 32000;  // (Reduce detail's top: the big-model memory, tools/model_budget.py LIMIT)
+constexpr int kReduceMax = 120000;  // (Reduce detail's top: the big-model memory, tools/model_budget.py LIMIT - a
+                                    // 124,000-vertex model took 1,489 of its 1,600 pages)
 
 struct Job {
   std::string needs;    // (kNeedsVersion for a model over the old 192 pages, written into the manifest)
