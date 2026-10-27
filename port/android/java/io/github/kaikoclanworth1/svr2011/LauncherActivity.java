@@ -627,11 +627,12 @@ public class LauncherActivity extends Activity {
         sp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (loading_ || !touched[0] || values[position].equals(settings_.getString(key, fallback))) return;
+                if (loading_ || !touched[0] || values[position].equals(current(key, fallback))) return;
+                String[] v = values[position].split(":");
                 if (quoted) settings_.setString(key, values[position]);
-                else settings_.setInt(key, Integer.parseInt(values[position]));
+                else settings_.setInt(key, Integer.parseInt(v[0]));
                 // (the in-game 900P / 1080P choice would win over this one: graphics_page.cpp)
-                if (key.equals("native_max_scale")) settings_.setInt("native_scene_height", 0);
+                if (key.equals("native_max_scale")) settings_.setInt("native_scene_height", v.length > 1 ? Integer.parseInt(v[1]) : 0);
                 saved(label);
             }
 
@@ -639,12 +640,19 @@ public class LauncherActivity extends Activity {
             public void onNothingSelected(AdapterView<?> parent) {}
         });
         refreshers_.add(() -> {
-            String v = settings_.getString(key, fallback);
+            String v = current(key, fallback);
             int index = 0;
             for (int i = 0; i < values.length; i++) if (values[i].equals(v)) index = i;
             sp.setSelection(index, false);
         });
         row(card, label, hint, sp);
+    }
+
+    // A choice's value now: the render resolution with the scene height the in-game 900P / 1080P set ("2:1080").
+    String current(String key, String fallback) {
+        String v = settings_.getString(key, fallback);
+        int h = key.equals("native_max_scale") ? settings_.getInt("native_scene_height", 0) : 0;
+        return h > 0 ? v + ":" + h : v;
     }
 
     View settingsPage() {
@@ -674,8 +682,11 @@ public class LauncherActivity extends Activity {
             "device_vibration", true);
 
         LinearLayout quality = card(c, "Quality");
-        choice(quality, "Render resolution", "The most the game renders at; lower is faster", "native_max_scale",
-            new String[] {"Auto", "720p (Xbox 360)", "1440p", "2160p"}, new String[] {"4", "1", "2", "3"}, false, "4");
+        // (above 720p: supersampling - rendered bigger, scaled down to the screen; "2:1080" is 2x with the in-game
+        // 1080P's native_scene_height)
+        choice(quality, "Render resolution", "The most the game renders at; lower is faster. Higher: sharper, warmer phone",
+            "native_max_scale", new String[] {"Auto", "720p (Xbox 360)", "1080p (1.5x)", "1440p (2x)", "2160p (3x)"},
+            new String[] {"4", "1", "2:1080", "2", "3"}, false, "4");
         toggle(quality, "Anti-aliasing", "Smoother edges, slower", "native_2x_msaa", true);
         choice(quality, "Textures", "Lower: big textures at half / a quarter size - less memory, faster loading",
             "native_texture_quality", new String[] {"High", "Medium", "Low"},

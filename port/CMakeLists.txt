@@ -27,6 +27,7 @@ set(SVR2011_SOURCES
     src/fps_overlay.cpp
     src/perf_stats.cpp
     src/guest_faults.cpp
+    src/android_perf.cpp
     src/achievements_page.cpp
     src/jukebox.cpp
     src/graphics_page.cpp
