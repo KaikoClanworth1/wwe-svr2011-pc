@@ -849,6 +849,22 @@ def slot_categories(bank):
     return out or list(SINGLES)
 
 
+def template_travel(g11, tid):
+    """(dx, dz) of a 2011 move's attacker (x 0 y 0) root from its first key to its last, None if unread"""
+    import ymks
+    for path, kind, ks in g11.banks_of(tid):
+        if kind != 'YMKs' or (0, 0) not in ks:
+            continue
+        pac, bank = g11.bank(path)
+        e = bank.find(tid, 0, 0)
+        if e is None:
+            continue
+        r = [k['root'] for k in ymks.body_keys(e['data'], bank.T, path.startswith('MOTP')) if k.get('root')]
+        if len(r) > 1:
+            return (r[-1][0] - r[0][0], r[-1][2] - r[0][2])
+    return None
+
+
 def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attacker_end_y=None, reversals=True,
                     with_score=False):
     """the 2011 move in MVMT/<cat> (YMKs only, x0 y0 and x0 y1 both there) most like the source:
@@ -1142,6 +1158,17 @@ def convert(a, rep):
             tid, vic, gap = dive, None, None
             rep['notes'].append("a dive onto a lying victim: the attacker's motion on a one-person template, the "
                                 "victim reacts as in the game's own dives")
+            # (the flight goes the template's way: 2011's corner climb ends facing the ring and the dive leaves from
+            # there - WWE '13's Diving Corkscrew Splash, kept as stored, flipped backwards out of the ring. One person:
+            # only the facing matters, the start is anchored to the template's below)
+            tt = template_travel(g11, dive)
+            st = (att_keys[-1][0][0] - att_keys[0][0][0], att_keys[-1][0][2] - att_keys[0][0][2])
+            if tt and tt[0] * st[0] + tt[1] * st[1] < 0:
+                import numpy as np
+                face = np.diag([-1.0, 1.0, -1.0, 1.0]) if face is None else None
+                att_keys = R0.keys(att, nf, face)
+                rep['notes'].append("dive turned round: its flight went against the template's (%.0f, %.0f vs %.0f, %.0f)"
+                                    % (st[0], st[1], tt[0], tt[1]))
     # A hold with phases (hold, struggle loops, escape, tap: two-person phases 1, 2 and 4 among those under 30 -
     # 2011's x 1 / 2 / 4; 2K17's Blue Thunder Bomb, a powerbomb with phases 1 / 2 / 3, got Walls of Jericho when 3
     # phases were enough) is a submission:
