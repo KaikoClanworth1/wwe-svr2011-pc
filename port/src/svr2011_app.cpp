@@ -258,6 +258,53 @@ std::string QuoteBareTomlWords(const std::string& text, std::string* keys) {
   return out;
 }
 
+// A settings file's top-level lines TOML can't read - no `=` (a file cut off
+// mid-line: "render_sc") or nothing after it - turned into comments: one such
+// line made the whole file unreadable, every setting back at its default at
+// each start (release test S5, 27 Oct). Lines inside a value over several lines
+// (an array or a """ string) are left alone.
+std::string SetAsideBrokenTomlLines(const std::string& text, std::string* lines) {
+  std::string out;
+  bool section = false, array = false, triple = false;
+  for (size_t pos = 0; pos <= text.size();) {
+    size_t nl = text.find('\n', pos);
+    if (nl == std::string::npos) nl = text.size();
+    std::string line = text.substr(pos, nl - pos);
+    const bool last = nl == text.size();
+    pos = nl + 1;
+    const bool cr = !line.empty() && line.back() == '\r';
+    if (cr) line.pop_back();
+    const size_t a = line.find_first_not_of(" \t");
+    const size_t eq = line.find('=');
+    size_t quotes = 0;  // (""" marks on the line)
+    for (size_t q = line.find("\"\"\""); q != std::string::npos; q = line.find("\"\"\"", q + 3)) ++quotes;
+    if (triple || array) {
+      if (triple && quotes % 2) triple = false;
+      if (array && line.find(']') != std::string::npos) array = false;
+    } else if (a != std::string::npos && line[a] == '[') {
+      section = true;
+    } else if (!section && a != std::string::npos && line[a] != '#') {
+      std::string value = eq == std::string::npos ? std::string() : line.substr(eq + 1);
+      value.erase(0, value.find_first_not_of(" \t"));
+      if (eq == std::string::npos || eq == a || value.empty() || value[0] == '#') {
+        if (lines) *lines += (lines->empty() ? "" : ", ") + line.substr(a);
+        line = "# (unreadable, set aside by the game) " + line.substr(a);
+      } else if (quotes % 2) {
+        triple = true;
+      } else if (value[0] == '[' && value.find(']') == std::string::npos) {
+        array = true;
+      }
+    }
+    out += line;
+    if (!last) out += cr ? "\r\n" : "\n";
+  }
+  return out;
+}
+
+// What the settings repairs above did: OnConfigurePaths runs before the log
+// file is open, so their lines are written at OnPreSetup.
+std::vector<std::string> g_settings_notes;
+
 // The runtime's user data (paths.user_data_root) and the saves folder.
 std::filesystem::path g_user_data;
 std::filesystem::path g_saves;
@@ -339,13 +386,20 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
     // at every save. The file no longer parsed - every setting ignored, no
     // gpu_plugin: a black screen at start (a 2.1.2 report).
     if (std::string fixed = JoinBrokenTomlStrings(text); fixed != text) {
-      REXLOG_WARN("settings: {} had a value broken over lines - joined again", paths.config_path.string());
+      g_settings_notes.push_back(
+          fmt::format("settings: {} had a value broken over lines - joined again", paths.config_path.string()));
       text = std::move(fixed);
       std::ofstream(paths.config_path, std::ios::binary | std::ios::trunc) << text;
     }
     if (std::string keys, fixed = QuoteBareTomlWords(text, &keys); fixed != text) {
-      REXLOG_WARN("settings: {} had words without quotes ({}) - quoted, so the file reads again",
-                  paths.config_path.string(), keys);
+      g_settings_notes.push_back(fmt::format("settings: {} had words without quotes ({}) - quoted, so the file reads again",
+                                             paths.config_path.string(), keys));
+      text = std::move(fixed);
+      std::ofstream(paths.config_path, std::ios::binary | std::ios::trunc) << text;
+    }
+    if (std::string lines, fixed = SetAsideBrokenTomlLines(text, &lines); fixed != text) {
+      g_settings_notes.push_back(fmt::format("settings: {} had lines that can't be read ({}) - set aside as comments, "
+                                             "the other settings kept", paths.config_path.string(), lines));
       text = std::move(fixed);
       std::ofstream(paths.config_path, std::ios::binary | std::ios::trunc) << text;
     }
@@ -402,6 +456,8 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
     rex::cvar::SetFlagByName("audio_mute", "true");
     REXLOG_INFO("settings: audio muted (SVR2011_AUDIO_MUTE)");
   }
+  for (const auto& note : g_settings_notes) REXLOG_WARN("{}", note);  // (OnConfigurePaths' repairs)
+  g_settings_notes.clear();
   // A settings file that couldn't be read (every setting ignored) still draws.
   if (config.gpu_plugin.empty()) {
     rex::cvar::SetFlagByName("gpu_plugin", "xenos");
