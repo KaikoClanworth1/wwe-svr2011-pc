@@ -2121,6 +2121,7 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
           if (auto it = s.contexts.find(id); it != s.contexts.end() && it->second != value) return false;
         return true;
       };
+      NoteOnlineActivity(OnlineActivity::kSearch);  // (the presence poll's place: matchmaking)
       auto sessions = Search();
       const size_t before = sessions.size();
       sessions.erase(std::remove_if(sessions.begin(), sessions.end(), [&](const Session& s) { return !same_kind(s); }),
@@ -2205,6 +2206,14 @@ bool P2PSessionInfo(uint8_t* out, uint32_t* slots) {
   WriteInfo(out, best->session);
   if (slots) *slots = best->session.public_slots + best->session.private_slots;
   return true;
+}
+
+int P2PSessionRole() {
+  std::lock_guard lock(g_mutex);
+  int role = 0;
+  for (const auto& [obj, local] : g_sessions)
+    if (local.session.flags & 0x20) role = local.host ? 1 : role ? role : 2;  // (a match's: the host's wins)
+  return role;
 }
 
 void P2PSetHostProperty(uint32_t id, uint32_t value) {
