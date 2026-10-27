@@ -11,6 +11,7 @@
 #include "caw_limits.h"
 
 #include <cstdint>
+#include <set>
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
@@ -149,6 +150,22 @@ void LogFighter(uint8_t* base, uint32_t f) {
 bool g_heap_log = false;
 int g_heap_watch = -1;  // (SVR2011_TEST_HEAP_LOG=<heap 2-53>: every allocation in that heap too)
 
+// A failed allocation the hooks below had no fallback for: logged once per heap and caller (every one with the
+// test aid) - a player's crash report then names it (27 Oct: an Extreme Rules weapon load wrote to such a 0 at
+// lr 8215A008, now and then). The file cache's heap (16) fails on purpose while it frees old files: only with the aid.
+namespace {
+void NoteFailed(uint32_t heap, uint32_t size, uint32_t lr) {
+  static std::mutex m;
+  static std::set<uint64_t> seen;
+  if (heap == 16 && !g_heap_log) return;
+  {
+    std::lock_guard lock(m);
+    if (!g_heap_log && !seen.insert(uint64_t(heap) << 32 | lr).second) return;
+  }
+  REXLOG_WARN("[svr2011] heap {}: allocation of {} bytes FAILED (lr {:08X})", heap, size, lr);
+}
+}  // namespace
+
 REX_EXTERN(__imp__sub_8269A8D8);
 REX_HOOK_RAW(sub_8269A8D8) {
   const uint32_t size = ctx.r3.u32;
@@ -175,6 +192,13 @@ REX_HOOK_RAW(sub_8269A8D8) {
         return;
       }
   }
+  if (ctx.r3.u32 == 0 && size) {
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    NoteFailed(heap, size, uint32_t(ctx.lr));
+  }
   if (!g_heap_log) return;
   static bool listed = false;
   const uint32_t table = Rd32(base + 0x82EC5F48);
@@ -184,13 +208,6 @@ REX_HOOK_RAW(sub_8269A8D8) {
       const uint32_t a = Rd32(base + table + i * 36), b = Rd32(base + table + i * 36 + 4);
       if (a || b) REXLOG_INFO("[svr2011] heap {}: {:08X}-{:08X} ({:.1f} MB)", i, a, b, (b - a) / 1048576.0);
     }
-  }
-  if (ctx.r3.u32 == 0 && size) {
-    const auto saved = ctx;
-    sub_8269A478(ctx, base);
-    const uint32_t heap = ctx.r3.u32;
-    ctx = saved;
-    REXLOG_WARN("[svr2011] heap {}: allocation of {} bytes FAILED (lr {:08X})", heap, size, uint32_t(ctx.lr));
   }
 }
 
@@ -234,13 +251,12 @@ REX_HOOK_RAW(sub_8269BA30) {
     if (units * 16 >= 256 * 1024 || int(heap) == g_heap_watch)
       REXLOG_INFO("[svr2011] heap {}: {} bytes at {:08X} (lr {:08X})", heap, units * 16, ctx.r3.u32, uint32_t(ctx.lr));
   }
-  if (g_heap_log && ctx.r3.u32 == 0 && units) {
+  if (ctx.r3.u32 == 0 && units) {
     const auto saved = ctx;
     sub_8269A478(ctx, base);
     const uint32_t heap = ctx.r3.u32;
     ctx = saved;
-    REXLOG_WARN("[svr2011] heap {}: allocation of {} bytes FAILED (16-byte units, lr {:08X})", heap, units * 16,
-                uint32_t(ctx.lr));
+    NoteFailed(heap, units * 16, uint32_t(ctx.lr));
   }
 }
 
