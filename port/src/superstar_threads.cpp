@@ -17,6 +17,7 @@
 // A mod's slots are kept by its folder (Saves\.threads\<folder>.bin), not by the id it holds this run: put
 // into its profile as it is set up (never the base's slots), written when the game saves.
 #include "superstar_threads.h"
+#include "superstar_mods.h"
 
 #include <algorithm>
 #include <chrono>
@@ -313,7 +314,24 @@ REX_HOOK_RAW(sub_827235D8) {
       REXLOG_INFO("[svr2011] superstar threads: {} - slots saved ({})", m.folder, IsEmpty(s) ? "all empty" : "edited");
     }
   }
+  svr2011::OnlineTempForSave(base, true);  // (the fetched mods of this run: not in the save)
   __imp__sub_827235D8(ctx, base);
+  // Test aid: SVR2011_TEST_SAVE_DUMP=<folder> - the records, profiles and the built save (guest memory) as files
+  if (const char* dir = std::getenv("SVR2011_TEST_SAVE_DUMP")) {
+    auto dump = [&](const char* name, uint32_t at, uint32_t size) {
+      if (FILE* f = std::fopen((std::string(dir) + "\\" + name).c_str(), "wb")) {
+        std::fwrite(base + at, 1, size, f);
+        std::fclose(f);
+      }
+    };
+    dump("records.bin", 0x82E407C0, 512 * 260);
+    dump("profiles.bin", kProfiles, 512 * kProfileSize);
+    dump("idtoindex.bin", kIdToIndex, 1024);
+    const uint32_t save = uint32_t(base[0x82E407B4] << 24 | base[0x82E407B5] << 16 | base[0x82E407B6] << 8 | base[0x82E407B7]);
+    if (save) dump("save.bin", save, 0x80000);
+    REXLOG_INFO("[svr2011] superstar threads: test - records, profiles and the save dumped to {}", dir);
+  }
+  svr2011::OnlineTempForSave(base, false);
 }
 
 // The edit screens' light (sub_8279EDE8 opens a colour screen: sub_82788310 -> sub_82787A20) is set on the

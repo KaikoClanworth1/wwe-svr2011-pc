@@ -49,8 +49,12 @@ ModDownloadState ModDownload();
 std::filesystem::path FetchedModFolder(const ModOffer& mod);
 // The host's set, asked for (empty: none, or no answer - why says which; "" when the host has none).
 std::vector<ModOffer> AskHostMods(int timeout_ms = 3000, std::string* why = nullptr);
-// Clears <user data>\OnlineMods (leaving online, the game's end, the next start).
+// Clears <user data>\OnlineMods (leaving online, the game's end, the next start) - not in a run that loads them.
 void ClearFetchedMods();
+// This run loads the fetched mods too (--online_mods_load, set by RESTART AND REJOIN): their root, <user
+// data>\OnlineMods (<kind>\<folder>@<crc>\ ...). The mod scans of the gameplay kinds read it as a second root.
+bool OnlineModsLoad();
+std::filesystem::path OnlineModsRoot();
 
 // The lobby: once per session this game joined, the host's gameplay mods it lacks - the overlay asks the player
 // (online_overlay.cpp: "THIS MATCH USES N MODS YOU DON'T HAVE (X MB) - DOWNLOAD THEM?", NO leaves the session).

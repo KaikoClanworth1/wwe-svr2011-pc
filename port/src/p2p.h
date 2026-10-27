@@ -44,6 +44,8 @@ std::optional<std::string> P2PFetch(uint8_t kind, const std::string& key, std::c
 // else joined) as an XSESSION_INFO (60 bytes: id, host XNADDR, key) and its
 // slots; false when there's none.
 bool P2PSessionInfo(uint8_t* out, uint32_t* slots = nullptr);
+// The match session this game is in: 0 none, 1 it hosts it, 2 it joined it (the presence poll's place).
+int P2PSessionRole();
 // An invited game, before the game joins: reaches the session's host (directly
 // or through the relay) so its packets get through; true if it still has it.
 bool P2PReachHost(const uint8_t* info);

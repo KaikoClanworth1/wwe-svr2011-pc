@@ -1598,10 +1598,11 @@ void LoadBackstage() {
       // Its own gimmicks (cars and their hot spots): gimmick.pac, a small pac
       // with GMGB/<gimmick> (4 chars, e.g. 78P8), mounted as one more pac
       // (move_packs.cpp) and played in place of the room's GMGB package in its
-      // matches (sub_824B0090 below). Only the first such mod brings one.
-      static bool have_gm = false;
-      if (r.gimmick.size() == 4 && fs::exists(d / "gimmick.pac", ec) && !have_gm) {
-        have_gm = true;
+      // matches (sub_824B0090 below). One mod per entry brings it - the first
+      // by folder name, as move_packs.cpp mounts them (HCTP rooms and worlds
+      // each have their own entry).
+      static std::set<std::string> have_gm;
+      if (r.gimmick.size() == 4 && fs::exists(d / "gimmick.pac", ec) && have_gm.insert(r.gimmick).second) {
         REXLOG_INFO("[svr2011] arena mods: {} plays its gimmicks GMGB/{}", r.label, r.gimmick);
       } else {
         if (!r.gimmick.empty()) REXLOG_WARN("[svr2011] arena mods: {}: gimmicks ignored", r.label);

@@ -28,6 +28,8 @@
 #include "caw_limits.h"
 #include "mem_trace.h"
 #include "superstar_mods.h"
+#include "mod_transfer.h"
+#include "p2p.h"
 #include "match_box.h"
 #include "superstar_threads.h"
 #include "universe_mods.h"
@@ -117,6 +119,8 @@ constexpr uint32_t kSelectable = 221, kDlc = 257, kSamePerson = 228, kAbilities 
 
 struct Mod {
   std::string folder, name, short_name;
+  fs::path dir;       // its folder (Mods/Superstars/<folder>, or OnlineMods/Superstars/<folder>@<crc>)
+  bool temp = false;  // fetched from a session's host for this run (OnlineMods): never in saves, Universe, Threads
   uint32_t base = 0, slot = 0;
   std::string ch_guest, ssf_guest;  // the overlay files, as the game opens them
   std::vector<std::string> attire_guests;  // extra attires' pacs (manifest attire<N>=)
@@ -744,7 +748,20 @@ void LoadMods() {
     if (e.is_directory() && fs::exists(e.path() / "ch.pac", ec) && !fs::exists(e.path() / "disabled", ec))
       folders.push_back(e.path());
   std::sort(folders.begin(), folders.end());
+  // (then the mods fetched from a session's host, this run only: RESTART AND REJOIN - mod_transfer.h)
+  std::vector<std::pair<fs::path, bool>> sources;
+  for (const auto& f : folders) sources.push_back({f, false});
   const fs::path overlay = g_game / "Mods" / "SuperstarOverlay";
+  const fs::path online_overlay = overlay / "online";  // (smods:\online\..., cleared at every start)
+  fs::remove_all(online_overlay, ec);
+  if (svr2011::OnlineModsLoad()) {
+    std::vector<fs::path> fetched;
+    for (const auto& e : fs::directory_iterator(svr2011::OnlineModsRoot() / "Superstars", ec))
+      if (e.is_directory() && fs::exists(e.path() / "ch.pac", ec)) fetched.push_back(e.path());
+    std::sort(fetched.begin(), fetched.end());
+    for (const auto& f : fetched) sources.push_back({f, true});
+    if (!fetched.empty()) fs::create_directories(online_overlay, ec);
+  }
   fs::create_directories(overlay, ec);
   auto slots = ReadSlots(dir / "slots.txt");
   bool slots_changed = false;
@@ -780,10 +797,34 @@ void LoadMods() {
     }
     return 0;
   };
-  for (const auto& f : folders) {
+  // (a fetched mod's id: a free one of the pool - none the player's slots hold, so a player's mod never meets
+  // its edits; this run only, never written)
+  std::set<uint32_t> temp_taken;
+  auto temp_slot = [&]() -> uint32_t {
+    for (uint32_t id : kPool) {
+      bool taken = temp_taken.count(id) != 0;
+      for (const auto& s : slots) taken |= s.second == id;
+      if (taken) continue;
+      temp_taken.insert(id);
+      return id;
+    }
+    return 0;
+  };
+  for (const auto& [f, temp] : sources) {
     svr2011::KeepWindowAlive();  // (startup_pump.h)
+    const fs::path& ov = temp ? online_overlay : overlay;
+    const std::string guest = temp ? "smods:\\online\\" : "smods:\\";
     Mod m;
     m.folder = f.filename().string();
+    m.dir = f, m.temp = temp;
+    if (temp) {
+      m.folder = m.folder.substr(0, m.folder.rfind('@'));
+      if (std::any_of(g_mods.begin(), g_mods.end(), [&](const Mod& o) { return o.folder == m.folder; })) {
+        REXLOG_INFO("[svr2011] superstar mods: {} fetched from the host, but this game has its own - its own plays",
+                    m.folder);
+        continue;
+      }
+    }
     m.name = m.short_name = m.folder;
     std::string song, movie, moves;
     float song_gain = 0.0f;  // theme_gain=<dB>: the theme's level (-20..+6, the Mod Maker's loudness match)
@@ -886,13 +927,13 @@ void LoadMods() {
       // (added below, once the mod has its id)
       m.sign_files = std::move(signs);
     }
-    InstallMedia(m, f, song, movie, song_gain);
+    if (!temp) InstallMedia(m, f, song, movie, song_gain);  // (a fetched mod's theme / movie: not copied in)
     ReadApplied(m, f);
-    m.slot = slot_of(m.folder);
+    m.slot = temp ? temp_slot() : slot_of(m.folder);
     if (!m.slot) {
       REXLOG_WARN("[svr2011] superstar mods: only {} fit, {} left out (switch another mod off to make room)",
                   std::size(kPool), m.folder);
-      left_out.push_back(m.folder);
+      if (!temp) left_out.push_back(m.folder);
       continue;
     }
     char nm[32];
@@ -900,7 +941,7 @@ void LoadMods() {
     for (int a = 0; a < 4; ++a)
       if (!attires[a].empty() && fs::exists(f / attires[a], ec)) drop |= 1u << a;
     std::snprintf(nm, sizeof nm, "ch%03u.pac", m.slot);
-    if (!Current(overlay / nm, {f / "ch.pac", f / "manifest.txt"})) {
+    if (!Current(ov / nm, {f / "ch.pac", f / "manifest.txt"})) {
       svrfmt::Bytes ch;
       if (!svrfmt::ReadFile((f / "ch.pac").string(), ch)) {
         REXLOG_WARN("[svr2011] superstar mods: {}: ch.pac is not a character model pac (EPK8 with EMD models)", m.folder);
@@ -915,19 +956,19 @@ void LoadMods() {
         continue;
       }
       if (!notes.empty()) REXLOG_INFO("[svr2011] superstar mods: {}: vertex memory:{}", m.folder, notes);
-      if (!RenameModel(ch, m.slot, -1, 0, drop) || !svrfmt::WriteFile((overlay / nm).string(), ch)) {
+      if (!RenameModel(ch, m.slot, -1, 0, drop) || !svrfmt::WriteFile((ov / nm).string(), ch)) {
         REXLOG_WARN("[svr2011] superstar mods: {}: ch.pac is not a character model pac (EPK8 with EMD models)", m.folder);
         continue;
       }
-      MarkCurrent(overlay / nm, {f / "ch.pac", f / "manifest.txt"});
+      MarkCurrent(ov / nm, {f / "ch.pac", f / "manifest.txt"});
     }
-    m.ch_guest = std::string("smods:\\") + nm;
+    m.ch_guest = guest + nm;
     for (int a = 0; a < 4; ++a) {
       if (!(drop >> a & 1)) continue;
       char an[32];
       std::snprintf(an, sizeof an, "ch%03u_a%d.pac", m.slot, a + 1);
       const fs::path src = f / attires[a];
-      if (!Current(overlay / an, {src, f / "manifest.txt"})) {
+      if (!Current(ov / an, {src, f / "manifest.txt"})) {
         svrfmt::Bytes d;
         std::string notes;
         if (svrfmt::ReadFile(src.string(), d) && !FitModelBudget(d, notes)) {
@@ -935,22 +976,22 @@ void LoadMods() {
                       m.folder, attires[a], notes);
           continue;
         }
-        if (d.empty() || !RenameModel(d, m.slot, 0, a) || !svrfmt::WriteFile((overlay / an).string(), d)) {
+        if (d.empty() || !RenameModel(d, m.slot, 0, a) || !svrfmt::WriteFile((ov / an).string(), d)) {
           REXLOG_WARN("[svr2011] superstar mods: {}: {} is not a character model pac", m.folder, attires[a]);
           continue;
         }
-        MarkCurrent(overlay / an, {src, f / "manifest.txt"});
+        MarkCurrent(ov / an, {src, f / "manifest.txt"});
       }
-      m.attire_guests.push_back(std::string("smods:\\") + an);
+      m.attire_guests.push_back(guest + an);
     }
     {  // the attires its models give (contiguous from 1)
       uint32_t mask = 0;
-      std::vector<fs::path> pacs = {overlay / nm};  // (nm: chNNN.pac still)
+      std::vector<fs::path> pacs = {ov / nm};  // (nm: chNNN.pac still)
       for (int a = 0; a < 4; ++a)
         if (drop >> a & 1) {
           char an[32];
           std::snprintf(an, sizeof an, "ch%03u_a%d.pac", m.slot, a + 1);
-          pacs.push_back(overlay / an);
+          pacs.push_back(ov / an);
         }
       for (const auto& pp : pacs) mask |= AttireMask(pp, m.slot);
       m.attires = 1;
@@ -960,14 +1001,15 @@ void LoadMods() {
     // (the renders depend on base=: rebuilt with the manifest)
     const std::vector<fs::path> render_srcs = {f / "manifest.txt", f / "render.dds", f / "render_small.dds",
                                                f / "render_full.dds"};
-    if (Current(overlay / nm, render_srcs) ||
-        (BuildRenders(overlay / nm, m.base, m.slot, f, m.styled) && (MarkCurrent(overlay / nm, render_srcs), true)))
-      m.ssf_guest = std::string("smods:\\") + nm;
+    if (Current(ov / nm, render_srcs) ||
+        (BuildRenders(ov / nm, m.base, m.slot, f, m.styled) && (MarkCurrent(ov / nm, render_srcs), true)))
+      m.ssf_guest = guest + nm;
     else
       REXLOG_WARN("[svr2011] superstar mods: {}: base {} has no select render (not a playable superstar)", m.folder,
                   m.base);
     if (m.signs) svr2011::AddCharacterSigns(m.slot, m.sign_files);
-    REXLOG_INFO("[svr2011] superstar mods: {} as id {} (from {})", m.name, m.slot, m.base);
+    REXLOG_INFO("[svr2011] superstar mods: {} as id {} (from {}){}", m.name, m.slot, m.base,
+                temp ? " - fetched from the session's host, this run only" : "");
     g_mods.push_back(std::move(m));
   }
   {  // the mods left out at this start, one folder a line (none: no file)
@@ -1362,6 +1404,41 @@ std::map<uint32_t, Handover> g_handed;
 constexpr int kHandoverFrames = 600;  // (10 s; the save's write comes within milliseconds)
 void RedoHandovers(uint8_t* base, bool frame);
 
+// A fetched mod's id (temp, this run only): its record + profile as the save had them before the mod was put
+// there - written back into the save it builds (OnlineTempForSave), so the save never keeps the host's mod and
+// a player's mod given that id later never meets its data. Taken at the first apply after a save load.
+std::map<uint32_t, std::vector<uint8_t>> g_temp_saved, g_temp_live;  // id -> record + profile
+
+// The fetched mods' ids as the save FILE has them (<saves>\SaveData.dat, the last one loaded or written - never one
+// with a fetched mod in it: 0x18-byte header; records at file 0x1C + index * 260, profiles at 0x18 + 0x3C160 +
+// index * 1056 - checked against the live tables). Not the live tables nor the in-memory image (*0x82E407B4): the
+// game rebuilds that from the tables, and the start's own apply put the mod in them before (s4save: the base's
+// profile in the save, B vs A). Read before each save is built and at a save load; no file (a new player): the
+// first ApplyRecords' snapshot stays. Proof: a save built with a fetched mod loaded = byte-identical to one without.
+fs::path g_save_file;
+
+void TempFromSave(uint8_t* base) {
+  constexpr size_t kHeader = 0x18, kSaveProfiles = 0x3C160;
+  if (g_save_file.empty() || std::none_of(g_mods.begin(), g_mods.end(), [](const Mod& m) { return m.temp; })) return;
+  svrfmt::Bytes file;
+  if (!svrfmt::ReadFile(g_save_file.string(), file) || file.size() < kHeader + kSaveProfiles + 512 * kProfileSize) return;
+  for (const auto& m : g_mods) {
+    if (!m.temp) continue;
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+    if (si >= 512) continue;
+    const uint8_t* r = file.data() + kHeader + 4 + si * kRecordSize;  // (records: 4 bytes after the header)
+    const uint8_t* p = file.data() + kHeader + kSaveProfiles + si * kProfileSize;
+    std::vector<uint8_t> b(r, r + kRecordSize);
+    b.insert(b.end(), p, p + kProfileSize);
+    g_temp_saved[m.slot] = std::move(b);
+  }
+}
+
+// A mod's record selectable: a fetched one (temp) only while the game is online (its lobby and matches) - the
+// offline game (WWE Universe's own generation at a save load, the other modes) never sees it in the roster, so
+// nothing it makes for the save differs from a start without it.
+uint8_t Selectable(const Mod& m) { return m.temp && !svr2011::P2POnlineMode() ? 0 : 1; }
+
 void ApplyRecords(uint8_t* base) {
   // Test aid: SVR2011_TEST_ID_TABLE=1 - once, the ids whose present flag
   // (0x82DB3AE0 + id, sub_828B7078) is off, with their record index and name.
@@ -1388,6 +1465,13 @@ void ApplyRecords(uint8_t* base) {
     uint8_t* br = base + kRecords + bi * kRecordSize;
     uint8_t* sr = base + kRecords + si * kRecordSize;
     if (!br[kFullName]) continue;  // (not loaded yet)
+    if (m.temp && !g_temp_saved.count(m.slot)) {  // (the id as it was, an unused pool slot: not selectable)
+      std::vector<uint8_t> b(sr, sr + kRecordSize);
+      b[kSelectable] = 0;
+      const uint8_t* sp = base + kProfiles + si * kProfileSize;
+      b.insert(b.end(), sp, sp + kProfileSize);
+      g_temp_saved[m.slot] = std::move(b);
+    }
     uint8_t* bp = base + kProfiles + bi * kProfileSize;
     uint8_t* sp = base + kProfiles + si * kProfileSize;
     bool have_blank = false;
@@ -1410,7 +1494,7 @@ void ApplyRecords(uint8_t* base) {
     if (have_blank) SetEntranceMedia(sp, m, bp);
     SetSigns(sr, br, m);
     if (!std::strncmp(reinterpret_cast<char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) {
-      sr[kSelectable] = 1, sr[kDlc] = 1;
+      sr[kSelectable] = Selectable(m), sr[kDlc] = 1;
       OwnSelectTile(sr, br);  // (a save from before 2.0.5 has the base's)
       SetHeight(sr, br, m);
       static std::vector<std::pair<uint32_t, uint32_t>> told;  // (slot, its ratings when last logged)
@@ -1460,7 +1544,7 @@ void ApplyRecords(uint8_t* base) {
     PutName(sr, kFullName, m.name);
     PutName(sr, kSecondName, m.name);
     PutName(sr, kShortName, m.short_name);
-    sr[kSelectable] = 1;
+    sr[kSelectable] = Selectable(m);
     sr[kDlc] = 1;
     for (uint32_t off : {kOwnId, kOwnId2, kSamePerson}) sr[off] = uint8_t(m.slot >> 8), sr[off + 1] = uint8_t(m.slot);
     SetSigns(sr, br, m);
@@ -2660,6 +2744,7 @@ REX_EXTERN(__imp__sub_8257A218);
 REX_HOOK_RAW(sub_8257A218) {
   __imp__sub_8257A218(ctx, base);
   const auto r3 = ctx.r3.u64;
+  TempFromSave(base);  // (the fetched mods' ids as this save has them: from its image, before they're written)
   ApplyRecords(base);
   g_moves_checked = false;  // (the save's profiles - its kept edits - get CheckModProfiles' move check too)
   svr2011::UniverseModsLoaded(base);  // (the mods' Universe side table for this save)
@@ -3136,7 +3221,8 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
   // Superstar Threads: the mods whose model is their base's, listed (superstar_threads.h)
   {
     std::vector<svr2011::ThreadsMod> tm;
-    for (const auto& m : g_mods) tm.push_back({m.slot, m.base, m.folder, g_game / "Mods" / "Superstars" / m.folder / "ch.pac"});
+    for (const auto& m : g_mods)
+      if (!m.temp) tm.push_back({m.slot, m.base, m.folder, m.dir / "ch.pac"});
     if (svr2011::BuildThreadsOverlay(memory, g_game, g_game / "Mods" / "SuperstarOverlay", tm))
       g_extra_mounts.push_back("smods:\\threads.pac");
   }
@@ -3156,10 +3242,47 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
   REXLOG_INFO("[svr2011] superstar mods: {}", g_mods.size());
 }
 
-std::vector<uint32_t> SuperstarModIds() {
+std::vector<uint32_t> SuperstarModIds(bool with_online) {
   std::vector<uint32_t> ids;
-  for (const auto& m : g_mods) ids.push_back(m.slot);
+  for (const auto& m : g_mods)
+    if (with_online || !m.temp) ids.push_back(m.slot);
   return ids;
+}
+
+void OnlineTempForSave(uint8_t* base, bool saving) {
+  // (the bytes to put back: the save image about to be rebuilt - the last one loaded or written, which never has a
+  // fetched mod in it; the boot's save load doesn't come through sub_8257A218's hook)
+  if (saving) TempFromSave(base);
+  // Test aid: SVR2011_TEST_NO_TEMP_BLANK=1 - the fetched mods go into the save as they are (the check's control)
+  static const bool off = std::getenv("SVR2011_TEST_NO_TEMP_BLANK") != nullptr;
+  if (off) {
+    if (saving) REXLOG_WARN("[svr2011] superstar mods: test - the save is built WITH the fetched mods");
+    return;
+  }
+  for (const auto& [id, saved] : g_temp_saved) {
+    const uint32_t si = Rd16(base + kIdToIndex + id * 2);
+    if (si >= 512) continue;
+    uint8_t* r = base + kRecords + si * kRecordSize;
+    uint8_t* p = base + kProfiles + si * kProfileSize;
+    if (saving) {
+      std::vector<uint8_t> live(r, r + kRecordSize);
+      live.insert(live.end(), p, p + kProfileSize);
+      g_temp_live[id] = std::move(live);
+      std::memcpy(r, saved.data(), kRecordSize), std::memcpy(p, saved.data() + kRecordSize, kProfileSize);
+    } else if (const auto it = g_temp_live.find(id); it != g_temp_live.end()) {
+      std::memcpy(r, it->second.data(), kRecordSize), std::memcpy(p, it->second.data() + kRecordSize, kProfileSize);
+    }
+  }
+  if (saving && !g_temp_saved.empty())
+    REXLOG_INFO("[svr2011] superstar mods: the save is built without the {} fetched mod(s)", g_temp_saved.size());
+  if (!saving) g_temp_live.clear();
+}
+
+void SetSuperstarModsSaves(const fs::path& saves) { g_save_file = saves / "SaveData.dat"; }
+
+bool IsOnlineTempSuperstar(uint32_t id) {
+  const Mod* m = ModOf(id);
+  return m && m->temp;
 }
 
 bool IsSuperstarMod(uint32_t id) { return ModOf(id) != nullptr; }
@@ -3172,7 +3295,7 @@ std::string SuperstarModLoading(uint32_t id) {
   const Mod* m = ModOf(id);
   if (!m) return {};
   std::error_code ec;
-  const fs::path p = m->loading.empty() ? g_game / "Mods" / "Superstars" / m->folder / "load.dds" : m->loading;
+  const fs::path p = m->loading.empty() ? m->dir / "load.dds" : m->loading;
   return fs::is_regular_file(p, ec) ? p.string() : std::string();
 }
 uint32_t SuperstarModBase(uint32_t id) {

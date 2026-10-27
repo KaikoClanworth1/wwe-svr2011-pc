@@ -2,6 +2,7 @@
 #include "online_files.h"
 
 #include "../modmaker/svrfmt/mod_travel.h"
+#include "mod_transfer.h"
 #include "no_mods.h"
 
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <set>
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -294,12 +296,24 @@ std::string BuildModSet() {
   const fs::path mods = rex::filesystem::GetExecutableFolder() / "Mods";
   std::error_code ec;
   for (const char* kind : {"Superstars", "Moves", "Arenas", "Backstage"}) {
-    for (const auto& e : fs::directory_iterator(mods / kind, ec)) {
+    // (a run that loads the host's fetched mods: those too - <folder>@<crc>, its key the host's; only the kinds
+    // that load from there: superstar_mods.cpp)
+    std::vector<std::pair<fs::directory_entry, bool>> entries;  // (fetched: its folder is <id>@<crc>)
+    std::set<std::string> own;
+    for (const auto& e : fs::directory_iterator(mods / kind, ec))
+      entries.push_back({e, false}), own.insert(e.path().filename().string());
+    if (svr2011::OnlineModsLoad() && !std::strcmp(kind, "Superstars"))
+      for (const auto& e : fs::directory_iterator(svr2011::OnlineModsRoot() / kind, ec)) entries.push_back({e, true});
+    for (const auto& [e, fetched] : entries) {
       if (!e.is_directory() || fs::exists(e.path() / "disabled", ec)) continue;
+      std::string id = e.path().filename().string();
+      if (fetched) {
+        id = id.substr(0, id.rfind('@'));
+        if (own.count(id)) continue;  // (this game's own of that name plays: superstar_mods.cpp)
+      }
       const uint32_t crc = FolderCrc(e.path());
       const fs::path manifest = e.path() / "manifest.txt";
       std::string name = ManifestValue(manifest, "name"), version = ManifestValue(manifest, "version");
-      const std::string id = e.path().filename().string();
       if (name.empty()) name = id;
       if (version.empty()) version = "-";
       char hex[16];

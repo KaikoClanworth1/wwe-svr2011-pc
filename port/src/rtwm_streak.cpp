@@ -87,7 +87,7 @@ void Save(const Choice& c) {
 // The mod's id now (a mod keeps its id, slots.txt; 0: not installed / off).
 uint32_t ModNow(const std::string& folder) {
   if (folder.empty()) return 0;
-  for (uint32_t id : svr2011::SuperstarModIds())
+  for (uint32_t id : svr2011::SuperstarModIds(false))
     if (svr2011::SuperstarModFolder(id) == folder) return id;
   return 0;
 }

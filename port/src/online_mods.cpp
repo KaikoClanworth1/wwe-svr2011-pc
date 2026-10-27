@@ -725,6 +725,12 @@ void OnlineModsFrame(PPCContext& ctx, uint8_t* base) {
   if (LogOn()) REXLOG_INFO("online mods: the lobby's records read again in this game's numbering");
 }
 
+std::string OnlineModsHostName() {
+  std::lock_guard lock(g_mutex);
+  const auto it = g_theirs.find(g_host);
+  return it != g_theirs.end() ? it->second.name : std::string();
+}
+
 std::vector<std::string> OnlineModsLackedFromHost() {
   std::lock_guard lock(g_mutex);
   std::vector<std::string> out;
