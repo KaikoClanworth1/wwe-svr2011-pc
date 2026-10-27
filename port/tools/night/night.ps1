@@ -8,6 +8,7 @@
 #   night.ps1 [-Workers 4] [-Only B,C] [-Ids B2B,C100_101] [-Redo] [-Setup]
 param([int]$Workers = 4, [string[]]$Only = @(), [string[]]$Ids = @(), [switch]$Redo, [switch]$Setup,
       [string]$Scenarios = "")
+$env:SVR2011_AUDIO_MUTE = "1"  # (test games stay muted even if their command line is lost)
 $ErrorActionPreference = "Continue"
 # (powershell -File passes "a,b" as one string)
 $Only = @($Only | ForEach-Object { $_ -split "," } | Where-Object { $_ })

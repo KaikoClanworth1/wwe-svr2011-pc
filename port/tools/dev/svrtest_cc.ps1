@@ -23,6 +23,7 @@
 # Example (the mod-move refusal: a jeff_hardy move planted into CAW slot 0's moveset, in memory):
 #   svrtest_cc.ps1 --mods "...\Game Files\Mods\Superstars\jeff_hardy" --env SVR2011_TEST_CC_MODMOVE=0:3575
 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
+$env:SVR2011_AUDIO_MUTE = "1"  # (test games stay muted even if their command line is lost)
 $ErrorActionPreference = "Stop"
 $tools = Split-Path $PSScriptRoot -Parent
 $port = Split-Path $tools -Parent

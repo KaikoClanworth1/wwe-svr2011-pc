@@ -19,6 +19,7 @@
 # Writes runs\svrtest\<stamp>_<name>\ (host\ and join\ dumps, host.log, join.log, server.log, result.json); stops
 # both games and the server by their PIDs.
 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
+$env:SVR2011_AUDIO_MUTE = "1"  # (test games stay muted even if their command line is lost)
 $ErrorActionPreference = "Stop"
 $tools = Split-Path $PSScriptRoot -Parent
 $port = Split-Path $tools -Parent
