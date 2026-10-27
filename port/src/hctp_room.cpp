@@ -116,6 +116,7 @@ struct Climber {
   int cooldown = 0;    // frames before another try
   uint32_t frame = 0;  // (the match frame last counted)
   uint32_t hit = 0;    // (the last match frame he walked into a climb wall, + 1)
+  float x[8] = {}, z[8] = {};  // (where he was the last 8 counted frames: the way he walks in)
 };
 Climber g_climbers[8];
 // Touched attributes that climb besides 0xDF: the standing cage panels (their
@@ -129,6 +130,8 @@ bool HctpRoomActive() {
 
 // The HCTP room number (hctp=30 the Back Entrance) - its cage rules use room 30's places.
 int HctpRoom();
+
+void WrF(uint8_t* p, float f);
 
 void Climb(PPCContext& ctx, uint8_t* base, uint32_t f) {
   int slot = -1;
@@ -146,6 +149,7 @@ void Climb(PPCContext& ctx, uint8_t* base, uint32_t f) {
   // (counted once a frame: this runs for each of his collision parts, and only one of them meets the wall)
   if (frame == c.frame) return;
   c.frame = frame;
+  c.x[frame % 8] = RdF(base + f + 288), c.z[frame % 8] = RdF(base + f + 296);
   if (c.cooldown > 0) --c.cooldown;
   if (c.hit && c.hit + 1 >= frame)  // (the wall this frame or the one before)
     ++c.pressing;
@@ -154,6 +158,8 @@ void Climb(PPCContext& ctx, uint8_t* base, uint32_t f) {
   if (g_log && c.pressing && c.pressing % 4 == 0)
     REXLOG_INFO("hctp: fighter {} presses into a climb wall ({} frames)", slot, c.pressing);
   if (c.pressing < 12 || c.cooldown > 0 || g_no_grab) return;
+  const float yaw_was = RdF(base + f + 276);
+  const float wx = RdF(base + f + 288) - c.x[(frame + 1) % 8], wz = RdF(base + f + 296) - c.z[(frame + 1) % 8];
   const auto saved = ctx;
   ctx.r3.u64 = f;
   sub_824B6A70(ctx, base);
@@ -161,9 +167,17 @@ void Climb(PPCContext& ctx, uint8_t* base, uint32_t f) {
   ctx = saved;
   c.cooldown = 30;
   c.pressing = 0;
-  REXLOG_INFO("hctp: fighter {} pressed into a climb wall at ({:.1f} {:.1f} {:.1f}): {}", slot,
+  // (a spot's yaw comes from its wall's normal, and HCTP's collision winds some faces - the ladder, the crate
+  // stack - the other way: the climb then played with his back to the wall. He walks into the wall, so the
+  // climb faces against his walk - a fighter in a climb at yaw y faces (-sin y, -cos y))
+  if (started && wx * wx + wz * wz > 1.0f) {
+    const float y = RdF(base + f + 276);
+    if (std::sin(y) * wx + std::cos(y) * wz > 0.0f) WrF(base + f + 276, y > 0.0f ? y - 3.14159265f : y + 3.14159265f);
+  }
+  REXLOG_INFO("hctp: fighter {} pressed into a climb wall at ({:.1f} {:.1f} {:.1f}): {} (yaw {:.2f} -> {:.2f})", slot,
               RdF(base + f + 288), RdF(base + f + 292), RdF(base + f + 296),
-              started ? fmt::format("climbs (motion {})", Rd32(base + f + 212)) : std::string("no spot in range"));
+              started ? fmt::format("climbs (motion {})", Rd32(base + f + 212)) : std::string("no spot in range"),
+              yaw_was, RdF(base + f + 276));
 }
 
 }  // namespace
