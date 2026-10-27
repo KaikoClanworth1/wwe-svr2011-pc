@@ -11,6 +11,7 @@
 # other motions than the recording's is stopped and started again (-Tries times).
 param([Parameter(Mandatory)][string]$Recording, [Parameter(Mandatory)][string]$GameDir, [string]$UserData = "",
       [int]$Shots = 6, [int]$ShotEvery = 10, [int]$Tries = 4, [int]$P2pPort = 36547, [string]$Exe = "svr2011.exe")
+$env:SVR2011_AUDIO_MUTE = "1"  # (test games stay muted even if their command line is lost)
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "test_guard.ps1")
 
