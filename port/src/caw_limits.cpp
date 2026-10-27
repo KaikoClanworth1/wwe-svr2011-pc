@@ -134,7 +134,8 @@ void InstallCawLimits(rex::memory::Memory* memory) {
   REXLOG_INFO("[svr2011] big models: {} pages a wrestler ({} MB of device memory{})", ModelPageLimit(), ram >> 20,
               std::getenv("SVR2011_TEST_RAM_MB") ? ", SVR2011_TEST_RAM_MB set" : "");
 #else
-  REXLOG_INFO("[svr2011] big models: {} pages a wrestler", ModelPageLimit());
+  REXLOG_INFO("[svr2011] big models: {} pages a wrestler{}", ModelPageLimit(),
+              std::getenv("SVR2011_TEST_RAM_MB") ? " (SVR2011_TEST_RAM_MB set)" : "");
 #endif
 }
 
@@ -205,14 +206,13 @@ uint32_t ModelPageLimit() {
   static const uint32_t pages = [] {
     if (const char* v = std::getenv("SVR2011_TEST_PAGE_LIMIT"); v && *v) return uint32_t(std::strtoul(v, nullptr, 10));
     if (!BigModelMemory()) return 192u;
+    uint64_t ram = 0;  // (0: the rule doesn't apply - a PC)
 #if defined(__ANDROID__)
-    uint64_t ram = uint64_t(sysconf(_SC_PHYS_PAGES)) * uint64_t(sysconf(_SC_PAGE_SIZE));
-    // (test aid SVR2011_TEST_RAM_MB=<MB>: the device's memory as if it were that - the small-device branch on a big one)
+    ram = uint64_t(sysconf(_SC_PHYS_PAGES)) * uint64_t(sysconf(_SC_PAGE_SIZE));
+#endif
+    // (test aid SVR2011_TEST_RAM_MB=<MB>: the memory as if it were that - the small-device rule, on any device or a PC)
     if (const char* v = std::getenv("SVR2011_TEST_RAM_MB"); v && *v) ram = uint64_t(std::strtoull(v, nullptr, 10)) << 20;
     return ram && ram < (uint64_t(6) << 30) ? 1024u : 1600u;
-#else
-    return 1600u;
-#endif
   }();
   return pages;
 }
