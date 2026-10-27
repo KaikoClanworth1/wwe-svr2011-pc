@@ -316,7 +316,7 @@ void ListMods(fs::path game, fs::path out, std::set<std::pair<std::string, std::
 // pace aren't replayed (docs/MATCH_RECORDINGS.md). The replay's own recording (a folder of its own) gets
 // replay.txt: second by second, how far each person is from the recording's trail.txt - where the two part.
 struct Replay {
-  bool loaded = false, on = false, done = false;
+  bool loaded = false, on = false, done = false, ended = false;  // (ended: the recording's match ended - not a crash)
   fs::path from;                        // (the recording)
   uint64_t bell = 0, frames = 0;        // (this run's bell frame; the recording's frames from its bell)
   std::array<std::vector<std::pair<uint32_t, std::array<uint8_t, 17>>>, 8> pads;
@@ -334,6 +334,7 @@ void ReplayLoad() {  // (under g_rec)
   const std::string json = ReadText(g_replay.from / "match.json");
   if (const size_t k = json.find("\"frames\": "); k != std::string::npos)
     g_replay.frames = std::strtoull(json.c_str() + k + 10, nullptr, 10);
+  g_replay.ended = json.find("\"result\": \"ended\"") != std::string::npos;
   FILE* f = std::fopen((g_replay.from / "inputs.bin").string().c_str(), "rb");
   uint32_t head[4] = {};
   if (!f || std::fread(head, 4, 4, f) != 4 || head[0] != 0x49525653u) {
@@ -386,14 +387,14 @@ std::map<int, std::map<int, std::array<double, 4>>> ReadTrail(const fs::path& fi
   return t;
 }
 
-void ReplayReport() {  // (under g_rec: the replay's end - replay.txt in this run's own folder)
+void ReplayReport(bool match_ended) {  // (under g_rec: the replay's end - replay.txt in this run's own folder)
   if (g.trail) std::fflush(g.trail);
   const auto a = ReadTrail(g_replay.from / "trail.txt"), b = ReadTrail(g.dir / "trail.txt");
   std::string text = fmt::format("replay of {}\n(second: the farthest any person is from the recording's place, "
                                  "in game units - the ring is about 50 across; * a motion differs)\n",
                                  g_replay.from.filename().string());
-  int parts = -1;
-  std::string why;
+  int parts = -1, first = -1;  // (first: anyone - the referee parted seconds before the wrestlers, 27 Oct)
+  std::string why, first_why;
   for (const auto& [second, people] : a) {
     const auto it = b.find(second);
     if (it == b.end()) continue;
@@ -406,6 +407,8 @@ void ReplayReport() {  // (under g_rec: the replay's end - replay.txt in this ru
                                  (v[1] - o->second[1]) * (v[1] - o->second[1]));
       if (person < 6 && v[3] != o->second[3]) motions = true;
       if (d > farthest) farthest = d;
+      if (first < 0 && d > 0.05)
+        first = second, first_why = fmt::format("person {} {:.2f} from the recording's place", person, d);
       if (parts < 0 && person < 6 && d > 2.0)
         parts = second, why = fmt::format("person {} is {:.1f} from the recording's place (motion {} - recorded {})", person,
                                           d, int(o->second[3]), int(v[3]));
@@ -415,8 +418,19 @@ void ReplayReport() {  // (under g_rec: the replay's end - replay.txt in this ru
   const std::string head =
       parts < 0 ? std::string("the replay stays with the recording (no person 2.0 or more from it at a second)")
                 : fmt::format("the replay parts from the recording at second {}: {}", parts, why);
+  // (the end: the replay's match ended, or the recording's frames ran out while it was still on)
+  const uint64_t at = g_updates - g_replay.bell;
+  const std::string ends =
+      match_ended ? fmt::format("the replay's match ended at frame {}; the recording {} at frame {}", at,
+                                g_replay.ended ? "ended" : "stopped (no end)", g_replay.frames)
+      : g_replay.ended ? fmt::format("the recording's match ended at frame {}; the replay's was still on", g_replay.frames)
+                       : fmt::format("the recording stopped at frame {} (no end); the replay's match was still on",
+                                     g_replay.frames);
+  const std::string firsts =
+      first < 0 ? std::string("no one parts at all (0.05 or more)")
+                : fmt::format("the first to part, by 0.05 or more: second {}, {}", first, first_why);
   if (FILE* f = std::fopen((g.dir / "replay.txt").string().c_str(), "wb"))
-    std::fputs((head + "\n" + text).c_str(), f), std::fclose(f);
+    std::fputs((head + "\n" + firsts + "\n" + ends + "\n" + text).c_str(), f), std::fclose(f);
   REXLOG_INFO("[svr2011] replay: {} - replay.txt in {}", head, g.dir.string());
 }
 
@@ -425,7 +439,7 @@ void ReplayFrame(uint8_t* base, uint32_t clock) {  // (under g_rec: each frame, 
   if (!g_replay.on || g_updates - g_replay.bell < g_replay.frames) return;
   g_replay.on = false, g_replay.done = true;
   REXLOG_INFO("[svr2011] replay: done - the recording's {} frames played; the pads are the players' again", g_replay.frames);
-  if (g.on) ReplayReport();
+  if (g.on) ReplayReport(false);
 }
 
 // bell.bin (exact replays, docs/MATCH_RECORDINGS.md): the state a replay takes over at its bell - "SVRB", version 1,
@@ -874,7 +888,7 @@ void MatchRecordEnded(const std::string& box) {
   }
   if (g_replay.on) {  // (the replay's match ended before the recording's frames ran out)
     g_replay.on = false, g_replay.done = true;
-    ReplayReport();
+    ReplayReport(true);
   }
   if (g.inputs) std::fclose(g.inputs);
   if (g.trail) std::fclose(g.trail);

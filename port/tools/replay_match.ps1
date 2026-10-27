@@ -8,7 +8,8 @@
 # seconds of the match) go into the replay's folder as PNGs. Prints the replay's folder and replay.txt's first lines.
 # Approximate (format 1 recordings): the start places, the game's random table and the loading pace aren't replayed.
 # The pre-bell intro (a sneak attack or standing) comes out either way: a replay whose bell finds the people in
-# other motions than the recording's is stopped and started again (-Tries times).
+# other motions than the recording's is stopped and started again (-Tries times; the last try is replayed all the
+# same, approximate from the start).
 param([Parameter(Mandatory)][string]$Recording, [Parameter(Mandatory)][string]$GameDir, [string]$UserData = "",
       [int]$Shots = 6, [int]$ShotEvery = 10, [int]$Tries = 4, [int]$P2pPort = 36547, [string]$Exe = "svr2011.exe",
       [ValidateSet("auto", "0", "1", "keep")][string]$Entrances = "auto")
@@ -85,6 +86,7 @@ foreach ($k in $set.Keys) { if ($set[$k]) { Set-Item "Env:$k" $set[$k] } }
 "replay: $($wrestlers.name -join ' vs ') - rule $($m.rule.name), arena $($m.arena.name); $($m.frames) frames, seed $seed"
 "  SVR2011_TEST_MATCH=$($set.SVR2011_TEST_MATCH)"
 $dir = $null
+$other = $false
 try {
     for ($try = 1; $try -le $Tries -and -not $dir; $try++) {
         # (a log of each try's own: a stopped game can hold its log for seconds, and a log that could not be deleted
@@ -110,9 +112,13 @@ try {
                     $got = if ($rec) { Get-BellMotions (Join-Path $rec.Matches[0].Groups[1].Value.Trim() "trail.txt") }
                     if ($got) {
                         $checked = $true
-                        if ($wantBell -and $got -ne $wantBell) {
+                        if ($wantBell -and $got -ne $wantBell -and $try -lt $Tries) {
                             "  try ${try}: the bell found $got, the recording's $wantBell (the pre-bell intro) - again"
                             break
+                        }
+                        if ($wantBell -and $got -ne $wantBell) {  # (the last try: replayed all the same - without
+                            $other = $true                        # bell.bin, so it parts from the start)
+                            "  try ${try}: the bell found $got, the recording's $wantBell - replaying from this other intro (approximate)"
                         }
                     }
                 }
@@ -121,7 +127,7 @@ try {
                 if ($line) { break }
             }
             if ($line) { $dir = $line.Matches[0].Groups[1].Value.Trim(); Start-Sleep 2 }  # (the last frame shots)
-            elseif (-not $checked -or $got -eq $wantBell -or -not $wantBell) {
+            elseif (-not $checked -or $got -eq $wantBell -or -not $wantBell -or $other) {
                 throw "no replay report (game $(if ($p.HasExited) { 'exited' } else { 'timed out' })); log: $log"
             }
         } finally {
@@ -132,7 +138,7 @@ try {
 } finally {
     foreach ($k in $set.Keys) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
 }
-if (-not $dir) { throw "no try's bell matched the recording's ($wantBell) in $Tries tries" }
+if (-not $dir) { throw "no replay in $Tries tries" }
 
 # The frame shots (binary PPM, P6) as PNGs into the replay's folder.
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
@@ -170,5 +176,5 @@ foreach ($f in Get-ChildItem $shotDir -Filter *.ppm | Sort-Object Name) {
     [SvrPpm]::ToPng($f.FullName, (Join-Path $dir ("shot_{0:D2}.png" -f $n))); $n++
 }
 Remove-Item $shotDir, $inputFile -Recurse -ErrorAction SilentlyContinue
-"replay folder: $dir ($n frame shots)"
+"replay folder: $dir ($n frame shots)$(if ($other) { ' - from another pre-bell intro than the recording' })"
 Get-Content (Join-Path $dir "replay.txt") -TotalCount 12
