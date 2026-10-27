@@ -714,10 +714,14 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
   const Json& item = NativeItem(p);
   const std::wstring thumb = Wide(!item["picture"].Str().empty() ? item["picture"].Str() : item["thumb"].Str());
   const std::string stem = fs::path(p.name).stem().string(), scanned = item["name"].Str();
+  // (the arena select shows about 30 letters: a long one gets "(2K17)", then nothing)
   const disc_list::Game* from = disc_list::GameByKey(game);
-  const std::string title = !scanned.empty() && Lower(scanned) != Lower(stem) && Lower(scanned).rfind("arena bg", 0) != 0
-                                ? scanned + (from ? std::string(" (") + from->name + ")" : "")
-                                : "";
+  std::string title = !scanned.empty() && Lower(scanned) != Lower(stem) && Lower(scanned).rfind("arena bg", 0) != 0 ? scanned : "";
+  if (!title.empty() && from) {
+    const std::string full = from->name, brief = full.rfind("WWE ", 0) == 0 ? full.substr(4) : full;
+    if (title.size() + full.size() + 3 <= 30) title += " (" + full + ")";
+    else if (title.size() + brief.size() + 3 <= 30) title += " (" + brief + ")";
+  }
   RunInBackground([p, image, folder, out, game, embedded, thumb, title, stem] {
     Progress("Copying " + p.name + " off the disc ...");
     Bytes b;

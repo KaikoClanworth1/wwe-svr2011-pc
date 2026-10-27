@@ -488,11 +488,14 @@ void ConvertModel13(Model& m, float scale, Convert13Stats& st) {
   // WWE '13's header screen video has no SvR2011 counterpart: the arena video. WWE 2K15 - 2K17 name their screens
   // layout_<show>_movie (the titantron: the entrance videos - raw, ss, nxt, me ...), layout_arena_movie and
   // layout_mini_tron (the arena's own loop), cut to 15 characters: names SvR2011 doesn't know play the live camera,
-  // in entrances too.
+  // in entrances too. WWE 2K14 names them main&banner (the titantron), <show>_header&wall and mini_tron (loops).
   for (auto& t : used) {
     const std::string l = Lower(t);
-    if (l == "header_wall_mov" || l.rfind("layout_arena_mo", 0) == 0 || l.rfind("layout_mini_tro", 0) == 0) t = "arena_movie";
-    else if (l.rfind("layout_", 0) == 0 && l.find("_mov", 6) != std::string::npos) t = "titantron_movie";
+    if (l == "header_wall_mov" || l.rfind("layout_arena_mo", 0) == 0 || l.rfind("layout_mini_tro", 0) == 0 || l == "mini_tron" ||
+        (l.size() > 12 && l.compare(l.size() - 12, 12, "_header&wall") == 0))
+      t = "arena_movie";
+    else if ((l.rfind("layout_", 0) == 0 && l.find("_mov", 6) != std::string::npos) || l == "main&banner")
+      t = "titantron_movie";
   }
   if (!m.meshes.empty()) m.textures = used;  // (a model without meshes keeps its list)
 }
@@ -1883,6 +1886,18 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
   for (const auto& name : used)
     if (!find(a, name)) {
       BundleTexture* h = find(host, name);
+      // a picture the arena names but doesn't carry - WWE 2K17's WCW Nitro: its light cards' pas_light / pas_light02
+      // (2K14's arenas carry them) - draws white: a clear one instead (the videos' names stay unstored, as shipped;
+      // "specular" is a map slot's placeholder)
+      if (!h && Lower(name) != "arena_movie" && Lower(name) != "titantron_movie" && Lower(name) != "specular" && !a.bundles.empty()) {
+        Image clear;
+        clear.w = clear.h = 4;
+        clear.rgba.assign(4 * 4 * 4, 0);
+        a.bundles[0].textures.push_back({name, "dds", DdsEncode(clear, DxtFormat::kDxt5, false)});
+        a.bundles[0].changed = true;
+        rep.notes.push_back("texture " + name + ": not in the arena - a clear one (it drew white)");
+        continue;
+      }
       if (!h) {
         rep.notes.push_back("texture " + name + ": none (as shipped)");
         continue;
