@@ -1,4 +1,4 @@
-"""An HCTP room's props + climb spots + converted motions -> GMGB package (78H3) for the row mod.
+"""An HCTP room's props + climb spots + converted motions -> GMGB package (78R<n>, or the world's) for the row mod.
 Room 30 by default; others by HCTP_ROOM / HCTP_DX / HCTP_DZ / HCTP_OUT (the mod folder)."""
 import math
 import os
@@ -143,7 +143,10 @@ for pr in plist:
             ix = {71: (0, 8), 81: (3, 4)}.get(pr['kind'])
             if ix and int(prm[ix[0]]) == mid and prm[ix[1]] > 0:
                 idle = OBJ_ACT + int(prm[ix[1]])
-        spec.append(dict(model=models[mid][0], pos=pos, ry=a, note=f"{pr['id']} m{mid}", idle=idle))
+        # (the equipment crate's model turned half round: its lid stood on the side it is whipped in from -
+        # its solid box is symmetric, and its floor zone stays where HCTP has it)
+        ry = a + math.pi if pr['kind'] == 36 else a
+        spec.append(dict(model=models[mid][0], pos=pos, ry=ry, note=f"{pr['id']} m{mid}", idle=idle))
 # climb spots from the room collision with props (HCTP coordinates, original attributes)
 hmd = open(STAGE + r'\00999.hmd', 'rb').read()
 extra = hctp_props.world_collision(STAGE, plist)
@@ -172,7 +175,7 @@ if SPEC_OUT:
         p['model'] = os.path.abspath(p['model'])
     pickle.dump(dict(spec=spec, spots=spots, tex=tex), open(SPEC_OUT, 'wb'))
 else:
-    hctp_gimmick.build(GM, f'{OUT}/gimmick.pac', entry='78H3', props=spec, textures=tex, report=True,
+    hctp_gimmick.build(GM, f'{OUT}/gimmick.pac', entry=os.environ.get('HCTP_ENTRY', '78R%d' % (ROOM - 30)), props=spec, textures=tex, report=True,
                        records=spots, bank=bank, keep_models=False)
 
 

@@ -23,6 +23,12 @@ sys.path.insert(0, os.path.join(HERE, 'mot'))
 # the first game version that loads a stage over its vertex window (src/model_mem.cpp): what such a room says
 # in its manifest (needs=) - older games crash at its load
 NEEDS_BIG_STAGE = '2.1.5'
+
+
+def gimmick_entry(room):
+    """the room's own GMGB entry (78R0 .. 78R6): every installed HCTP mod gets its gimmicks, arena_mods.cpp
+    (before 2.1.6 every room was 78H3 and only the first mod's played)"""
+    return '78R%d' % (room - 30)
 BIG_STAGE_ROOMS = {34}   # (uncropped: over the window)
 # room -> (dx, dz, crop x0,x1,z0,z1 or None, row name)
 ROOMS = {
@@ -175,7 +181,7 @@ def build(room, unpacked, pac11, work, mod, name=None, progress=lambda p, t: Non
     # (id: the install folder's name - the launcher installs a mod under Mods/<type>/<id>)
     mod_id = mod_id or re.sub(r'[^A-Za-z0-9_]', '_', os.path.basename(os.path.normpath(mod))) or 'hctp_room_%d' % room
     lines = ['type=backstage', 'id=%s' % mod_id, 'name=%s' % name, 'author=HCTP port', 'version=1.0', 'area=0',
-             'row=%s' % name, 'gimmick=78H3',
+             'row=%s' % name, 'gimmick=%s' % gimmick_entry(room),
              'box=%.1f,%.1f,%.1f,%.1f' % ((x0 + x1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (z1 - z0) / 2),
              'camera_height=45', 'hctp=%d' % room, 'weapons=%s' % weapons]
     if room in BIG_STAGE_ROOMS and not ROOMS[room][2]:

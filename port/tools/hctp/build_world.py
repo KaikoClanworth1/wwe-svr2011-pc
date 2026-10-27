@@ -168,14 +168,16 @@ def build(unpacked, pac11, work, mod, rooms=WORLD_ROOMS, name='HCTP Backstage', 
         first += n
     progress(88, 'package')
     import hctp_gimmick
-    hctp_gimmick.build(os.path.join(pac11, 'gm.pac'), os.path.join(mod, 'gimmick.pac'), entry='78H3', props=spec,
+    # (its own GMGB entry: 78WB the backstage, 78WF the fountain one - not a room's, 78R0 ..)
+    entry = '78WF' if 35 in rooms else '78WB'
+    hctp_gimmick.build(os.path.join(pac11, 'gm.pac'), os.path.join(mod, 'gimmick.pac'), entry=entry, props=spec,
                        textures=tex, records=spots, bank=open(bank, 'rb').read(), keep_models=False,
                        first_obj=FIRST_OBJ, last_obj=LAST_OBJ)
     open(os.path.join(mod, 'hctp.txt'), 'w').write('\n'.join(text) + '\n')
     x0, x1, z0, z1 = st['areas'][0]
     mod_id = mod_id or re.sub(r'[^A-Za-z0-9_]', '_', os.path.basename(os.path.normpath(mod))) or 'hctp_world'
     lines = ['type=backstage', 'id=%s' % mod_id, 'name=%s' % name, 'author=HCTP port', 'version=1.0', 'area=0',
-             'row=%s' % name, 'gimmick=78H3',
+             'row=%s' % name, 'gimmick=%s' % entry,
              'box=%.1f,%.1f,%.1f,%.1f' % ((x0 + x1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (z1 - z0) / 2),
              'camera_height=45', 'hctp=%d' % rooms[0], 'weapons=%s' % (';'.join(weapons) or 'none')]
     # (HCTP's gates - exit acts, 8 spots - are in the game from NEEDS_GATES; a stage bigger than the shipped
