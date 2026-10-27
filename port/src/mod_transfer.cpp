@@ -735,7 +735,11 @@ void Run(std::vector<ModOffer> wanted) {
       for (int tries = 0; tries < 15 && !got && !g_cancel; ++tries) {  // (the host lists a big mod first)
         Out o;
         o.u8(kListReq), o.u32(gen), o.u16(index), o.u16(page);
-        if (!Send(o)) return fail("There's no direct link to the host: mods never come through the relay.");
+        if (!Send(o)) {  // (a link still settling: a moment, again - through the relay for good: the reason)
+          if (tries >= 10) return fail("There's no direct link to the host: mods never come through the relay.");
+          std::this_thread::sleep_for(std::chrono::seconds(2));
+          continue;
+        }
         error.clear();
         got = Await(kList, 2000, &error);
         if (!got && !error.empty()) return fail(error);
