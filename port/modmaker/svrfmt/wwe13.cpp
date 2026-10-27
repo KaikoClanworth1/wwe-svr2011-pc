@@ -486,12 +486,13 @@ void ConvertModel13(Model& m, float scale, Convert13Stats& st) {
     s.params = std::move(ps);
   }
   // WWE '13's header screen video has no SvR2011 counterpart: the arena video. WWE 2K15 - 2K17 name their screens
-  // layout_raw_movie (the titantron: the entrance videos), layout_arena_movie and layout_mini_tron (the arena's own
-  // loop), cut to 15 characters: names SvR2011 doesn't know play the live camera, in entrances too.
+  // layout_<show>_movie (the titantron: the entrance videos - raw, ss, nxt, me ...), layout_arena_movie and
+  // layout_mini_tron (the arena's own loop), cut to 15 characters: names SvR2011 doesn't know play the live camera,
+  // in entrances too.
   for (auto& t : used) {
     const std::string l = Lower(t);
     if (l == "header_wall_mov" || l.rfind("layout_arena_mo", 0) == 0 || l.rfind("layout_mini_tro", 0) == 0) t = "arena_movie";
-    else if (l.rfind("layout_raw_movi", 0) == 0) t = "titantron_movie";
+    else if (l.rfind("layout_", 0) == 0 && l.find("_mov", 6) != std::string::npos) t = "titantron_movie";
   }
   if (!m.meshes.empty()) m.textures = used;  // (a model without meshes keeps its list)
 }
@@ -1332,6 +1333,161 @@ bool DropHangingScreens(Model& m) {
   return !any_left;
 }
 
+namespace {
+
+// SvR2011 plays videos on few screen models: the entrance video on 803 / 806 / 808, the arena's loop on 801 / 807
+// (sub_821828D0: 800-808 are slots, 809 and up none); any other screen gets the live camera, in entrances too. WWE
+// 2K15 - 2K17 hang 10 - 11 of them (800 - 809, 820): their extra titantrons showed the camera (the walk filmed into
+// the screen behind it). Their screens go to those ids, biggest first, the rest's meshes into the biggest of their
+// kind (arena vertices are world positions: models whose nodes all sit at the origin only); an announce table's
+// monitor (small, at the ring) keeps its id and the game's feed. The flag lines (0xC351) follow the ids.
+void ArrangeScreens(std::map<uint32_t, Model>& pending, std::string& flags, Wwe13Report& rep) {
+  auto kind = [](const Model& m) {
+    for (const auto& t : m.textures) {
+      if (Lower(t) == "titantron_movie") return 1;
+      if (Lower(t) == "arena_movie") return 2;
+    }
+    return 0;
+  };
+  auto at_origin = [](const Model& m) {
+    for (const auto& n : m.nodes)
+      for (int k = 0; k < 3; ++k)
+        if (std::fabs(n.t[k]) > 1e-4f || std::fabs(n.r[k]) > 1e-4f) return false;
+    return true;
+  };
+  auto radius = [](const Model& m) {
+    float r = 0;
+    for (const auto& s : m.meshes) r = std::max(r, s.sphere[3]);
+    return r;
+  };
+  auto monitor = [](const Model& m) {
+    bool small = !m.meshes.empty();
+    for (const auto& s : m.meshes)
+      small = small && s.sphere[3] < 60.f && std::fabs(s.sphere[0]) < 60.f && std::fabs(s.sphere[2]) < 60.f;
+    return small;
+  };
+  std::vector<uint32_t> screens[3];
+  for (const auto& [id, m] : pending)
+    if (id >= 800 && id <= 899 && kind(m) && !monitor(m) && !m.meshes.empty()) screens[kind(m)].push_back(id);
+  const std::vector<uint32_t> slots[3] = {{}, {803, 806, 808}, {801, 807}};
+  std::map<uint32_t, uint32_t> moved;  // old id -> new id (0: merged into another)
+  std::map<uint32_t, Model> placed;
+  std::string note;
+  for (int k = 1; k <= 2; ++k) {
+    auto& ids = screens[k];
+    if (ids.empty()) continue;
+    std::stable_sort(ids.begin(), ids.end(), [&](uint32_t a, uint32_t b) { return radius(pending[a]) > radius(pending[b]); });
+    // (a slot id held by something that isn't one of these screens stays as it is)
+    std::vector<uint32_t> free_slots;
+    for (uint32_t s : slots[k])
+      if (!pending.count(s) || std::find(ids.begin(), ids.end(), s) != ids.end()) free_slots.push_back(s);
+    if (free_slots.empty()) continue;
+    for (size_t i = 0; i < ids.size(); ++i) {
+      Model& src = pending[ids[i]];
+      if (i < free_slots.size()) {
+        moved[ids[i]] = free_slots[i];
+        placed[free_slots[i]] = src;
+        continue;
+      }
+      Model& dst = placed[free_slots[0]];
+      // (both in world positions first: each mesh through its node - rotation Rz Ry Rx, then the offset, up the
+      // parents - and the nodes then at the origin)
+      auto to_world = [](Model& m) {
+        auto world = [&m](int node, float v[3], bool direction) {
+          for (int n = node, steps = 0; n >= 0 && n < int(m.nodes.size()) && steps < 64; n = m.nodes[size_t(n)].parent, ++steps) {
+            const Node& nd = m.nodes[size_t(n)];
+            float x = v[0], y = v[1], z = v[2];
+            const float cx = std::cos(nd.r[0]), sx = std::sin(nd.r[0]), cy = std::cos(nd.r[1]), sy = std::sin(nd.r[1]),
+                        cz = std::cos(nd.r[2]), sz = std::sin(nd.r[2]);
+            const float y1 = cx * y - sx * z, z1 = sx * y + cx * z;  // Rx
+            y = y1, z = z1;
+            const float x2 = cy * x + sy * z, z2 = -sy * x + cy * z;  // Ry
+            x = x2, z = z2;
+            const float x3 = cz * x - sz * y, y3 = sz * x + cz * y;  // Rz
+            x = x3, y = y3;
+            v[0] = x + (direction ? 0.f : nd.t[0]), v[1] = y + (direction ? 0.f : nd.t[1]), v[2] = z + (direction ? 0.f : nd.t[2]);
+            if (nd.parent == n) break;
+          }
+        };
+        for (auto& mesh : m.meshes) {
+          const int node = mesh.palette.empty() ? 0 : mesh.palette[0];
+          for (auto& v : mesh.verts) world(node, v.pos, false), world(node, v.normal, true);
+          world(node, mesh.sphere.data(), false);
+        }
+        std::vector<std::array<float, 3>> centres(m.nodes.size());
+        for (size_t n = 0; n < m.nodes.size(); ++n) {
+          float c[3] = {m.nodes[n].sphere[0], m.nodes[n].sphere[1], m.nodes[n].sphere[2]};
+          world(int(n), c, false);
+          centres[n] = {c[0], c[1], c[2]};
+        }
+        for (size_t n = 0; n < m.nodes.size(); ++n)
+          for (int k = 0; k < 3; ++k) m.nodes[n].t[k] = 0.f, m.nodes[n].r[k] = 0.f, m.nodes[n].sphere[k] = centres[n][size_t(k)];
+      };
+      if (!at_origin(dst)) to_world(dst), note += " " + std::to_string(free_slots[0]) + " (to world positions)";
+      if (!at_origin(src)) to_world(src), note += " " + std::to_string(ids[i]) + " (to world positions)";
+      for (auto& mesh : src.meshes)
+        for (auto& p : mesh.palette) p = 0;  // (the screen it joins: its first node, at the origin now)
+      // its textures onto the biggest one's list, its meshes' texture slots renumbered
+      std::vector<int> map(src.textures.size());
+      for (size_t t = 0; t < src.textures.size(); ++t) {
+        auto f = std::find(dst.textures.begin(), dst.textures.end(), src.textures[t]);
+        if (f == dst.textures.end()) dst.textures.push_back(src.textures[t]), f = dst.textures.end() - 1;
+        map[t] = int(f - dst.textures.begin());
+      }
+      for (Mesh mesh : src.meshes) {
+        for (auto& p : mesh.params)
+          if (IsTexParam(p)) {
+            const int32_t v = int32_t(Be32(p.value.data()));
+            if (v >= 0 && v < int(map.size())) PutBe32(p.value.data(), uint32_t(map[size_t(v)]));
+          }
+        dst.meshes.push_back(std::move(mesh));
+      }
+      moved[ids[i]] = 0;
+      note += " " + std::to_string(ids[i]) + "->" + std::to_string(free_slots[0]) + " (merged)";
+    }
+  }
+  if (moved.empty()) return;
+  for (const auto& [from, to] : moved) {
+    pending.erase(from);
+    if (to && from != to) note += " " + std::to_string(from) + "->" + std::to_string(to);
+  }
+  for (auto& [id, m] : placed) pending[id] = std::move(m);
+  // the flag lines: a moved model's under its new id, a merged one's gone (the one it went into keeps its own)
+  std::map<uint32_t, std::string> line_of;
+  std::string out;
+  for (size_t at = 0; at < flags.size();) {
+    size_t end = flags.find('\n', at);
+    end = end == std::string::npos ? flags.size() : end + 1;
+    std::string line = flags.substr(at, end - at);
+    at = end;
+    size_t p = line.find_first_not_of(" \t");
+    if (p != std::string::npos && std::isdigit(static_cast<unsigned char>(line[p]))) {
+      const uint32_t id = uint32_t(std::strtoul(line.c_str() + p, nullptr, 10));
+      if (moved.count(id)) {
+        line_of[id] = line;  // (written back below under its new id)
+        continue;
+      }
+      if (pending.count(id) && id >= 800 && id <= 899 && std::find_if(moved.begin(), moved.end(), [&](const auto& mv) { return mv.second == id; }) != moved.end())
+        continue;  // (a slot id something else moved onto: its old line goes)
+    }
+    out += line;
+  }
+  for (const auto& [from, to] : moved) {
+    if (!to || !line_of.count(from)) continue;
+    std::string line = line_of[from];
+    const size_t p = line.find_first_not_of(" \t");
+    size_t e = p;
+    while (e < line.size() && std::isdigit(static_cast<unsigned char>(line[e]))) ++e;
+    line.replace(p, e - p, std::to_string(to));
+    if (!out.empty() && out.back() != '\n') out += "\r\n";
+    out += line;
+  }
+  flags = out;
+  rep.notes.push_back("screens to SvR2011's video slots (entrance 803 / 806 / 808, loop 801 / 807):" + note);
+}
+
+}  // namespace
+
 bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13Options& opt, Bytes& out,
                          Wwe13Report& rep, std::string* error) {
   auto fail = [&](const std::string& why) { if (error) *error = why; return false; };
@@ -1538,6 +1694,7 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
     }
   }
   if (opt.barrier_corners) BakeBarrierCorners(pending, rep);
+  ArrangeScreens(pending, flags13, rep);
   // LightBank13: the arena's own light sets, plus those the game looks up
   // itself and the flags name that it lacks, from the 2011 host arena's bank
   if (!bank13.empty()) {
