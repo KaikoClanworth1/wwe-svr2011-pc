@@ -359,6 +359,7 @@ struct FighterState {
   int wall = -1;  // the wall prop he holds
   int presses = 0;
   int idle = 0;   // frames since his last press
+  int away = 0;   // frames the stick has pointed away from the wall he holds
   int burn_cd = 0;  // frames before steam can burn him again
 };
 FighterState g_fs[8];
@@ -2262,6 +2263,7 @@ void Fighters(PPCContext& ctx, uint8_t* base) {
           s.wall = int(j);
           s.presses = 0;
           s.idle = 0;
+          s.away = 0;
           JumpAct(ctx, base, f, kWallGrab);
           PlayProp(ctx, base, w, kWallGrab, 0, 1);
           REXLOG_INFO("hctp: fighter {} grabs {}", i, w.name);
@@ -2276,6 +2278,18 @@ void Fighters(PPCContext& ctx, uint8_t* base) {
       // holding the wall (HCTP: shaking it while the button is mashed; he
       // lets go 180 frames after the last press; ~11 presses tear it down)
       ++s.idle;
+      // (the stick away from the wall - 8 ways, 4 up the screen = -z, 6 right = -x - or B lets go: a
+      // player can always walk off; before, only 180 frames without a press did)
+      const Prop& held = Cur().props[size_t(s.wall)];
+      const int32_t stick = input ? int32_t(Rd32(base + input + 56)) : -1;
+      bool off = input && (Rd32(base + input + 52) & kButtonB);
+      if (stick >= 0 && stick < 8 && held.has_box) {
+        const float a = float(stick - 4) * 0.785398f;
+        const float wx = x - (held.box[0] + held.box[1]) * 0.5f, wz = z - (held.box[4] + held.box[5]) * 0.5f;
+        s.away = -std::sin(a) * wx - std::cos(a) * wz > 0.0f ? s.away + 1 : 0;
+      } else
+        s.away = 0;
+      off = off || s.away >= 8;
       if (x_pressed) {
         ++s.presses;
         s.idle = 0;
@@ -2287,7 +2301,7 @@ void Fighters(PPCContext& ctx, uint8_t* base) {
         BreakWall(ctx, base, s.wall);
         REXLOG_INFO("hctp: fighter {} tears {} down", i, Cur().props[size_t(s.wall)].name);
         s.wall = -1;
-      } else if (s.idle > 180) {
+      } else if (s.idle > 180 || off) {
         JumpAct(ctx, base, f, kWallRelease);  // let go (HCTP 12060)
         REXLOG_INFO("hctp: fighter {} lets go of {}", i, Cur().props[size_t(s.wall)].name);
         s.wall = -1;
