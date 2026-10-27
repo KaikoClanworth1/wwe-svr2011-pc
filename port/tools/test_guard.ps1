@@ -136,7 +136,7 @@ function Use-SvrTestServer([string]$GameDir = "", $GameArgs = @(), [string]$Conf
 # Process names without .exe; add more here, or for one shell in
 # SVR2011_BUSY_GAMES="name1,name2".
 $SvrBusyGames = @(
-    "VALORANT-Win32-Shipping", "VRChat", "FortniteClient-Win64-Shipping", "cs2",
+    "VALORANT-Win64-Shipping", "VALORANT-Win32-Shipping", "VALORANT", "VRChat", "FortniteClient-Win64-Shipping", "cs2",
     "RocketLeague", "r5apex", "GTA5", "eldenring", "Overwatch", "LeagueClient", "League of Legends",
     "Minecraft.Windows", "Cyberpunk2077", "FC25", "FC26", "WWE2K25", "WWE2K26")
 $SvrTestLimit = 4
