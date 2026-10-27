@@ -143,7 +143,10 @@ for pr in plist:
             ix = {71: (0, 8), 81: (3, 4)}.get(pr['kind'])
             if ix and int(prm[ix[0]]) == mid and prm[ix[1]] > 0:
                 idle = OBJ_ACT + int(prm[ix[1]])
-        spec.append(dict(model=models[mid][0], pos=pos, ry=a, note=f"{pr['id']} m{mid}", idle=idle))
+        # (the equipment crate's model turned half round: its lid stood on the side it is whipped in from -
+        # its solid box is symmetric, and its floor zone stays where HCTP has it)
+        ry = a + math.pi if pr['kind'] == 36 else a
+        spec.append(dict(model=models[mid][0], pos=pos, ry=ry, note=f"{pr['id']} m{mid}", idle=idle))
 # climb spots from the room collision with props (HCTP coordinates, original attributes)
 hmd = open(STAGE + r'\00999.hmd', 'rb').read()
 extra = hctp_props.world_collision(STAGE, plist)
