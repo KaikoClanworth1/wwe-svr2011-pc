@@ -46,6 +46,7 @@
 #include "weapons_page.h"
 #include "discord_presence.h"
 #include "online.h"
+#include "caw_limits.h"
 #include "match_record.h"
 #include "match_types.h"
 #include "mystery_opponent.h"
@@ -581,6 +582,7 @@ REX_EXTERN(__imp__sub_823EEB98);
 REX_HOOK_RAW(sub_823EEB98) {
   svr2011::ArmMatchStart([] {
     REXLOG_INFO("[svr2011] match starts");
+    svr2011::NoteMatchLoading(false);  // (model_mem.cpp's load watch)
     svr2011::TouchGameInMatch(true);  // (the touch controller's MATCH layout)
     svr2011::native::SetMatchScene(true);  // (wide screens: full width)
     svr2011::SetDiscordScene(svr2011::DiscordScene::kMatch);
@@ -588,6 +590,7 @@ REX_HOOK_RAW(sub_823EEB98) {
     svr2011::MysteryOpponentReveal("the match runs");  // (mystery_opponent.h)
   });
   svr2011::MatchRecordMatchLoads();  // (the match's rand() seed: match_record.h)
+  svr2011::NoteMatchLoading(true);    // (model_mem.cpp's load watch)
   __imp__sub_823EEB98(ctx, base);
 }
 

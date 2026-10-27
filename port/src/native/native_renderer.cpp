@@ -1990,7 +1990,12 @@ double g_resident_mb = 0;  // (the textures' host memory at the last 5 s perf lo
 
 int BlankedSlot(Renderer* r);
 
+std::atomic<uint32_t> g_last_draws{0};
+std::atomic<uint64_t> g_frames_shown{0};
+
 void UpdateTitle(Renderer* r) {
+  g_last_draws = r->frame_stats.draws;
+  ++g_frames_shown;
   ++r->stat_frames;
   ++r->perf_frames;
   r->perf_draws += r->frame_stats.draws;
@@ -4367,6 +4372,9 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
 
 // ---------------------------------------------------------------------------
 // entry points
+
+uint32_t LastFrameDraws() { return g_last_draws.load(); }
+uint64_t FramesShown() { return g_frames_shown.load(); }
 
 FrameCosts LastFrameCosts() {
   std::lock_guard lock(g_costs_mutex);

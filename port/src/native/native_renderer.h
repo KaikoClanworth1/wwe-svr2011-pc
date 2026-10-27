@@ -61,6 +61,10 @@ struct FrameCosts {
   uint32_t textures = 0;  // the game's textures on the GPU
 };
 FrameCosts LastFrameCosts();
+// The draws of the last frame shown, and how many frames so far (any thread; model_mem.cpp's load watch: a loading
+// screen draws a handful).
+uint32_t LastFrameDraws();
+uint64_t FramesShown();
 
 // Game state (any thread): a match (entrances on) or the menus - on a wide
 // window, matches fill it (native_widescreen), menus stay 16:9.
