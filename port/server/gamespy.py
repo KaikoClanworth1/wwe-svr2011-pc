@@ -272,6 +272,10 @@ def zip_title(path):
     return ("%s %s (%s)" % (m.get("name", "?"), m.get("version", ""), m.get("type", "?"))).replace("  ", " ")
 
 
+class StorageBusy(OSError):
+    """The storage node is up but didn't hand a blob over in time (a busy disk): worth asking again soon."""
+
+
 class RemoteBlobs:
     """Blob bytes on a storage node (server.py --role storage, the user's PC behind the VPS): GET / PUT /
     DELETE <url>/blob/<sha>?packed=0|1 with the shared key. Down: reads give None (a download fails, the
@@ -310,18 +314,38 @@ class RemoteBlobs:
         except Exception:
             return None
 
+    def _get(self, sha, start=0):
+        """A GET, tried twice when the node doesn't answer in time or answers 5xx (its disk busy: 27 Oct the
+        old HDD at 100% gave 50 s first bytes); then StorageBusy. A 404 / 416 raises as it is."""
+        import urllib.error
+        for attempt in (1, 2):
+            try:
+                return self._req("GET", sha, start=start)
+            except urllib.error.HTTPError as e:
+                if e.code < 500:
+                    raise
+                why = "it said %d" % e.code
+            except Exception as e:
+                why = str(e) or type(e).__name__
+        log("storage node busy for %s (%s)" % (sha[:12], why))
+        raise StorageBusy(why)
+
     def open(self, sha, start=0):
         """-> (the node's answer, read as it comes, packed, where it starts) or None. A stored blob starts at
         `start` when the node answers its Range (206: aiohttp's FileResponse); a packed one is asked for whole
         (its packed bytes from an offset are no use - past a small packed file's end the node says 416) and
-        starts at 0."""
+        starts at 0. StorageBusy when the node is there but too slow (the caller's 503 + Retry-After)."""
         try:
-            f = self._req("GET", sha, start=start)
+            f = self._get(sha, start)
+        except StorageBusy:
+            raise
         except Exception:
             if not start:
                 return None
             try:
-                f = self._req("GET", sha)
+                f = self._get(sha)
+            except StorageBusy:
+                raise
             except Exception:
                 return None
             return f, f.headers.get("X-Packed") == "1", 0
@@ -331,7 +355,9 @@ class RemoteBlobs:
         if f.status == 206:
             f.close()
             try:
-                f = self._req("GET", sha)
+                f = self._get(sha)
+            except StorageBusy:
+                raise
             except Exception:
                 return None
         return f, packed, 0
