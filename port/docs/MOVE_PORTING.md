@@ -188,6 +188,42 @@ page (`port/docs/MOVE_MODDING.md`).
   and end without the hold loop (the parked submission issue, 2.8); Shooting Star Press 4 / Springboard Moonsault
   (dives) can't be forced (2.5). Sync looks right where the camera catches it; d / e / g not run yet.
 
+### WWE '13
+- Extract `WWE13 Extract` (xcompressed pacs: `--svrmod` = the Mod Maker's svrmod.exe). Most of its moves share names
+  and keys with WWE '12 (same dives, Tilt-A-Whirl ...); the new ones are its apron group APR1, corner and BASE.
+- **APR1 (grapples by the apron) are standing grapples in 2011** (CATS APR1 -> STN1, 27 Oct). On 2011's APRO
+  templates (Apron Guillotine Drop 10885) the template's own events - the victim's fall from the apron to the floor
+  - put both people at floor height: Canadian Backbreaker 1 sank under the ring wherever it started (its tracks
+  have no drop: both keep normal heights). As standing grapples Canadian Backbreaker 1 (template 5118, 2011's
+  Emerald Fusion: lift, rack across the shoulders, drop) and Emerald Fusion 1 (Spinning Side Slam 5037: lift onto
+  the shoulder, slam) play in sync in mid-ring. APR2 stays an apron move (warned).
+- **Dives (27 Oct)**, three porter fixes found here:
+  - the flight goes the template's way: a flight whose root travel is against the template attacker's is turned
+    round (Diving Corkscrew Splash flipped backwards out of the ring; WWE '12's Springboard Moonsault, a backward
+    flip, landed 2 m past the victim - turned, it lands on him);
+  - the template must have every branch the source has (`need_x`): Leap of Faith 3591 keeps its miss in x 110, so
+    a dive the game judged a miss flew a second time with Leap of Faith's own miss flight (Corkscrew now on 450
+    Splash 3559, WWE '12's Shooting Star Press on Diving Headbutt 3 3570 - both fly once, the Corkscrew lands
+    across the victim's back);
+  - the flight-block path (2.5) only for a lying victim; a dive onto a standing one from up high takes 2011's move
+    of the same name (Diving Double Axe Handle 1 -> 2011's Diving Double Axe Handle 3538; before Roll Up).
+- Khali Bomb plays through: throat grab, lift, hold, drop - the victim lands about 2 m in front (TEST_VIEW didn't
+  hold: the move's own camera).
+- Open:
+  - Stratusfaction 1 (situation 11 corner, template Springboard Bulldog 5757): forced, the stock 5757 puts its
+    attacker at the corner first (28.8, 28.8) and he climbs and bulldogs the victim; the port isn't put there and
+    the victim does the climb while the attacker stands - though the port's attacker track (y 0) is the flier
+    like the template's. Not solved.
+  - 450 Splash 1 lands short, by the corner (its flight travels 3.1 m the template's way like the Corkscrew's:
+    likely the dive aid's start, rerun pending).
+  - Springboard Hurricanrana 4 (APRO, Cut Down) plays in sync but on the floor, not off the apron.
+- **Placing for a forced move: place the target too.** The paired start puts the attacker relative to the
+  target: a target the CPU had thrown out of the ring took the pair there (FORCE_PLACE's target fields).
+- Test runs: `scratchpad mv13run5.ps1`-style batches run each again when the test match pick adds a third person
+  (seen 3 times in 10 runs, 27 Oct), and wait while a build runs - a starved test game took 215 s to its test
+  match and never reached the move. The porter's `MOVES_PORT_TRACE=1` logs both people's root paths and each
+  phase's attacker heights.
+
 ## 5. Parked: a reversal test aid
 
 Wanted: `SVR2011_TEST_REVERSE=<person>` - the next move on that person goes into its reversal branch (x 90-92),
