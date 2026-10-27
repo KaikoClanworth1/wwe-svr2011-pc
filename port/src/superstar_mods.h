@@ -32,6 +32,8 @@ void CopySuperstarMovies(const std::filesystem::path& movies);
 std::vector<uint32_t> SuperstarModIds(bool with_online = true);
 // A mod fetched from a session's host for this run (OnlineMods): never kept in saves (superstar_threads.cpp).
 bool IsOnlineTempSuperstar(uint32_t id);
+// The saves folder (its SaveData.dat: what a fetched mod's id is put back to in every save built).
+void SetSuperstarModsSaves(const std::filesystem::path& saves);
 // The save being built (superstar_threads.cpp's sub_827235D8 hook): saving true puts back the fetched mods' ids as
 // the save had them, false (after the build) the mods again.
 void OnlineTempForSave(uint8_t* base, bool saving);

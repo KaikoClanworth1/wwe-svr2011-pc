@@ -1409,26 +1409,27 @@ void RedoHandovers(uint8_t* base, bool frame);
 // a player's mod given that id later never meets its data. Taken at the first apply after a save load.
 std::map<uint32_t, std::vector<uint8_t>> g_temp_saved, g_temp_live;  // id -> record + profile
 
-// A save just loaded: the fetched mods' ids as it holds them, read from the save's image (*0x82E407B4: records at
-// +index * 260, profiles at +0x3C160 + index * 1056) - the live tables may still have the mod there from the start
-// (the save load leaves some profiles as they were: the snapshot taken from them held the mod's profile, and the
-// save got the base's moves - s4save B vs A). No image: the first ApplyRecords' snapshot stays.
+// The fetched mods' ids as the save FILE has them (<saves>\SaveData.dat, the last one loaded or written - never one
+// with a fetched mod in it: 0x18-byte header; records at file 0x1C + index * 260, profiles at 0x18 + 0x3C160 +
+// index * 1056 - checked against the live tables). Not the live tables nor the in-memory image (*0x82E407B4): the
+// game rebuilds that from the tables, and the start's own apply put the mod in them before (s4save: the base's
+// profile in the save, B vs A). Read before each save is built and at a save load; no file (a new player): the
+// first ApplyRecords' snapshot stays. Proof: a save built with a fetched mod loaded = byte-identical to one without.
+fs::path g_save_file;
+
 void TempFromSave(uint8_t* base) {
-  constexpr uint32_t kSavePtr = 0x82E407B4, kSaveProfiles = 0x3C160;
-  const uint32_t save = Rd32(base + kSavePtr);
-  if (!save) return;
+  constexpr size_t kHeader = 0x18, kSaveProfiles = 0x3C160;
+  if (g_save_file.empty() || std::none_of(g_mods.begin(), g_mods.end(), [](const Mod& m) { return m.temp; })) return;
+  svrfmt::Bytes file;
+  if (!svrfmt::ReadFile(g_save_file.string(), file) || file.size() < kHeader + kSaveProfiles + 512 * kProfileSize) return;
   for (const auto& m : g_mods) {
     if (!m.temp) continue;
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
     if (si >= 512) continue;
-    const uint8_t* r = base + save + si * kRecordSize;
-    const uint8_t* p = base + save + kSaveProfiles + si * kProfileSize;
+    const uint8_t* r = file.data() + kHeader + 4 + si * kRecordSize;  // (records: 4 bytes after the header)
+    const uint8_t* p = file.data() + kHeader + kSaveProfiles + si * kProfileSize;
     std::vector<uint8_t> b(r, r + kRecordSize);
     b.insert(b.end(), p, p + kProfileSize);
-    REXLOG_INFO("[svr2011] superstar mods: {} (id {}, index {}) as the save holds it: profile {:02X}{:02X}{:02X}{:02X}"
-                "{:02X}{:02X}{:02X}{:02X}... (live {:02X}{:02X}{:02X}{:02X}...)", m.folder, m.slot, si, p[0], p[1], p[2],
-                p[3], p[4], p[5], p[6], p[7], base[kProfiles + si * kProfileSize], base[kProfiles + si * kProfileSize + 1],
-                base[kProfiles + si * kProfileSize + 2], base[kProfiles + si * kProfileSize + 3]);
     g_temp_saved[m.slot] = std::move(b);
   }
 }
@@ -3276,6 +3277,8 @@ void OnlineTempForSave(uint8_t* base, bool saving) {
     REXLOG_INFO("[svr2011] superstar mods: the save is built without the {} fetched mod(s)", g_temp_saved.size());
   if (!saving) g_temp_live.clear();
 }
+
+void SetSuperstarModsSaves(const fs::path& saves) { g_save_file = saves / "SaveData.dat"; }
 
 bool IsOnlineTempSuperstar(uint32_t id) {
   const Mod* m = ModOf(id);

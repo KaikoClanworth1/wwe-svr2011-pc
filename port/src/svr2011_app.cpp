@@ -761,6 +761,7 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallModelMem(runtime()->memory());  // (model_mem.cpp)
 #endif
   svr2011::SetThreadsSaves(g_saves);  // (the mods' Superstar Threads slots, kept by folder)
+  svr2011::SetSuperstarModsSaves(g_saves);  // (a fetched mod's id as the save file has it)
   svr2011::InstallSuperstarMods(runtime()->memory(), runtime()->file_system());
   svr2011::InstallUniverseWelcome(g_saves, g_user_data);  // (the Universe welcome kept as seen once accepted)
   svr2011::InstallUniverseMods(runtime()->memory(), g_saves);  // (the mods' WWE Universe side table: after the mods)
