@@ -37,7 +37,8 @@
 //                               select; "route match": into the match
 //                               SVR2011_TEST_MATCH asks for (test_match.cpp).
 //                               SVR2011_ROUTE=<name> runs one at start.
-// Each gives up after a while (a warning in the log) and the script goes on.
+// Each gives up after a while (180 s; test aid SVR2011_TEST_SCRIPT_WAIT=<s>) - a warning in the log - and the
+// script goes on.
 //
 // <buttons> is one or more of A B X Y START BACK LB RB LS RS UP DOWN LEFT RIGHT
 // joined with '+'. Lines starting with '#' are ignored.
