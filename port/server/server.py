@@ -1154,7 +1154,10 @@ class Service:
                 return None
             return web.Response(body=data[start:end + 1] if rng else data, status=206 if rng else 200,
                                 content_type=content_type, headers=headers)
-        pieces = await loop.run_in_executor(None, lambda: self.store.blob_chunks(sha, start=start))
+        try:
+            pieces = await loop.run_in_executor(None, lambda: self.store.blob_chunks(sha, start=start))
+        except gs.StorageBusy:   # (the storage node's disk too slow just now: the launcher tries again)
+            return web.Response(status=503, text="storage busy, try again shortly", headers={"Retry-After": "10"})
         first = await loop.run_in_executor(None, next, pieces, None) if pieces is not None else None
         if first is None:
             return None
