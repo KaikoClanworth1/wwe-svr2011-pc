@@ -1176,9 +1176,25 @@ void LatencyOnPublish() {
 // (nothing). The free itself is made as always.
 REX_EXTERN(__imp__sub_826DFFA0);
 REX_HOOK_RAW(sub_826DFFA0) {
+  const uint32_t queue = ctx.r3.u32;
   __imp__sub_826DFFA0(ctx, base);
+  if (!ctx.r3.u32) {  // (the queue's buffer full: the caller writes to 0 - logged with its fill)
+    static int count = 0;
+    if (++count <= 5)
+      REXLOG_WARN("frame rate: render command queue {:08X} full ({} buffers, {} commands each)", queue,
+                  Rd32(base + queue + 88), Rd32(base + queue + 20));
+  }
   if (ctx.r3.u32 && std::this_thread::get_id() == g_logic_thread.load() && g_frame_commands.size() < 100000)
     g_frame_commands.push_back(ctx.r3.u32);
+}
+
+// The queue is made once (sub_826DF610, from sub_82578B80): r8 = its commands per buffer (16 bytes each; 393,216 on
+// PC - 6 MB a buffer, twice that is no room at start-up), logged.
+REX_EXTERN(__imp__sub_826DF610);
+REX_HOOK_RAW(sub_826DF610) {
+  const uint32_t q = ctx.r3.u32;
+  __imp__sub_826DF610(ctx, base);
+  REXLOG_INFO("frame rate: render command queue {:08X}: {} commands per buffer", q, Rd32(base + q + 20));
 }
 
 // And where the render thread runs them (sub_826E02A8(?, command)): a

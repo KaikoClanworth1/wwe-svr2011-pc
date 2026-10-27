@@ -59,6 +59,42 @@ void LogHeaps() {
 }
 }  // namespace
 
+// The match's block heap (sub_821DB908 at each match start: XMemAlloc 6.5 MB, allocator 0, caller 821DB9B4 ->
+// sub_8215A380 in 19EC0000-1A540000, exactly its size, protect 4) needs its whole window free; placed anywhere else
+// XMemAlloc still fails (27 Oct: F38A8000, the memset at lr 821DBA14 a crash). Another allocator shares the window
+// (1 MB / 64 KB / 48 KB ... blocks, protect 404) and model / arena loads push into it: six 1,047-page superstars in a
+// 327k-vertex arena left 73 MB of physical memory free and no 6.5 MB of that window. So the window is held (a
+// reserve in the physical heap) once the game's heaps are made (a reserve before that, at start-up, broke their
+// set-up: its own physical blocks found no room, the boot a crash in sub_8269AD08) and the window is free, handed over for the block heap's own request only and taken back
+// when XMemFree frees that block; the other allocator's blocks go elsewhere at once (the "anywhere" path below,
+// as with a full window before). Off: test aid SVR2011_TEST_BLOCKHEAP_RESERVE_OFF=1.
+namespace {
+constexpr uint32_t kBlockLo = 0x19EC0000, kBlockHi = 0x1A540000, kBlockSize = kBlockHi - kBlockLo;
+std::mutex g_block_mutex;
+bool g_block_held = false;  // (the reserve is in place)
+uint32_t g_block_ptr = 0;   // (the block heap's block now, from XMemAlloc: given back to the reserve when freed)
+thread_local bool t_block_request = false;  // (inside the block heap's XMemAlloc)
+uint32_t Rd32(const uint8_t* base, uint32_t a);  // (below)
+
+bool BlockReserveOn() {
+  static const bool on = std::getenv("SVR2011_TEST_BLOCKHEAP_RESERVE_OFF") == nullptr;
+  return on;
+}
+
+// (g_block_mutex held)
+bool HoldBlockWindow(const char* when) {
+  if (g_block_held || !g_memory) return g_block_held;
+  auto* phys = g_memory->GetPhysicalHeap();
+  g_block_held = phys && phys->AllocFixed(kBlockLo, kBlockSize, 0x1000, rex::memory::kMemoryAllocationReserve,
+                                          rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite);
+  static int held = 0, missed = 0;
+  if (g_block_held ? held++ < 6 : (missed++ < 3 || missed % 1000 == 0))
+    REXLOG_INFO("[svr2011] model memory: block heap window {:08X}-{:08X} {} ({})", kBlockLo, kBlockHi,
+                g_block_held ? "held" : "not held yet - something is in it", when);
+  return g_block_held;
+}
+}  // namespace
+
 namespace svr2011 {
 void InstallModelMem(rex::memory::Memory* memory) { g_memory = memory; }
 }  // namespace svr2011
@@ -90,7 +126,14 @@ REX_HOOK_RAW(sub_82914DD0) {
 REX_EXTERN(__imp__sub_82158C70);
 REX_HOOK_RAW(sub_82158C70) {
   const uint32_t size = ctx.r3.u32, attr = ctx.r4.u32, caller = uint32_t(ctx.lr);
+  const bool block = caller == 0x821DB9B4 && size == kBlockSize && BlockReserveOn();
+  t_block_request = block;
   __imp__sub_82158C70(ctx, base);
+  t_block_request = false;
+  if (block && ctx.r3.u32) {
+    std::lock_guard<std::mutex> lock(g_block_mutex);
+    g_block_ptr = ctx.r3.u32;
+  }
   // Big models / arenas: allocator 128 (the model loader's vertex / index buffers and textures - a wrestler's 768 KB
   // window, the stage's) full - the block from the fallback memory; XMemFree's hook (below) gives it back. Every
   // allocator-128 block is freed by XMemFree (SVR2011_TEST_MEMTRACE, 23 Oct: 21,782 of 21,782, two call sites).
@@ -130,7 +173,15 @@ REX_HOOK_RAW(sub_82158940) {
     }
     if (mine && svr2011::CawHeapFree(ptr)) return;
   }
+  const uint32_t ptr = ctx.r3.u32;
   __imp__sub_82158940(ctx, base);
+  if (ptr && BlockReserveOn()) {  // (the block heap's block freed: its window held again)
+    std::lock_guard<std::mutex> lock(g_block_mutex);
+    if (ptr == g_block_ptr) {
+      g_block_ptr = 0;
+      HoldBlockWindow("block heap freed");
+    }
+  }
 }
 
 // sub_8215A380(size, min, max, align, protect) -> MmAllocatePhysicalMemoryEx: an
@@ -160,7 +211,30 @@ REX_HOOK_RAW(sub_8215A380) {
       ctx = in;
     }
   }
+  // The block heap's window held (above): the block heap's own request gets it, any other goes elsewhere at once.
+  bool block_window = false;
+  if (BlockReserveOn() && !g_block_held && !g_block_ptr && !t_block_request && Rd32(base, 0x82EC5F48) &&
+      Rd32(base, Rd32(base, 0x82EC5F48) + 53 * 36)) {  // (the heap table made - heap 53, the last, set up: hold it)
+    std::lock_guard<std::mutex> lock(g_block_mutex);
+    if (!g_block_held && !g_block_ptr) HoldBlockWindow("the game's heaps made");
+  }
+  if (lo == kBlockLo && hi == kBlockHi && BlockReserveOn()) {
+    std::lock_guard<std::mutex> lock(g_block_mutex);
+    if (t_block_request && size == kBlockSize) {
+      if (g_block_held && g_memory->GetPhysicalHeap()->Release(kBlockLo)) g_block_held = false;
+      block_window = true;
+    } else if (g_block_held) {
+      static uint32_t moved = 0;
+      if (++moved <= 3 || moved % 500 == 0)
+        REXLOG_INFO("[svr2011] model memory: {} bytes for the block heap's window placed elsewhere ({} so far)", size, moved);
+      ctx.r4.u64 = 0, ctx.r5.u64 = 0x1FFFFFFF;
+    }
+  }
   __imp__sub_8215A380(ctx, base);
+  if (block_window && ctx.r3.u32 == 0) {
+    std::lock_guard<std::mutex> lock(g_block_mutex);
+    HoldBlockWindow("block heap request failed");
+  }
   static const bool log_all = std::getenv("SVR2011_TEST_BUFFER_LOG") != nullptr;
   if (ctx.r3.u32 == 0 || log_all)
     REXLOG_WARN("[svr2011] model memory: physical {} bytes in {:08X}-{:08X} (align {:X}, protect {:X}) -> {:08X} (caller {:08X})",
