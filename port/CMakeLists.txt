@@ -40,6 +40,7 @@ set(SVR2011_SOURCES
     src/online_cpu.cpp
     src/online_cas.cpp
     src/online_mods.cpp
+    src/mod_transfer.cpp
     src/online_chat.cpp
     src/online_overlay.cpp
     src/leaderboards.cpp
