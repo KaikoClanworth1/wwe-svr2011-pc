@@ -2110,9 +2110,10 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
   // (more geometry than any 2011 arena: the game crashes loading it - WWE 2K16 bg06 / bg12 / bg15)
   if (const ArenaGeometry g = GeometryOf(a); g.Over()) {
     if (error)
-      *error = "this arena has more 3D detail than SvR 2011 can load (" + std::to_string(g.verts) + " points and " +
-               std::to_string(g.indices) + " corners; it takes up to " + std::to_string(kMaxArenaVertsNew) +
-               " and " + std::to_string(kMaxArenaIndicesNew) + "): it would crash the game when the match loads";
+      *error = "this arena has more 3D detail than SvR 2011 can load (" + std::to_string(g.verts) + " points, " +
+               std::to_string(g.indices) + " corners and " + std::to_string(g.meshes) + " meshes; it takes up to " +
+               std::to_string(kMaxArenaVertsNew) + ", " + std::to_string(kMaxArenaIndicesNew) + " and " +
+               std::to_string(kMaxArenaMeshesNew) + "): it would crash the game in the match";
     return false;
   }
   return true;

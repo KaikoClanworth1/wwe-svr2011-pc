@@ -127,7 +127,16 @@ std::atomic<uint32_t> g_fallback_blocks{0};  // (every game free asks: no lock w
 
 namespace svr2011 {
 
-void InstallCawLimits(rex::memory::Memory* memory) { g_memory = memory; }
+void InstallCawLimits(rex::memory::Memory* memory) {
+  g_memory = memory;
+#if defined(__ANDROID__)
+  const uint64_t ram = uint64_t(sysconf(_SC_PHYS_PAGES)) * uint64_t(sysconf(_SC_PAGE_SIZE));
+  REXLOG_INFO("[svr2011] big models: {} pages a wrestler ({} MB of device memory{})", ModelPageLimit(), ram >> 20,
+              std::getenv("SVR2011_TEST_RAM_MB") ? ", SVR2011_TEST_RAM_MB set" : "");
+#else
+  REXLOG_INFO("[svr2011] big models: {} pages a wrestler", ModelPageLimit());
+#endif
+}
 
 uint32_t CawHeapFallback(uint32_t size) {
   static const bool off = std::getenv("SVR2011_TEST_CAW_HEAP_FALLBACK_OFF") != nullptr;  // (test aid: the game's way)
@@ -157,7 +166,7 @@ uint32_t CawHeapFallback(uint32_t size) {
 // (the file loader's cache, model_mem.cpp: a file that never fits in its heap - the same fallback memory, its
 // blocks freed by the same hook)
 // (logged at each 16 MB step up and at every refusal, so a report shows how near the cap a match came)
-uint32_t FallbackBlock(uint32_t size, bool cpu) {
+uint32_t FallbackBlock(uint32_t size, bool cpu, uint32_t align) {
   if (!g_memory || !size) return 0;
   std::lock_guard lock(g_fallback_mutex);
   if (g_fallback_bytes + size > kFallbackMax) {
@@ -167,7 +176,7 @@ uint32_t FallbackBlock(uint32_t size, bool cpu) {
                   g_fallback_bytes / 1048576.0, kFallbackMax >> 20, size);
     return 0;
   }
-  const uint32_t ptr = g_memory->SystemHeapAlloc(size, cpu ? 0x10 : 0x1000,
+  const uint32_t ptr = g_memory->SystemHeapAlloc(size, align ? align : cpu ? 0x10 : 0x1000,
                                                  cpu ? rex::memory::kSystemHeapVirtual : rex::memory::kSystemHeapPhysical);
   if (!ptr) {
     REXLOG_WARN("[svr2011] fallback in use {:.1f} MB / cap {} MB - the system heap has no {} bytes",
@@ -197,10 +206,10 @@ uint32_t ModelPageLimit() {
     if (const char* v = std::getenv("SVR2011_TEST_PAGE_LIMIT"); v && *v) return uint32_t(std::strtoul(v, nullptr, 10));
     if (!BigModelMemory()) return 192u;
 #if defined(__ANDROID__)
-    const uint64_t ram = uint64_t(sysconf(_SC_PHYS_PAGES)) * uint64_t(sysconf(_SC_PAGE_SIZE));
-    const uint32_t limit = ram && ram < (uint64_t(6) << 30) ? 1024u : 1600u;
-    REXLOG_INFO("[svr2011] big models: {} pages a wrestler ({} MB of memory)", limit, ram >> 20);
-    return limit;
+    uint64_t ram = uint64_t(sysconf(_SC_PHYS_PAGES)) * uint64_t(sysconf(_SC_PAGE_SIZE));
+    // (test aid SVR2011_TEST_RAM_MB=<MB>: the device's memory as if it were that - the small-device branch on a big one)
+    if (const char* v = std::getenv("SVR2011_TEST_RAM_MB"); v && *v) ram = uint64_t(std::strtoull(v, nullptr, 10)) << 20;
+    return ram && ram < (uint64_t(6) << 30) ? 1024u : 1600u;
 #else
     return 1600u;
 #endif

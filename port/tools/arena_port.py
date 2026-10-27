@@ -166,10 +166,16 @@ MAX_ARENA = 9_400_000  # bytes: the smaller 2011 hosts (until 2.1.6 a bigger fil
 # games crash loading it.
 ARENA_FILE_MAX = 21 << 20
 STOCK_VERTS = 65450
+# Meshes (the stage's drawn pieces): the game's own arenas have up to STOCK_MESHES (bg01). Each is drawn with its own
+# render commands every frame; past MAX_MESHES the match's command queue runs full in a 6-man and the game crashes
+# (27 Oct: 1,770 meshes crashed with stock wrestlers; 1,062 held 5 minutes with six 1,489-page superstars) - the same
+# numbers as the Mod Maker's (modmaker/svrfmt/arena.h kMaxArenaMeshes / kMaxArenaMeshesNew).
+STOCK_MESHES = 446
+MAX_MESHES = 900
 
 
-def stage_vertices(data):
-    """every JBOY model's vertices in an arena pac's STG entries"""
+def stage_vertices(data, meshes_out=None):
+    """every JBOY model's vertices in an arena pac's STG entries (and their meshes into meshes_out[0])"""
     import jboy
     n = 0
     for typ, ents in svrfmt.epac_read(data)[1]:
@@ -182,16 +188,25 @@ def stage_vertices(data):
                 raw = svrfmt.bpe_decode(cb) if cb[:4] == b'BPE ' else cb
                 if raw[:4] == b'JBOY':
                     try:
-                        n += sum(len(s.verts) for s in jboy.read(raw).meshes)
+                        m = jboy.read(raw)
+                        n += sum(len(s.verts) for s in m.meshes)
+                        if meshes_out is not None:
+                            meshes_out[0] += len(m.meshes)
                     except Exception:  # noqa: BLE001
                         pass
     return n
 
 
 def needs_line(data, host_size):
-    """the manifest's needs= line for an arena bigger than its slot's file or with more 3D detail ('' when neither)"""
+    """the manifest's needs= line for an arena bigger than its slot's file or with more 3D detail ('' when neither);
+    BadInput for more meshes than the game can draw (MAX_MESHES)"""
     import model_budget
-    if len(data) > host_size or stage_vertices(data) > STOCK_VERTS:
+    meshes = [0]
+    verts = stage_vertices(data, meshes)
+    if meshes[0] > MAX_MESHES:
+        raise BadInput('the arena has %d separate meshes; SvR 2011 can draw up to %d in a match (more crash a 6-man): '
+                       'leave some objects out or join small ones' % (meshes[0], MAX_MESHES))
+    if len(data) > host_size or verts > STOCK_VERTS or meshes[0] > STOCK_MESHES:
         return 'needs=%s\n' % model_budget.NEEDS_VERSION
     return ''
 

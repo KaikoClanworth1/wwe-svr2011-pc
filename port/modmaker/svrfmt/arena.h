@@ -77,13 +77,21 @@ struct Arena {
 // at 1080p); 458,150 / 773,654 / 21.5 MB in a 1v1 and a 6-man (60 fps); 654,500 crashed (512 MB physical memory).
 constexpr size_t kMaxArenaVerts = 65450, kMaxArenaIndices = 110522;
 constexpr size_t kMaxArenaVertsNew = 350000, kMaxArenaIndicesNew = 590000;
+// Meshes (drawn pieces): each takes render commands every frame, and too many fill the match's command queue - the
+// game crashes, in a 6-man about 40 s in (27 Oct: bg16 x5, 1,770 meshes, with stock wrestlers). bg16 x3 (1,062) held
+// 5 minutes with six 1,489-page superstars; kMaxArenaMeshesNew keeps headroom under it. The game's own arenas have up
+// to kMaxArenaMeshes (bg01); more needs 2.1.6 (the stage heap's per-mesh arrays: fallback memory). tools/arena_port.py
+// STOCK_MESHES / MAX_MESHES are the same.
+constexpr size_t kMaxArenaMeshes = 446, kMaxArenaMeshesNew = 900;
 // An arena's file may outgrow its slot's shipped one since 2.1.6 (the game reads its stage entry at its own size:
 // src/arena_mods.cpp ServedStageUnits) - tested to 21.5 MB (above); FitFile keeps it under this (file_max).
 constexpr size_t kArenaFileMax = size_t(21) << 20;
 struct ArenaGeometry {
-  size_t verts = 0, indices = 0;
-  bool Over() const { return verts > kMaxArenaVertsNew || indices > kMaxArenaIndicesNew; }
-  bool OverStock() const { return verts > kMaxArenaVerts || indices > kMaxArenaIndices; }  // (needs 2.1.6)
+  size_t verts = 0, indices = 0, meshes = 0;
+  bool Over() const { return verts > kMaxArenaVertsNew || indices > kMaxArenaIndicesNew || meshes > kMaxArenaMeshesNew; }
+  bool OverStock() const {  // (needs 2.1.6)
+    return verts > kMaxArenaVerts || indices > kMaxArenaIndices || meshes > kMaxArenaMeshes;
+  }
 };
 ArenaGeometry GeometryOf(const Arena& a);
 // The arena saved as `saved_size` bytes needs 2.1.6: bigger than its slot's shipped file, or more 3D detail than the

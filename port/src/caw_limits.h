@@ -19,7 +19,8 @@ uint32_t CawHeapFallback(uint32_t size);
 // The same fallback memory for another full game heap (the file loader's cache, model_mem.cpp): `size` bytes,
 // 4 KB aligned, or 0. Freed by the same hook (CawHeapFree). `cpu`: from the virtual system heap instead (a CPU heap's
 // blocks - the stage's heap, kStageHeap - not GPU memory: guest addresses below 0x80000000, as the game heaps' own).
-uint32_t FallbackBlock(uint32_t size, bool cpu = false);
+// `align`: 0 = 4 KB (physical) / 16 bytes (cpu).
+uint32_t FallbackBlock(uint32_t size, bool cpu = false, uint32_t align = 0);
 // Big models / arenas (model_mem.cpp): a full XMemAlloc allocator 128 (a wrestler's 768 KB vertex window, the
 // stage's) or a wrestler's model heap gives way to the fallback memory - so their budget (the game's, the
 // converters', the Mod Maker's) is ModelPageLimit() pages, not 192. Off: test aid SVR2011_TEST_BIGMEM_OFF=1 (the

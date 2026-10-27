@@ -199,6 +199,7 @@ ArenaGeometry GeometryOf(const Arena& a) {
   ArenaGeometry g;
   for (const auto& am : a.models)
     for (const auto& m : am.model.meshes) {
+      ++g.meshes;
       g.verts += m.verts.size();
       for (const auto& s : m.strips) g.indices += s.indices.size();
     }
