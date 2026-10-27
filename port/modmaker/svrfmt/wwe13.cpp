@@ -488,14 +488,18 @@ void ConvertModel13(Model& m, float scale, Convert13Stats& st) {
   // WWE '13's header screen video has no SvR2011 counterpart: the arena video. WWE 2K15 - 2K17 name their screens
   // layout_<show>_movie (the titantron: the entrance videos - raw, ss, nxt, me ...), layout_arena_movie and
   // layout_mini_tron (the arena's own loop), cut to 15 characters: names SvR2011 doesn't know play the live camera,
-  // in entrances too. WWE 2K14 names them main&banner (the titantron), <show>_header&wall and mini_tron (loops).
+  // in entrances too. WWE 2K14 names them main&banner (the titantron), <show>_header&wall and mini_tron (loops); WWE
+  // '12 minitron_movie - any other video name (…movie, never stored) is a loop.
   for (auto& t : used) {
     const std::string l = Lower(t);
-    if (l == "header_wall_mov" || l.rfind("layout_arena_mo", 0) == 0 || l.rfind("layout_mini_tro", 0) == 0 || l == "mini_tron" ||
-        (l.size() > 12 && l.compare(l.size() - 12, 12, "_header&wall") == 0))
-      t = "arena_movie";
-    else if ((l.rfind("layout_", 0) == 0 && l.find("_mov", 6) != std::string::npos) || l == "main&banner")
+    if (l == "titantron_movie" || l == "arena_movie") continue;
+    if ((l.rfind("layout_", 0) == 0 && l.find("_mov", 6) != std::string::npos && l.rfind("layout_arena_mo", 0) != 0) ||
+        l == "main&banner")
       t = "titantron_movie";
+    else if (l == "header_wall_mov" || l.rfind("layout_", 0) == 0 && l.find("_mov", 6) != std::string::npos ||
+             l.rfind("layout_mini_tro", 0) == 0 || l == "mini_tron" || l.find("movie") != std::string::npos ||
+             (l.size() > 12 && l.compare(l.size() - 12, 12, "_header&wall") == 0))
+      t = "arena_movie";
   }
   if (!m.meshes.empty()) m.textures = used;  // (a model without meshes keeps its list)
 }
