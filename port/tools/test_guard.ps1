@@ -139,8 +139,9 @@ $SvrBusyGames = @(
     "VALORANT-Win64-Shipping", "VALORANT-Win32-Shipping", "VALORANT", "VRChat", "FortniteClient-Win64-Shipping", "cs2",
     "RocketLeague", "r5apex", "GTA5", "eldenring", "Overwatch", "LeagueClient", "League of Legends",
     "Minecraft.Windows", "Cyberpunk2077", "FC25", "FC26", "WWE2K25", "WWE2K26")
-$SvrTestLimit = 4
-$SvrTestLimitBusy = 2
+# (27 Oct 2026, the user: up to 6 at once, no lower limit while they game)
+$SvrTestLimit = 6
+$SvrTestLimitBusy = 6
 
 # Why the PC is busy ("" when it isn't): a known game running, or the user's own
 # svr2011.exe (a game not started by a test).
