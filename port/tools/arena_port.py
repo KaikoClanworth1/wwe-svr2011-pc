@@ -341,6 +341,21 @@ def svr2010_convert(disc, key, out, base=None, name=None, pac11=None, year='2010
             warnings.append('motion bank not replaced: %s' % e)
     with open(os.path.join(mod, 'arena.pac'), 'wb') as f:
         f.write(arena)
+    # (SvR 2010's match light sets are far darker than 2011's in some arenas - WrestleMania 25: set 10 ground 0.20 against
+    # RAW's 0.78 - wrestlers and ring dark in the match: those sets from 2011 RAW, as the Mod Maker's "Repair it" and
+    # its WWE '12+ converter do; svrmod lights, which leaves an arena that isn't dark as it is)
+    if pac11:
+        try:
+            import subprocess
+            import wwe13_entrance as WE
+            pac = os.path.join(mod, 'arena.pac')
+            r = subprocess.run([WE.find_svrmod(None), 'lights', pac, find_host(pac11, 1), pac], capture_output=True,
+                               text=True, timeout=120)
+            dark = [ln.split(':', 1)[1].strip() for ln in r.stdout.splitlines() if ln.startswith('dark sets:')]
+            if dark and dark[0]:
+                notes.append('match lighting too dark for SvR 2011 - 2011 RAW\'s sets used: %s' % dark[0])
+        except Exception as e:  # noqa: BLE001 - no svrmod.exe: the arena's own lights (the doctor offers the repair)
+            warnings.append('match lighting not checked: %s' % e)
 
     progress(40, 'pictures')
     match = disc.read('pac/menu/MatchHD.pac') if disc.exists('pac/menu/MatchHD.pac') else None
