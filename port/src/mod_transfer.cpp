@@ -41,6 +41,8 @@
 #include "online_mods.h"
 #include "p2p.h"
 
+REXCVAR_DEFINE_BOOL(online_mod_upload, true, "Online",
+                    "Hosting: send this game's gameplay mods to joiners who lack them (direct links only)");
 REXCVAR_DEFINE_INT32(online_mod_upload_kbs, 4096, "Online",
                      "Hosting: the most KB a second this game sends of its mods to joiners who lack them (in all)");
 REXCVAR_DEFINE_INT32(online_mod_upload_peers, 2, "Online",
@@ -60,7 +62,7 @@ constexpr uint32_t kRangeChunks = 32;    // one request: 32 chunks (38 KB)
 constexpr int kWindowStart = 7, kWindowMin = 2, kWindowMax = 54;  // ranges in flight (256 KB .. 2 MB)
 constexpr size_t kMaxPayload = 1350;
 enum : uint8_t { kSetReq = 1, kSet = 2, kListReq = 3, kList = 4, kDataReq = 5, kData = 6, kError = 7 };
-enum : uint8_t { kErrBusy = 1, kErrNotHosting = 2, kErrUnknown = 3, kErrUnsendable = 4, kErrRead = 5 };
+enum : uint8_t { kErrBusy = 1, kErrNotHosting = 2, kErrUnknown = 3, kErrUnsendable = 4, kErrRead = 5, kErrOff = 6 };
 
 // -- bytes ------------------------------------------------------------------------------
 
@@ -265,6 +267,10 @@ bool Admit(uint64_t peer) {
   uint64_t session = 0;
   if (!P2PHosting(&session)) {
     SendError(peer, kErrNotHosting, "This game doesn't host a session now.");
+    return false;
+  }
+  if (!REXCVAR_GET(online_mod_upload)) {
+    SendError(peer, kErrOff, "The host doesn't send its mods (its online_mod_upload setting is off).");
     return false;
   }
   const int64_t now = NowMs();
@@ -869,10 +875,16 @@ void LobbyLoop() {
       std::string why;
       const auto offers = AskHostMods(4000, &why);
       g_running = false;
-      if (offers.empty() && !why.empty()) {  // (the link still settling, a busy host: again in 5 s, for a minute)
+      const bool settling = why == "The host didn't answer." || why.find("direct link") != std::string::npos;
+      if (offers.empty() && settling) {  // (the link still settling: again in 5 s, for a minute)
         if (++asks < 12) tried = 0, retry_at = NowMs() + 5000;
         REXLOG_INFO("mod transfer: the host's mods: {}{}", why, asks < 12 ? " - asking again in 5 s" : " - given up");
         continue;
+      }
+      if (offers.empty() && !why.empty()) {  // (the host won't send: its reason, if this game lacks anything)
+        REXLOG_INFO("mod transfer: the host's mods: {}", why);
+        for (const std::string& l : OnlineModsLackedFromHost()) offer.unsendable.push_back(l + ": " + why);
+        if (offer.unsendable.empty()) continue;
       }
       std::set<std::string> mine;
       for (const std::string& line : Split(GameplayModSet(), '\n')) {
