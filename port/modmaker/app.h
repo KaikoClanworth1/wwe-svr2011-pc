@@ -460,7 +460,9 @@ extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion
                       bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width);
                       bool PickEntrance(const char* label, int& value, const char* none, float width = 320);
                       bool EntranceOutfit(const std::wstring& pac); }
-namespace attire_page { extern PageHooks hooks; void TestPacAttires(const std::wstring& spec); void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); void TestKeepEntrance(); }
+namespace attire_page { extern PageHooks hooks; void TestPacAttires(const std::wstring& spec); void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); void TestKeepEntrance(); void TestFrom(int from, const std::string& name);
+                       // a superstar mod (a converted one: the From another game result) taken in as the model of a new attire
+                       void UseStarMod(const std::wstring& src); }
 namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save);
                        Image SignPicture(const Image& src);
                        // a sign pack's files (manifest.txt + NN_<name>.dds) from 128 x 64 signs; installed into
@@ -494,6 +496,7 @@ namespace port_page { void Draw();
                       enum : unsigned { kSuperstars = 1, kMovesKind = 2, kEntrances = 4, kArenas = 8, kAttires = 16, kBelts = 32,
                                         kWeapons = 64, kBackstageKind = 128, kVsScreens = 256 };
                       void DrawKinds(unsigned mask); int Kind();
+                      void TestAsAttire(const std::string& spec);  // (--port-as-attire)
                       void TestStart(const std::string& spec); void TestClear(); void TestFullPreview();
                       // the superstar steps alone (Simple mode): a converted .svrmod comes back in EmbeddedResult()
                       void SuperstarFlow(); std::wstring EmbeddedResult(); void ClearEmbeddedResult();

@@ -68,6 +68,7 @@ int g_force_kind = -1;  // (the test's tab: ImGui reports the first tab selected
 bool g_same_moves = false;      // (PS2 superstars: --same-moves, no "similar" stand-ins)
 bool g_vs_renders = true;       // (VS screens: --renders, that game's renders for 2011's superstars too)
 bool g_test_fp = false;         // (--port-fullpreview: an entrance test's result opens in the Full preview)
+std::string g_test_as_attire;   // (--port-as-attire <star>,<slot>,<from>[,<name>][;<save .svrmod>]: a superstar result goes on as an attire)
 int g_test_stage = -1;          // 0 list, 1 convert, 2 open, 3 done
 std::string g_test_game;        // (--port-test kind@game: a folder's game, as picked in its combo)
 
@@ -1108,6 +1109,7 @@ void DiscRow() {
 
 void TestClear() { CacheJob(false, true); }
 void TestFullPreview() { g_test_fp = true; }
+void TestAsAttire(const std::string& spec) { g_test_as_attire = spec; }
 // The ported entrance (g_result: its move pack and number), played whole by `who` before it is installed.
 int g_fp_who = 139;
 void PortedEntrancePreview(const Json& item) {
@@ -1206,7 +1208,16 @@ void KindBody(int k) {
     if (g_result_error.empty()) {
       if (g_test_fp && std::wstring(kKinds[k].script) == L"entrance_port.py" && g_pick >= 0 && g_pick < int(g_list.items.size()))
         PortedEntrancePreview(g_list.items[size_t(g_pick)]);
-      else
+      else if (!g_test_as_attire.empty() && g_result["opens"].Str() == "superstar") {
+        const std::string& t = g_test_as_attire;
+        const size_t semi = t.find(';');
+        const std::string a = t.substr(0, semi), save = semi == std::string::npos ? "" : t.substr(semi + 1);
+        const size_t c1 = a.find(','), c2 = a.find(',', c1 + 1), c3 = a.find(',', c2 + 1);
+        attire_page::TestStart(std::atoi(a.c_str()), Wide(g_result["out"].Str()), std::atoi(a.c_str() + c1 + 1), Wide(save));
+        attire_page::TestFrom(std::atoi(a.c_str() + c2 + 1), c3 == std::string::npos ? "" : a.substr(c3 + 1));
+        Log("port test: the superstar goes on " + a + " as an attire");
+        GoTo(PageId::kAttire);
+      } else
         OpenResult();
     }
   }
@@ -1318,6 +1329,17 @@ void KindBody(int k) {
     ImGui::SameLine();
     if (ImGui::Button(g_result["opens"].Str() == "belt" || g_result["opens"].Str() == "weapon" ? "Install the pack" :
                       g_result["opens"].Str() == "vs_style" ? "Install the style" : g_embedded ? "5. Use it" : "5. Open it to finish")) OpenResult();
+    if (g_result["opens"].Str() == "superstar" && !g_embedded) {  // (or onto a superstar of the game: one of its attires)
+      ImGui::SameLine();
+      if (ImGui::Button("Or put it on a game superstar as an attire...")) {
+        attire_page::UseStarMod(Wide(g_result["out"].Str()));
+        GoTo(PageId::kAttire);
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The Attires page with this superstar's model taken in: pick the game superstar, the attire\n"
+                          "number and which of the ported attires (once per attire). Its entrance can come along; its\n"
+                          "moveset, theme and ratings belong to a superstar, not to an attire, so they stay the game's.");
+    }
     if (const int t = std::atoi(g_result["template"].Str().c_str()); t > 0)  // (moves: what it was built on)
       ImGui::TextDisabled("Built on the 2011 move %s (%d)%s; record %s. Not right? Pick a template above and convert again.",
                           MoveName(t).c_str(), t, g_template > 0 ? "" : ", picked automatically", g_result["id"].Str().c_str());

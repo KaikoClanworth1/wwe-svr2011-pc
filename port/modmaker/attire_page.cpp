@@ -46,6 +46,9 @@ void Editor();
 void RunEditorTest();
 AttireProject g_at;
 std::wstring g_test_save;
+int g_test_from = 0;          // (--attire-from: which of the source's attires)
+std::wstring g_use_star;      // (UseStarMod: taken in on the next frame)
+std::string g_test_name;      // (and the attire's name)
 struct {
   int star = -1;
   std::wstring model;
@@ -330,6 +333,10 @@ void Problems(std::vector<Problem>& p) {
 
 void Draw() {
   if (!g_ed_test.empty()) RunEditorTest();
+  if (!g_use_star.empty()) {
+    TakeStarSource(g_use_star);
+    g_use_star.clear();
+  }
   if (g_test.pending) {
     g_test.pending = false;
     g_at.star = g_test.star, g_at.slot = g_test.slot;
@@ -339,6 +346,8 @@ void Draw() {
     } else {
       TakeStarSource(g_test.model);  // (a superstar mod: an installed folder, a .svrmod or a project)
     }
+    if (g_test_from > 0) g_at.from = g_test_from;
+    if (!g_test_name.empty()) std::snprintf(g_at.name, sizeof g_at.name, "%s", g_test_name.c_str());
   }
   if (!g_test_save.empty() && g_at.star >= 0 && !g_at.model.empty()) {
     std::vector<ZipEntry> files;
@@ -706,6 +715,8 @@ void TestStart(int star, const std::wstring& model, int slot, const std::wstring
   g_test_save = save;
 }
 void TestKeepEntrance() { g_keep_entrance = true; }
+void TestFrom(int from, const std::string& name) { g_test_from = from, g_test_name = name; }
+void UseStarMod(const std::wstring& src) { g_use_star = src; }
 
 PageHooks hooks = {
     "attire", Draw, Problems, Reset, StateText, WriteProject,
