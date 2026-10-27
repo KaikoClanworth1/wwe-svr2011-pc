@@ -209,14 +209,15 @@ void Poll() {
     g_state = State{};
     return;
   }
-  // (?here=1: this game is in online mode - its friends see it Online; leaving
-  // online mode says bye: the offline menus show nobody online)
+  // (?here=1: this game runs, signed in - its friends can invite it from anywhere in the game (it walks there);
+  // &mode=online: in online mode - its friends see it Online. Leaving online mode says bye: friends see it
+  // in the game, not online)
   static bool was_online = false;
   const bool online = P2POnlineMode();
   if (was_online && !online) SayGoodbye();
   was_online = online;
   // (&mode=online: counted "in online mode" - the server counts only games that say so)
-  auto r = net::ServerRequest("GET", online ? "/api/friends?here=1&mode=online" : "/api/friends");
+  auto r = net::ServerRequest("GET", online ? "/api/friends?here=1&mode=online" : "/api/friends?here=1");
   State s;
   s.signed_in = true;
   Json j;
@@ -262,13 +263,13 @@ void PollSoon() {
 
 // -- actions (each on a thread of its own) -------------------------------------------
 
-void SendInvite(std::string name) {
+void SendInvite(std::string name, std::string status) {
   uint8_t info[60];
   uint32_t slots = 0;
   if (!P2PSessionInfo(info, &slots)) return Say("YOU'RE NOT IN A SESSION: CREATE OR JOIN ONE FIRST");
   const std::string key = Base64(info, 8) + name;
   const std::string kind = slots > 6 ? "Royal Rumble" : "Match";
-  std::thread([name, key, kind, session = Base64(info, 60)] {
+  std::thread([name, status, key, kind, session = Base64(info, 60)] {
     auto r = net::ServerRequest("POST", "/api/invite",
                                 "{\"to\": " + Quote(name) + ", \"session\": \"" + session + "\", \"kind\": " + Quote(kind) + "}",
                                 {{"Content-Type", "application/json"}});
@@ -277,12 +278,14 @@ void SendInvite(std::string name) {
         std::lock_guard lock(g_mutex);
         g_invited.insert(key);
       }
-      REXLOG_INFO("online overlay: invited {}", name);
-      Say("INVITE SENT TO " + Upper(name));
+      REXLOG_INFO("online overlay: invited {} ({})", name, status);
+      // (not in the game: the server keeps it a while - they see it if they start the game soon)
+      Say("INVITE SENT TO " + Upper(name) + (status == "offline" ? " - THEY SEE IT WHEN THEY START THE GAME" : ""));
     } else {
       Json j;
       std::string error;
       if (r && JsonReader{r->body}.Value(j)) error = j.Str("error");
+      REXLOG_WARN("online overlay: invite to {} refused: {}", name, r ? std::to_string(r->status) + " " + error : "no answer");
       Say(error.empty() ? "THE INVITE DIDN'T GO" : Upper(error));
     }
   }).detach();
@@ -508,7 +511,9 @@ void OnlineOverlay::Toast(ImGuiIO& io) {
   // of the screen (INVITE POP-UPS on the overlay turns it off).
   const bool popups = rex::cvar::Query<bool>("online_invite_popups");
   for (const Invite& i : s.invites) {
-    if (!seen_invites_.insert(i.from + i.session).second || !popups) continue;
+    if (!seen_invites_.insert(i.from + i.session).second) continue;
+    REXLOG_INFO("online overlay: invite from {} ({}){}", i.from, i.kind, popups ? "" : " - pop-ups off: on the list only");
+    if (!popups) continue;
     toast_ = Upper(i.from) + " INVITED YOU";
     toast_line2_ = "TO A " + Upper(i.kind.empty() ? "match" : i.kind) + "  -  " +
                    Upper(rex::cvar::Query<std::string>("bind_online_menu")) + " OR BACK + RB TO ANSWER";
@@ -825,8 +830,7 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
     } else if (row.kind == kFriendRow && choose) {
       const Friend& f = st.friends[row.index];
       if (!in_session) Say("CREATE OR JOIN A SESSION FIRST, THEN INVITE");
-      else if (f.status == "offline") Say(Upper(f.name) + " ISN'T ONLINE");
-      else SendInvite(f.name);
+      else SendInvite(f.name, f.status);  // (any friend: an offline one sees it when their game polls next)
     } else if (row.kind == kAddedRow && choose) {
       AddFriend(st.added_you[row.index]);
     } else if (row.kind == kPopupRow && choose) {
@@ -896,6 +900,7 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
         name = Upper(f.name);
         if (f.status == "playing") right = "IN AN ONLINE MATCH", rc = kGreen;
         else if (f.status == "online") right = "ONLINE", rc = kGreen;
+        else if (f.status == "ingame") right = "IN THE GAME", rc = kGreen;
         else right = f.mutual ? "OFFLINE" : "OFFLINE (HASN'T ADDED YOU)", rc = kDim;
         if (in_session && invited.count(session_key + f.name)) right = "INVITED", rc = kGold;
         break;

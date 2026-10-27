@@ -819,6 +819,10 @@ class Service:
             return "playing"
         if account_id in self.in_online_mode():
             return "online"
+        # ingame: its game runs, signed in, outside online mode (2.1.7 on: ?here=1 from the offline menus too) -
+        # it can be invited (the game walks there); older games show it as offline but let it be invited
+        if self.stats.recent.get(account_id, 0) >= now() - SETTINGS["presence_window"]:
+            return "ingame"
         return "offline"
 
     def friends_json(self, account):
@@ -829,7 +833,7 @@ class Service:
         added = {a["id"] for a in mine}
         friends = [{"name": a["name"], "status": self.presence(a["id"]), "last_seen": a["last_seen"],
                     "mutual": any(t["id"] == a["id"] for t in theirs)} for a in mine if not a["banned"]]
-        friends.sort(key=lambda f: ("playing", "online", "offline").index(f["status"]))  # (online first)
+        friends.sort(key=lambda f: ("playing", "online", "ingame", "offline").index(f["status"]))  # (online first)
         return {
             "ok": True,
             "config": {"mods_online": bool(SETTINGS["mods_online"]), "match_network": SETTINGS["match_network"],
