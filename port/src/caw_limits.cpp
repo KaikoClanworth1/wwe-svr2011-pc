@@ -25,11 +25,15 @@
 // 31 hoodies or 16+ extra T-shirts crashed (21 Oct tests). Below: a full
 // heap 42 falls back to system memory (any CAW, any setting), and no-limits
 // stops at kMaxLayers layers a block (50 T-shirts still crashed the draw).
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <mutex>
 #include <unordered_map>
+#if defined(__ANDROID__)
+#include <unistd.h>
+#endif
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -117,6 +121,7 @@ constexpr uint32_t kFallbackMax = 192u << 20;
 std::mutex g_fallback_mutex;
 std::unordered_map<uint32_t, uint32_t> g_fallback;  // guest pointer -> size
 uint32_t g_fallback_bytes = 0;
+uint32_t g_fallback_logged = 0;  // (the last 16 MB step logged: "fallback in use N MB / cap")
 std::atomic<uint32_t> g_fallback_blocks{0};  // (every game free asks: no lock while there are none)
 }  // namespace
 
@@ -151,16 +156,32 @@ uint32_t CawHeapFallback(uint32_t size) {
 
 // (the file loader's cache, model_mem.cpp: a file that never fits in its heap - the same fallback memory, its
 // blocks freed by the same hook)
+// (logged at each 16 MB step up and at every refusal, so a report shows how near the cap a match came)
 uint32_t FallbackBlock(uint32_t size, bool cpu) {
   if (!g_memory || !size) return 0;
   std::lock_guard lock(g_fallback_mutex);
-  if (g_fallback_bytes + size > kFallbackMax) return 0;
+  if (g_fallback_bytes + size > kFallbackMax) {
+    static int told = 0;
+    if (told++ < 10 || told % 1000 == 0)
+      REXLOG_WARN("[svr2011] fallback in use {:.1f} MB / cap {} MB - {} bytes refused (the game's own failure follows)",
+                  g_fallback_bytes / 1048576.0, kFallbackMax >> 20, size);
+    return 0;
+  }
   const uint32_t ptr = g_memory->SystemHeapAlloc(size, cpu ? 0x10 : 0x1000,
                                                  cpu ? rex::memory::kSystemHeapVirtual : rex::memory::kSystemHeapPhysical);
-  if (!ptr) return 0;
+  if (!ptr) {
+    REXLOG_WARN("[svr2011] fallback in use {:.1f} MB / cap {} MB - the system heap has no {} bytes",
+                g_fallback_bytes / 1048576.0, kFallbackMax >> 20, size);
+    return 0;
+  }
   g_fallback[ptr] = size;
   g_fallback_bytes += size;
   g_fallback_blocks = uint32_t(g_fallback.size());
+  if (const uint32_t step = g_fallback_bytes >> 24; step > g_fallback_logged) {
+    g_fallback_logged = step;
+    REXLOG_INFO("[svr2011] fallback in use {:.1f} MB / cap {} MB ({} blocks)", g_fallback_bytes / 1048576.0,
+                kFallbackMax >> 20, g_fallback.size());
+  }
   return ptr;
 }
 
@@ -169,10 +190,20 @@ bool BigModelMemory() {
   return on;
 }
 
+// (Android: a device with under 6 GB of memory keeps 1024 pages - the big models' fallback memory is host memory too,
+// and six of them in a match on a small phone is more than it holds; logged once)
 uint32_t ModelPageLimit() {
   static const uint32_t pages = [] {
     if (const char* v = std::getenv("SVR2011_TEST_PAGE_LIMIT"); v && *v) return uint32_t(std::strtoul(v, nullptr, 10));
-    return BigModelMemory() ? 1024u : 192u;
+    if (!BigModelMemory()) return 192u;
+#if defined(__ANDROID__)
+    const uint64_t ram = uint64_t(sysconf(_SC_PHYS_PAGES)) * uint64_t(sysconf(_SC_PAGE_SIZE));
+    const uint32_t limit = ram && ram < (uint64_t(6) << 30) ? 1024u : 1600u;
+    REXLOG_INFO("[svr2011] big models: {} pages a wrestler ({} MB of memory)", limit, ram >> 20);
+    return limit;
+#else
+    return 1600u;
+#endif
   }();
   return pages;
 }
@@ -190,10 +221,12 @@ bool CawHeapFree(uint32_t ptr) {
   g_fallback_bytes -= it->second;
   g_fallback.erase(it);
   g_fallback_blocks = uint32_t(g_fallback.size());
+  if ((g_fallback_bytes >> 24) + 1 < g_fallback_logged)  // (16 MB down: the next climb logged again)
+    g_fallback_logged = (g_fallback_bytes >> 24) + 1;
   g_memory->SystemHeapFree(ptr);
   if (g_fallback.empty()) {  // (a game that takes fallback memory gives it all back: logged a few times)
     static int told = 0;
-    if (told++ < 5) REXLOG_INFO("[svr2011] fallback memory: every block given back");
+    if (told++ < 5) REXLOG_INFO("[svr2011] fallback in use 0 MB / cap {} MB - every block given back", kFallbackMax >> 20);
   }
   return true;
 }

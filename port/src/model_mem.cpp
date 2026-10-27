@@ -207,6 +207,9 @@ REX_HOOK_RAW(sub_82158940) {
       if (ptr == g_block_ptr[w]) {
         g_block_ptr[w] = 0;
         g_blocks_all = HoldBlockWindows("block heap freed");
+        if (auto* phys = g_memory ? g_memory->GetPhysicalHeap() : nullptr)  // (a match's end: repeated matches' trend)
+          REXLOG_INFO("[svr2011] model memory: block heap freed - physical {} of {} 4K pages free, fallback {:.1f} MB",
+                      phys->GetUnreservedPageCount(), phys->GetTotalPageCount(), svr2011::FallbackBytesInUse() / 1048576.0);
       }
   }
 }
