@@ -1,5 +1,7 @@
 // What online needs to trust - see online_files.h.
 #include "online_files.h"
+
+#include "../modmaker/svrfmt/mod_travel.h"
 #include "no_mods.h"
 
 #include <algorithm>
@@ -264,15 +266,8 @@ std::string ManifestValue(const fs::path& manifest, const char* key) {
 
 // Pictures, sounds and movies: cosmetic (left out of a mod's CRC). Dot files too: the Mod Maker's project settings
 // (.mm_project.txt) and local markers (.applied) aren't the mod.
-bool Cosmetic(const fs::path& p) {
-  if (const std::string n = p.filename().string(); !n.empty() && n[0] == '.') return true;
-  std::string e = p.extension().string();
-  std::transform(e.begin(), e.end(), e.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
-  for (const char* x : {".png", ".jpg", ".jpeg", ".bmp", ".dds", ".tga", ".ogg", ".wav", ".mp3", ".xma", ".bik",
-                        ".wmv", ".mp4", ".db", ".ini"})
-    if (e == x) return true;
-  return false;
-}
+// (the files outside a mod's key: one rule with what may travel online - svrfmt/mod_travel.h)
+bool Cosmetic(const fs::path& p) { return svrfmt::CosmeticFile(p); }
 
 // A mod folder's CRC for the set: its files but the cosmetic ones in a stable order, each one's path and CRC
 // folded (the same for a downloaded copy: mod_transfer.cpp checks it against the host's).

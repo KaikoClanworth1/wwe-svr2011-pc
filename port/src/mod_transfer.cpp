@@ -37,9 +37,13 @@
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 
+#include "../modmaker/svrfmt/mod_travel.h"
 #include "online_files.h"
+#include "online_mods.h"
 #include "p2p.h"
 
+REXCVAR_DEFINE_BOOL(online_mod_upload, true, "Online",
+                    "Hosting: send this game's gameplay mods to joiners who lack them (direct links only)");
 REXCVAR_DEFINE_INT32(online_mod_upload_kbs, 4096, "Online",
                      "Hosting: the most KB a second this game sends of its mods to joiners who lack them (in all)");
 REXCVAR_DEFINE_INT32(online_mod_upload_peers, 2, "Online",
@@ -59,7 +63,7 @@ constexpr uint32_t kRangeChunks = 32;    // one request: 32 chunks (38 KB)
 constexpr int kWindowStart = 7, kWindowMin = 2, kWindowMax = 54;  // ranges in flight (256 KB .. 2 MB)
 constexpr size_t kMaxPayload = 1350;
 enum : uint8_t { kSetReq = 1, kSet = 2, kListReq = 3, kList = 4, kDataReq = 5, kData = 6, kError = 7 };
-enum : uint8_t { kErrBusy = 1, kErrNotHosting = 2, kErrUnknown = 3, kErrUnsendable = 4, kErrRead = 5 };
+enum : uint8_t { kErrBusy = 1, kErrNotHosting = 2, kErrUnknown = 3, kErrUnsendable = 4, kErrRead = 5, kErrOff = 6 };
 
 // -- bytes ------------------------------------------------------------------------------
 
@@ -111,39 +115,7 @@ int64_t NowMs() {
 
 // -- what may travel -----------------------------------------------------------------------
 
-bool ModFileAllowed(const std::string& rel, std::string* why) {
-  auto no = [&](const char* w) {
-    if (why) *why = w;
-    return false;
-  };
-  if (rel.empty() || rel.size() > 180) return no("an empty or too long path");
-  if (rel.front() == '/' || rel.find('\\') != std::string::npos) return no("not a relative path");
-  for (unsigned char c : rel)
-    if (c < 0x20 || c == ':' || c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*')
-      return no("a character a file name can't have (':' and the like)");
-  const auto parts = Split(rel, '/');
-  if (parts.size() > 8) return no("too deep");
-  static const std::set<std::string> kDevices = {"con", "prn", "aux", "nul", "com1", "com2", "com3", "com4",
-                                                 "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3",
-                                                 "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9", "conin$",
-                                                 "conout$"};
-  for (const std::string& p : parts) {
-    if (p.empty() || p == "." || p == "..") return no("a '..' or empty part");
-    if (p.back() == '.' || p.back() == ' ') return no("a name ending in a dot or space");
-    if (kDevices.count(Lower(p.substr(0, p.find('.'))))) return no("a device name (CON, NUL ...)");
-  }
-  const std::string name = Lower(parts.back());
-  const size_t dot = name.rfind('.');
-  if (dot == std::string::npos) return no("no file type");
-  const std::string ext = name.substr(dot), stem = name.substr(0, dot);
-  static const std::set<std::string> kKinds = {".pac", ".bik", ".mp4", ".mp3", ".wav", ".m4a", ".ogg", ".xma",
-                                               ".dds", ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".ymk", ".ymb",
-                                               ".txt"};
-  if (kKinds.count(ext)) return true;
-  if (ext == ".bin" && Lower(parts.front()) == "moves" && parts.size() > 1) return true;
-  if ((ext == ".toml" || ext == ".ini") && stem == "manifest") return true;
-  return no("a file type that isn't sent: only the game's and mods' own kinds");
-}
+bool ModFileAllowed(const std::string& rel, std::string* why) { return svrfmt::ModFileAllowed(rel, why); }
 
 namespace {
 
@@ -186,7 +158,10 @@ void SendError(uint64_t peer, uint8_t code, const std::string& text) {
   SendTo(peer, o);
 }
 
-// The host's set now (by its text: rebuilt when it changes). Caller holds g_host_mutex.
+using svrfmt::CosmeticFile;  // (the files outside the mod's key: mod_travel.h)
+
+// The host's set now (by its text: rebuilt when it changes; a mod that can't travel says why, so the joiner
+// is told before it asks). Caller holds g_host_mutex.
 void RefreshSet() {
   const std::string& set = GameplayModSet();
   const uint32_t gen = Crc32(0, set.data(), set.size());
@@ -205,12 +180,16 @@ void RefreshSet() {
     for (const auto& e : fs::recursive_directory_iterator(m.dir, ec)) {
       if (!e.is_regular_file()) continue;
       const std::string rel = fs::relative(e.path(), m.dir, ec).generic_string();
-      if (!ModFileAllowed(rel)) continue;
+      std::string why;
+      if (!ModFileAllowed(rel, &why)) {
+        if (!CosmeticFile(e.path()) && m.unsendable.empty()) m.unsendable = rel + " (" + why + ")";
+        continue;
+      }
       m.bytes += e.file_size(ec);
       ++m.count;
     }
     g_set_text += m.kind + "\t" + m.id + "\t" + m.version + "\t" + m.crc + "\t" + m.name + "\t" +
-                  std::to_string(m.bytes) + "\t" + std::to_string(m.count) + "\n";
+                  std::to_string(m.bytes) + "\t" + std::to_string(m.count) + "\t" + m.unsendable + "\n";
     g_host_mods.push_back(std::move(m));
   }
 }
@@ -229,11 +208,7 @@ void ListMod(uint32_t gen, size_t index, HostMod m) {
     std::string why;
     if (!ModFileAllowed(rel, &why)) {
       REXLOG_INFO("mod transfer: {}\\{}: {} isn't sent - {}", m.kind, m.id, rel, why);
-      // (pictures, sounds, movies and the like are outside the mod's key: only those may be left behind)
-      const std::string e = Lower(p.extension().string());
-      static const std::set<std::string> kCosmetic = {".png", ".jpg", ".jpeg", ".bmp", ".dds", ".tga", ".ogg",
-                                                      ".wav", ".mp3", ".xma", ".bik", ".wmv", ".mp4", ".db", ".ini"};
-      if (!kCosmetic.count(e) && m.unsendable.empty()) m.unsendable = rel + " (" + why + ")";
+      if (!CosmeticFile(p) && m.unsendable.empty()) m.unsendable = rel + " (" + why + ")";
       continue;
     }
     HostFile f{rel, p};
@@ -256,6 +231,10 @@ bool Admit(uint64_t peer) {
   uint64_t session = 0;
   if (!P2PHosting(&session)) {
     SendError(peer, kErrNotHosting, "This game doesn't host a session now.");
+    return false;
+  }
+  if (!REXCVAR_GET(online_mod_upload)) {
+    SendError(peer, kErrOff, "The host doesn't send its mods (its online_mod_upload setting is off).");
     return false;
   }
   const int64_t now = NowMs();
@@ -505,7 +484,10 @@ std::vector<ModOffer> FetchSet(uint32_t* gen, std::string* error) {
       }
       if (!got && !error->empty()) return {};
     }
-    if (!got) return {};
+    if (!got) {
+      if (error && error->empty()) *error = "The host didn't answer.";
+      return {};
+    }
     In in{got->data.data(), got->data.size()};
     *gen = in.u32();
     if (in.u16() != page) return {};
@@ -519,6 +501,7 @@ std::vector<ModOffer> FetchSet(uint32_t* gen, std::string* error) {
     ModOffer m{f[0], f[1], f[2], f[3], f[4]};
     m.bytes = std::strtoull(f[5].c_str(), nullptr, 10);
     m.files = uint32_t(std::strtoul(f[6].c_str(), nullptr, 10));
+    if (f.size() >= 8) m.unsendable = f[7];
     out.push_back(std::move(m));
   }
   return out;
@@ -799,19 +782,26 @@ void Run(std::vector<ModOffer> wanted) {
   g_running = false;
 }
 
-// Test aids: SVR2011_TEST_MOD_DOWNLOAD=1 (or =all: every one of the host's mods) - once joined to a session,
-// the host's mods this game lacks are fetched; progress in the log every 2 s. SVR2011_TEST_XFER_STOP_MB=<n>:
-// the first download is cancelled after n MB and started again 3 s later (it must resume from its .part files).
-void TestLoop() {
-  uint64_t tried = 0;
+std::mutex g_offer_mutex;
+std::optional<ModLobbyOffer> g_offer;  // (the newest, for the overlay)
+std::vector<ModOffer> g_last_wanted;   // (the last download's mods: the test aid's resume)
+
+// The lobby watch: once per session this game joined (3 s in: the direct link and the lobby's mod tables are up),
+// the host's gameplay mods this game lacks -> an offer for the overlay; a download goes when the session does.
+// Test aids: SVR2011_TEST_MOD_DOWNLOAD=1 - progress in the log every 2 s (=all: every one of the host's mods is
+// offered); SVR2011_TEST_MOD_ANSWER=yes|no answers the offer itself; SVR2011_TEST_XFER_STOP_MB=<n>: the first
+// download is cancelled after n MB and started again 3 s later (it must resume from its .part files).
+void LobbyLoop() {
   const char* mode = std::getenv("SVR2011_TEST_MOD_DOWNLOAD");
-  const bool all = mode && std::string(mode) == "all";
+  const bool test = mode != nullptr, all = mode && std::string(mode) == "all";
   const char* stop_env = std::getenv("SVR2011_TEST_XFER_STOP_MB");
   uint64_t stop_at = stop_env ? uint64_t(std::atoi(stop_env)) << 20 : 0;
-  std::vector<ModOffer> last_wanted;
-  for (int64_t last_log = 0;; std::this_thread::sleep_for(std::chrono::milliseconds(500))) {
+  uint64_t tried = 0, seen = 0;
+  int64_t seen_at = 0, last_log = 0, retry_at = 0;
+  int asks = 0;
+  for (;; std::this_thread::sleep_for(std::chrono::milliseconds(500))) {
     const ModDownloadState s = ModDownload();
-    if (g_running && NowMs() - last_log > 2000) {
+    if (test && g_running && NowMs() - last_log > 2000) {
       last_log = NowMs();
       REXLOG_INFO("mod transfer: mod {}/{}, {:.1f} of {:.1f} MB, {:.2f} MB/s", s.mod, s.mods, s.done / 1048576.0,
                   s.total / 1048576.0, s.rate / 1048576.0);
@@ -822,38 +812,71 @@ void TestLoop() {
       CancelModDownload();
       while (g_running) std::this_thread::sleep_for(std::chrono::milliseconds(50));
       std::this_thread::sleep_for(std::chrono::seconds(3));
-      StartModDownload(last_wanted);
+      StartModDownload(g_last_wanted);
       continue;
     }
     uint64_t session = 0;
     const uint64_t host = P2PSessionHost(&session);
+    if (!host && g_running && s.phase == ModDownloadState::kFetching) {  // (the session went: so does its download)
+      REXLOG_INFO("mod transfer: the session ended - the download stops");
+      CancelModDownload();
+    }
     if (!host || session == tried || g_running) continue;
+    if (session != seen) seen = session, seen_at = NowMs(), asks = 0, retry_at = 0;
+    if (NowMs() - seen_at < 3000 || NowMs() < retry_at) continue;
     tried = session;
+    ModLobbyOffer offer;
+    offer.session = session;
     if (!P2PPeerDirect(host)) {
-      REXLOG_WARN("mod transfer: test: the host's link isn't direct - no files through the relay");
+      offer.lacking = OnlineModsLackedFromHost();
+      REXLOG_INFO("mod transfer: the host's link goes through the relay - no mods can come ({} lacked)",
+                  offer.lacking.size());
+      if (offer.lacking.empty()) continue;
+      offer.relayed = true;
+    } else {
+      g_host = host;
+      g_running = true;  // (AskHostMods takes the host's answers only while running)
+      std::string why;
+      const auto offers = AskHostMods(4000, &why);
+      g_running = false;
+      const bool settling = why == "The host didn't answer." || why.find("direct link") != std::string::npos;
+      if (offers.empty() && settling) {  // (the link still settling: again in 5 s, for a minute)
+        if (++asks < 12) tried = 0, retry_at = NowMs() + 5000;
+        REXLOG_INFO("mod transfer: the host's mods: {}{}", why, asks < 12 ? " - asking again in 5 s" : " - given up");
+        continue;
+      }
+      if (offers.empty() && !why.empty()) {  // (the host won't send: its reason, if this game lacks anything)
+        REXLOG_INFO("mod transfer: the host's mods: {}", why);
+        for (const std::string& l : OnlineModsLackedFromHost()) offer.unsendable.push_back(l + ": " + why);
+        if (offer.unsendable.empty()) continue;
+      }
+      std::set<std::string> mine;
+      for (const std::string& line : Split(GameplayModSet(), '\n')) {
+        const auto f = Split(line, '\t');
+        if (f.size() >= 4) mine.insert(f[0] + "\t" + f[1] + "\t" + f[3]);
+      }
+      for (const ModOffer& o : offers) {
+        if (!all && mine.count(o.kind + "\t" + o.id + "\t" + o.crc)) continue;
+        if (!o.unsendable.empty()) offer.unsendable.push_back((o.name.empty() ? o.id : o.name) + ": " + o.unsendable);
+        else offer.mods.push_back(o), offer.bytes += o.bytes;
+      }
+      REXLOG_INFO("mod transfer: the host has {} mod(s), {} this game lacks ({:.1f} MB), {} it can't send",
+                  offers.size(), offer.mods.size(), offer.bytes / 1048576.0, offer.unsendable.size());
+      if (offer.mods.empty() && offer.unsendable.empty()) continue;
+    }
+    if (const char* answer = std::getenv("SVR2011_TEST_MOD_ANSWER")) {
+      REXLOG_INFO("mod transfer: test: the offer answered {}", answer);
+      if (std::string(answer) == "yes" && !offer.relayed) StartModDownload(offer.mods);
       continue;
     }
-    g_host = host;
-    g_running = true;  // (AskHostMods takes the host's answers only while running)
-    const auto offers = AskHostMods(4000);
-    g_running = false;
-    std::set<std::string> mine;
-    for (const std::string& line : Split(GameplayModSet(), '\n')) {
-      const auto f = Split(line, '\t');
-      if (f.size() >= 4) mine.insert(f[0] + "\t" + f[1] + "\t" + f[3]);
-    }
-    std::vector<ModOffer> missing;
-    for (const ModOffer& o : offers)
-      if (all || !mine.count(o.kind + "\t" + o.id + "\t" + o.crc)) missing.push_back(o);
-    REXLOG_INFO("mod transfer: test: the host has {} mod(s), {} to fetch", offers.size(), missing.size());
-    last_wanted = missing;
-    if (!missing.empty()) StartModDownload(missing);
+    std::lock_guard lock(g_offer_mutex);
+    g_offer = std::move(offer);
   }
 }
 
 }  // namespace
 
-std::vector<ModOffer> AskHostMods(int timeout_ms) {
+std::vector<ModOffer> AskHostMods(int timeout_ms, std::string* why) {
   if (!g_host) g_host = P2PSessionHost();
   if (!g_host) return {};
   uint32_t gen = 0;
@@ -862,7 +885,7 @@ std::vector<ModOffer> AskHostMods(int timeout_ms) {
   auto set = FetchSet(&gen, &error);
   if (!was) g_running = false;
   (void)timeout_ms;
-  if (set.empty() && !error.empty()) REXLOG_INFO("mod transfer: the host's mods: {}", error);
+  if (why) *why = set.empty() ? error : std::string();
   return set;
 }
 
@@ -884,6 +907,7 @@ bool StartModDownload(const std::vector<ModOffer>& mods) {
     g_state = {};
   }
   if (g_thread.joinable()) g_thread.join();
+  g_last_wanted = mods;
   g_thread = std::thread(Run, mods);
   return true;
 }
@@ -920,7 +944,21 @@ void InstallModTransfer() {
   if (!std::getenv("SVR2011_TEST_XFER_KEEP")) ClearFetchedMods();
   SetP2PModXferHandler(OnMessage);
   std::thread(SenderLoop).detach();
-  if (std::getenv("SVR2011_TEST_MOD_DOWNLOAD")) std::thread(TestLoop).detach();
+  std::thread(LobbyLoop).detach();
+}
+
+bool TakeModLobbyOffer(ModLobbyOffer* out) {
+  std::lock_guard lock(g_offer_mutex);
+  if (!g_offer) return false;
+  *out = std::move(*g_offer);
+  g_offer.reset();
+  return true;
+}
+
+void AnswerModLobbyOffer(const ModLobbyOffer& offer, bool download) {
+  REXLOG_INFO("mod transfer: the player answered {} to {} mod(s), {:.1f} MB", download ? "YES" : "NO",
+              offer.mods.size(), offer.bytes / 1048576.0);
+  if (download && !offer.relayed && P2PSessionHost() != 0) StartModDownload(offer.mods);
 }
 
 }  // namespace svr2011

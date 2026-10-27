@@ -17,6 +17,8 @@
  *
  * Command line (tests):  --capture <play|settings|install|dlc|saves|paint|mods> <file.bmp> [--paint-page <1-10>]
  *                          [--report-window <1|2>]  (Report a problem's window instead: questions / where to post)
+ *                          [--online-mods show | <share 0|1> <KB/s> <joiners> <mod MB> <session MB>]  (online: the
+ *                          Mod sharing fold open - as loaded, or those rows filled and saved first)
  *                        --paint-export <file.pt> <slot> <out.png>  /  --paint-import <file.pt> <slot> <image>
  *                          (slot 1-200: 1-20 page 1, 21-40 page 2, ...)
  *                        --install <image> <folder>   (no window; exit code)
@@ -133,7 +135,9 @@ enum {
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
     ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL, ID_ON_PEERS, ID_ON_ROUTE,
-    ID_FR_LIST, ID_FR_NAME, ID_FR_ADD, ID_FR_REMOVE, ID_FR_STATUS,
+    ID_FR_LIST, ID_FR_NAME, ID_FR_ADD, ID_FR_REMOVE, ID_FR_STATUS, ID_FR_GROUP, ID_FR_INFO,
+    ID_ON_SHARE, ID_ON_MODS_FOLD, ID_ON_MODS_GROUP, ID_ON_UP_KBS, ID_ON_UP_PEERS, ID_ON_MOD_MB, ID_ON_MODS_MB,
+    ID_ON_MODS_L1, ID_ON_MODS_L2, ID_ON_MODS_L3, ID_ON_MODS_L4, ID_ON_MODS_INFO,
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
     ID_PROGRESS, ID_INSTALL_STATUS, ID_VERIFY, ID_VERIFY_REPAIR, ID_VERIFY_MARK, ID_VERIFY_STATUS,
@@ -1954,6 +1958,8 @@ static void friends_show(int http, char *answer)
                 label = L"In an online match", online++;
             else if (!wcscmp(status, L"online"))
                 label = L"Online", online++;
+            else if (!wcscmp(status, L"ingame"))
+                label = L"In the game";
             v = strstr(p, "\"mutual\"");
             if (v && v < close && strncmp(v + 8, ": false", 7) == 0 && wcscmp(label, L"Offline") == 0)
                 label = L"Offline (hasn't added you)";
@@ -2127,6 +2133,7 @@ static void settings_load(void)
     int msaa = 0, aa = 0, emulated = 0, api = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
     int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0, arena_light = 100;
     int match_camera = 0;
+    int share = 1, up_kbs = 0, up_peers = 0, mod_mb = 0, mods_mb = 0;  /* (the game's online mod settings) */
     int exclusive = 0, max_scale = 4, scene_height = 0, upscale = 0, upscale_quality = 1;
     double render_scale = 1.0;
     char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
@@ -2180,6 +2187,11 @@ static void settings_load(void)
             else if (!strcmp(key, "online_token")) strcpy_s(s_online_token, sizeof s_online_token, val);
             else if (!strcmp(key, "online_xuid")) strcpy_s(s_online_xuid, sizeof s_online_xuid, val);
             else if (!strcmp(key, "p2p_peers")) strcpy_s(online_peers, sizeof online_peers, val);
+            else if (!strcmp(key, "online_mod_upload")) share = strcmp(val, "false") != 0;
+            else if (!strcmp(key, "online_mod_upload_kbs")) up_kbs = atoi(val);
+            else if (!strcmp(key, "online_mod_upload_peers")) up_peers = atoi(val);
+            else if (!strcmp(key, "online_mod_max_mb")) mod_mb = atoi(val);
+            else if (!strcmp(key, "online_mods_max_mb")) mods_mb = atoi(val);
         }
         lines_free(&l);
     } else if (on_steam_deck()) {
@@ -2208,6 +2220,14 @@ static void settings_load(void)
     display_hint();
     (void)emulated;  /* (an old native_renderer = "off": saved as "main" next time) */
     online_show(online, online_name, online_server);
+    {   /* (the game's online mod settings: mod_transfer.cpp's defaults when missing) */
+        WCHAR n[16];
+        CheckDlgButton(s_wnd, ID_ON_SHARE, share ? BST_CHECKED : BST_UNCHECKED);
+        swprintf_s(n, 16, L"%d", up_kbs > 0 ? up_kbs : 4096), set_text(ID_ON_UP_KBS, n);
+        swprintf_s(n, 16, L"%d", up_peers > 0 ? up_peers : 2), set_text(ID_ON_UP_PEERS, n);
+        swprintf_s(n, 16, L"%d", mod_mb > 0 ? mod_mb : 300), set_text(ID_ON_MOD_MB, n);
+        swprintf_s(n, 16, L"%d", mods_mb > 0 ? mods_mb : 1024), set_text(ID_ON_MODS_MB, n);
+    }
     {
         WCHAR w[256];
         MultiByteToWideChar(CP_UTF8, 0, online_peers, -1, w, 256);
@@ -2234,7 +2254,7 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 38 };
+    enum { NK = 43 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
@@ -2243,7 +2263,9 @@ static int settings_save(void)
                                     "process_priority", "unlock_everything", "native_texture_quality",
                                     "skip_intros", "skip_training", "fullscreen_exclusive", "native_max_scale",
                                     "native_render_scale", "native_scene_height", "arena_brightness", "perf_overlay",
-                                    "native_upscale", "native_upscale_quality", "match_camera" };
+                                    "native_upscale", "native_upscale_quality", "match_camera",
+                                    "online_mod_upload", "online_mod_upload_kbs", "online_mod_upload_peers",
+                                    "online_mod_max_mb", "online_mods_max_mb" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -2336,6 +2358,22 @@ static int settings_save(void)
         sprintf_s(vals[21], 64, "%d", k_frame_rates[fi >= 0 && fi < N_FRAME_RATES ? fi : 1]);
     }
     toml_quote_ctl(ID_ON_PEERS, 140, vals[22], sizeof vals[22]);
+    {   /* (the game's online mod settings, kept in its ranges) */
+        static const struct { int id, lo, hi, def; } k_mods[4] = {
+            { ID_ON_UP_KBS, 64, 65536, 4096 }, { ID_ON_UP_PEERS, 1, 8, 2 },
+            { ID_ON_MOD_MB, 1, 4096, 300 }, { ID_ON_MODS_MB, 1, 16384, 1024 } };
+        strcpy_s(vals[38], 64, IsDlgButtonChecked(s_wnd, ID_ON_SHARE) == BST_CHECKED ? "true" : "false");
+        for (k = 0; k < 4; k++) {
+            WCHAR n[16];
+            int v;
+            GetWindowTextW(ctl(k_mods[k].id), n, 16);
+            v = n[0] ? _wtoi(n) : k_mods[k].def;
+            v = v < k_mods[k].lo ? k_mods[k].lo : v > k_mods[k].hi ? k_mods[k].hi : v;
+            sprintf_s(vals[39 + k], 64, "%d", v);
+            swprintf_s(n, 16, L"%d", v);  /* (the field shows what's saved) */
+            set_text(k_mods[k].id, n);
+        }
+    }
 
     settings_path(p);
     if (!toml_read(p, &l))
@@ -2828,9 +2866,15 @@ static RECT nav_rect(int k)
 }
 
 /* A group box: a card the window draws on the page. */
-typedef struct { int tab, x, y, w, h; WCHAR title[64]; } Card;
+typedef struct { int tab, x, y, w, h, id; WCHAR title[64]; } Card;
 static Card s_cards[96];
 static int  s_ncards;
+/* The Online tab's "Mod sharing" fold: its card and rows in the Friends card's place while open. */
+static int s_mods_fold;
+static int card_hidden(const Card *cd)
+{
+    return (cd->id == ID_FR_GROUP && s_mods_fold) || (cd->id == ID_ON_MODS_GROUP && !s_mods_fold);
+}
 /* Push buttons, drawn by the window (rounded; red for the main actions). */
 typedef struct { HWND h; int primary; } Btn;
 static Btn  s_btns[256];
@@ -2954,7 +2998,7 @@ static HWND add(int tab, const WCHAR *cls, const WCHAR *text, DWORD style, int x
     /* A group box becomes a card the window draws (the control is never shown). */
     if (button && kind == BS_GROUPBOX && tab >= 0 && s_ncards < (int)(sizeof s_cards / sizeof s_cards[0])) {
         Card *cd = &s_cards[s_ncards++];
-        cd->tab = tab; cd->x = x; cd->y = y; cd->w = w; cd->h = h;
+        cd->tab = tab; cd->x = x; cd->y = y; cd->w = w; cd->h = h; cd->id = id;
         wcsncpy_s(cd->title, 64, text ? text : L"", _TRUNCATE);
         return CreateWindowExW(0, cls, text, WS_CHILD | style, S(x + SB_W), S(y + DY), S(w), S(h), s_wnd,
                                (HMENU)(INT_PTR)id, s_inst, NULL);
@@ -3050,6 +3094,21 @@ static void pt_refresh(void);
 static void mv_refresh(void);
 static volatile LONG s_up_busy;
 
+static void online_mods_fold_apply(void)
+{
+    static const int friends[] = { ID_FR_LIST, ID_FR_NAME, ID_FR_ADD, ID_FR_REMOVE, ID_FR_INFO, ID_FR_STATUS };
+    static const int mods[] = { ID_ON_MODS_L1, ID_ON_UP_KBS, ID_ON_MODS_L2, ID_ON_UP_PEERS,
+                                ID_ON_MODS_L3, ID_ON_MOD_MB, ID_ON_MODS_L4, ID_ON_MODS_MB, ID_ON_MODS_INFO };
+    size_t i;
+    const int shown = s_cur_tab == TAB_ONLINE;
+    for (i = 0; i < sizeof friends / sizeof friends[0]; i++)
+        ShowWindow(ctl(friends[i]), shown && !s_mods_fold ? SW_SHOW : SW_HIDE);
+    for (i = 0; i < sizeof mods / sizeof mods[0]; i++)
+        ShowWindow(ctl(mods[i]), shown && s_mods_fold ? SW_SHOW : SW_HIDE);
+    SetWindowTextW(ctl(ID_ON_MODS_FOLD), s_mods_fold ? L"Friends \x25B8" : L"Mod sharing \x25B8");
+    InvalidateRect(s_wnd, NULL, TRUE);  /* (the cards: drawn by the window) */
+}
+
 static void show_tab(int t)
 {
     int i, k;
@@ -3063,6 +3122,7 @@ static void show_tab(int t)
         online_account_show();
         online_server_show();
         friends_enable();
+        online_mods_fold_apply();
         friends_fetch(NULL);
         SetTimer(s_wnd, FRIENDS_TIMER, 20000, NULL);
     } else {
@@ -4027,7 +4087,12 @@ static void build_ui(void)
     add(TAB_ONLINE, L"Static", L"Community Creations and online matches (Player Match, Royal Rumble) through a "
                                L"Community Creations server - the original servers closed in 2014.",
         SS_LEFT, X0, 54, 560, 36, 0);
-    add(TAB_ONLINE, L"Button", L"Play online", BS_AUTOCHECKBOX | WS_TABSTOP, X0, 92, 400, 22, ID_ON_ENABLE);
+    add(TAB_ONLINE, L"Button", L"Play online", BS_AUTOCHECKBOX | WS_TABSTOP, X0, 92, 150, 22, ID_ON_ENABLE);
+    /* (the game's online_mod_upload: mod_transfer.cpp - the host sends its gameplay mods to joiners who lack them) */
+    add(TAB_ONLINE, L"Button", L"Share my mods with players who join me", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 160, 92,
+        290, 22, ID_ON_SHARE);
+    add(TAB_ONLINE, L"Button", L"Mod sharing \x25B8", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 90, 108, 26,
+        ID_ON_MODS_FOLD);
     add(TAB_ONLINE, L"Button", L"Your account", BS_GROUPBOX, X0, 118, 560, 124, 0);
     add(TAB_ONLINE, L"Static", L"Name", SS_LEFT, X0 + 16, 144, 130, 20, 0);
     h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 140, 220, 24, ID_ON_NAME);
@@ -4052,7 +4117,7 @@ static void build_ui(void)
     SendMessageW(h, CB_SETCURSEL, 0, 0);
     add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 270, 396, 24, ID_ON_SERVER);
     add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 150, 298, 396, 20, ID_ON_SERVER_LABEL);
-    add(TAB_ONLINE, L"Button", L"Friends", BS_GROUPBOX, X0, 328, 560, 202, 0);
+    add(TAB_ONLINE, L"Button", L"Friends", BS_GROUPBOX, X0, 328, 560, 202, ID_FR_GROUP);
     {
         static const WCHAR *const names[] = { L"Player", L"Status" };
         static const int widths[] = { 150, 196 };
@@ -4066,7 +4131,24 @@ static void build_ui(void)
     add(TAB_ONLINE, L"Button", L"Add", BS_PUSHBUTTON | WS_TABSTOP, X0 + 380, 380, 80, 26, ID_FR_ADD);
     add(TAB_ONLINE, L"Button", L"Remove", BS_PUSHBUTTON | WS_TABSTOP, X0 + 466, 380, 80, 26, ID_FR_REMOVE);
     add(TAB_ONLINE, L"Static", L"Online: in the game's ONLINE menus. Friends' matches show in the game's searches.",
-        SS_LEFT | SS_NOPREFIX, X0 + 380, 414, 166, 60, 0);
+        SS_LEFT | SS_NOPREFIX, X0 + 380, 414, 166, 60, ID_FR_INFO);
+    /* Mod sharing (the fold: in the Friends box's place while open) - the game's online mod settings */
+    add(TAB_ONLINE, L"Button", L"Mods in online sessions", BS_GROUPBOX, X0, 328, 560, 202, ID_ON_MODS_GROUP);
+    add(TAB_ONLINE, L"Static", L"Upload speed (KB/s, all joiners)", SS_LEFT, X0 + 16, 354, 250, 20, ID_ON_MODS_L1);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_NUMBER | WS_BORDER | WS_TABSTOP, X0 + 280, 350, 90, 24, ID_ON_UP_KBS);
+    SendMessageW(h, EM_LIMITTEXT, 5, 0);
+    add(TAB_ONLINE, L"Static", L"Joiners downloading at once", SS_LEFT, X0 + 16, 380, 250, 20, ID_ON_MODS_L2);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_NUMBER | WS_BORDER | WS_TABSTOP, X0 + 280, 376, 90, 24, ID_ON_UP_PEERS);
+    SendMessageW(h, EM_LIMITTEXT, 1, 0);
+    add(TAB_ONLINE, L"Static", L"Largest mod to download (MB)", SS_LEFT, X0 + 16, 406, 250, 20, ID_ON_MODS_L3);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_NUMBER | WS_BORDER | WS_TABSTOP, X0 + 280, 402, 90, 24, ID_ON_MOD_MB);
+    SendMessageW(h, EM_LIMITTEXT, 4, 0);
+    add(TAB_ONLINE, L"Static", L"Most to download for one session (MB)", SS_LEFT, X0 + 16, 432, 260, 20, ID_ON_MODS_L4);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_NUMBER | WS_BORDER | WS_TABSTOP, X0 + 280, 428, 90, 24, ID_ON_MODS_MB);
+    SendMessageW(h, EM_LIMITTEXT, 5, 0);
+    add(TAB_ONLINE, L"Static", L"Mods you lack come straight from the host's game (never the server or the relay), into "
+                               L"UserData\\OnlineMods - removed when you leave online or close the game.",
+        SS_LEFT | SS_NOPREFIX, X0 + 16, 458, 530, 36, ID_ON_MODS_INFO);
     add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 478, 530, 18, ID_FR_STATUS);
     add(TAB_ONLINE, L"Static", L"Addresses", SS_LEFT, X0 + 16, 502, 90, 20, 0);
     h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 110, 498, 436, 24, ID_ON_PEERS);
@@ -7887,7 +7969,7 @@ static int card_at(HWND c)
     MapWindowPoints(NULL, s_wnd, (POINT *)&r, 2);
     for (i = 0; i < s_ncards; i++) {
         const Card *cd = &s_cards[i];
-        if (cd->tab != s_cur_tab)
+        if (cd->tab != s_cur_tab || card_hidden(cd))
             continue;
         if (r.left >= S(cd->x + SB_W) && r.top >= S(cd->y + DY) && r.right <= S(cd->x + cd->w + SB_W) + 1 &&
             r.bottom <= S(cd->y + cd->h + DY) + 1)
@@ -8520,7 +8602,7 @@ static void paint_window(HDC dc)
         for (i = 0; i < s_ncards; i++) {
             const Card *cd = &s_cards[i];
             RECT c;
-            if (cd->tab != s_cur_tab || (cd->title[0] == 1 && !s_notice[0]))
+            if (cd->tab != s_cur_tab || card_hidden(cd) || (cd->title[0] == 1 && !s_notice[0]))
                 continue;
             c.left = S(cd->x + SB_W); c.top = S(cd->y + DY); c.right = S(cd->x + cd->w + SB_W);
             c.bottom = S(cd->y + cd->h + DY);
@@ -8647,13 +8729,18 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_DEFAULTS:
             settings_defaults();
             break;
-        case ID_ON_ENABLE:
+        case ID_ON_MODS_FOLD:
+            s_mods_fold = !s_mods_fold;
+            online_mods_fold_apply();
+            break;
+        case ID_ON_ENABLE: case ID_ON_SHARE:
             if (HIWORD(wp) == BN_CLICKED) {
                 s_settings_dirty = 1;
                 set_text(ID_ON_STATUS, L"");
             }
             break;
         case ID_ON_NAME: case ID_ON_SERVER: case ID_ON_PEERS:
+        case ID_ON_UP_KBS: case ID_ON_UP_PEERS: case ID_ON_MOD_MB: case ID_ON_MODS_MB:
             if (HIWORD(wp) == EN_CHANGE) {
                 s_settings_dirty = 1;
                 set_text(ID_ON_STATUS, L"");
@@ -9113,7 +9200,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     int capture_bundled = 0;  /* (--bundled-start: the start's bundled install too - timed, a shot while it runs) */
     const ULONGLONG t_start = GetTickCount64();
     ULONGLONG t_shown = 0;
-    const WCHAR *capture_music = NULL, *const *capture_tag = NULL;
+    const WCHAR *capture_music = NULL, *const *capture_tag = NULL, *const *capture_mods = NULL;
+    int capture_mods_show = 0;
     WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc), *slash, *capture_file = NULL, **capture_account = NULL;
     (void)prev; (void)cmd;
 
@@ -9567,6 +9655,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         /* ... --roster-tag <id> <SMACKDOWN|RAW|NPC|MODS|DEFAULT>: the Roster tab tags it. */
         if (argc >= 7 && !wcscmp(argv[4], L"--roster-tag"))
             capture_tag = argv + 5;
+        /* ... --online-mods <share 0|1> <kbs> <peers> <mod MB> <session MB>: the Online tab's Mod sharing rows
+           filled and saved (svr2011.toml), then the fold captured open. */
+        if (argc >= 10 && !wcscmp(argv[4], L"--online-mods"))
+            capture_mods = argv + 5;
+        if (argc >= 6 && !wcscmp(argv[4], L"--online-mods") && !wcscmp(argv[5], L"show"))  /* (only the fold, as loaded) */
+            capture_mods_show = 1;
         /* ... --report-window <1|2>: Report a problem's window (questions / where to post) is captured instead. */
         if (argc >= 6 && !wcscmp(argv[4], L"--report-window"))
             capture_report = _wtoi(argv[5]);
@@ -9626,6 +9720,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         music_add_files(s_game_dir, &capture_music, 1);
     if (capture_tag)
         roster_tag(s_game_dir, _wtoi(capture_tag[0]), capture_tag[1]);
+    if (capture_mods) {
+        CheckDlgButton(s_wnd, ID_ON_SHARE, _wtoi(capture_mods[0]) ? BST_CHECKED : BST_UNCHECKED);
+        set_text(ID_ON_UP_KBS, capture_mods[1]), set_text(ID_ON_UP_PEERS, capture_mods[2]);
+        set_text(ID_ON_MOD_MB, capture_mods[3]), set_text(ID_ON_MODS_MB, capture_mods[4]);
+        settings_save();
+        s_mods_fold = 1;
+    }
+    if (capture_mods_show)
+        s_mods_fold = 1;
     /* The first start (launcher.ini SetupShown): the Setup tab, what's found and what's missing. */
     if (capture_tab < 0 && !GetPrivateProfileIntW(L"Launcher", L"SetupShown", 0, s_launcher_ini)) {
         WritePrivateProfileStringW(L"Launcher", L"SetupShown", L"1", s_launcher_ini);
