@@ -802,6 +802,12 @@ def build_motion(keys, nframes, packed=False):
         ev = b''.join(k.get('events', []))
         if k.get('bones') is None and k.get('root') is None:
             pose = b''
+        elif packed and max(abs(v) for v in k['root']) >= 2 << (PK_ROOT_BITS - 1):
+            # (past the packed root's range - +-4096, a dive's drop to 7000: the bones without a root, then the
+            # s16 root on its own, as the stock packed copies do - Diving Double Axe Handle 3538's last keys)
+            pose = encode_packed({'subs': [{'form': 'mask', 'count': k['count'], 'mask': 0x1FFFFF, 'bones': k['bones']},
+                                           {'form': 'root', 'count': k['count'],
+                                            'root': tuple(int(v) for v in k['root'])}], 'trail': b''})
         elif packed:
             pose = encode_packed({'subs': [{'form': 'full', 'count': k['count'], 'root': k['root'],
                                             'bones': k['bones']}], 'trail': b''})

@@ -877,6 +877,20 @@ def scale_travel(keys, k):
     return [((x0 + (r[0] - x0) * k, r[1], z0 + (r[2] - z0) * k), a) for r, a in keys]
 
 
+def fall_tail(tk):
+    """A 2011 dive's flight ends in a drop: the attacker's root falls on past the mat (7000 on the last key -
+    Diving Double Axe Handle 3538, Frog Splash 3555) and the game lands the dive when the root reaches the mat.
+    (the key the drop starts at, [root height change per key from the key before it]) - (None, []) when the
+    template's flight ends in the air"""
+    ks = [(k['frame'], k['root'][1]) for k in tk if k.get('root')]
+    if len(ks) < 3 or ks[-1][1] < 3000:
+        return None, []
+    i = len(ks) - 1
+    while i > 1 and ks[i - 1][1] > ks[0][1]:   # (back to where it passes its start height going down)
+        i -= 1
+    return ks[i][0], [y - ks[i - 1][1] for f, y in ks[i:]]
+
+
 def heading_turn(st, tt, min_travel=200.0, min_angle=0.35):
     """the 4x4 turning a source about the vertical so its attacker's travel st (dx, dz) goes the template's way tt,
     and the angle; (None, 0) when either barely travels or they already agree within min_angle (radians)"""
@@ -1000,6 +1014,29 @@ def choose_submission(g11, frames, phases):
                 if best is None or score < best[0]:
                     best = (score, e['id'])
     return best[1] if best else None
+
+
+def dive_kin(g11, name):
+    """2011's dives (one-person MVMT/CORN moves) whose names share the source's rarest word - WWE '13's Diving
+    Corkscrew Splash: Diving Corkscrew Body 3624 (the closest length gave 450 Splash, which leaves upright: the
+    corkscrew starts flipped, the game dropped its base to the mat at once and it landed a torso short). An empty
+    set when no name word is shared"""
+    import collections
+    ids = set()
+    for path, (kind, keys, size) in g11.idx.items():
+        if path.startswith('MVMT/CORN') and kind == 'YMKs':
+            ids |= {k[0] for k in keys if k[1] == 0 and k[2] == 0} - {k[0] for k in keys if k[1] == 0 and k[2] == 1}
+    ids = {i for i in ids if usable11(g11.waze, i)}
+
+    def words(s):
+        return set(re.findall(r'[a-z]{3,}', (s or '').lower())) - {'diving', 'pin', 'top', 'rope'}
+    count = collections.Counter(w for i in ids for w in words(g11.waze[i][1]))
+    # (a rare word only: "splash" names half of them - WWE '13's 450 Splash moved off 3570, the template it lands on)
+    mine = [w for w in words(name) if 0 < count[w] <= 2]
+    if not mine:
+        return set()
+    w = min(mine, key=lambda w: count[w])
+    return {i for i in ids if w in words(g11.waze[i][1])}
 
 
 def choose_template_by_length(g11, cat, frames):
@@ -1182,18 +1219,28 @@ def convert(a, rep):
     corner = 'CORN' in (cat11 if isinstance(cat11, list) else [cat11.strip() if cat11 else ''])
     # (laid out as 2011's: the flight at x 0, the branches at theirs - onto a lying victim only: WWE '13's Diving Double
     # Axe Handle 1, onto a standing one (victim root -877), is a two-person corner move)
-    if not tid and corner and flight is not None and (vic_y is None or vic_y > -400):
+    # (a dive given as the template - the Mod Maker's template pick - is a dive all the same: before, the flight,
+    # its branches, the turn and the travel were left out and the source's x 30 took x 0)
+    opt_dive = bool(tid and a.get('template') and any(p.startswith('MVMT/CORN') for p, kd, ks in g11.banks_of(tid)) and
+                    not any((0, 1) in ks for p, kd, ks in g11.banks_of(tid) if kd == 'YMKs'))
+    if (not tid or opt_dive) and corner and flight is not None and (vic_y is None or vic_y > -400):
         att, vic, branched_dive = flight, None, True
         nf = max(1, (att['frames'] - 1) // 2)
         rep['notes'].append("source block 00000000 the attacker's flight (%d frames at 60 Hz), %s the branches" %
                             (att['frames'], ' / '.join(p for p in pairs if p.isdigit() and 30 <= int(p) < 90)))
     att_keys = R0.keys(att, nf, face)
-    if not tid and (branched_dive or (vic is not None and corner and vic_y > -400 and
-                                      min(k[0][1] for k in att_keys) < -1100)):
+    if (not tid or opt_dive) and (branched_dive or (vic is not None and corner and vic_y > -400 and
+                                                    min(k[0][1] for k in att_keys) < -1100)):
         branches = sorted({int(p) for p, d in by.items() if p.isdigit() and 30 <= int(p) < 90 and 0 in d})
-        dive = (choose_template(g11, ['CORN'], nf, None, paired=False, attacker_end_y=att_keys[-1][0][1], need_x=branches)
-                or choose_template(g11, ['CORN'], nf, None, paired=False,   # (dives are corner moves; SPE1 has strikes)
-                                   attacker_end_y=att_keys[-1][0][1]))
+        kin = dive_kin(g11, name) or None
+        dive = tid if opt_dive else next(
+            (t for allowed in ([kin] if kin else []) + [None] for t in (
+                choose_template(g11, ['CORN'], nf, None, allowed, paired=False, attacker_end_y=att_keys[-1][0][1],
+                                need_x=branches),
+                choose_template(g11, ['CORN'], nf, None, allowed, paired=False,   # (dives are corner moves; SPE1
+                                attacker_end_y=att_keys[-1][0][1])) if t), None)   # has strikes)
+        if kin and dive in kin and not opt_dive:
+            rep['notes'].append('template: a 2011 dive of a like name (%s)' % g11.waze[dive][1])
         if dive:
             tid, vic, gap = dive, None, None
             rep['notes'].append("a dive onto a lying victim: the attacker's motion on a one-person template, the "
@@ -1352,6 +1399,7 @@ def convert(a, rep):
     nmot = 0
     ymb_ns, ymb_solved, ymb_built = None, {}, {}
     ymb_shift = None   # (YMBs: the source moved so its attacker starts where the template's does - as the YMKs path)
+    landing = {}   # (a dive's drop to the mat: from the keyframe bank, the packed copies too - fall_tail)
     for path, kind, ks in g11.banks_of(tid):
         if kind == 'YMBs':   # (taunts, submissions: ADPCM channels with limb IK - ymbs_retarget)
             import ymbs
@@ -1431,9 +1479,31 @@ def convert(a, rep):
                     if r0:
                         offset = (r0[0] - src_keys[0][0][0], 0.0, r0[2] - src_keys[0][0][2])
                 off = offset or (0.0, 0.0, 0.0)
-                n = len(src_keys) - 1
-                evs = retime([(k['frame'], k['events']) for k in tk if k.get('events')], n / float(max(1, e['frames'])),
-                             n, tid, new_id, 0x20 if packed else 0x7f)
+                tev = [(k['frame'], k['events']) for k in tk if k.get('events')]
+                lim = 0x20 if packed else 0x7f
+                drop, tail = fall_tail(tk) if (x, y) == (0, 0) and not packed else (None, [])
+                if packed and (x, y) == (0, 0):   # (the packed copy keys every 5 frames: the keyframe bank's drop)
+                    drop, tail = landing.get('drop', (None, []))
+                if tail and src_keys[-1][0][1] < src_keys[0][0][1] + 300:   # (ends as high as it left from)
+                    # A source flight that ends in the air (WWE '12's Diving Double Axe Handle: its own engine brought
+                    # the base down) hung at turnbuckle height in 2011, the root never reaching the mat: the
+                    # template's drop goes on after it, the last pose held (copying the template's 7000 onto the last
+                    # key alone froze it in the air).
+                    landing['drop'] = (drop, tail)
+                    (r1, a1), ns = src_keys[-1], len(src_keys) - 1
+                    src_keys = src_keys + [((r1[0], r1[1] + d, r1[2]), a1) for d in tail]
+                    n = len(src_keys) - 1
+                    evs = retime([(f, ev) for f, ev in tev if f < drop], ns / float(max(1, drop)), ns, tid, new_id, lim)
+                    for f, ev in retime([(f - drop, ev) for f, ev in tev if f >= drop], 1.0, n - ns - 1, tid, new_id,
+                                        lim).items():
+                        evs.setdefault(ns + 1 + f, []).extend(ev)
+                    if not landing.get('noted'):
+                        landing['noted'] = True
+                        rep['notes'].append("the template's drop to the mat after the flight (%d frames: the game lands "
+                                            "a dive when the attacker's root reaches the mat)" % len(tail))
+                else:
+                    n = len(src_keys) - 1
+                    evs = retime(tev, n / float(max(1, e['frames'])), n, tid, new_id, lim)
                 # A key at frame f with count c is the pose the body reaches at f + c + 1 (ymks.build_motion). The
                 # game's own copies: keyframe banks a key every frame (count 0: the next frame's pose), the packed
                 # match copies (MOTP) a key every 5 frames (count 4: the pose 5 frames on) - a packed copy keyed
@@ -1446,8 +1516,6 @@ def convert(a, rep):
                     bones = {k: {ax: ang[k]['xyz'.index(ax)] for ax in ymks.axes_of(ymks.TYPES_M1[k])} for k in range(21)}
                     return (root[0] + off[0], root[1], root[2] + off[2]), bones
 
-                # (a dive's last key with root height 7000 is the template's "landed" mark: the game then drops the
-                # base to the mat and plays the landing - Diving Double Axe Handle 3538, Frog Splash 3555)
                 ks_ = []
                 for f in range(0, n + 1, step):
                     root, bones = pose(f + step)

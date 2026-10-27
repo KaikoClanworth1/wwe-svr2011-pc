@@ -213,20 +213,33 @@ page (`port/docs/MOVE_MODDING.md`).
     landed metres past or beside the target. On a one-person dive template the flight's horizontal travel is
     scaled to the template's (`scale_travel`; the heights - the jump - kept), the branches likewise;
   - the template must have every branch the source has (`need_x`): Leap of Faith 3591 keeps its miss in x 110, so
-    a dive the game judged a miss flew a second time with Leap of Faith's own miss flight (Corkscrew now on 450
-    Splash 3559, WWE '12's Shooting Star Press on Diving Headbutt 3 3570 - both fly once, the Corkscrew lands
-    across the victim's back);
+    a dive the game judged a miss flew a second time with Leap of Faith's own miss flight (WWE '12's Shooting Star
+    Press on Diving Headbutt 3 3570 flies once; the Corkscrew: see the name word below);
   - the flight-block path (2.5) only for a lying victim; a dive onto a standing one from up high takes 2011's move
     of the same name (Diving Double Axe Handle 1 -> 2011's Diving Double Axe Handle 3538; before Roll Up).
+  - **a dive lands when its root reaches the mat** (28 Oct): a stock flight ends in a drop past the mat (3538's root
+    -1579 at the top, then +435 ... +999 a frame to 7000 on the last key) and the game lands the dive when the root
+    gets there. WWE '13's Diving Double Axe Handle 1 ends its flight as high as it left (its own engine brought the
+    base down) and hung at turnbuckle height; 7000 copied onto its last key alone froze it in the air. A flight
+    ending as high as it left (within 3 units) gets the template's drop after it, the last pose held (`fall_tail`);
+    the template's events of the drop go with it. The packed copies' root is 12 bits x 2 (+-4096): past that a key
+    is the bones without a root plus the s16 root on its own, as 3538's packed copy (`ymks.build_motion`).
+  - **a dive's template by a rare name word** (`dive_kin`: a word at most 2 of 2011's dives have): WWE '13's
+    Diving Corkscrew Splash -> Diving Corkscrew Body 3624. On 450 Splash 3559 (upright at the start; the corkscrew
+    starts flipped) the game dropped its base to the mat in 16 frames, never carried it to the target, and it
+    landed a torso short. "Splash" is in half of them: not a match (the 450 stays on 3570).
+  - a dive given as the template (`--template`, the Mod Maker's pick) is ported as a dive: before, its flight,
+    branches, turn and travel scaling were left out and the source's x 30 took x 0.
 - Khali Bomb plays through: throat grab, lift, hold, drop - the victim lands about 2 m in front (TEST_VIEW didn't
   hold: the move's own camera).
 - Open:
   - Stratusfaction 1 (situation 11 corner, template Springboard Bulldog 5757): forced, the stock 5757 puts its
     attacker at the corner first (28.8, 28.8) and he climbs and bulldogs the victim; the port isn't put there and
     the victim does the climb while the attacker stands - though the port's attacker track (y 0) is the flier
-    like the template's. Not solved.
-  - 450 Splash 1 lands short, by the corner (its flight travels 3.1 m the template's way like the Corkscrew's:
-    likely the dive aid's start, rerun pending).
+    like the template's. Not solved. (28 Oct, POS_LOG: the port's motion matches 5757's; at its start the game
+    moves the *victim's* base to a corner (-28.6, -28.8, yaw 0.79) where the stock moves the attacker's. Every
+    WAZE / WAZA record is 5757's (wazecopy): the free id, 3247 in a thousand of other moves, is the suspect - an
+    A/B with 5007, in 5757's thousand, is the next run.)
   - Springboard Hurricanrana 4 (APRO, Cut Down) plays in sync but on the floor, not off the apron.
 - **Placing for a forced move: place the target too.** The paired start puts the attacker relative to the
   target: a target the CPU had thrown out of the ring took the pair there (FORCE_PLACE's target fields).
