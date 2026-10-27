@@ -274,6 +274,25 @@ bool Cosmetic(const fs::path& p) {
   return false;
 }
 
+// A mod folder's CRC for the set: its files but the cosmetic ones in a stable order, each one's path and CRC
+// folded (the same for a downloaded copy: mod_transfer.cpp checks it against the host's).
+uint32_t FolderCrc(const fs::path& dir) {
+  std::error_code ec;
+  std::vector<fs::path> files;
+  for (const auto& f : fs::recursive_directory_iterator(dir, ec))
+    if (f.is_regular_file() && !Cosmetic(f.path())) files.push_back(f.path());
+  std::sort(files.begin(), files.end());
+  uint32_t crc = 0;
+  for (const fs::path& f : files) {
+    uint32_t c = 0;
+    if (!FileCrc(f, false, &c)) continue;
+    const std::string rel = fs::relative(f, dir, ec).generic_string();
+    crc = CrcUpdate(crc, reinterpret_cast<const uint8_t*>(rel.data()), rel.size());
+    crc = CrcUpdate(crc, reinterpret_cast<const uint8_t*>(&c), 4);
+  }
+  return crc;
+}
+
 std::string BuildModSet() {
   if (svr2011::NoMods()) return {};  // (Start Without Mods: no_mods.h)
   std::vector<std::string> lines;
@@ -282,19 +301,7 @@ std::string BuildModSet() {
   for (const char* kind : {"Superstars", "Moves", "Arenas", "Backstage"}) {
     for (const auto& e : fs::directory_iterator(mods / kind, ec)) {
       if (!e.is_directory() || fs::exists(e.path() / "disabled", ec)) continue;
-      // (the files in a stable order, then their CRCs folded)
-      std::vector<fs::path> files;
-      for (const auto& f : fs::recursive_directory_iterator(e.path(), ec))
-        if (f.is_regular_file() && !Cosmetic(f.path())) files.push_back(f.path());
-      std::sort(files.begin(), files.end());
-      uint32_t crc = 0;
-      for (const fs::path& f : files) {
-        uint32_t c = 0;
-        if (!FileCrc(f, false, &c)) continue;
-        const std::string rel = fs::relative(f, e.path(), ec).generic_string();
-        crc = CrcUpdate(crc, reinterpret_cast<const uint8_t*>(rel.data()), rel.size());
-        crc = CrcUpdate(crc, reinterpret_cast<const uint8_t*>(&c), 4);
-      }
+      const uint32_t crc = FolderCrc(e.path());
       const fs::path manifest = e.path() / "manifest.txt";
       std::string name = ManifestValue(manifest, "name"), version = ManifestValue(manifest, "version");
       const std::string id = e.path().filename().string();
@@ -357,6 +364,17 @@ void SetGameFilesPaths(const fs::path& game_root, const fs::path& user_data) {
   g_game_root = game_root;
   g_user_data = user_data;
 }
+
+const fs::path& UserDataFolder() { return g_user_data; }
+
+uint32_t ModFolderCrc(const fs::path& dir) { return FolderCrc(dir); }
+
+uint32_t Crc32(uint32_t crc, const void* data, size_t n) {
+  std::call_once(g_crc_once, CrcInit);
+  return CrcUpdate(crc, static_cast<const uint8_t*>(data), n);
+}
+
+bool FileCrc32(const fs::path& file, uint32_t* out) { return FileCrc(file, false, out); }
 
 void StartGameFilesCheck() {
   static std::once_flag once;
