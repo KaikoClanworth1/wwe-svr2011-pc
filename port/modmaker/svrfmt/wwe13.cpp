@@ -485,9 +485,14 @@ void ConvertModel13(Model& m, float scale, Convert13Stats& st) {
     }
     s.params = std::move(ps);
   }
-  // WWE '13's header screen video has no SvR2011 counterpart: the arena video
-  for (auto& t : used)
-    if (t == "header_wall_mov") t = "arena_movie";
+  // WWE '13's header screen video has no SvR2011 counterpart: the arena video. WWE 2K15 - 2K17 name their screens
+  // layout_raw_movie (the titantron: the entrance videos), layout_arena_movie and layout_mini_tron (the arena's own
+  // loop), cut to 15 characters: names SvR2011 doesn't know play the live camera, in entrances too.
+  for (auto& t : used) {
+    const std::string l = Lower(t);
+    if (l == "header_wall_mov" || l.rfind("layout_arena_mo", 0) == 0 || l.rfind("layout_mini_tro", 0) == 0) t = "arena_movie";
+    else if (l.rfind("layout_raw_movi", 0) == 0) t = "titantron_movie";
+  }
   if (!m.meshes.empty()) m.textures = used;  // (a model without meshes keeps its list)
 }
 

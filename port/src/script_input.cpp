@@ -82,6 +82,8 @@ constexpr Route kRoutes[] = {
     // (through the select screen and the match screen to the match loading:
     // with SVR2011_TEST_MATCH / SVR2011_TEST_RULE, the match a test asks for)
     {"match", "route normal\npressuntil A match: rule"},
+    // (the same, but the presses stop as the match loads: its entrances play - arena checks of ramps and screens)
+    {"match_entrances", "route normal\npressuntil A arena mods: a match loads"},
 };
 
 // "until": the text a step waits for in the log, and whether it has come.

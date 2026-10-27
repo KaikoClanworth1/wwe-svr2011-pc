@@ -24,6 +24,7 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
 | **WWE '12 (360)** | `pac/bg/bgNN.pac`, plain EPAC | **ready (in the Mod Maker)** | the WWE '13 converter (`svrmod wwe13`) takes it as is |
 | **WWE '13 (360)** | `pac/bg/bgNN.pac`, `0x0FF512ED` LZX container around an EPK8 | **ready (in the Mod Maker)** | `svrfmt/wwe13.cpp` (`svrmod wwe13`); see below |
 | **WWE 2K14 (360)** | `pac/bg/bgNN.pac`, EPAC with ZLIB entries | **ready (in the Mod Maker)** | the WWE '13 converter: ZLIB unpacked, the host's arena motions |
+| **WWE 2K15 - 2K17 (360)** | `pac/bg/bgNN.pac`: 2K15 as 2K14, 2K16 in the LZX container, 2K17 an HSPC of SHDCs | **ready (in the Mod Maker)** | the WWE '13 converter. Their screens (`layout_raw_movie` / `layout_arena_movie` / `layout_mini_tron`) become 2011's `titantron_movie` / `arena_movie`; otherwise they played the live camera, in entrances too. 2K17's select pictures: MatchHD.pac `Ar<NN>`. Tested in a match: 2K17 SummerSlam (bg07), 27 Oct. |
 
 ### SvR 2010
 
