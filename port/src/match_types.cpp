@@ -2017,6 +2017,26 @@ REX_HOOK_RAW(sub_82216C58) {
                   RdF(base + fighter + 296), base[fighter + 444]);
     }
   }
+  // Test aid: SVR2011_TEST_POS_LOG=<frames> - for that many frames after person 0's or 1's motion changes, every 4th:
+  // the motion's base (+288, where the paired start put it), the body's place (body +0) and the facing (+276) of
+  // both - where a ported dive or corner move starts against the game's own
+  static const int pos_frames = [] { const char* v = std::getenv("SVR2011_TEST_POS_LOG"); return v ? std::atoi(v) : 0; }();
+  if (pos_frames > 0 && fighter) {
+    static uint32_t last_m[2] = {}, since[2] = {};
+    const uint32_t person = Rd32(base + fighter + 1156);
+    if (person < 2) {
+      const uint32_t m = Rd32(base + fighter + 212);
+      if (m != last_m[person]) last_m[person] = m, since[person] = 0;
+      if (since[person] <= uint32_t(pos_frames) && since[person] % 4 == 0) {
+        const uint32_t body = Rd32(base + fighter + 304);
+        REXLOG_INFO("pos: person {} motion {} +{} base ({:.1f}, {:.1f}, {:.1f}) body ({:.1f}, {:.1f}, {:.1f}) yaw {:.2f}", person, m,
+                    since[person], RdF(base + fighter + 288), RdF(base + fighter + 292), RdF(base + fighter + 296),
+                    body ? RdF(base + body) : 0.0f, body ? RdF(base + body + 4) : 0.0f, body ? RdF(base + body + 8) : 0.0f,
+                    RdF(base + fighter + 276));
+      }
+      ++since[person];
+    }
+  }
   // Test aid: SVR2011_TEST_LOSE=<person>,<s> - at <s> seconds of the match clock the person loses (to person 0).
   static const std::pair<int, int> lose = [] {
     const char* v = std::getenv("SVR2011_TEST_LOSE");
@@ -2110,6 +2130,16 @@ REX_HOOK_RAW(sub_82216C58) {
       ctx.r4.u64 = tgt;
       ctx.r5.u64 = motion;
       sub_82191AA8(ctx, base);
+      // (and again after the start: the paired start keeps or redoes the places by the move - a stock corner move
+      // kept them, a ported one got its pair put back near the target - and the facing came out as the start left
+      // it (0.17 for a written -0.79: the target then landed outside the ring); written after it, the motion plays
+      // from them)
+      if (place.size() >= 3) {
+        const float x = place[0], z = place[1], y = place.size() > 3 ? place[3] : -12.0f;
+        WrF(base + att + 288, x), WrF(base + att + 292, y), WrF(base + att + 296, z), WrF(base + att + 276, place[2]);
+        if (place.size() >= 6)
+          WrF(base + tgt + 288, place[4]), WrF(base + tgt + 292, place.size() > 6 ? place[6] : -12.0f), WrF(base + tgt + 296, place[5]);
+      }
       REXLOG_INFO("match types: test - person {} starts motion {} on person {} ({} -> state {})", force[0], motion,
                   force[1], frames, Rd32(base + att + 212));
       ctx = saved;
@@ -2171,6 +2201,8 @@ REX_HOOK_RAW(sub_82216C58) {
         put(tgt, vx, -12.0f, vz);
         ctx.r3.u64 = att, ctx.r4.u64 = tgt, ctx.r5.u64 = motion;
         sub_82191AA8(ctx, base);
+        // (nothing written after the start: the place or the facing written again made the stock Frog Splash dive out
+        // of the ring, 28 Oct - the start's own are right for a dive)
         ctx.r3.u64 = tgt, ctx.r4.u64 = lying, ctx.r5.u64 = lx, ctx.r6.u64 = ly;
         sub_82396E80(ctx, base);
         REXLOG_INFO("match types: test dive - person 0 dives with {} from the top rope onto person 1 ({} -> state {})",

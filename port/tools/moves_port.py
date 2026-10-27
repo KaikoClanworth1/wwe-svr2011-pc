@@ -49,6 +49,7 @@ source's attacker (and victim) as YMBs channels: ymbs_retarget.py solves the gam
 (worst joint error in the notes), ymbs.py encodes; the motion keeps the template's header times.
 """
 import json
+import math
 import os
 import re
 import struct
@@ -868,6 +869,31 @@ def template_travel(g11, tid):
     return None
 
 
+def scale_travel(keys, k):
+    """[(root, ang)] with the root's horizontal travel from the first key scaled by k (the height kept)"""
+    if not keys or k == 1.0:
+        return keys
+    x0, z0 = keys[0][0][0], keys[0][0][2]
+    return [((x0 + (r[0] - x0) * k, r[1], z0 + (r[2] - z0) * k), a) for r, a in keys]
+
+
+def heading_turn(st, tt, min_travel=200.0, min_angle=0.35):
+    """the 4x4 turning a source about the vertical so its attacker's travel st (dx, dz) goes the template's way tt,
+    and the angle; (None, 0) when either barely travels or they already agree within min_angle (radians)"""
+    import math
+    import numpy as np
+    if not tt or math.hypot(*st) < min_travel or math.hypot(*tt) < 0.25 * min_travel:
+        return None, 0.0
+    a = math.atan2(tt[1], tt[0]) - math.atan2(st[1], st[0])
+    a = (a + math.pi) % (2 * math.pi) - math.pi
+    if abs(a) < min_angle:
+        return None, 0.0
+    c, s_ = math.cos(a), math.sin(a)
+    M = np.eye(4)
+    M[0, 0], M[0, 2], M[2, 0], M[2, 2] = c, -s_, s_, c   # (x' = c x - s z, z' = s x + c z: the angle of (x, z) + a)
+    return M, a
+
+
 def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attacker_end_y=None, reversals=True,
                     with_score=False, need_x=()):
     """the 2011 move in MVMT/<cat> (YMKs only, x0 y0 and x0 y1 both there) most like the source:
@@ -1179,12 +1205,14 @@ def convert(a, rep):
             if os.environ.get('MOVES_PORT_TRACE'):   # (debug: the flight's root path and the template's travel)
                 log('trace flight %s, template travel %s' % ([tuple(round(v) for v in k[0]) for k in att_keys[::4]], tt))
             st = (att_keys[-1][0][0] - att_keys[0][0][0], att_keys[-1][0][2] - att_keys[0][0][2])
-            if tt and tt[0] * st[0] + tt[1] * st[1] < 0:
-                import numpy as np
-                face = np.diag([-1.0, 1.0, -1.0, 1.0]) if face is None else None
+            # (to the template's heading, not only turned round: WWE '13's Diving Double Axe Handle 1 flew 37 degrees
+            # off its template's and left the ring at an angle off the turnbuckle)
+            turn, ang = heading_turn(st, tt)
+            if turn is not None:
+                face = turn if face is None else turn @ face
                 att_keys = R0.keys(att, nf, face)
-                rep['notes'].append("dive turned round: its flight went against the template's (%.0f, %.0f vs %.0f, %.0f)"
-                                    % (st[0], st[1], tt[0], tt[1]))
+                rep['notes'].append("dive turned %.0f degrees to its template's heading (flight %.0f, %.0f vs %.0f, %.0f)"
+                                    % (math.degrees(ang), st[0], st[1], tt[0], tt[1]))
     # A hold with phases (hold, struggle loops, escape, tap: two-person phases 1, 2 and 4 among those under 30 -
     # 2011's x 1 / 2 / 4; 2K17's Blue Thunder Bomb, a powerbomb with phases 1 / 2 / 3, got Walls of Jericho when 3
     # phases were enough) is a submission:
@@ -1254,7 +1282,31 @@ def convert(a, rep):
     os.makedirs(os.path.join(pd, 'motions'), exist_ok=True)
     progress(40, 'retargeting')
     R = WR.Retarget(bind='rest', twist=True, ik=a['game'] != 'wwe12')
-    keys_of = {0: [R.keys(att, nf, face), R.keys(vic, nf) if vic is not None else None]}
+    # (a two-person corner move from up high - a dive onto a standing victim - flies the template's heading too: both
+    # people turn alike, the pair keeps its relation; the attacker's start is anchored to the template's below)
+    vface = None
+    if vic is not None and corner and min(k[0][1] for k in att_keys) < -1000:
+        st = (att_keys[-1][0][0] - att_keys[0][0][0], att_keys[-1][0][2] - att_keys[0][0][2])
+        turn, ang = heading_turn(st, template_travel(g11, tid))
+        if turn is not None:
+            face, vface = (turn if face is None else turn @ face), turn
+            rep['notes'].append("both people turned %.0f degrees to the template's heading" % math.degrees(ang))
+    keys_of = {0: [R.keys(att, nf, face), R.keys(vic, nf, vface) if vic is not None else None]}
+    # (a one-person dive's travel is the game's: in a stock dive the attacker's own root moves a few units and the game
+    # carries his base to the target during the dive - Diving Double Axe Handle 3538: 52 root units. A ported flight
+    # kept WWE '13's own 1600 on top of the game's and landed metres past or beside the target. Its horizontal travel
+    # is scaled to the template's; the heights - the jump - are kept)
+    one_person = not any((0, 1) in ks for p, kd, ks in g11.banks_of(tid) if kd == 'YMKs')
+    travel_k = 1.0
+    if one_person and corner and keys_of[0][0]:
+        a0 = keys_of[0][0]
+        src_t = math.hypot(a0[-1][0][0] - a0[0][0][0], a0[-1][0][2] - a0[0][0][2])
+        tt = template_travel(g11, tid)
+        if tt and src_t > 1.5 * math.hypot(*tt) and src_t > 200:
+            travel_k = math.hypot(*tt) / src_t
+            keys_of[0][0] = scale_travel(a0, travel_k)
+            rep['notes'].append('flight travel scaled to the template (%.0f -> %.0f root units: the game carries a dive '
+                                'to its target)' % (src_t, math.hypot(*tt)))
     if os.environ.get('MOVES_PORT_TRACE'):   # (debug: both people's root paths, every 4th key)
         for who, ks in (('attacker', keys_of[0][0]), ('victim', keys_of[0][1] or [])):
             log('trace %s %s' % (who, [tuple(round(v) for v in k[0]) for k in ks[::4]]))
@@ -1279,15 +1331,20 @@ def convert(a, rep):
     if phase_blocks:
         rep['notes'].append('source phases %s = 2011 x of the same number' % ', '.join(str(x) for x in sorted(phase_blocks)))
 
+    scaled_x = set()
+
     def phase_keys(x):
         if x not in keys_of and x in phase_blocks:
             ax, vx, nx = phase_blocks[x]
-            ka, kv = R.keys(ax, nx, face), R.keys(vx, nx) if vx is not None else None
+            ka, kv = R.keys(ax, nx, face), R.keys(vx, nx, vface) if vx is not None else None
             if os.environ.get('MOVES_PORT_TRACE'):   # (debug: a phase's attacker root heights)
                 log('trace x%d %s' % (x, [round(k[0][1]) for k in ka]))
             keys_of[x] = [ka, kv]
         if branched_dive and x >= 30 and x not in keys_of:   # (a branch the source lacks: the template's own)
             return [None, None]
+        if x in keys_of and travel_k != 1.0 and x not in scaled_x:   # (the branches too, from their own start)
+            keys_of[x][0] = scale_travel(keys_of[x][0], travel_k)
+            scaled_x.add(x)
         return keys_of.get(x, keys_of[0])
     lines = ['wazecopy %d %d' % (new_id, tid), 'wazename %d %s' % (new_id, name)]
     progress(60, 'tracks')
@@ -1389,6 +1446,8 @@ def convert(a, rep):
                     bones = {k: {ax: ang[k]['xyz'.index(ax)] for ax in ymks.axes_of(ymks.TYPES_M1[k])} for k in range(21)}
                     return (root[0] + off[0], root[1], root[2] + off[2]), bones
 
+                # (a dive's last key with root height 7000 is the template's "landed" mark: the game then drops the
+                # base to the mat and plays the landing - Diving Double Axe Handle 3538, Frog Splash 3555)
                 ks_ = []
                 for f in range(0, n + 1, step):
                     root, bones = pose(f + step)

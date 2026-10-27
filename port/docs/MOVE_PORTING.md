@@ -145,6 +145,12 @@ page (`port/docs/MOVE_MODDING.md`).
   Splash lands on him, WWE '12's Shooting Star Press across his legs; WWE '12's Springboard Moonsault 5094 rises
   and flips but lands about 2 m past the victim, who isn't hit (a springboard starts from the side ropes - the
   aid's corner start may not be its place; later: a side-rope start for springboards in the aid, then judge the landing again).
+- **Where a forced move starts** (28 Oct): the paired start keeps or redoes the places by the move, and the facing
+  it leaves can differ from the one written (0.17 for a written -0.79: the target then landed outside the ring), so
+  `FORCE_PLACE` and the dive aid write the places and the facing again right after the start. The stock Diving
+  Double Axe Handle from the turnbuckle onto a target 6 units in then lands on him - before, every corner and dive
+  result depended on where the start happened to put the pair. `SVR2011_TEST_POS_LOG=<frames>` logs both people's
+  base, body and facing every 4th frame after a motion change.
 - **Ending a match**: `SVR2011_TEST_LOSE=<person>,<s>` - at <s> seconds the person loses to person 0 (victory
   scenes). `SVR2011_TEST_EVP_LOG=1` logs every scene script the game opens (`/EVPx/<n>`, with the caller).
 - **Hidden test games**: `SVR2011_WINDOW_HIDDEN=1` (tools/test_guard.ps1 sets it) - the window is never shown;
@@ -198,9 +204,14 @@ page (`port/docs/MOVE_MODDING.md`).
   Emerald Fusion: lift, rack across the shoulders, drop) and Emerald Fusion 1 (Spinning Side Slam 5037: lift onto
   the shoulder, slam) play in sync in mid-ring. APR2 stays an apron move (warned).
 - **Dives (27 Oct)**, three porter fixes found here:
-  - the flight goes the template's way: a flight whose root travel is against the template attacker's is turned
-    round (Diving Corkscrew Splash flipped backwards out of the ring; WWE '12's Springboard Moonsault, a backward
-    flip, landed 2 m past the victim - turned, it lands on him);
+  - the flight goes the template's heading: the source is turned about the vertical so its attacker's root travel
+    points the template attacker's way (`heading_turn`; Corkscrew Splash 180 degrees, WWE '12's Springboard
+    Moonsault 161, Diving Double Axe Handle 1 -39 - a flip alone left that one leaving the ring at an angle);
+  - **the game carries a dive to its target** (28 Oct, `SVR2011_TEST_POS_LOG`): in a stock dive the attacker's own
+    root moves a few units (Diving Double Axe Handle 3538: 52 root units) and the game slides his base (+288)
+    toward the target during the flight. A ported flight kept its own travel (1600-3100 root units) on top and
+    landed metres past or beside the target. On a one-person dive template the flight's horizontal travel is
+    scaled to the template's (`scale_travel`; the heights - the jump - kept), the branches likewise;
   - the template must have every branch the source has (`need_x`): Leap of Faith 3591 keeps its miss in x 110, so
     a dive the game judged a miss flew a second time with Leap of Faith's own miss flight (Corkscrew now on 450
     Splash 3559, WWE '12's Shooting Star Press on Diving Headbutt 3 3570 - both fly once, the Corkscrew lands
