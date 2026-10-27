@@ -29,6 +29,23 @@ $ports = $wrestlers | ForEach-Object { if ($null -ne $_.port) { $_.port } else {
 $entr = switch ($Entrances) { "keep" { "" } "auto" { if ($null -ne $m.entrances) { if ($m.entrances) { "1" } else { "0" } } else { "0" } } default { $Entrances } }
 $seed = if ($m.seeds -and $m.seeds.rand) { "0x$($m.seeds.rand)" } else { "" }
 
+# The recording's mods (its superstars' and arena's "mod") must be in the game folder's Mods (a manifest with that
+# id): without one, the mod's superstar id is no roster wrestler and the match load hangs (27 Oct: "test match:
+# people 0", no bell in 180 s). Another version only gets a note - the replay can part sooner.
+$needed = @($m.people | Where-Object { $_.mod } | ForEach-Object { $_.mod }) + @($m.arena.mod | Where-Object { $_ })
+$installed = @{}
+foreach ($man in Get-ChildItem (Join-Path $GameDir "Mods") -Filter manifest.txt -Recurse -Depth 2 -ErrorAction SilentlyContinue) {
+    $kv = @{}; foreach ($l in Get-Content $man.FullName) { if ($l -match '^\s*([a-z_]+)\s*=\s*(.*?)\s*$') { $kv[$Matches[1]] = $Matches[2] } }
+    if ($kv.id) { $installed[$kv.id] = $kv.version }
+}
+$missing = @($needed | Where-Object { -not $installed.ContainsKey($_.id) } | ForEach-Object { "$($_.type) $($_.id) $($_.version)" })
+if ($missing) { throw "the recording needs mods that aren't in $GameDir\Mods: $($missing -join ', ') - install them to replay it" }
+foreach ($x in $needed) {
+    if ($x.version -and $installed[$x.id] -and $installed[$x.id] -ne $x.version) {
+        "note: mod $($x.id) is version $($installed[$x.id]) here, the recording's $($x.version) - the replay can part sooner"
+    }
+}
+
 # (the wrestlers' and the referee's motions and places (in 4s) at the bell: trail.txt's first line - "person x y z
 # motion" parts)
 function Get-BellMotions([string]$trail) {
