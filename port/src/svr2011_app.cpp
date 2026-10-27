@@ -394,6 +394,13 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
 }
 
 void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
+  // Test games (tools/dev/svrtest.ps1 and the other test scripts): SVR2011_AUDIO_MUTE=1 mutes every sound path
+  // (they all read audio_mute) even when the command line was dropped - a flag given twice is a parse error that
+  // loses every --option, --audio_mute=true with them (27 Oct: a test game was heard).
+  if (const char* m = std::getenv("SVR2011_AUDIO_MUTE"); m && *m == '1') {
+    rex::cvar::SetFlagByName("audio_mute", "true");
+    REXLOG_INFO("settings: audio muted (SVR2011_AUDIO_MUTE)");
+  }
   // A settings file that couldn't be read (every setting ignored) still draws.
   if (config.gpu_plugin.empty()) {
     rex::cvar::SetFlagByName("gpu_plugin", "xenos");
