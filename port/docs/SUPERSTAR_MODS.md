@@ -242,6 +242,24 @@ tab), `manifest.txt`:
   0x7530) are left out of the overlay copy; still over, the mod is left out,
   with a log line.
 
+#### A superstar from another game as attires of a game superstar
+
+The Mod Maker, From another game -> Superstar: after converting, **Or put it on a game superstar as an
+attire...** opens the Attires page with the converted mod taken in ("From a superstar mod..." on the Attires
+page takes an installed one, a .svrmod or a project the same way). Pick the game superstar, the attire number
+and **Its attire** (which of the ported attires); save or install, then again for the next attire.
+
+What follows the attire: the model (with its entrance gear, unless left out) and the entrance ("Keep its
+entrance": `entrance=`). What can't: the moveset, theme / music, titantron, ratings, abilities and name call are
+the superstar's profile (CHAR/PRO and the record), one per superstar for every attire - so they stay the game
+superstar's. (The game's only attire-dependent entrance - Rey Mysterio's attire 1 - is code, and Swagger's
+attire 1 music the same; none of it is data an attire mod can carry.) For his whole moveset and theme too, install
+the converted superstar as a superstar mod of its own.
+
+Test aids: `--port-test "superstar@wwe13,<disc folder>,101,--base 101 --no-port" --port-as-attire
+"101,3,1,Stone Cold 13;<save .svrmod>"` (convert, then attire 3 of 101 from its attire 1); `--attire
+101,4,<mod .svrmod>,<save>` with `--attire-from 2,Stone Cold 13 B`.
+
 Tested: an attire mod replacing Mark Henry's attire 1 with Sabu's model plays
 in a match; new attires (guest pacs) on Mark Henry (2) and Chris Jericho (3 and
 4, the launcher's move) play in matches (13 Oct).

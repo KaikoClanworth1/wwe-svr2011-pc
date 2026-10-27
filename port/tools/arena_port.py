@@ -161,9 +161,10 @@ MOTION_BANK = 0x7922
 HOST_COVERS = (0x3C4, 0x3C5, 0x3C6, 0x3C7)
 MAX_ARENA = 9_400_000  # bytes: the smaller 2011 hosts (until 2.1.6 a bigger file than its slot's crashed)
 # Since 2.1.6 an arena may be bigger than its slot's shipped file (the game reads its stage at its own size:
-# src/arena_mods.cpp) - up to ARENA_FILE_MAX (tested 18.1 MB) - and hold more 3D detail than 2011's own (STOCK_VERTS;
-# src/ring_rules.cpp): such an arena says needs=model_budget.NEEDS_VERSION, older games crash loading it.
-ARENA_FILE_MAX = 17 << 20
+# src/arena_mods.cpp) - up to ARENA_FILE_MAX (tested 21.5 MB: 1v1 and a 6-man at 60 fps, 27 Oct) - and hold more 3D
+# detail than 2011's own (STOCK_VERTS; src/ring_rules.cpp): such an arena says needs=model_budget.NEEDS_VERSION, older
+# games crash loading it.
+ARENA_FILE_MAX = 21 << 20
 STOCK_VERTS = 65450
 
 

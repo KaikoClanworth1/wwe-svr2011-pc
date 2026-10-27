@@ -36,6 +36,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import sys
 import threading
@@ -160,6 +161,11 @@ def release_at_least(text, want):
     return bool(parts) and tuple(int(p) for p in parts[:len(want)]) >= want
 LIVE_LIFE = 60      # seconds a session host's report stays (it reports every 20 s)
 RESTART_CODE = 75
+# A storage node stopped from the dashboard: its exit code (the supervisor ends too, not a restart) and the
+# marker in its data folder that keeps it stopped (it refuses to start; the watchdog, pc_watchdog.ps1, leaves
+# it) until the dashboard's Start (the core's wanted state, which the watchdog asks for).
+STOP_CODE = 76
+NODE_STOPPED = "node.stopped"
 # the dashboard's own pages (admin_auth.py): never framed, cached or sent on as a referrer
 ADMIN_HEADERS = {"X-Frame-Options": "DENY", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
                  "X-Content-Type-Options": "nosniff"}   # the exit code that asks the supervisor (--supervise) to start the server again
@@ -630,6 +636,17 @@ class Service:
         if getattr(args, "role", "all") == "core":  # (the blob bytes on the storage node: the user's PC)
             blobs = gs.RemoteBlobs(args.storage_url, read_key(args.storage_key))
         self.store = gs.Store(args.data, max_file=args.max_file_mb << 20, quota=args.quota_mb << 20, blobs=blobs)
+        # (the storage node's panel: its address and key; the wanted state - running / stopped - the PC's
+        # watchdog asks for; the last time it asked)
+        self.node_url = args.storage_url.rstrip("/") if blobs is not None else ""
+        self.node_key = read_key(args.storage_key) if blobs is not None else ""
+        self.node_state_path = os.path.join(args.data, "storage_node.json")
+        try:
+            self.node_state = json.load(open(self.node_state_path, encoding="utf-8"))
+        except (OSError, ValueError):
+            self.node_state = {}
+        self.node_state.setdefault("wanted", "running")
+        self.node_polled = 0.0
         # (problem reports: where the blobs are - the storage node's reports folder, readable on the PC)
         self.reports = (reports.RemoteReports(args.storage_url, read_key(args.storage_key)) if blobs is not None
                         else reports.LocalReports(args.data))
@@ -819,6 +836,10 @@ class Service:
             return "playing"
         if account_id in self.in_online_mode():
             return "online"
+        # ingame: its game runs, signed in, outside online mode (2.1.7 on: ?here=1 from the offline menus too) -
+        # it can be invited (the game walks there); older games show it as offline but let it be invited
+        if self.stats.recent.get(account_id, 0) >= now() - SETTINGS["presence_window"]:
+            return "ingame"
         return "offline"
 
     def friends_json(self, account):
@@ -829,7 +850,7 @@ class Service:
         added = {a["id"] for a in mine}
         friends = [{"name": a["name"], "status": self.presence(a["id"]), "last_seen": a["last_seen"],
                     "mutual": any(t["id"] == a["id"] for t in theirs)} for a in mine if not a["banned"]]
-        friends.sort(key=lambda f: ("playing", "online", "offline").index(f["status"]))  # (online first)
+        friends.sort(key=lambda f: ("playing", "online", "ingame", "offline").index(f["status"]))  # (online first)
         return {
             "ok": True,
             "config": {"mods_online": bool(SETTINGS["mods_online"]), "match_network": SETTINGS["match_network"],
@@ -1154,7 +1175,10 @@ class Service:
                 return None
             return web.Response(body=data[start:end + 1] if rng else data, status=206 if rng else 200,
                                 content_type=content_type, headers=headers)
-        pieces = await loop.run_in_executor(None, lambda: self.store.blob_chunks(sha, start=start))
+        try:
+            pieces = await loop.run_in_executor(None, lambda: self.store.blob_chunks(sha, start=start))
+        except gs.StorageBusy:   # (the storage node's disk too slow just now: the launcher tries again)
+            return web.Response(status=503, text="storage busy, try again shortly", headers={"Retry-After": "10"})
         first = await loop.run_in_executor(None, next, pieces, None) if pieces is not None else None
         if first is None:
             return None
@@ -2442,6 +2466,67 @@ class Service:
     async def health(self, request):
         return web.json_response({"ok": True})
 
+    # -- the storage node (the user's PC behind the VPS): its state, Stop / Start ----------------
+
+    def node_save(self):
+        tmp = self.node_state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self.node_state, f)
+        os.replace(tmp, self.node_state_path)
+
+    def node_call(self, method, path, timeout=6):
+        """The node's answer (status, JSON or None); (0, None) when it doesn't answer."""
+        import urllib.error
+        import urllib.request
+        r = urllib.request.Request(self.node_url + path, method=method, data=b"" if method == "POST" else None,
+                                   headers={"X-Storage-Key": self.node_key})
+        try:
+            with urllib.request.urlopen(r, timeout=timeout) as f:
+                return f.status, json.loads(f.read() or b"null")
+        except urllib.error.HTTPError as e:
+            return e.code, None
+        except Exception:
+            return 0, None
+
+    @admin_only
+    async def admin_storage(self, request):
+        """GET: the node's state for the dashboard's panel. POST {"action": "stop" | "start"}: stop it (the core
+        tells it - it stays stopped) or want it running (the PC's watchdog asks for that and starts it)."""
+        if not self.node_url:
+            return web.json_response({"ok": True, "node": False})
+        loop = asyncio.get_running_loop()
+        if request.method == "POST":
+            try:
+                body = await request.json()
+            except ValueError:
+                body = {}
+            action = body.get("action")
+            if action not in ("stop", "start"):
+                return web.json_response({"ok": False, "error": "stop or start"}, status=400)
+            self.node_state.update(wanted="stopped" if action == "stop" else "running", changed=now())
+            self.node_save()
+            gs.log("storage node: %s asked from the dashboard" % action)
+            if action == "stop":
+                status, _ = await loop.run_in_executor(None, self.node_call, "POST", "/__stop")
+                if status != 200:  # (not answering: the watchdog stops it when it asks next)
+                    gs.log("storage node: it didn't take the stop now (%s) - the watchdog stops it" % (status or
+                                                                                                        "no answer"))
+        status, info = await loop.run_in_executor(None, self.node_call, "GET", "/__health")
+        up = status == 200 and bool(info and info.get("ok"))
+        if up:
+            self.node_state["answered"] = now()
+        return web.json_response({"ok": True, "node": True, "up": up, "info": info if up else None,
+                                  "wanted": self.node_state["wanted"], "changed": self.node_state.get("changed"),
+                                  "answered": self.node_state.get("answered"), "watchdog_polled": self.node_polled or None,
+                                  "now": now()})
+
+    async def api_storage_wanted(self, request):
+        """The PC's watchdog (pc_watchdog.ps1, every 2 minutes, with the node's key): running or stopped."""
+        if not self.node_url or not hmac.compare_digest(request.headers.get("X-Storage-Key", ""), self.node_key):
+            return web.Response(status=403)
+        self.node_polled = now()
+        return web.json_response({"wanted": self.node_state["wanted"]})
+
     def health_line(self):
         r = self.relay
         return ("health: %s requests running %d of %d, relay streams %d, UDP games %d (edge %d), threads %d, "
@@ -2519,6 +2604,7 @@ class Service:
         app.router.add_post(b + "/api/reports/mods/check", self.api_report_mods_check)
         self.relay.routes(app, b)
         app.router.add_get("/__health", self.health)
+        app.router.add_get(b + "/api/storage/wanted", self.api_storage_wanted)  # (the storage node's watchdog)
         # the dashboard: at / (the portal, --local-admin) and again under /svr-admin/ (its own
         # sign-in: admin_auth.py - what nginx passes on the VPS)
         app.router.add_get(aa.PREFIX, self.admin_slash)
@@ -2551,6 +2637,7 @@ class Service:
             app.router.add_get(p + "/api/admin/log", self.admin_log)
             app.router.add_route("*", p + "/api/admin/settings", self.admin_settings)
             app.router.add_post(p + "/api/admin/restart", self.admin_restart)
+            app.router.add_route("*", p + "/api/admin/storage", self.admin_storage)
             app.router.add_post(p + "/api/admin/user/{id}/{action}", self.admin_user_action)
         app.cleanup_ctx.append(self.background)
         return app
@@ -2595,8 +2682,44 @@ def storage_app(args):
                     "X-Packed": "1" if packed else "0", "Content-Type": "application/octet-stream"})
         return web.Response(status=404)
 
+    started = time.time()
+    count = {"at": 0, "n": 0}
+
+    def blob_count():  # (the blobs folder's files, counted at most once a minute)
+        if time.time() - count["at"] > 60:
+            try:
+                count["n"] = sum(1 for d in os.scandir(blobs.folder) if d.is_dir()
+                                 for e in os.scandir(d.path) if e.is_file())
+            except OSError:
+                pass
+            count["at"] = time.time()
+        return count["n"]
+
     async def health(request):
-        return web.json_response({"ok": True, "role": "storage"})
+        out = {"ok": True, "role": "storage"}
+        if ok(request):  # (the core asking: the details for the dashboard's panel)
+            try:
+                du = shutil.disk_usage(args.data)
+                out.update(free_bytes=du.free, total_bytes=du.total)
+            except OSError:
+                pass
+            out.update(up_s=int(time.time() - started), pid=os.getpid(), supervised=bool(os.environ.get(
+                "SVR2011_SUPERVISOR_PID")), blobs=await asyncio.get_running_loop().run_in_executor(None, blob_count))
+        return web.json_response(out)
+
+    async def stop(request):  # (the dashboard's Stop: stopped until its Start - the marker, then a clean exit)
+        if not ok(request):
+            return web.Response(status=403)
+        with open(os.path.join(args.data, NODE_STOPPED), "w", encoding="utf-8") as f:
+            json.dump({"at": time.time(), "why": "the dashboard's Stop"}, f)
+        gs.log("storage node: stop asked from the dashboard - stopped until its Start")
+
+        def bye():
+            gs.log("stopped %s: the dashboard's Stop" % time.strftime("%Y-%m-%d %H:%M:%S"))
+            os._exit(STOP_CODE)
+
+        asyncio.get_running_loop().call_later(0.5, bye)
+        return web.json_response({"ok": True})
 
     async def blob_list(request):  # (the core's blob audit)
         if not ok(request):
@@ -2606,6 +2729,7 @@ def storage_app(args):
     app = web.Application(client_max_size=1 << 31)  # (any blob: songs, movies, mods - only the key's holder puts)
     app.router.add_route("*", "/blob/{sha}", blob)
     app.router.add_get("/__health", health)
+    app.router.add_post("/__stop", stop)
     app.router.add_get("/blobs", blob_list)
     reports.node_routes(app, args.data, ok, int(args.report_mod_quota_gb * (1 << 30)))  # (problem reports: <data>/reports)
     return app
@@ -2633,6 +2757,9 @@ def supervise(args):
             gs.log("supervisor: restart asked - starting it again")
             backoff = 2.0
             continue
+        if code == STOP_CODE:  # (a storage node stopped from the dashboard: stays stopped)
+            gs.log("supervisor: the server stopped on purpose (the dashboard's Stop) - not starting it again")
+            return
         gs.log("supervisor: the server exited (code %s) after %.0f s - again in %.0f s" % (code, ran, backoff))
         time.sleep(backoff)
         backoff = 2.0 if ran > 60 else min(backoff * 2, 60.0)
@@ -2726,6 +2853,10 @@ def main():
     if args.role == "storage":
         if args.log:
             gs.LOG = open(args.log, "a", encoding="utf-8")
+        if os.path.exists(os.path.join(args.data, NODE_STOPPED)):  # (stopped from the dashboard: stays so)
+            gs.log("storage node: not starting - stopped from the dashboard (%s; its Start removes it)" %
+                   os.path.join(args.data, NODE_STOPPED))
+            sys.exit(STOP_CODE)
         watch_supervisor()
         gs.log("storage node on %s:%d, blobs in %s" % (args.host, args.port, os.path.abspath(args.data)))
         web.run_app(storage_app(args), host=args.host, port=args.port, print=None, access_log=None)

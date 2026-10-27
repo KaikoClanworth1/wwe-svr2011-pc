@@ -1593,6 +1593,11 @@ void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_
   if (worst && worst->pages > kModelPagesOld && worst->pages <= kModelPagesWarn)
     out.push_back(Warning(who + "'s model takes " + std::to_string(worst->pages) + " memory pages: version " + kNeedsVersion +
                        " or newer plays it (older games had " + std::to_string(kModelPagesOld) + " and leave it out).", ""));
+  // (27 Oct: six 1,489-page superstars in one 6-man - 60 fps at 1080p, about 40 at 4x supersampling with 2x AA)
+  if (worst && worst->pages > kModelPagesHeavy)
+    out.push_back(Warning(who + "'s model is very detailed (" + std::to_string(worst->pages) + " memory pages). Fine on its "
+                          "own; six models this detailed in one match play at 60 fps at 1080p, about 40 fps at the "
+                          "highest render scale with anti-aliasing.").Note());
   if (!worst || worst->pages <= kModelPagesWarn) return;
   const int pct = worst->pages * 100 / kModelPages;
   // a lighter copy: the model without its blood, used in its place
@@ -3193,6 +3198,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--port-fullpreview")) port_page::TestFullPreview();  // with --port-test on an entrance: its result in the Full preview
     else if (!wcscmp(argv[i], L"--port-test") && more) port_page::TestStart(Utf8(argv[++i])), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--port-clear")) port_page::TestClear(), g_page = PageId::kPort;
+    else if (!wcscmp(argv[i], L"--port-as-attire") && more) port_page::TestAsAttire(Utf8(argv[++i]));  // with --port-test on a superstar
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
     else if (!wcscmp(argv[i], L"--fbx-map") && more) {  // <fbx>,<out file>: its skeleton, the rig found and the mapping
       const std::wstring v = argv[++i];
@@ -3487,6 +3493,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-gear") && more) star_page::TestGear(Utf8(argv[++i]));  // <attire>:<off|from<k>>[,...]
     else if (!wcscmp(argv[i], L"--hits")) char_preview::SetHits(true);
     else if (!wcscmp(argv[i], L"--attire-keep-entrance")) attire_page::TestKeepEntrance();  // (--attire from a superstar mod: its entrance too)
+    else if (!wcscmp(argv[i], L"--attire-from") && more) {  // <n>[,<name>]: --attire takes the source's attire n (and names it)
+      const std::string v = Utf8(argv[++i]);
+      const size_t c = v.find(',');
+      attire_page::TestFrom(std::atoi(v.c_str()), c == std::string::npos ? "" : v.substr(c + 1));
+    }
     else if (!wcscmp(argv[i], L"--attire") && more) {  // <star id>,<slot 0=new>,<model pac | superstar mod folder / .svrmod / .svrproj>[,<save .svrmod>]
       const std::wstring a = argv[++i];
       const size_t c1 = a.find(L','), c2 = a.find(L',', c1 + 1), c3 = a.find(L',', c2 + 1);

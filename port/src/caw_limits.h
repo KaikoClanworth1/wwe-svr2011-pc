@@ -25,8 +25,11 @@ uint32_t FallbackBlock(uint32_t size, bool cpu = false);
 // converters', the Mod Maker's) is ModelPageLimit() pages, not 192. Off: test aid SVR2011_TEST_BIGMEM_OFF=1 (the
 // old limits, the game's own way).
 bool BigModelMemory();
-// The pages a wrestler's model may take: 1024 with BigModelMemory (4 MB, about 70,000 vertices), else 192; test aid
-// SVR2011_TEST_PAGE_LIMIT=<pages>.
+// The pages a wrestler's model may take: 1600 with BigModelMemory (6.25 MB, about 130,000 vertices), else 192; test
+// aid SVR2011_TEST_PAGE_LIMIT=<pages>. 27 Oct, six 1,489-page superstars in a 327k-vertex arena (6-man): 60 fps at
+// 1080p, about 40 at 4x supersampling with 2x AA (GPU-bound). A model PART over 2,048 pages crashes the draw
+// (sub_826E6AD0) - the tools keep each part under 1,900.
+// Android: under 6 GB of device memory, 1024.
 uint32_t ModelPageLimit();
 // The stage's heap (6 MB, AB8C2E00-ABEBAE00 - SVR2011_TEST_HEAP_LOG=1 lists them): its models' per-mesh arrays
 // (sub_826E84D0: +240, sub_826E75A8's matrices +176), lists and decode buffers. The game's own arenas fill most of
