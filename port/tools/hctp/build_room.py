@@ -100,15 +100,17 @@ def bank_h3(unpacked, pac11, mot):
 
 def room_bank(room, unpacked, pac11, mot):
     """Room 30: bank_h3. Others: bank_h3 + every HCTP backstage act 12000-12099 as 12600 + n (12500-12599,
-    the high-ground acts, as 12800 + n) + the room's object acts (50102) n as 12700 + n."""
+    the high-ground acts, as 12800 + n; 15900-15919, the gates' exit acts, as 12900 + n - build_world.py) + the
+    room's object acts (50102) n as 12700 + n."""
     h3 = bank_h3(unpacked, pac11, mot)
     if room == 30:
         return h3
     conv = os.path.join(HERE, 'mot', 'hctp2ymks.py')
     hb = os.path.join(unpacked, 'm', 'MOT_GAME', '00004.bin')
-    wr = os.path.join(mot, 'bank_wr.bin')
+    wr = os.path.join(mot, 'bank_wx.bin')
     if not os.path.exists(wr):
-        ids = acts(hb, 600, lambda k: 12000 <= k < 12100) + ',' + acts(hb, 300, lambda k: 12500 <= k < 12600)
+        ids = ','.join((acts(hb, 600, lambda k: 12000 <= k < 12100), acts(hb, 300, lambda k: 12500 <= k < 12600),
+                        acts(hb, -3000, lambda k: 15900 <= k < 15920)))
         py([conv, hb, ids, '--into', h3, '--out', wr, '--jumpmap', JUMPMAP])
     out = os.path.join(mot, 'bank_r%d.bin' % room)
     objs = os.path.join(unpacked, 'bg', 'stg_00%d' % room, '50102.bin')
