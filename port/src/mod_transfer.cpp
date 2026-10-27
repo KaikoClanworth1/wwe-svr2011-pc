@@ -142,7 +142,7 @@ bool ModFileAllowed(const std::string& rel, std::string* why) {
   if (kKinds.count(ext)) return true;
   if (ext == ".bin" && Lower(parts.front()) == "moves" && parts.size() > 1) return true;
   if ((ext == ".toml" || ext == ".ini") && stem == "manifest") return true;
-  return no("a file type that isn't sent (only the game's and mods' own kinds)");
+  return no("a file type that isn't sent: only the game's and mods' own kinds");
 }
 
 namespace {
@@ -228,7 +228,7 @@ void ListMod(uint32_t gen, size_t index, HostMod m) {
     const std::string rel = fs::relative(p, m.dir, ec).generic_string();
     std::string why;
     if (!ModFileAllowed(rel, &why)) {
-      REXLOG_INFO("mod transfer: {}\\{}: {} isn't sent ({})", m.kind, m.id, rel, why);
+      REXLOG_INFO("mod transfer: {}\\{}: {} isn't sent - {}", m.kind, m.id, rel, why);
       // (pictures, sounds, movies and the like are outside the mod's key: only those may be left behind)
       const std::string e = Lower(p.extension().string());
       static const std::set<std::string> kCosmetic = {".png", ".jpg", ".jpeg", ".bmp", ".dds", ".tga", ".ogg",
