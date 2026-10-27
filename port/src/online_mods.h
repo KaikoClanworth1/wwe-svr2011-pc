@@ -62,5 +62,7 @@ std::vector<std::pair<int, int>> OnlineModWeapons();
 // (a client) What the lobby's tables say this game lacks of the host's superstar mods and the session's arena:
 // their labels (mod_transfer.h's offer when the link goes through the relay and nothing can come).
 std::vector<std::string> OnlineModsLackedFromHost();
+// (a client) The session's host's name, as its mod table says ("" none yet).
+std::string OnlineModsHostName();
 
 }  // namespace svr2011

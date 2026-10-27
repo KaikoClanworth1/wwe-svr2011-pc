@@ -2,6 +2,7 @@
 #include "online_files.h"
 
 #include "../modmaker/svrfmt/mod_travel.h"
+#include "mod_transfer.h"
 #include "no_mods.h"
 
 #include <algorithm>
@@ -294,7 +295,13 @@ std::string BuildModSet() {
   const fs::path mods = rex::filesystem::GetExecutableFolder() / "Mods";
   std::error_code ec;
   for (const char* kind : {"Superstars", "Moves", "Arenas", "Backstage"}) {
-    for (const auto& e : fs::directory_iterator(mods / kind, ec)) {
+    // (a run that loads the host's fetched mods: those too - <folder>@<crc>, its key the host's; only the kinds
+    // that load from there: superstar_mods.cpp)
+    std::vector<fs::directory_entry> entries;
+    for (const auto& e : fs::directory_iterator(mods / kind, ec)) entries.push_back(e);
+    if (svr2011::OnlineModsLoad() && !std::strcmp(kind, "Superstars"))
+      for (const auto& e : fs::directory_iterator(svr2011::OnlineModsRoot() / kind, ec)) entries.push_back(e);
+    for (const auto& e : entries) {
       if (!e.is_directory() || fs::exists(e.path() / "disabled", ec)) continue;
       const uint32_t crc = FolderCrc(e.path());
       const fs::path manifest = e.path() / "manifest.txt";

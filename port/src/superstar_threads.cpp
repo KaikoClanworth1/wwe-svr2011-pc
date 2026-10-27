@@ -17,6 +17,7 @@
 // A mod's slots are kept by its folder (Saves\.threads\<folder>.bin), not by the id it holds this run: put
 // into its profile as it is set up (never the base's slots), written when the game saves.
 #include "superstar_threads.h"
+#include "superstar_mods.h"
 
 #include <algorithm>
 #include <chrono>
@@ -313,7 +314,9 @@ REX_HOOK_RAW(sub_827235D8) {
       REXLOG_INFO("[svr2011] superstar threads: {} - slots saved ({})", m.folder, IsEmpty(s) ? "all empty" : "edited");
     }
   }
+  svr2011::OnlineTempForSave(base, true);  // (the fetched mods of this run: not in the save)
   __imp__sub_827235D8(ctx, base);
+  svr2011::OnlineTempForSave(base, false);
 }
 
 // The edit screens' light (sub_8279EDE8 opens a colour screen: sub_82788310 -> sub_82787A20) is set on the

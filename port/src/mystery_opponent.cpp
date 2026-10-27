@@ -129,7 +129,7 @@ uint32_t Choose(uint8_t* base, uint32_t player) {
     const uint8_t* rec = Record(base, id);
     if (rec && rec[kSelectable] == 1 && !rec[kDlc] && fits(id)) pool.push_back(id);
   }
-  for (uint32_t id : svr2011::SuperstarModIds())
+  for (uint32_t id : svr2011::SuperstarModIds(false))
     if (fits(id) && std::find(pool.begin(), pool.end(), id) == pool.end()) pool.push_back(id);
   if (rex::cvar::GetFlagByName("managers_tile") != "false")
     for (uint32_t id : kManagers)

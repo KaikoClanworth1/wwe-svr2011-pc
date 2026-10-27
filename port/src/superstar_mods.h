@@ -27,8 +27,14 @@ void PrepareAttirePacks(const std::filesystem::path& game);
 // Before the Custom Movies folder is mounted (its device lists the files
 // once): the mods' entrance movies are copied into it.
 void CopySuperstarMovies(const std::filesystem::path& movies);
-// The installed mods' character ids (the select screen's EXTRA list).
-std::vector<uint32_t> SuperstarModIds();
+// The installed mods' character ids (the select screen's EXTRA list); with_online false: without the ones
+// fetched from a session's host for this run (WWE Universe, Road to WrestleMania, Mystery Opponent).
+std::vector<uint32_t> SuperstarModIds(bool with_online = true);
+// A mod fetched from a session's host for this run (OnlineMods): never kept in saves (superstar_threads.cpp).
+bool IsOnlineTempSuperstar(uint32_t id);
+// The save being built (superstar_threads.cpp's sub_827235D8 hook): saving true puts back the fetched mods' ids as
+// the save had them, false (after the build) the mods again.
+void OnlineTempForSave(uint8_t* base, bool saving);
 bool IsSuperstarMod(uint32_t id);
 // A mod's folder in Mods/Superstars ("" for no mod).
 std::string SuperstarModFolder(uint32_t id);

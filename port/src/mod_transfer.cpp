@@ -42,6 +42,9 @@
 #include "online_mods.h"
 #include "p2p.h"
 
+REXCVAR_DEFINE_BOOL(online_mods_load, false, "Online",
+                    "This run also loads the mods fetched from a session's host (<user data>\\OnlineMods; set by the "
+                    "game's RESTART AND REJOIN, never saved)");
 REXCVAR_DEFINE_BOOL(online_mod_upload, true, "Online",
                     "Hosting: send this game's gameplay mods to joiners who lack them (direct links only)");
 REXCVAR_DEFINE_INT32(online_mod_upload_kbs, 4096, "Online",
@@ -930,8 +933,12 @@ fs::path FetchedModFolder(const ModOffer& mod) {
   return dir;
 }
 
+bool OnlineModsLoad() { return REXCVAR_GET(online_mods_load) && !Root().empty() && Root().is_absolute(); }
+fs::path OnlineModsRoot() { return Root(); }
+
 void ClearFetchedMods() {
   if (g_running || Root().empty() || !Root().is_absolute()) return;
+  if (OnlineModsLoad()) return;  // (this run plays with them: they go at its end / the next start)
   std::error_code ec;
   if (fs::exists(Root(), ec)) {
     const auto n = fs::remove_all(Root(), ec);

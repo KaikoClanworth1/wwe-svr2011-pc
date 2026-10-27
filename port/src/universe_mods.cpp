@@ -218,7 +218,7 @@ void InstallUniverseMods(rex::memory::Memory* memory, const fs::path& saves) {
       REXLOG_INFO("[svr2011] universe mods: side table moved to {}", g_file.string());
     }
   }
-  g_ids = SuperstarModIds();
+  g_ids = SuperstarModIds(false);  // (not the host's fetched ones)
   if (g_ids.size() > kMax) {
     REXLOG_WARN("[svr2011] universe mods: {} mods - the first {} take part in Universe", g_ids.size(), kMax);
     g_ids.resize(kMax);
