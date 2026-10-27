@@ -3219,6 +3219,12 @@ std::vector<uint32_t> SuperstarModIds(bool with_online) {
 }
 
 void OnlineTempForSave(uint8_t* base, bool saving) {
+  // Test aid: SVR2011_TEST_NO_TEMP_BLANK=1 - the fetched mods go into the save as they are (the check's control)
+  static const bool off = std::getenv("SVR2011_TEST_NO_TEMP_BLANK") != nullptr;
+  if (off) {
+    if (saving) REXLOG_WARN("[svr2011] superstar mods: test - the save is built WITH the fetched mods");
+    return;
+  }
   for (const auto& [id, saved] : g_temp_saved) {
     const uint32_t si = Rd16(base + kIdToIndex + id * 2);
     if (si >= 512) continue;
