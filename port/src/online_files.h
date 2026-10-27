@@ -35,6 +35,13 @@ namespace svr2011 {
 // The app's paths (before the settings are read), then - with online on
 // (InstallOnline) - the checks start (threads).
 void SetGameFilesPaths(const std::filesystem::path& game_root, const std::filesystem::path& user_data);
+const std::filesystem::path& UserDataFolder();
+
+// A gameplay mod folder's CRC as the mod set has it (a downloaded copy is checked with it: mod_transfer.cpp),
+// and plain CRC-32 (a running value, start 0; a file's: false if unreadable).
+uint32_t ModFolderCrc(const std::filesystem::path& dir);
+uint32_t Crc32(uint32_t crc, const void* data, size_t n);
+bool FileCrc32(const std::filesystem::path& file, uint32_t* out);
 void StartGameFilesCheck();
 
 enum class GameFiles { kChecking, kClean, kModified };

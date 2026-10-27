@@ -103,7 +103,8 @@ enum : uint8_t {
   kFileRequest = 7, kFilePart = 8,  // (files peers fetch from each other: P2PFetch)
   kModsRefused = 9,                 // (a searcher's mods differ: its set, for the host's notice)
   kMods = 14,                       // (a lobby's superstar mods: online_mods.cpp)
-  kChat = 15                        // (lobby chat, whole: online_chat.cpp)
+  kChat = 15,                       // (lobby chat, whole: online_chat.cpp)
+  kModXfer = 16                     // (mod files, one peer to another, direct links only: mod_transfer.cpp)
 };
 // Round trips to the peers a match exchanges game packets with (net_sim.h);
 // game packets with the last few repeated (a peer that pings takes them).
@@ -325,6 +326,12 @@ Mac MacOf(const uint8_t* xnaddr) {
   Mac m;
   std::memcpy(m.data(), xnaddr + 10, 6);
   return m;
+}
+// (a peer as the other modules know it: its MAC in a number)
+uint64_t PeerId(const Mac& m) {
+  uint64_t v = 0;
+  for (uint8_t b : m) v = v << 8 | b;
+  return v;
 }
 
 // The way to a peer not heard from yet: this PC, its LAN address (same network) or its public one.
@@ -677,6 +684,7 @@ std::map<uint64_t, Session> g_found;          // the last search's sessions
 // its private slots open to this game (as the console's invites let in).
 uint64_t g_invited = 0;
 std::atomic<P2PModHandler> g_mod_handler{nullptr};
+std::atomic<P2PModXferHandler> g_mod_xfer_handler{nullptr};
 std::atomic<P2PChatHandler> g_chat_handler{nullptr};
 Clock::time_point g_invited_at{};
 
@@ -1300,6 +1308,11 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
     case kMods: {  // (online_mods.cpp: the rest is its own)
       P2PModHandler handler = g_mod_handler.load();
       if (handler && r.ok && r.at <= r.n) handler(r.p + r.at, r.n - r.at);
+      break;
+    }
+    case kModXfer: {  // (mod_transfer.cpp: the rest is its own; never through the relay)
+      P2PModXferHandler handler = g_mod_xfer_handler.load();
+      if (handler && !via.relayed && r.ok && r.at <= r.n) handler(PeerId(mac), r.p + r.at, r.n - r.at);
       break;
     }
     case kChat: {  // (online_chat.cpp: the rest is its own)
@@ -2234,6 +2247,67 @@ void P2PSendChat(const std::vector<uint8_t>& payload) {
   w.b = Header(kChat, NewNonce());
   w.bytes(payload.data(), payload.size());
   for (const auto& p : peers) Send(p, w.b);
+}
+
+// -- mod files (mod_transfer.cpp): to one peer, over a direct link only -----------------
+
+void SetP2PModXferHandler(P2PModXferHandler handler) { g_mod_xfer_handler = handler; }
+
+// Direct: a peer on this network, or one outside it whose direct path works now (a direct ping came back in the
+// last 10 s, or it was heard from directly) and that isn't sent through the relay. Never in the forced-relay
+// test mode.
+bool DirectLocked(const Peer& p) {
+  if (ForceRelay() || p.relayed) return false;
+  if (!p.tunnel) return true;
+  const auto now = Clock::now();
+  return now - p.direct_ok < std::chrono::seconds(10) || now - p.direct < std::chrono::seconds(10);
+}
+
+bool P2PPeerDirect(uint64_t peer) {
+  std::lock_guard lock(g_mutex);
+  for (const auto& [mac, p] : g_peers)
+    if (PeerId(mac) == peer) return DirectLocked(p);
+  return false;
+}
+
+bool P2PSendModXfer(uint64_t peer, const std::vector<uint8_t>& payload) {
+  if (g_socket == kBadSocket || payload.size() > 1400) return false;
+  Path path{};
+  {
+    std::lock_guard lock(g_mutex);
+    bool found = false;
+    for (const auto& [mac, p] : g_peers)
+      if (PeerId(mac) == peer) {
+        if (!DirectLocked(p)) return false;
+        path = PathOf(mac, p), found = true;
+      }
+    if (!found) return false;
+  }
+  Writer w;
+  w.b = Header(kModXfer, NewNonce());
+  w.bytes(payload.data(), payload.size());
+  Send(path, w.b);
+  return true;
+}
+
+uint64_t P2PSessionHost(uint64_t* session) {
+  std::lock_guard lock(g_mutex);
+  for (const auto& [object, local] : g_sessions) {
+    if (local.host || local.session.public_slots + local.session.private_slots < 2) continue;
+    if (session) *session = local.session.id;
+    return PeerId(MacOf(local.session.host.data()));
+  }
+  return 0;
+}
+
+bool P2PHosting(uint64_t* session) {
+  std::lock_guard lock(g_mutex);
+  for (const auto& [object, local] : g_sessions)
+    if (local.host && local.session.public_slots + local.session.private_slots >= 2) {
+      if (session) *session = local.session.id;
+      return true;
+    }
+  return false;
 }
 
 void P2PSendMods(const std::vector<uint8_t>& payload) {

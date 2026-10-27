@@ -108,6 +108,16 @@ P2PRelayPathInfo P2PRelayPath();
 using P2PModHandler = void (*)(const uint8_t* data, size_t size);
 void SetP2PModHandler(P2PModHandler handler);
 void P2PSendMods(const std::vector<uint8_t>& payload);
+
+// Mod files (mod_transfer.cpp): kModXfer messages to one peer (a peer = its MAC as a number), over a DIRECT
+// link only - false when there's none (the relay never carries files: the user's rule). The handler gets the
+// sender. The session this game joined: its host (0: none) and id; or the one it hosts.
+using P2PModXferHandler = void (*)(uint64_t peer, const uint8_t* data, size_t size);
+void SetP2PModXferHandler(P2PModXferHandler handler);
+bool P2PSendModXfer(uint64_t peer, const std::vector<uint8_t>& payload);
+bool P2PPeerDirect(uint64_t peer);
+uint64_t P2PSessionHost(uint64_t* session = nullptr);
+bool P2PHosting(uint64_t* session = nullptr);
 // Lobby chat longer than the game's 64 bytes (online_chat.cpp): the same, a
 // message kind of its own.
 using P2PChatHandler = void (*)(const uint8_t* data, size_t size);
