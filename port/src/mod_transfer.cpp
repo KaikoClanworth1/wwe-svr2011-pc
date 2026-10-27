@@ -37,6 +37,7 @@
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 
+#include "../modmaker/svrfmt/mod_travel.h"
 #include "online_files.h"
 #include "online_mods.h"
 #include "p2p.h"
@@ -114,39 +115,7 @@ int64_t NowMs() {
 
 // -- what may travel -----------------------------------------------------------------------
 
-bool ModFileAllowed(const std::string& rel, std::string* why) {
-  auto no = [&](const char* w) {
-    if (why) *why = w;
-    return false;
-  };
-  if (rel.empty() || rel.size() > 180) return no("an empty or too long path");
-  if (rel.front() == '/' || rel.find('\\') != std::string::npos) return no("not a relative path");
-  for (unsigned char c : rel)
-    if (c < 0x20 || c == ':' || c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*')
-      return no("a character a file name can't have (':' and the like)");
-  const auto parts = Split(rel, '/');
-  if (parts.size() > 8) return no("too deep");
-  static const std::set<std::string> kDevices = {"con", "prn", "aux", "nul", "com1", "com2", "com3", "com4",
-                                                 "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3",
-                                                 "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9", "conin$",
-                                                 "conout$"};
-  for (const std::string& p : parts) {
-    if (p.empty() || p == "." || p == "..") return no("a '..' or empty part");
-    if (p.back() == '.' || p.back() == ' ') return no("a name ending in a dot or space");
-    if (kDevices.count(Lower(p.substr(0, p.find('.'))))) return no("a device name (CON, NUL ...)");
-  }
-  const std::string name = Lower(parts.back());
-  const size_t dot = name.rfind('.');
-  if (dot == std::string::npos) return no("no file type");
-  const std::string ext = name.substr(dot), stem = name.substr(0, dot);
-  static const std::set<std::string> kKinds = {".pac", ".bik", ".mp4", ".mp3", ".wav", ".m4a", ".ogg", ".xma",
-                                               ".dds", ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".ymk", ".ymb",
-                                               ".txt"};
-  if (kKinds.count(ext)) return true;
-  if (ext == ".bin" && Lower(parts.front()) == "moves" && parts.size() > 1) return true;
-  if ((ext == ".toml" || ext == ".ini") && stem == "manifest") return true;
-  return no("a file type that isn't sent: only the game's and mods' own kinds");
-}
+bool ModFileAllowed(const std::string& rel, std::string* why) { return svrfmt::ModFileAllowed(rel, why); }
 
 namespace {
 
@@ -189,12 +158,7 @@ void SendError(uint64_t peer, uint8_t code, const std::string& text) {
   SendTo(peer, o);
 }
 
-// A file outside the mod's key (pictures, sounds, movies and the like): the only kind that may be left behind.
-bool CosmeticFile(const fs::path& p) {
-  static const std::set<std::string> kCosmetic = {".png", ".jpg", ".jpeg", ".bmp", ".dds", ".tga", ".ogg",
-                                                  ".wav", ".mp3", ".xma", ".bik", ".wmv", ".mp4", ".db", ".ini"};
-  return kCosmetic.count(Lower(p.extension().string())) != 0;
-}
+using svrfmt::CosmeticFile;  // (the files outside the mod's key: mod_travel.h)
 
 // The host's set now (by its text: rebuilt when it changes; a mod that can't travel says why, so the joiner
 // is told before it asks). Caller holds g_host_mutex.

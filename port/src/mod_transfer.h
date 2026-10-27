@@ -20,9 +20,7 @@ namespace svr2011 {
 
 void InstallModTransfer();
 
-// A path inside a mod folder ("moves/motions/x.ymk"; '/' between parts) that may travel: allowed kinds only,
-// no "..", no absolute or drive paths, no ':' (streams), no device names (CON, NUL ...); .bin only under
-// moves/, .toml / .ini only as the manifest. (why: the reason, for the log / the player.)
+// A path inside a mod folder that may travel (svrfmt/mod_travel.h's check - the Mod Maker says the same).
 bool ModFileAllowed(const std::string& rel, std::string* why = nullptr);
 
 // One mod of the host's set as the joiner sees it.

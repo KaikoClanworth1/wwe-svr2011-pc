@@ -18,6 +18,7 @@
 #include "editor.h"
 #include "svrfmt/arena.h"
 #include "svrfmt/pac.h"
+#include "svrfmt/mod_travel.h"
 
 namespace mm {
 namespace installed_page {
@@ -77,6 +78,8 @@ struct View {
   std::vector<Picture> pics;
   std::vector<std::string> pic_names;
   std::vector<std::string> files;  // (the folder's other files, for the record)
+  std::string online;  // (whether the game's host can send it to players who join: svrfmt/mod_travel.h)
+  bool online_ok = true;
   // superstar / attire
   std::wstring model;
   std::vector<std::pair<int, std::wstring>> attires;  // (attire number, its pac: the model or an attireN.pac)
@@ -204,6 +207,14 @@ void Select(int i) {
   if (i < 0 || i >= int(g_mods.size())) return;
   const Mod& m = g_mods[size_t(i)];
   std::error_code ec;
+  // online: the game sends a joiner the host's gameplay mods it lacks (the same check as the game's host)
+  if (m.kind == "Superstars" || m.kind == "Moves" || m.kind == "Arenas" || m.kind == "Backstage") {
+    std::string why;
+    g_view.online_ok = ModCanTravel(m.dir, &why);
+    g_view.online = g_view.online_ok ? "Online: can be sent to players who join you" : "Online: can't be sent - " + why;
+  } else {
+    g_view.online = "Online: not sent (only superstars, move packs, arenas and backstage mods travel)";
+  }
   // pictures (here and one folder down: an arena's vs\), other files
   auto add_pictures = [&](const fs::path& dir, const std::string& prefix) {
     for (const auto& e : fs::directory_iterator(dir, ec)) {
@@ -524,6 +535,13 @@ void Draw() {
   ImGui::PopFont();
   ImGui::TextDisabled("%s  %s%s%s%s", m.kind.c_str(), Utf8(m.dir.filename().wstring()).c_str(), m.version.empty() ? "" : ("  v" + m.version).c_str(),
                       m.author.empty() ? "" : ("  by " + m.author).c_str(), m.made_with.empty() ? "" : ("  (" + m.made_with + ")").c_str());
+  if (!g_view.online.empty()) {
+    if (g_view.online_ok) ImGui::TextDisabled("%s", g_view.online.c_str());
+    else ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.25f, 1), "%s", g_view.online.c_str());
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("When you host an online session, players who join without this mod can download it straight "
+                        "from your game. Only the game's and mods' own file types travel (no .exe, .dll, scripts ...).");
+  }
   // the actions: only on a click
   bool on = !m.off;
   if (ImGui::Checkbox("Switched on", &on)) {
