@@ -452,6 +452,18 @@ REX_EXTERN(__imp__sub_8269D768);
 REX_HOOK_RAW(sub_8269D768) {
   svr2011::PerfHintThread();  // (android_perf.h: the world update's thread in the phone's hint session)
   if (!g_kernel) g_kernel = REX_KERNEL_STATE();  // (for the stuck-update thread dump)
+  // Test aid: SVR2011_TEST_GUEST_FAULT=<seconds> - that long after the first world update, one write to guest
+  // address 0 (unmapped: a fault no handler takes) - proves guest_faults.cpp: one log line with the place, then a
+  // crash report and the game closes (Android: no endless retry).
+  static const int fault_secs = [] { const char* v = std::getenv("SVR2011_TEST_GUEST_FAULT"); return v ? std::atoi(v) : 0; }();
+  if (fault_secs > 0) {
+    static const auto first = std::chrono::steady_clock::now();
+    if (std::chrono::steady_clock::now() - first >= std::chrono::seconds(fault_secs)) {
+      REXLOG_WARN("frame rate: SVR2011_TEST_GUEST_FAULT - writing guest address 0 now");
+      rex::FlushLogging();
+      *reinterpret_cast<volatile uint32_t*>(base) = 0x0DEFACED;
+    }
+  }
   // Test aid: SVR2011_TEST_SLOW_MS=<ms> - a slow PC (each frame that much longer).
   static const int slow_ms = [] { const char* v = std::getenv("SVR2011_TEST_SLOW_MS"); return v ? std::atoi(v) : 0; }();
   // (SVR2011_TEST_SLOW_IN_MATCH=1: only while a match runs - the menus at speed for the scripted route)
