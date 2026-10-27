@@ -1562,6 +1562,14 @@ void WrF(uint8_t* p, float f) {
   std::memcpy(&v, &f, 4);
   Wr32(p, v);
 }
+// (test aids: a fighter put at x, y, z - his base +288 and the body's three copies (+0, +704, +768, hctp_room) -
+// in area `area` (+444: 0 the ring, 1 outside); a paired start keeps such places)
+void PutFighter(uint8_t* base, uint32_t f, float x, float y, float z, uint8_t area = 0) {
+  WrF(base + f + 288, x), WrF(base + f + 292, y), WrF(base + f + 296, z);
+  if (const uint32_t body = Rd32(base + f + 304))
+    for (uint32_t at : {0u, 704u, 768u}) WrF(base + body + at, x), WrF(base + body + at + 4, y), WrF(base + body + at + 8, z);
+  base[f + 444] = area;
+}
 
 }  // namespace
 
@@ -2074,9 +2082,10 @@ REX_HOOK_RAW(sub_82216C58) {
     if (att == fighter && tgt && frames > 300 && frames >= last + every) {
       last = frames;
       const uint32_t motion = force[3 + next++ % (force.size() - 3)];
-      // SVR2011_TEST_FORCE_PLACE=<x>,<z>,<yaw>[,<y>] - the attacker is first put there in the ring (y -12 the
-      // mat; yaw in radians, +z at 0): corner, rope and dive moves start where they belong (the move pairs the
-      // target with him).
+      // SVR2011_TEST_FORCE_PLACE=<x>,<z>,<yaw>[,<y>[,<target x>,<target z>[,<target y>[,<target area>]]]] - the
+      // attacker is first put there in the ring (y -12 the mat; yaw in radians, +z at 0): corner, rope and dive
+      // moves start where they belong; with a target place the target too (an apron move: the target on the apron,
+      // area 1 - the paired start then sets both from the move).
       static const std::vector<float> place = [] {
         std::vector<float> v;
         if (const char* e = std::getenv("SVR2011_TEST_FORCE_PLACE"))
@@ -2091,10 +2100,10 @@ REX_HOOK_RAW(sub_82216C58) {
       }();
       if (place.size() >= 3) {
         const float x = place[0], z = place[1], yaw = place[2], y = place.size() > 3 ? place[3] : -12.0f;
-        WrF(base + att + 288, x), WrF(base + att + 292, y), WrF(base + att + 296, z);
+        PutFighter(base, att, x, y, z, std::fabs(x) > 28.8f || std::fabs(z) > 28.8f ? 1 : 0);  // (past the ropes: outside)
         WrF(base + att + 276, yaw);
-        if (const uint32_t body = Rd32(base + att + 304)) WrF(base + body, x), WrF(base + body + 4, y), WrF(base + body + 8, z);
-        base[att + 444] = 0;  // (in the ring)
+        if (place.size() >= 6)
+          PutFighter(base, tgt, place[4], place.size() > 6 ? place[6] : -12.0f, place[5], place.size() > 7 ? uint8_t(place[7]) : 0);
       }
       const auto saved = ctx;
       ctx.r3.u64 = att;
@@ -2137,14 +2146,7 @@ REX_HOOK_RAW(sub_82216C58) {
     if (att == fighter && tgt && frames > 300) {
       if (frames < phase_at) phase_at = 0, phase = 0;  // (a new match)
       const auto saved = ctx;
-      auto put = [&](uint32_t f, float x, float y, float z) {
-        WrF(base + f + 288, x), WrF(base + f + 292, y), WrF(base + f + 296, z);
-        if (const uint32_t body = Rd32(base + f + 304)) {  // (+704 / +768: the body's other copies, hctp_room)
-          WrF(base + body, x), WrF(base + body + 4, y), WrF(base + body + 8, z);
-          for (uint32_t at : {704u, 768u}) WrF(base + body + at, x), WrF(base + body + at + 4, y), WrF(base + body + at + 8, z);
-        }
-        base[f + 444] = 0;
-      };
+      auto put = [&](uint32_t f, float x, float y, float z) { PutFighter(base, f, x, y, z); };
       if (phase == 0 && frames >= phase_at + every) {
         phase_at = frames, phase = 1;
         put(att, 0.0f, -12.0f, 0.0f);

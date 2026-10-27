@@ -82,7 +82,10 @@ READY = {g['id'] for g in GAMES if g['status'] == 'ready'}
 CATS = {'STAT': 'STAT', 'BASE': 'BASE', 'STN1': 'STN1', 'STN2': 'STN2', 'GRND': 'GRND', 'CORN': 'CORN',
         'CETB': 'CETB', 'ROPE': 'ROPE', 'APRO': 'APRO', 'RUN ': 'RUN ', 'TEAM': 'TEAM', 'FINI': 'FINI',
         'SPE1': 'STN1', 'SPE2': 'STN2', 'ANAS': 'ANAS', 'RUMB': 'RUMB', 'LADR': 'LADR', 'CELL': 'CELL',
-        'ABIL': 'ABIL', 'DIVI': 'CORN', 'APR2': 'APRO', 'ANA2': 'ANAS', 'WEAP': 'STAT', 'APR1': 'APRO', 'SPE0': 'STN1'}
+        'ABIL': 'ABIL', 'DIVI': 'CORN', 'APR2': 'APRO', 'ANA2': 'ANAS', 'WEAP': 'STAT', 'APR1': 'STN1', 'SPE0': 'STN1'}
+# (APR1 - WWE '12 / '13's grapples by the apron: Canadian Backbreaker 1, Emerald Fusion 1, F-5 1 - are standing
+# grapples in their motion; on 2011's APRO templates (Apron Guillotine Drop 10885) the template's own events, the
+# victim's fall from the apron to the floor, put both at floor height: they sank under the ring, 27 Oct)
 
 
 # Games whose two-person moves keep the attacker turned 180 degrees in its own frame, this many root units down -z
@@ -849,8 +852,24 @@ def slot_categories(bank):
     return out or list(SINGLES)
 
 
+def template_travel(g11, tid):
+    """(dx, dz) of a 2011 move's attacker (x 0 y 0) root from its first key to its last, None if unread"""
+    import ymks
+    for path, kind, ks in g11.banks_of(tid):
+        if kind != 'YMKs' or (0, 0) not in ks:
+            continue
+        pac, bank = g11.bank(path)
+        e = bank.find(tid, 0, 0)
+        if e is None:
+            continue
+        r = [k['root'] for k in ymks.body_keys(e['data'], bank.T, path.startswith('MOTP')) if k.get('root')]
+        if len(r) > 1:
+            return (r[-1][0] - r[0][0], r[-1][2] - r[0][2])
+    return None
+
+
 def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attacker_end_y=None, reversals=True,
-                    with_score=False):
+                    with_score=False, need_x=()):
     """the 2011 move in MVMT/<cat> (YMKs only, x0 y0 and x0 y1 both there) most like the source:
     the attacker / victim start distance (a running move needs a running template), for a dive where the
     attacker ends (low: on a lying victim) and the length"""
@@ -886,6 +905,10 @@ def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attac
                        for p, kd, ks in g11.banks_of(e['id'])):
                     continue
                 if any(kd == 'YMBs' for p, kd, ks in g11.banks_of(e['id'])):
+                    continue
+                # (a dive's branches where the source has them: Leap of Faith keeps its miss in x 110, so a ported
+                # dive judged a miss flew again with Leap of Faith's own miss flight)
+                if need_x and not set(need_x) <= {x for p, kd, ks in g11.banks_of(e['id']) for x, y in ks if y == 0}:
                     continue
                 score = abs(e['frames'] - frames) / 10.0
                 if gap is not None:
@@ -1078,6 +1101,8 @@ def convert(a, rep):
     g11 = a.get('_g11') or Game11(a['pac11'], os.path.join(outdir, '.work_cache'))
     R0 = WR.Retarget(bind='rest', twist=True, ik=a['game'] != 'wwe12')
     cat11 = CATS.get(cat0, '')   # ('': every category - 2K14's coded ones)
+    if cat0 == 'APR2':   # (WWE '12 / '13 moves from the apron: on an APRO template - check where it starts)
+        rep['warnings'].append('an apron move in its game (APR2): in 2011 it plays as an apron move - check it in a match')
     # (a moveset slot's own category wins - moveset_port passes it: Mankind '13's Mandible Claw in a finisher
     # slot (STN1) got an apron move as its template, both people sunk in the mat; Rumble elimination slots: RUMB)
     if a.get('cat') and not a.get('template'):
@@ -1107,7 +1132,8 @@ def convert(a, rep):
                                     (a['game'], FACING_GAP[a['game']]))
             else:
                 rep['notes'].append('attacker as stored (the turn would start the pair %.0f units apart)' % turned)
-        rep['notes'].append('source start gap %.0f units' % gap)
+        rep['notes'].append('source start gap %.0f units; root heights at the start: attacker %.0f, victim %.0f' %
+                            (gap, R0.keys(att, 2, face)[0][0][1], k1[0][0][1]))
     tid = int(a['template']) if a.get('template') else None
     if tid and not usable11(g11.waze, tid):
         rep['warnings'].append("template %d is a move the game can't play (no move record): picked another" % tid)
@@ -1128,7 +1154,9 @@ def convert(a, rep):
     # one-person move and the source's victim track is left out. Before, 2K15's Superfly Splash got a two-person
     # corner move (Corner Head Scissors Flip) and was called off in 5 frames.
     corner = 'CORN' in (cat11 if isinstance(cat11, list) else [cat11.strip() if cat11 else ''])
-    if not tid and corner and flight is not None:   # (laid out as 2011's: the flight at x 0, the branches at theirs)
+    # (laid out as 2011's: the flight at x 0, the branches at theirs - onto a lying victim only: WWE '13's Diving Double
+    # Axe Handle 1, onto a standing one (victim root -877), is a two-person corner move)
+    if not tid and corner and flight is not None and (vic_y is None or vic_y > -400):
         att, vic, branched_dive = flight, None, True
         nf = max(1, (att['frames'] - 1) // 2)
         rep['notes'].append("source block 00000000 the attacker's flight (%d frames at 60 Hz), %s the branches" %
@@ -1136,12 +1164,27 @@ def convert(a, rep):
     att_keys = R0.keys(att, nf, face)
     if not tid and (branched_dive or (vic is not None and corner and vic_y > -400 and
                                       min(k[0][1] for k in att_keys) < -1100)):
-        dive = choose_template(g11, ['CORN'], nf, None, paired=False,   # (dives are corner moves; SPE1 has strikes)
-                               attacker_end_y=att_keys[-1][0][1])
+        branches = sorted({int(p) for p, d in by.items() if p.isdigit() and 30 <= int(p) < 90 and 0 in d})
+        dive = (choose_template(g11, ['CORN'], nf, None, paired=False, attacker_end_y=att_keys[-1][0][1], need_x=branches)
+                or choose_template(g11, ['CORN'], nf, None, paired=False,   # (dives are corner moves; SPE1 has strikes)
+                                   attacker_end_y=att_keys[-1][0][1]))
         if dive:
             tid, vic, gap = dive, None, None
             rep['notes'].append("a dive onto a lying victim: the attacker's motion on a one-person template, the "
                                 "victim reacts as in the game's own dives")
+            # (the flight goes the template's way: 2011's corner climb ends facing the ring and the dive leaves from
+            # there - WWE '13's Diving Corkscrew Splash, kept as stored, flipped backwards out of the ring. One person:
+            # only the facing matters, the start is anchored to the template's below)
+            tt = template_travel(g11, dive)
+            if os.environ.get('MOVES_PORT_TRACE'):   # (debug: the flight's root path and the template's travel)
+                log('trace flight %s, template travel %s' % ([tuple(round(v) for v in k[0]) for k in att_keys[::4]], tt))
+            st = (att_keys[-1][0][0] - att_keys[0][0][0], att_keys[-1][0][2] - att_keys[0][0][2])
+            if tt and tt[0] * st[0] + tt[1] * st[1] < 0:
+                import numpy as np
+                face = np.diag([-1.0, 1.0, -1.0, 1.0]) if face is None else None
+                att_keys = R0.keys(att, nf, face)
+                rep['notes'].append("dive turned round: its flight went against the template's (%.0f, %.0f vs %.0f, %.0f)"
+                                    % (st[0], st[1], tt[0], tt[1]))
     # A hold with phases (hold, struggle loops, escape, tap: two-person phases 1, 2 and 4 among those under 30 -
     # 2011's x 1 / 2 / 4; 2K17's Blue Thunder Bomb, a powerbomb with phases 1 / 2 / 3, got Walls of Jericho when 3
     # phases were enough) is a submission:
@@ -1158,12 +1201,25 @@ def convert(a, rep):
     # (a reversal as the template only for a reversal: WWE '12's G.T.S. and World's Strongest Slam, filed under
     # its STAT, got Ankle Lock Reversal)
     rev = 'reversal' in (name or '').lower()
+    # (a corner move from up high onto a standing victim: 2011's own of that name - its diving axe handles, clotheslines
+    # and cross bodies sit in no MVMT/CORN group, so the category pick never sees them; WWE '13's Diving Double Axe
+    # Handle 1 got Roll Up, then Apron Elbow Attack)
+    if not tid and vic is not None and corner and min(k[0][1] for k in att_keys) < -1000:
+        base = norm(re.sub(r'\s+\d+$', '', name or ''))
+        same = sorted(i for i, (bits, nm) in g11.waze.items() if usable11(g11.waze, i) and
+                      norm(re.sub(r'\s+\d+$', '', nm)) == base and
+                      any(kd == 'YMKs' and p.startswith('MOT/') for p, kd, xs in g11.banks_of(i)))
+        if same:
+            tid = same[0]
+            rep['notes'].append('template: the 2011 move of the same name (a dive onto a standing victim)')
     if not tid:
         tid, score = choose_template(g11, cat11, nf, gap, reversals=rev, with_score=True)
         # (a two-person move filed under STAT - strikes and reversals: WWE '12's G.T.S. got Pull-Back Armbar - or a
         # poor fit in its category's own moves also looks among the standing grapples; the better fit wins)
         stat = 'STAT' in (cat11 if isinstance(cat11, list) else [cat11.strip() if cat11 else ''])
-        if vic is not None and (tid is None or stat or score > 6) and cat11 not in (['ANAS'], 'ANAS'):
+        # (not for a corner move from up high - WWE '13's Diving Double Axe Handle 1 onto a standing victim got Roll Up)
+        high = corner and min(k[0][1] for k in att_keys) < -1000
+        if vic is not None and (tid is None or stat or score > 6) and cat11 not in (['ANAS'], 'ANAS') and not (high and tid):
             t2, s2 = choose_template(g11, ['STN1', 'STN2'], nf, gap, reversals=rev, with_score=True)
             if t2 is not None and (tid is None or s2 < score):
                 rep['notes'].append('a poor fit in MVMT/%s (score %.1f): the standing grapples fit better (%.1f)' %
@@ -1199,6 +1255,9 @@ def convert(a, rep):
     progress(40, 'retargeting')
     R = WR.Retarget(bind='rest', twist=True, ik=a['game'] != 'wwe12')
     keys_of = {0: [R.keys(att, nf, face), R.keys(vic, nf) if vic is not None else None]}
+    if os.environ.get('MOVES_PORT_TRACE'):   # (debug: both people's root paths, every 4th key)
+        for who, ks in (('attacker', keys_of[0][0]), ('victim', keys_of[0][1] or [])):
+            log('trace %s %s' % (who, [tuple(round(v) for v in k[0]) for k in ks[::4]]))
     xs = [0]
     # A multi-phase source move (a submission: hold, struggle loops, escape, tap) has a block pair per phase, and
     # phase n is 2011's x n: 2K15's Patriot Lock 0000 / 0001 / 0002 / 0004 / 0006 / 0007 against Ankle Lock 3's
@@ -1212,13 +1271,23 @@ def convert(a, rep):
             px = int(ph)
             if 0 < px < 90 and 0 in d and 1 in d and d[0]['frames'] > 2:
                 phase_blocks[px] = (d[0], d[1], max(1, (d[0]['frames'] - 1) // 2))
+            # (a dive's miss, 0050, is the attacker alone - he lands on the mat: without it here the template's x 50
+            # took the flight (x 0) again, and every ported dive that missed flew twice; 2011's x 50 goes on from the
+            # air, as the source's)
+            elif branched_dive and 30 <= px < 90 and 0 in d and d[0]['frames'] > 2:
+                phase_blocks[px] = (d[0], None, max(1, (d[0]['frames'] - 1) // 2))
     if phase_blocks:
         rep['notes'].append('source phases %s = 2011 x of the same number' % ', '.join(str(x) for x in sorted(phase_blocks)))
 
     def phase_keys(x):
         if x not in keys_of and x in phase_blocks:
             ax, vx, nx = phase_blocks[x]
-            keys_of[x] = [R.keys(ax, nx, face), R.keys(vx, nx)]
+            ka, kv = R.keys(ax, nx, face), R.keys(vx, nx) if vx is not None else None
+            if os.environ.get('MOVES_PORT_TRACE'):   # (debug: a phase's attacker root heights)
+                log('trace x%d %s' % (x, [round(k[0][1]) for k in ka]))
+            keys_of[x] = [ka, kv]
+        if branched_dive and x >= 30 and x not in keys_of:   # (a branch the source lacks: the template's own)
+            return [None, None]
         return keys_of.get(x, keys_of[0])
     lines = ['wazecopy %d %d' % (new_id, tid), 'wazename %d %s' % (new_id, name)]
     progress(60, 'tracks')
