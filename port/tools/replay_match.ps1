@@ -10,7 +10,8 @@
 # The pre-bell intro (a sneak attack or standing) comes out either way: a replay whose bell finds the people in
 # other motions than the recording's is stopped and started again (-Tries times).
 param([Parameter(Mandatory)][string]$Recording, [Parameter(Mandatory)][string]$GameDir, [string]$UserData = "",
-      [int]$Shots = 6, [int]$ShotEvery = 10, [int]$Tries = 4, [int]$P2pPort = 36547, [string]$Exe = "svr2011.exe")
+      [int]$Shots = 6, [int]$ShotEvery = 10, [int]$Tries = 4, [int]$P2pPort = 36547, [string]$Exe = "svr2011.exe",
+      [ValidateSet("auto", "0", "1", "keep")][string]$Entrances = "auto")
 $env:SVR2011_AUDIO_MUTE = "1"  # (test games stay muted even if their command line is lost)
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "test_guard.ps1")
@@ -23,6 +24,9 @@ if (-not $wrestlers.Count) { throw "no wrestlers in $Recording\match.json" }
 $ids = $wrestlers | ForEach-Object { if ($_.superstar -lt 50) { "CAW$($_.superstar)" } else { "$($_.superstar)" } }
 $attires = $wrestlers | ForEach-Object { if ($_.attire) { $_.attire } else { 1 } }
 $ports = $wrestlers | ForEach-Object { if ($null -ne $_.port) { $_.port } else { -1 } }
+# (the entrances as the recording had them - match.json "entrances"; older recordings: off. keep: the game's own
+# setting, skipped by the route's presses)
+$entr = switch ($Entrances) { "keep" { "" } "auto" { if ($null -ne $m.entrances) { if ($m.entrances) { "1" } else { "0" } } else { "0" } } default { $Entrances } }
 $seed = if ($m.seeds -and $m.seeds.rand) { "0x$($m.seeds.rand)" } else { "" }
 
 # (the wrestlers' and the referee's motions and places (in 4s) at the bell: trail.txt's first line - "person x y z
@@ -51,7 +55,7 @@ $set = @{
     SVR2011_ROUTE                = "match"
     SVR2011_TEST_MATCH           = "people=$($ids -join ',') attires=$($attires -join ',') ports=$($ports -join ',') arena=$($m.arena.id) exact=1"
     SVR2011_TEST_RULE            = "{0:X2}" -f [int]$m.rule.id
-    SVR2011_TEST_ENTRANCES       = "0"
+    SVR2011_TEST_ENTRANCES       = $entr
     SVR2011_TEST_RAND_SEED       = $seed
     SVR2011_REPLAY               = $Recording
     SVR2011_TEST_FRAME_SHOT      = Join-Path $shotDir "shot.ppm"
@@ -63,19 +67,27 @@ if ($UserData) { $set.SVR2011_USER_DATA = $UserData }
 foreach ($k in $set.Keys) { if ($set[$k]) { Set-Item "Env:$k" $set[$k] } }
 "replay: $($wrestlers.name -join ' vs ') - rule $($m.rule.name), arena $($m.arena.name); $($m.frames) frames, seed $seed"
 "  SVR2011_TEST_MATCH=$($set.SVR2011_TEST_MATCH)"
-$gameArgs = @("--log_file=`"$log`"", "--audio_mute=true", "--fullscreen=false", "--monitor=2", "--p2p_port=$P2pPort")
 $dir = $null
 try {
     for ($try = 1; $try -le $Tries -and -not $dir; $try++) {
+        # (a log of each try's own: a stopped game can hold its log for seconds, and a log that could not be deleted
+        # gave the next try the last game's lines)
+        $log = Join-Path $runs "$stem.try$try.log"
         Remove-Item $log -ErrorAction SilentlyContinue
+        $gameArgs = @("--log_file=`"$log`"", "--audio_mute=true", "--fullscreen=false", "--monitor=2", "--mnk_mode=false",
+                      "--p2p_port=$P2pPort")
         Get-ChildItem $shotDir -Filter *.ppm -ErrorAction SilentlyContinue | Remove-Item
+        if ($try -gt 1) { Assert-NoPlayerGame }  # (the game-load guard before every start)
+        Use-SvrTestServer -GameDir $GameDir -GameArgs $gameArgs | Out-Null
         $p = Start-Process (Join-Path $GameDir $Exe) -WorkingDirectory $GameDir -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
+        Set-SvrTestPriority $p
         try {
             # (the route to the match, the match until the recording's frames are played - and room for slow loads)
             $limit = [DateTime]::Now.AddSeconds(240 + [int]($m.frames / 30))
             $line = $null; $checked = $false
             while (-not $p.HasExited -and [DateTime]::Now -lt $limit) {
                 Start-Sleep 2
+                if (-not (Test-Path $log)) { continue }  # (Select-String on a log not made yet stops the script: $ErrorActionPreference)
                 if (-not $checked) {  # (the bell: the same intro as the recording's?)
                     $rec = Select-String -Path $log -Pattern "record: this match in (.*)$" -ErrorAction SilentlyContinue | Select-Object -Last 1
                     $got = if ($rec) { Get-BellMotions (Join-Path $rec.Matches[0].Groups[1].Value.Trim() "trail.txt") }

@@ -169,6 +169,7 @@ struct Recording {
   std::string start;
   std::chrono::steady_clock::time_point started;
   uint32_t rule = 0, arena = 0;
+  bool entrances = false;  // (the live rules' ENTRANCES, +38: a replay sets them alike - its bell comes after them)
   std::string arena_manifest, rule_name, arena_name;  // (the names: the game's strings, a mod arena's manifest)
   std::vector<svr2011::MatchPerson> people;
   std::map<uint32_t, std::pair<bool, int>> cpu_attire;  // (character index: a CPU, the attire 1-4 - wrestlers only)
@@ -263,13 +264,13 @@ void WriteJson(bool complete) {  // (under g_rec)
       "{{\n  \"format\": 1,\n  \"complete\": {},\n  \"game\": {{\"version\": {}, \"commit\": {}}},\n  \"start\": {},\n"
       "  \"length_s\": {},\n  \"result\": {},\n  \"rule\": {{\"id\": {}, \"name\": {}}},\n"
       "  \"arena\": {{\"id\": {}, \"name\": {}, \"mod\": {}}},\n  \"people\": [\n    {}\n  ],\n  \"frame_rate\": {},\n"
-      "  \"online\": {},\n  \"renderer\": {},\n  \"cpu_tab\": {{\"reversal_chance\": {}, \"reversal_rates\": {}, "
+      "  \"online\": {},\n  \"entrances\": {},\n  \"renderer\": {},\n  \"cpu_tab\": {{\"reversal_chance\": {}, \"reversal_rates\": {}, "
       "\"damage_level\": {}, \"pin_level\": {}, \"momentum_level\": {}}},\n  \"weapons\": {{\"picks\": {}}},\n"
       "  \"inputs\": {{\"file\": \"inputs.bin\", \"version\": {}}},\n  \"frames\": {},\n  \"seeds\": {}\n}}\n",
       complete ? "true" : "false", Json(SVR2011_PORT_VERSION), Json(SVR2011_BUILD_COMMIT), Json(g.start), len, Json(g.result),
       g.rule, Json(g.rule_name), g.arena, Json(g.arena_name),
       arena_id.empty() ? std::string("null") : ModJson("Arenas", arena_id), people, REXCVAR_GET(frame_rate),
-      svr2011::P2POnlineMode() ? "true" : "false", Json(rex::cvar::Query<std::string>("gpu_backend")),
+      svr2011::P2POnlineMode() ? "true" : "false", g.entrances ? "true" : "false", Json(rex::cvar::Query<std::string>("gpu_backend")),
       REXCVAR_GET(cpu_reversal_chance), REXCVAR_GET(cpu_reversal_rates), REXCVAR_GET(cpu_damage_level),
       REXCVAR_GET(cpu_pin_level), REXCVAR_GET(cpu_momentum_level),
       Json(rex::cvar::Query<std::string>("extreme_weapons")), kInputsVersion, g_updates - g.bell, SeedsJson());
@@ -538,9 +539,10 @@ void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
   g.people = svr2011::MatchPeople(base);
   for (auto& p : g.people)  // (MatchPeople's names end " (id N)": the id is its own key)
     if (const size_t at = p.name.rfind(" (id "); at != std::string::npos) p.name.resize(at);
-  // Each wrestler's CPU flag and attire, from the match's pick slots (*0x82EDEB48 +432, 2116 bytes a person: -8
-  // the controller, 1 the CPU; +8 superstar * 100 + (attire - 1) * 10 + 2) and the character's player +1152 - a
-  // CPU only while no pad of a local player plays him (a test's cpu=all marks the picks too: match_types.cpp).
+  // Each wrestler's CPU flag and attire, from the match's pick slots (*0x82EDEB48 +432, 2116 bytes a person: +8
+  // superstar * 100 + (attire - 1) * 10 + 2) and the character's player +1152 - the CPU when no pad of a local
+  // player plays him. (Slot -8, 1 the CPU, isn't it: the select screen's CPU picks leave it 0, and a test's cpu=all
+  // sets it on person 0 too, whom pad 0 still plays.)
   if (const uint32_t match = Rd32(base + 0x82EDEB48); match >= 0x40000000u && !(match & 3))
     for (const auto& p : g.people) {
       if (p.person >= 6) continue;
@@ -549,7 +551,7 @@ void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
       const uint32_t port = c ? Rd32(base + c + 1152) : ~0u, pick = Rd32(slot + 8);
       const bool pad = port < svr2011::kMaxPlayers && svr2011::PlayerPadType(port) != svr2011::PadType::kNone;
       const int attire = pick != 51200 && pick / 100 < 512 ? int(pick % 100 / 10) + 1 : 0;
-      g.cpu_attire[p.index] = {slot[-8] == 1 && !pad, attire};
+      g.cpu_attire[p.index] = {!pad, attire};
       if (pad) g.ports[p.index] = port;
     }
   std::string names;
@@ -570,10 +572,13 @@ void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
   const fs::path root = LogsDir() / "matches";
   std::error_code ec;
   fs::create_directories(root, ec);
-  // (the newest `keep` folders: the oldest go - the names start with their time)
+  // (the newest `keep` folders: the oldest go - the names start with their time; never the recording a replay plays,
+  // SVR2011_REPLAY - it is read at this bell, after this)
+  const char* replaying = std::getenv("SVR2011_REPLAY");
   std::vector<fs::path> old;
   for (const auto& e : fs::directory_iterator(root, ec))
-    if (e.is_directory(ec)) old.push_back(e.path());
+    if (e.is_directory(ec) && !(replaying && *replaying && fs::equivalent(e.path(), fs::u8path(replaying), ec)))
+      old.push_back(e.path());
   std::sort(old.begin(), old.end());
   while (!old.empty() && int(old.size()) >= keep) fs::remove_all(old.front(), ec), old.erase(old.begin());
   g.dir = root / (std::string(stamp) + "_" + names);
@@ -593,7 +598,7 @@ void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
   g.last_table = g.table_bell;
   WriteBell(base);
   g.frames_load_to_bell = g_load_frame ? g_updates - g_load_frame : 0;
-  g.rule = base[kLive], g.arena = Rd32(base + kLive + 64);
+  g.rule = base[kLive], g.arena = Rd32(base + kLive + 64), g.entrances = base[kLive + 38] != 0;
   g.arena_manifest = svr2011::ArenaModManifest();
   // The names as the game shows them (port/server/match_names.py has the English ones): the rule record's +56 is
   // its name's string id (misc.pac RUL, *0x82EDE954, 100 bytes a rule); arena n's name is string 0x9C42 + n; a mod
@@ -757,6 +762,7 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
         }
         std::fputs((line + "\n").c_str(), g.trail);
         std::fflush(g.trail);
+        if (g.inputs) std::fflush(g.inputs);  // (a hung game that is killed keeps its pads up to the last second)
       }
     }
   }
