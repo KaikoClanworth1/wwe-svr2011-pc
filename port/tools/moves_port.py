@@ -82,7 +82,10 @@ READY = {g['id'] for g in GAMES if g['status'] == 'ready'}
 CATS = {'STAT': 'STAT', 'BASE': 'BASE', 'STN1': 'STN1', 'STN2': 'STN2', 'GRND': 'GRND', 'CORN': 'CORN',
         'CETB': 'CETB', 'ROPE': 'ROPE', 'APRO': 'APRO', 'RUN ': 'RUN ', 'TEAM': 'TEAM', 'FINI': 'FINI',
         'SPE1': 'STN1', 'SPE2': 'STN2', 'ANAS': 'ANAS', 'RUMB': 'RUMB', 'LADR': 'LADR', 'CELL': 'CELL',
-        'ABIL': 'ABIL', 'DIVI': 'CORN', 'APR2': 'APRO', 'ANA2': 'ANAS', 'WEAP': 'STAT', 'APR1': 'APRO', 'SPE0': 'STN1'}
+        'ABIL': 'ABIL', 'DIVI': 'CORN', 'APR2': 'APRO', 'ANA2': 'ANAS', 'WEAP': 'STAT', 'APR1': 'STN1', 'SPE0': 'STN1'}
+# (APR1 - WWE '12 / '13's grapples by the apron: Canadian Backbreaker 1, Emerald Fusion 1, F-5 1 - are standing
+# grapples in their motion; on 2011's APRO templates (Apron Guillotine Drop 10885) the template's own events, the
+# victim's fall from the apron to the floor, put both at floor height: they sank under the ring, 27 Oct)
 
 
 # Games whose two-person moves keep the attacker turned 180 degrees in its own frame, this many root units down -z
@@ -1098,10 +1101,8 @@ def convert(a, rep):
     g11 = a.get('_g11') or Game11(a['pac11'], os.path.join(outdir, '.work_cache'))
     R0 = WR.Retarget(bind='rest', twist=True, ik=a['game'] != 'wwe12')
     cat11 = CATS.get(cat0, '')   # ('': every category - 2K14's coded ones)
-    if cat0 in ('APR1', 'APR2'):   # (WWE '12 / '13 apron moves, 27 Oct: Emerald Fusion 1 played on 2011's apron set-up,
-        # Canadian Backbreaker 1 sank under the ring - its source drops to the floor)
-        rep['warnings'].append('an apron move in its game (%s): in 2011 it starts like an apron move (attacker on the '
-                               'apron); one that ends on the floor sinks into the ring - check it in a match' % cat0)
+    if cat0 == 'APR2':   # (WWE '12 / '13 moves from the apron: on an APRO template - check where it starts)
+        rep['warnings'].append('an apron move in its game (APR2): in 2011 it plays as an apron move - check it in a match')
     # (a moveset slot's own category wins - moveset_port passes it: Mankind '13's Mandible Claw in a finisher
     # slot (STN1) got an apron move as its template, both people sunk in the mat; Rumble elimination slots: RUMB)
     if a.get('cat') and not a.get('template'):
@@ -1175,6 +1176,8 @@ def convert(a, rep):
             # there - WWE '13's Diving Corkscrew Splash, kept as stored, flipped backwards out of the ring. One person:
             # only the facing matters, the start is anchored to the template's below)
             tt = template_travel(g11, dive)
+            if os.environ.get('MOVES_PORT_TRACE'):   # (debug: the flight's root path and the template's travel)
+                log('trace flight %s, template travel %s' % ([tuple(round(v) for v in k[0]) for k in att_keys[::4]], tt))
             st = (att_keys[-1][0][0] - att_keys[0][0][0], att_keys[-1][0][2] - att_keys[0][0][2])
             if tt and tt[0] * st[0] + tt[1] * st[1] < 0:
                 import numpy as np
@@ -1252,6 +1255,9 @@ def convert(a, rep):
     progress(40, 'retargeting')
     R = WR.Retarget(bind='rest', twist=True, ik=a['game'] != 'wwe12')
     keys_of = {0: [R.keys(att, nf, face), R.keys(vic, nf) if vic is not None else None]}
+    if os.environ.get('MOVES_PORT_TRACE'):   # (debug: both people's root paths, every 4th key)
+        for who, ks in (('attacker', keys_of[0][0]), ('victim', keys_of[0][1] or [])):
+            log('trace %s %s' % (who, [tuple(round(v) for v in k[0]) for k in ks[::4]]))
     xs = [0]
     # A multi-phase source move (a submission: hold, struggle loops, escape, tap) has a block pair per phase, and
     # phase n is 2011's x n: 2K15's Patriot Lock 0000 / 0001 / 0002 / 0004 / 0006 / 0007 against Ankle Lock 3's
