@@ -48,6 +48,7 @@
 #include "graphics_page.h"
 #include "p2p.h"
 #include "mod_transfer.h"
+#include "online_mods.h"
 #include "script_input.h"
 
 // The game's own Xbox LIVE invite path (it restarts itself to join): off - the
@@ -147,6 +148,8 @@ std::atomic<uint16_t> g_guest_pad{0};  // (OnlineOverlayPad)
 std::atomic<bool> g_relay_dialog{false};  // the relay warning is up (it holds the input)
 std::atomic<bool> g_mods_dialog{false};   // the host's mods question is up (it holds the input too)
 bool LobbyShown();  // (below: a session's lobby is on screen - the join done)
+void RestartAndRejoin();  // (below: the mods question's RESTART AND REJOIN)
+void ResumeRejoin();      // (below: a copy started by it - back to the session)
 std::atomic<int> g_leave_yes{0};  // (the mods question's DON'T JOIN / LEAVE: then the lobby's "Leave this session?" YES)
 std::atomic<int> g_press_b{0};            // its BACK: the game reads B for these many more pad reads
 
@@ -684,7 +687,8 @@ bool OnlineOverlay::ModsDialog(ImGuiIO& io) {
       if (was_running && d.phase == ModDownloadState::kDone)
         open(kModsDone, "THE MODS ARE DOWNLOADED",
              std::to_string(d.mods) + (d.mods == 1 ? " mod is" : " mods are") + " on this PC for this session (" +
-                 Megabytes(d.total) + "). They're removed when you leave online.");
+                 Megabytes(d.total) + "). The game loads them when it starts again: RESTART AND REJOIN starts it "
+                 "again and takes you back to this session. They're removed when the game closes.");
       else if (was_running && d.phase == ModDownloadState::kFailed && d.error != "Cancelled.")
         open(kModsFailed, "THE MODS DIDN'T DOWNLOAD", d.error + "\n\nYou can stay in the session, but you can't "
                                                      "play with the mods you don't have.");
@@ -719,9 +723,9 @@ bool OnlineOverlay::ModsDialog(ImGuiIO& io) {
   }
   static const char* const kAsk[] = {"DOWNLOAD", "DON'T JOIN"};
   static const char* const kStay[] = {"STAY", "LEAVE"};
-  static const char* const kOk[] = {"OK"};
-  const char* const* labels = mods_mode_ == kModsAsk ? kAsk : mods_mode_ == kModsDone ? kOk : kStay;
-  const int count = mods_mode_ == kModsDone ? 1 : 2;
+  static const char* const kDone[] = {"RESTART AND REJOIN", "LATER"};
+  const char* const* labels = mods_mode_ == kModsAsk ? kAsk : mods_mode_ == kModsDone ? kDone : kStay;
+  const int count = 2;
   const float sc = std::min(io.DisplaySize.x / 1280.0f, io.DisplaySize.y / 720.0f);
   const float title_size = 28 * sc, size = 21 * sc, pad = 28 * sc, w = 820 * sc;
   ImFont* font = g_menu_font;
@@ -782,6 +786,7 @@ bool OnlineOverlay::ModsDialog(ImGuiIO& io) {
     if (mods_mode_ == kModsAsk) AnswerModLobbyOffer(mods_offer_, chosen == 0);
     // (DON'T JOIN / LEAVE: the lobby's B, a few frames - its EXIT SESSION question)
     if (mods_mode_ != kModsDone && chosen == 1) g_press_b = 8, g_leave_yes = 1;
+    if (mods_mode_ == kModsDone && chosen == 0) RestartAndRejoin();
     mods_open_ = false;
     g_mods_dialog = false;
     g_wait_release = true;  // (the choosing button: not to the game too)
@@ -1241,11 +1246,12 @@ void LoadRelaunch() {
 }
 
 // A new copy of the game, with this one's command line, folder and settings.
-bool StartNewCopy() {
+bool StartNewCopy(const std::wstring& extra = {}) {
 #ifdef _WIN32
   wchar_t exe[MAX_PATH];
   if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return false;
   std::wstring cmd = GetCommandLineW();
+  if (!extra.empty() && cmd.find(extra) == std::wstring::npos) cmd += L" " + extra;
   SetEnvironmentVariableW(L"SVR2011_RELAUNCHED", L"1");  // (inherited)
   STARTUPINFOW si = {sizeof(si)};
   PROCESS_INFORMATION pi = {};
@@ -1270,6 +1276,7 @@ void InstallOnlineOverlay(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
   g_kernel = kernel;
   g_relaunch_file = user_data / "relaunch.bin";
   LoadRelaunch();
+  ResumeRejoin();  // (a copy RESTART AND REJOIN started: back to the session)
   new OnlineOverlay(drawer);  // lives for the whole run
   rex::ui::RegisterBind("bind_online_menu", "F1", "Online menu (friends, invites)", [] { g_toggle = true; });
   std::thread(PollThread).detach();
@@ -1612,6 +1619,70 @@ void WalkTick() {
 }
 
 // (Accept(): the walk, from the next pad read)
+// RESTART AND REJOIN (the fetched mods load at a start: mod_transfer.h OnlineModsLoad): the session to go back
+// to into OnlineMods\rejoin.bin ("SVRJ", its 60-byte XSESSION_INFO, the host's name), the session left as DON'T
+// JOIN does, then a new copy with --online_mods_load=true and this one ends. The new copy reads the file
+// (ResumeRejoin) and walks back as an accepted invite does (the session first in its searches).
+uint64_t SessionId(const uint8_t* info) {
+  uint64_t v = 0;
+  for (int i = 0; i < 8; ++i) v = v << 8 | info[i];
+  return v;
+}
+
+void RestartAndRejoin() {
+  uint8_t info[60];
+  uint32_t slots = 0;
+  if (!P2PSessionInfo(info, &slots)) return Say("NOT IN A SESSION ANY MORE - JOIN IT AGAIN AFTER A RESTART");
+  std::string host = OnlineModsHostName();
+  if (host.empty()) host = "the host";
+  const std::filesystem::path file = OnlineModsRoot() / "rejoin.bin";
+  std::string out = "SVRJ";
+  out.append(reinterpret_cast<const char*>(info), 60);
+  out.push_back(char(slots > 6));
+  out.push_back(char(std::min<size_t>(host.size(), 64)));
+  out.append(host.substr(0, 64));
+  std::error_code ec;
+  std::filesystem::create_directories(file.parent_path(), ec);
+  if (FILE* f = std::fopen(file.string().c_str(), "wb")) {
+    std::fwrite(out.data(), 1, out.size(), f);
+    std::fclose(f);
+  } else {
+    return Say("COULDN'T SAVE THE SESSION TO GO BACK TO");
+  }
+  REXLOG_INFO("online overlay: restart and rejoin - {}'s session {:016X}", host, SessionId(info));
+  g_press_b = 8, g_leave_yes = 1;  // (out of the session first: the host keeps no stale slot for this game)
+  std::thread([] {
+    for (int i = 0; i < 100 && P2PSessionHost() != 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const bool started = StartNewCopy(L"--online_mods_load=true");
+    REXLOG_INFO("online overlay: restart and rejoin - {}", started ? "a new copy started, this one ends" : "couldn't start a new copy");
+    if (!started) return Say("COULDN'T START THE GAME AGAIN - START IT YOURSELF, THEN JOIN THE SESSION");
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));  // (the log written)
+    std::_Exit(0);
+  }).detach();
+}
+
+void ResumeRejoin() {
+  if (!OnlineModsLoad()) return;
+  const std::filesystem::path file = OnlineModsRoot() / "rejoin.bin";
+  std::ifstream in(file, std::ios::binary);
+  std::string b((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  std::error_code ec;
+  std::filesystem::remove(file, ec);
+  if (b.size() < 66 || b.compare(0, 4, "SVRJ") != 0) return;
+  std::vector<uint8_t> info(b.begin() + 4, b.begin() + 64);
+  const bool rumble = b[64] != 0;
+  const std::string host = b.substr(66, size_t(uint8_t(b[65])));
+  REXLOG_INFO("online overlay: back to {}'s session {:016X} with its mods loaded", host, SessionId(info.data()));
+  P2PExpectInvite(info.data());
+  RequestInviteWalk(rumble, host);
+  std::thread([info] {
+    std::this_thread::sleep_for(std::chrono::seconds(20));  // (the network up)
+    P2PReachHost(info.data());
+  }).detach();
+  OnlineOverlayNotice("THE MODS ARE LOADED", "AT A MENU, THE GAME TAKES YOU BACK TO " + Upper(host) + "'S SESSION", 15);
+}
+
 void RequestInviteWalk(bool rumble, const std::string& from) {
   std::lock_guard lock(g_walk_mutex);
   g_walk_request = WalkRequest{rumble, from, Clock::now() + std::chrono::minutes(15)};

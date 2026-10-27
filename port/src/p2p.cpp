@@ -897,12 +897,39 @@ void OnDataV2(const uint8_t* data, size_t size, Via via) {
     fake = p.fake;
     p.game_traffic = Clock::now();
     uint32_t& last = p.delivered[{to, from}];
-    // (a peer that started over - a new match, a restarted game - begins at 1 again)
-    if (seq + 64 < last) last = 0;
+    // (a peer that started over - a new match, a restarted game - begins at 1 again: far behind, or a stream's
+    // very first packets behind a short old one - RESTART AND REJOIN's new copy, whose join packets were dropped
+    // as already seen while the old copy's stream had fewer than 64)
+    const uint32_t was = last;
+    // (a stream's very start again: the peer's game restarted - its old proxy goes, so this game's game sees a new
+    // address: through the old one its new join was taken for the old connection and never answered)
+    const bool restarted = seq <= kRepeat + 1 && seq < last;
+    if (seq + 64 < last || restarted) last = 0;
     for (auto e = got.rbegin(); e != got.rend(); ++e) {
       if (e->first > last) deliver.push_back(e->second), last = e->first;
     }
+    if (restarted)
+      if (auto old = g_proxies.find({mac, from}); old != g_proxies.end()) {
+        Proxy* dead = old->second;
+        g_proxy_ports.erase(dead->local);
+        g_proxies.erase(old);
+        dead->dead = true;
+#if defined(_WIN32)
+        CloseSocket(dead->s);  // (its recvfrom returns: its thread deletes it)
+#else
+        shutdown(dead->s, SHUT_RDWR);
+#endif
+        REXLOG_INFO("p2p: a peer's game started over (port {}): a new proxy for it", from);
+      }
     Proxy* proxy = ProxyFor(mac, from);
+    // Test aid: SVR2011_TEST_P2P_DATA_LOG=<n> - the first n game packets in of which nothing got through: their
+    // stream, sequence, the last one passed on before
+    static int data_log = [] { const char* v = std::getenv("SVR2011_TEST_P2P_DATA_LOG"); return v ? std::atoi(v) : 0; }();
+    if (data_log > 0 && (deliver.empty() || !proxy)) {
+      --data_log;
+      REXLOG_INFO("p2p: data in {}->{} seq {} ({} in it), last was {}, {} passed on{}", from, to, seq, got.size(), was,
+                  deliver.size(), proxy ? "" : " - no proxy");
+    }
     if (!proxy) return;
     proxy->used_ms = NowMs();
     s = proxy->s;

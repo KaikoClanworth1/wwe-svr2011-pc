@@ -42,6 +42,9 @@
 #include "online_mods.h"
 #include "p2p.h"
 
+REXCVAR_DEFINE_BOOL(online_mods_load, false, "Online",
+                    "This run also loads the mods fetched from a session's host (<user data>\\OnlineMods; set by the "
+                    "game's RESTART AND REJOIN, never saved)");
 REXCVAR_DEFINE_BOOL(online_mod_upload, true, "Online",
                     "Hosting: send this game's gameplay mods to joiners who lack them (direct links only)");
 REXCVAR_DEFINE_INT32(online_mod_upload_kbs, 4096, "Online",
@@ -732,7 +735,11 @@ void Run(std::vector<ModOffer> wanted) {
       for (int tries = 0; tries < 15 && !got && !g_cancel; ++tries) {  // (the host lists a big mod first)
         Out o;
         o.u8(kListReq), o.u32(gen), o.u16(index), o.u16(page);
-        if (!Send(o)) return fail("There's no direct link to the host: mods never come through the relay.");
+        if (!Send(o)) {  // (a link still settling: a moment, again - through the relay for good: the reason)
+          if (tries >= 10) return fail("There's no direct link to the host: mods never come through the relay.");
+          std::this_thread::sleep_for(std::chrono::seconds(2));
+          continue;
+        }
         error.clear();
         got = Await(kList, 2000, &error);
         if (!got && !error.empty()) return fail(error);
@@ -930,8 +937,12 @@ fs::path FetchedModFolder(const ModOffer& mod) {
   return dir;
 }
 
+bool OnlineModsLoad() { return REXCVAR_GET(online_mods_load) && !Root().empty() && Root().is_absolute(); }
+fs::path OnlineModsRoot() { return Root(); }
+
 void ClearFetchedMods() {
   if (g_running || Root().empty() || !Root().is_absolute()) return;
+  if (OnlineModsLoad()) return;  // (this run plays with them: they go at its end / the next start)
   std::error_code ec;
   if (fs::exists(Root(), ec)) {
     const auto n = fs::remove_all(Root(), ec);
