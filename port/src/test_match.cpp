@@ -254,9 +254,12 @@ REX_HOOK_RAW(sub_828BC5E8) {
         slot[4] = 0;           // (kind: a wrestler)
         slot[-8] = 1;          // (controller: the CPU)
       }
-      if (m.all_cpu) slot[-8] = 1;  // (cpu=all: the picks too)
-      if (i < m.ports.size()) {  // (ports=: the controller - slot -8 1 the CPU, else slot -4's low bits the player)
-        if (m.ports[i] < 0) slot[-8] = 1;
+      // (a CPU: slot -8 1 and slot -4's low bits 6 - the character's +1152, the pad that plays him; the select
+      // screen's CPU picks have 6. With -8 alone person 0 kept pad 0: an idle player in "CPU vs CPU" tests)
+      const auto cpu = [&] { slot[-8] = 1, slot[-4] = uint8_t((slot[-4] & ~7) | 6); };
+      if (m.all_cpu) cpu();  // (cpu=all: the picks too)
+      if (i < m.ports.size()) {  // (ports=: the controller - the CPU, else slot -4's low bits the player)
+        if (m.ports[i] < 0) cpu();
         else slot[-8] = 0, slot[-4] = uint8_t((slot[-4] & ~7) | m.ports[i]);
       }
       // Online (a LAN test, tools/dev/svrtest_lan.ps1): a player's slot carries the lobby's whole person record
