@@ -689,7 +689,9 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
   ImGui::EndChild();
   if (!g_native_test.empty() && (!g_list.items.empty() || !g_list_error.empty())) {  // (test: pick by name, once the statuses are in)
     for (int i = 0; i < int(g_native.size()); ++i)
-      if (Lower(g_native[size_t(i)].name) == Lower(g_native_test) && !NativeBlocked(g_native[size_t(i)])) g_native_pick = i;
+      if ((Lower(g_native[size_t(i)].name) == Lower(g_native_test) || Lower(g_native[size_t(i)].name) == Lower(g_native_test) + ".pac") &&
+          !NativeBlocked(g_native[size_t(i)]))  // (bg07 or bg07.pac)
+        g_native_pick = i;
     if (g_native_pick < 0) Log("port test: no arena pac " + g_native_test), g_native_test.clear();
   }
   if (g_native_pick >= 0 && NativeBlocked(g_native[size_t(g_native_pick)])) g_native_pick = -1;  // (its status came in after the pick)
@@ -706,11 +708,15 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
   const fs::path out = WorkDir() / Wide("Arenas_" + game + "_" + p.name);
   const bool embedded = g_embedded;
   // the scan's picture (the full-size backdrop when the scan kept it, else its thumb) as the banner + loading picture,
-  // and the game's own name of the arena ("Raw") as the mod's name
+  // and the game's own name of the arena with the game's ("RAW (WWE 2K17)": most are SvR2011's own shows too) as the
+  // mod's name
   const Json& item = NativeItem(p);
   const std::wstring thumb = Wide(!item["picture"].Str().empty() ? item["picture"].Str() : item["thumb"].Str());
   const std::string stem = fs::path(p.name).stem().string(), scanned = item["name"].Str();
-  const std::string title = !scanned.empty() && Lower(scanned) != Lower(stem) && Lower(scanned).rfind("arena bg", 0) != 0 ? scanned : "";
+  const disc_list::Game* from = disc_list::GameByKey(game);
+  const std::string title = !scanned.empty() && Lower(scanned) != Lower(stem) && Lower(scanned).rfind("arena bg", 0) != 0
+                                ? scanned + (from ? std::string(" (") + from->name + ")" : "")
+                                : "";
   RunInBackground([p, image, folder, out, game, embedded, thumb, title, stem] {
     Progress("Copying " + p.name + " off the disc ...");
     Bytes b;
