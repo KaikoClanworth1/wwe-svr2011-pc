@@ -281,9 +281,15 @@ struct WeaponSpot {
 };
 // A door of the HCTP backstage as one stage (world hctp.txt): where it is, the
 // door it leads to, and where a fighter coming in through it stands (x, z, yaw).
+// HCTP's gates (build_world.py's gate lines) also carry the act the one going
+// through plays first and the way he faces for it, and a spot for each of the 8
+// fighters coming in (HCTP's own); older lines have one entry spot (ex, ez).
 struct Door {
   int id = 0, to = 0;
   float x = 0, y = 0, z = 0, ex = 0, ez = 0, eyaw = 0;
+  uint32_t act = 0;
+  float oyaw = 0;
+  std::vector<std::array<float, 2>> spots;
 };
 struct Room {
   std::string dir;
@@ -405,7 +411,21 @@ bool LoadRoom(const std::string& dir) {
       Cur().spawns.push_back(w);
     } else if (what == "door") {
       Door d;
-      ls >> d.id >> d.to >> d.x >> d.y >> d.z >> d.ex >> d.ez >> d.eyaw;
+      ls >> d.id >> d.to >> d.x >> d.y >> d.z;
+      if (line.find(';') != std::string::npos) {  // (a gate: act, way out, 8 'x,z' spots, way in)
+        std::string spots;
+        ls >> d.act >> d.oyaw >> spots >> d.eyaw;
+        std::istringstream ss(spots);
+        std::array<float, 2> s{};
+        char c = 0;
+        while (ss >> s[0] >> c >> s[1]) {
+          d.spots.push_back(s);
+          ss >> c;  // (';')
+        }
+        if (!d.spots.empty()) d.ex = d.spots[0][0], d.ez = d.spots[0][1];
+      } else {
+        ls >> d.ex >> d.ez >> d.eyaw;
+      }
       Cur().doors.push_back(d);
     } else if (what == "prop") {
       Prop p;
@@ -2320,12 +2340,14 @@ uint32_t ColliderFighter(PPCContext& ctx, uint8_t* base, uint32_t collider) {
 // Its hctp.txt has a 'room' line per room (number, model ids, object ids, its
 // object acts' first key, its floor x0 x1 z0 z1, its HMD 1004 triangles and
 // climb-spot records first..last), 'door' lines (HCTP's 50000.txt move points
-// 201-210, paired 202-203, 204-205, 206-207, 208-209, 210-201: id, the door it
-// leads to, where it is, where one coming in stands and faces) and 'spawn'
-// lines (weapons put down on its first visit). Only the current room is shown,
-// collides, has its climb spots and runs its props. Walking (or running) into
-// a door for half a second takes every fighter through it: they stand at the
-// other door's entry, the fight box goes with them and the camera cuts.
+// 201-210 and where HCTP's gates send them: id, the door it leads to, where it
+// is, HCTP's exit act and the way out, where those coming in stand and face)
+// and 'spawn' lines (weapons put down on its first visit). Only the current
+// room is shown, collides, has its climb spots and runs its props. As in HCTP
+// (CGate4 / CMoveStage) a player within 10 of a gate on each axis presses Y
+// (the CPU walks into it for half a second): he plays the exit act there, then
+// every fighter stands at the other gate's spots, the fight box goes with them
+// and the camera cuts.
 struct Stash {  // (the per-room state kept outside Room while a room is away)
   std::vector<LaterShow> later;
   std::map<size_t, Taxi> taxis;
@@ -2339,6 +2361,13 @@ bool g_box_set = false;
 bool g_world_set = false;  // (the other rooms' collision and climb spots taken out)
 int g_door_cd = 0;        // frames before a door takes anyone again
 int g_door_hold[8] = {};  // frames each fighter has walked into a door
+// (a gate's exit act under way: the door, the one going through and the frames since; at most 200)
+struct Going {
+  const Door* door = nullptr;
+  int who = -1, frames = 0;
+  std::array<std::array<float, 4>, 8> wait{};  // (where the others stand meanwhile: x, y, z, yaw)
+};
+Going g_going;
 
 void SetPoles() {
   g_poles.clear();
@@ -2487,13 +2516,17 @@ void GoThrough(PPCContext& ctx, uint8_t* base, const Door& d, int who) {
         // (an act first - standing, 0 - then the place: a walk or run under way puts him back where
         // he was, the game's own snap does it in this order too)
         JumpAct(ctx, base, f, 0);
-        PlaceFighterHeld(base, f, t.ex + side * fz + back * fx, t.y, t.ez - side * fx + back * fz, t.eyaw);
+        if (t.spots.size() == 8)  // (a gate: fighter i at HCTP's spot i - CMoveStage's Rear)
+          PlaceFighterHeld(base, f, t.spots[i][0], t.y, t.spots[i][1], t.eyaw);
+        else
+          PlaceFighterHeld(base, f, t.ex + side * fz + back * fx, t.y, t.ez - side * fx + back * fz, t.eyaw);
         ++n;
       }
       svr2011::SnapMatchCamera();
       REXLOG_INFO("hctp: door {} (room {}) -> door {} (room {})", d.id, Cur().number, t.id, g_rooms[k].number);
       SwitchRoom(ctx, base, k);
       g_door_cd = 90;
+      g_going = {};
       std::fill(std::begin(g_door_hold), std::end(g_door_hold), 0);
       return;
     }
@@ -2582,6 +2615,34 @@ void UpdateWorld(PPCContext& ctx, uint8_t* base) {
     PublishPrompt(nullptr);
     return;
   }
+  // (a gate's exit act: through once it has played - 200 frames at most; the others wait meanwhile where
+  // they stood, as CMoveStage has them - act 0, the pads stopped)
+  if (g_going.door) {
+    const uint32_t f = Rd32(base + kChars + 4 * uint32_t(g_going.who));
+    ++g_going.frames;
+    for (uint32_t i = 0; i < 8; ++i)
+      if (const uint32_t o = Rd32(base + kChars + 4 * i); o && i != uint32_t(g_going.who)) {
+        const auto& w = g_going.wait[i];
+        PlaceBody(base, o, w[0], w[1], w[2], w[3]);
+      }
+    if (!f || (g_going.frames > 2 && Rd32(base + f + 212) != g_going.door->act) || g_going.frames >= 200)
+      GoThrough(ctx, base, *g_going.door, g_going.who);
+    PublishPrompt(nullptr);
+    return;
+  }
+  // (HCTP's exit act at the gate, facing out - the act first, then the place)
+  const auto go = [&](const Door& d, uint32_t f, int i) {
+    if (!d.act || !HasKey(ctx, base, d.act, 0, 0)) return GoThrough(ctx, base, d, i);
+    JumpAct(ctx, base, f, d.act);
+    PlaceFighterHeld(base, f, d.x, d.y, d.z, d.oyaw);
+    g_going = {&d, i, 0};
+    for (uint32_t k = 0; k < 8; ++k)
+      if (const uint32_t o = Rd32(base + kChars + 4 * k); o && k != uint32_t(i)) {
+        JumpAct(ctx, base, o, 0);
+        g_going.wait[k] = {RdF(base + o + 288), RdF(base + o + 292), RdF(base + o + 296), RdF(base + o + 276)};
+      }
+    REXLOG_INFO("hctp: fighter {} goes through door {} (act {})", i, d.id, d.act);
+  };
   for (uint32_t i = 0; i < 8; ++i) {
     const uint32_t f = Rd32(base + kChars + 4 * i);
     int& hold = g_door_hold[i];
@@ -2593,8 +2654,11 @@ void UpdateWorld(PPCContext& ctx, uint8_t* base) {
     const bool moving = m == kWalkBackstage || base[f + 1286];
     const float x = RdF(base + f + 288), y = RdF(base + f + 292), z = RdF(base + f + 296);
     const Door* door = nullptr;
+    // (a gate: within 10 on each axis - CGate4::Action; an older door: 22 around, 4 up or down)
     for (const Door& d : Cur().doors)
-      if ((x - d.x) * (x - d.x) + (z - d.z) * (z - d.z) < 22.0f * 22.0f) door = &d;
+      if (d.spots.empty() ? (x - d.x) * (x - d.x) + (z - d.z) * (z - d.z) < 22.0f * 22.0f && std::fabs(y - d.y) <= 4.0f
+                          : std::fabs(x - d.x) < 10.0f && std::fabs(y - d.y) < 10.0f && std::fabs(z - d.z) < 10.0f)
+        door = &d;
     // a player: Y at the door (HCTP's own way; the prompt shows meanwhile); the CPU: walking into it for
     // half a second (its AI walks after its opponent - CPU-vs-CPU and chases keep moving)
     // (online every wrestler is a player: a port is local - the other side's player has one of 4 or
@@ -2605,21 +2669,21 @@ void UpdateWorld(PPCContext& ctx, uint8_t* base) {
       hold = 0;
       // (on his feet: standing 0, fighting stance 20, walking or running - not lying or in a move)
       const bool ready = m == 0 || m == 20 || m == kWalkBackstage || base[f + 1286];
-      if (!door || !ready || std::fabs(y - door->y) > 4.0f) continue;
+      if (!door || !ready) continue;
       if (!prompt_set && port < 4) {  // (only this PC's own players see it)
         prompt_set = true;
         prompt.port = port, prompt.to = door->to;
       }
       const uint32_t input = svr2011::FighterInput(f);
       if (input && (Rd32(base + input + 52) & kButtonY)) {
-        GoThrough(ctx, base, *door, int(i));
+        go(*door, f, int(i));
         break;
       }
       continue;
     }
     hold = door && moving ? hold + 1 : 0;
     if (hold >= 30) {
-      GoThrough(ctx, base, *door, int(i));
+      go(*door, f, int(i));
       break;
     }
   }
@@ -2673,6 +2737,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
     if (Cur().loaded) {
       for (Held& h : g_held) h = {};
       REXLOG_INFO("hctp: room unloaded (held placements, door hold cleared)");
+      g_going = {};
       std::fill(std::begin(g_door_hold), std::end(g_door_hold), 0);
     }
     Cur().loaded = false;
@@ -2691,6 +2756,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
     SetPoles();
     g_stash.assign(g_rooms.size(), Stash{});
     g_door_cd = 0;
+    g_going = {};  // (its door was in the rooms just replaced)
     g_box_set = false;
     g_world_set = false;
     for (Held& h : g_held) h = {};
