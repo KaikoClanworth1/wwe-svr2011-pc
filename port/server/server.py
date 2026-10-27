@@ -159,6 +159,20 @@ def release_at_least(text, want):
     """'2.1.5' (or 'v2.1.5.1') >= want, a tuple; False when empty or not a version."""
     parts = re.findall(r"\d+", text or "")
     return bool(parts) and tuple(int(p) for p in parts[:len(want)]) >= want
+# Where a player is (the game's presence poll, 2.1.7 on: &place=) - the dashboard's names for the tokens.
+PLACE_NAMES = {
+    "match_online": "Online match", "match_offline": "Offline match",
+    "lobby_host": "Lobby (host)", "lobby_join": "Lobby (joined)",
+    "matchmaking": "Matchmaking", "online_menu": "Online menu",
+    "cc": "Community Creations", "cc_download": "CC: downloading", "cc_upload": "CC: uploading",
+    "leaderboards": "Leaderboards",
+    "menus": "Offline menus", "match_setup": "Match setup", "universe": "WWE Universe", "rtwm": "Road to WrestleMania",
+    "shop": "Shop", "my_wwe": "My WWE", "practice": "Practice arena", "options": "Options",
+    "create_superstar": "Create a Superstar", "paint_tool": "Paint Tool", "threads": "Superstar Threads",
+    "create_story": "Story Designer", "create_finisher": "Create a Finisher", "create_entrance": "Create an Entrance",
+    "highlight_reel": "Highlight Reel", "create_moveset": "Create a Move-Set", "create_menu": "Create modes",
+}
+
 LIVE_LIFE = 60      # seconds a session host's report stays (it reports every 20 s)
 RESTART_CODE = 75
 # A storage node stopped from the dashboard: its exit code (the supervisor ends too, not a restart) and the
@@ -507,6 +521,7 @@ class Stats:
         self.minute = self._zero()
         self.recent = {}      # account id -> last presence poll (?here=1): its game runs (old clients: from start)
         self.online_mode = {}  # account id -> last poll marked &mode=online (2.1.4 on: only in online mode)
+        self.places = {}  # account id -> (place, kind) of its last poll (2.1.7 on: &place=, &kind=; the dashboard's)
         self.days_counted = set()  # (day, account id) already in player_days
         self.total_in = 0
         self.total_out = 0
@@ -540,11 +555,16 @@ class Stats:
     def count(self, what, n=1):
         self.minute[what] += n
 
-    def seen(self, account_id, online_mode=False):
-        """A game's presence poll: its game runs - in online mode when it says so (2.1.4 on)."""
+    def seen(self, account_id, online_mode=False, place="", kind=""):
+        """A game's presence poll: its game runs - in online mode when it says so (2.1.4 on), and where in the game
+        it is (2.1.7 on: a token, PLACE_NAMES; "" from an older game)."""
         self.recent[account_id] = now()
         if online_mode:
             self.online_mode[account_id] = now()
+        if place:
+            self.places[account_id] = (place, kind)
+        else:
+            self.places.pop(account_id, None)
         self.day(account_id)
 
 
@@ -876,9 +896,13 @@ class Service:
         if request.query.get("bye"):  # (the game closing / leaving online mode: offline now)
             self.stats.recent.pop(account["id"], None)
             self.stats.online_mode.pop(account["id"], None)
+            self.stats.places.pop(account["id"], None)
             return web.json_response({"ok": True})
         if request.query.get("here"):  # (the game asking: it's running, signed in; 2.1.4 on: &mode=online)
-            self.stats.seen(account["id"], request.query.get("mode") == "online")
+            place = request.query.get("place", "")
+            kind = request.query.get("kind", "")
+            self.stats.seen(account["id"], request.query.get("mode") == "online",
+                            place if place in PLACE_NAMES else "", kind if kind in ("ranked", "player") else "")
         if request.method == "POST":
             try:
                 body = await request.json()
@@ -2291,10 +2315,15 @@ class Service:
                         "ORDER BY at DESC LIMIT 1", (aid,)).fetchone()
                     out.append({"name": a[0], "seen": self.stats.recent.get(aid, 0), "link": links.get(a[0], ""),
                                 "session": sessions.get(a[0].lower()),
+                                "place": self.stats.places.get(aid, ("", ""))[0],
+                                "kind": self.stats.places.get(aid, ("", ""))[1],
+                                "online_mode": aid in self.stats.online_mode and
+                                self.stats.online_mode[aid] >= cutoff,
                                 "last": dict(zip(("at", "path", "nat", "rtt", "network", "version"), e)) if e else None})
             return sorted(out, key=lambda r: r["name"].lower())
 
-        return web.json_response({"now": t, "players": await asyncio.get_running_loop().run_in_executor(None, rows)})
+        return web.json_response({"now": t, "place_names": PLACE_NAMES,
+                                  "players": await asyncio.get_running_loop().run_in_executor(None, rows)})
 
     @admin_only
     async def admin_player(self, request):

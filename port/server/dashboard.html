@@ -141,6 +141,8 @@ td.acts { text-align: right; white-space: nowrap; }
         border: 1px solid var(--line); color: var(--dim); background: var(--panel-2); vertical-align: 1px; }
 .kind.ranked { color: #fff; background: var(--accent); border-color: var(--accent); }
 .tag.bad { color: var(--bad); border-color: var(--bad-line); }
+.tag.place-online, .tag.place-boards { color: var(--accent); border-color: var(--accent); }
+.tag.place-cc, .tag.place-create { color: var(--text); border-color: var(--dim); }
 .tag.warn { color: var(--warn); border-color: var(--warn); }
 .node { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 12px; }
 .node .what { font-weight: 600; }
@@ -282,8 +284,13 @@ td.acts { text-align: right; white-space: nowrap; }
   </section>
 
   <section role="tabpanel" id="p-ping" aria-labelledby="tab-ping" tabindex="0" hidden>
-    <h2>Online now <span class="spacer"></span><span class="note" id="ping-note"></span></h2>
-    <p class="intro">Now is what the player is in at this moment (from the session host's report). Each game sends its network report (the round trip to the other player, the path) when a match <b>ends</b>: a player's first match shows no ping until it's over. Relay now is how the game is on the relay at this moment.</p>
+    <h2>Online now <span class="spacer"></span><span class="note" id="ping-note"></span>
+      <select class="filter" id="f-place" aria-label="Where"><option value="">Everywhere</option>
+        <option value="match">In a match</option><option value="lobby">In a lobby</option>
+        <option value="online">Online menus / matchmaking</option><option value="cc">Community Creations</option>
+        <option value="boards">Leaderboards</option><option value="create">Creation suites</option>
+        <option value="offline">Offline menus / modes</option></select></h2>
+    <p class="intro">Now is where the player is at this moment: a session from its host's report, else the place their game reports (2.1.7 on; older games show "menus"). Each game sends its network report (the round trip to the other player, the path) when a match <b>ends</b>: a player's first match shows no ping until it's over. Relay now is how the game is on the relay at this moment.</p>
     <div class="scroll"><table>
       <thead><tr><th>Player</th><th>Now</th><th>Last match ping</th><th>Path</th><th>Match network</th><th>Relay now</th><th>NAT</th><th>Version</th><th>Last match</th></tr></thead>
       <tbody id="pings"><tr><td colspan="9" class="empty">Loading&hellip;</td></tr></tbody>
@@ -665,17 +672,42 @@ td.acts { text-align: right; white-space: nowrap; }
   }
 
   // ---- ping: who's online now and their last match's network report
+  // (a place token -> its filter group: the game's presence poll, 2.1.7 on)
+  function placeGroup(t) {
+    return !t ? '' : /^match_/.test(t) ? 'match' : /^lobby_/.test(t) ? 'lobby' :
+      t === 'matchmaking' || t === 'online_menu' ? 'online' : /^cc/.test(t) ? 'cc' : t === 'leaderboards' ? 'boards' :
+      /^create_|^paint_tool$|^threads$|^highlight_reel$/.test(t) ? 'create' : 'offline';
+  }
+  function playerGroup(p) {
+    var s = p.session;
+    if (s) return s.state === 'match' ? 'match' : 'lobby';
+    return placeGroup(p.place) || (p.online_mode ? 'online' : 'offline');
+  }
+  var pingData = null;
   function pings() {
-    return api('api/admin/pings').then(function (d) {
+    return api('api/admin/pings').then(function (d) { pingData = d; renderPings(); }).catch(function () {});
+  }
+  el('f-place').addEventListener('change', renderPings);
+  function renderPings() {
+    var d = pingData;
+    if (!d) return;
+    var want = el('f-place').value, names = d.place_names || {};
+    (function () {
       var withPing = d.players.filter(function (p) { return p.last; });
       var playing = d.players.filter(function (p) { return p.session && p.session.state === 'match'; });
       el('n-ping').textContent = d.players.length || '';
       el('ping-note').textContent = d.players.length + ' online · ' + playing.length + ' in a match now · ' +
         withPing.length + ' with a match report';
-      el('pings').innerHTML = d.players.length ? d.players.map(function (p) {
+      var shown = d.players.filter(function (p) { return !want || playerGroup(p) === want; });
+      el('pings').innerHTML = shown.length ? shown.map(function (p) {
         var l = p.last || {}, s = p.session, inMatch = s && s.state === 'match';
-        // (what they're in now: a match or a lobby, the path the host sees, for how long)
-        var nowCell = !s ? '<span class="note">menus</span>' :
+        // (what they're in now: a match or a lobby, the path the host sees, for how long; else the place
+        // their game reports - an older game: "menus")
+        var g = placeGroup(p.place);
+        var placeCell = !p.place ? '<span class="note">menus</span>' :
+          '<span class="tag place-' + g + (g === 'match' ? ' on' : '') + '" title="' + esc(p.place) + '">' +
+          esc(names[p.place] || p.place) + '</span>' + (p.kind ? ' ' + kindBadge(p.kind) : '');
+        var nowCell = !s ? placeCell :
           '<span class="tag' + (inMatch ? ' on' : '') + '" title="' + esc((s.rule_name || s.rule || '') + ' · host ' + s.host) + '">' +
           (inMatch ? 'in a match' : 'in a lobby') + '</span> ' + kindBadge(s.match_kind) + ' ' + esc(s.path === 'host' ? 'hosting' : s.path) +
           ' <span class="note">' + dur(d.now - s.since) + '</span>';
@@ -687,8 +719,9 @@ td.acts { text-align: right; white-space: nowrap; }
           '</td><td>' + esc(l.network || '') + '</td><td>' + (p.link ? '<span class="tag">' + esc(p.link) + '</span>' : '') +
           '</td><td>' + esc(l.nat || '') + '</td><td>' + esc(l.version || '') + '</td><td class="note">' +
           (p.last ? ago(l.at) : '') + '</td></tr>';
-      }).join('') : '<tr><td colspan="9" class="empty">Nobody online right now.</td></tr>';
-    }).catch(function () {});
+      }).join('') : '<tr><td colspan="9" class="empty">' + (d.players.length ? 'Nobody there right now.' :
+                                                            'Nobody online right now.') + '</td></tr>';
+    })();
   }
 
   // ---- matches: sessions now (the hosts' reports) + the leaderboards

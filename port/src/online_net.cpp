@@ -2,6 +2,7 @@
 // Creations server (see online_net.h).
 
 #include "online_net.h"
+#include "online_overlay.h"
 
 #include <algorithm>
 #include <array>
@@ -455,6 +456,16 @@ void HandleHttp(Socket s) {
   if (Lower(target).find("/sakestorageserver/") != std::string::npos && body.find("CreateRecord") != std::string::npos &&
       body.find("UserContent") != std::string::npos)
     forward.emplace_back("x-svr-modfree", "1");
+  {  // (where the player is, for the presence poll: Community Creations' requests)
+    const std::string path = Lower(target);
+    if (path.find("/sakefileserver/upload.aspx") != std::string::npos ||
+        (path.find("/sakestorageserver/") != std::string::npos && body.find("CreateRecord") != std::string::npos))
+      NoteOnlineActivity(OnlineActivity::kCcUpload);
+    else if (path.find("/sakefileserver/download.aspx") != std::string::npos)
+      NoteOnlineActivity(OnlineActivity::kCcDownload);
+    else if (path.find("/sakestorageserver/") != std::string::npos && body.find("Newsfeed") == std::string::npos)
+      NoteOnlineActivity(OnlineActivity::kCcBrowse);  // (not the NEWS panel's read at every visit to ONLINE)
+  }
   const auto t0 = std::chrono::steady_clock::now();
   auto r = ServerRequest(method, "/game" + target, body, forward);
   const auto ms =

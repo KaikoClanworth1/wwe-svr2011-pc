@@ -50,6 +50,7 @@
 #include "mod_transfer.h"
 #include "online_mods.h"
 #include "script_input.h"
+#include "frame_rate.h"
 
 // The game's own Xbox LIVE invite path (it restarts itself to join): off - the
 // restarted game says "a sign-in change has occurred" (see the notes below).
@@ -223,8 +224,12 @@ void Poll() {
   const bool online = P2POnlineMode();
   if (was_online && !online) SayGoodbye();
   was_online = online;
-  // (&mode=online: counted "in online mode" - the server counts only games that say so)
-  auto r = net::ServerRequest("GET", online ? "/api/friends?here=1&mode=online" : "/api/friends?here=1");
+  // (&mode=online: counted "in online mode" - the server counts only games that say so; &place=: where in
+  // the game, the dashboard's - older servers ignore it)
+  std::string kind;
+  const std::string place = PresencePlace(&kind);
+  auto r = net::ServerRequest("GET", std::string(online ? "/api/friends?here=1&mode=online" : "/api/friends?here=1") +
+                                         "&place=" + place + (kind.empty() ? "" : "&kind=" + kind));
   State s;
   s.signed_in = true;
   Json j;
@@ -1698,6 +1703,80 @@ void OnlineNoteString(uint32_t id) {
       REXLOG_INFO("online overlay: string {} shown", id);
     return;
   }
+}
+
+// -- where the player is (the presence poll's &place=) ------------------------------------
+
+std::atomic<int64_t> g_activity_at[size_t(OnlineActivity::kCount)];
+
+void NoteOnlineActivity(OnlineActivity what) { g_activity_at[size_t(what)] = Ticks(); }
+
+std::string PresencePlace(std::string* kind) {
+  const auto lately = [](OnlineActivity a, int seconds) {
+    const int64_t at = g_activity_at[size_t(a)].load();
+    return at && Ticks() - at < std::chrono::duration_cast<Clock::duration>(std::chrono::seconds(seconds)).count();
+  };
+  const int role = P2PSessionRole();  // (a match session: 1 hosts it, 2 joined)
+  if (InMatch()) {
+    if (role || P2POnlineMode()) {
+      if (const auto ranked = P2PRanked(); ranked && kind) *kind = *ranked ? "ranked" : "player";
+      return "match_online";
+    }
+    return "match_offline";
+  }
+  if (role) return role == 1 ? "lobby_host" : "lobby_join";
+  uint32_t group = 0, row = 0;
+  const bool menu = ScriptMenuState(&group, &row);
+  if (P2POnlineMode()) {
+    // (Community Creations and the leaderboards: the server requests they make, the last 30 s)
+    if (lately(OnlineActivity::kCcUpload, 30)) return "cc_upload";
+    if (lately(OnlineActivity::kCcDownload, 30)) return "cc_download";
+    if (lately(OnlineActivity::kCcBrowse, 30)) return "cc";
+    if (lately(OnlineActivity::kLeaderboards, 30)) return "leaderboards";
+    if (lately(OnlineActivity::kSearch, 30)) return "matchmaking";
+    // (else the ONLINE menu's row the cursor was on last, and whether the MATCH screens came after it)
+    int64_t online_at = 0, match_at = 0, player_at = 0, custom_at = 0;
+    const uint32_t online_row = Latest(kOnlineRows, &online_at);
+    Latest(kMatchRows, &match_at), Latest(kPlayerRows, &player_at), Latest(kCustomRows, &custom_at);
+    if (std::max({match_at, player_at, custom_at}) > online_at || online_row == kOnRumble) return "matchmaking";
+    if (online_row == kOnCc) return "cc";
+    if (online_row == kOnBoards) return "leaderboards";
+    return "online_menu";
+  }
+  if (!menu) return "menus";
+  if (group < 1000) {  // (a main-menu group: the suites' own menus, MY WWE, OPTIONS, the match setup)
+    switch (group) {
+      case 0xD: return "create_story";      // (NEW | LIST | ONLINE)
+      case 0xE: return "create_superstar";  // (NEW | EDIT | SUPERSTAR THREADS | PAINT TOOL | ONLINE)
+      case 0xF: return "create_finisher";
+      case 4: return "create_menu";         // (CREATE MODES)
+      case 5: return "my_wwe";
+      case 0x10: return "practice";
+      case 0x11: case 0x19: case 0x20: case 0x21: case 0x25: return "options";
+      default: break;
+    }
+    if (group == 2 || (group >= 6 && group <= 0xC) || group == 0x18 || (group >= 0x1A && group <= 0x1F) ||
+        (group >= 0x22 && group <= 0x27))
+      return "match_setup";
+    return "menus";
+  }
+  // (a screen opened from the main menu: what was picked last - by its place, not its label)
+  uint32_t g = 0, r = 0;
+  ScriptMenuSelects(&g, &r);
+  if (g == 1) return r == 1 ? "universe" : r == 2 ? "rtwm" : r == 6 ? "shop" : "menus";
+  if (g == 4) {
+    static const char* const create[] = {"create_story", "create_superstar", "create_finisher", "create_entrance",
+                                         "highlight_reel", "create_moveset"};
+    return r < std::size(create) ? create[r] : "menus";
+  }
+  if (g == 0xD) return r == 2 ? "cc" : "create_story";          // (NEW | LIST | ONLINE)
+  if (g == 0xE) return r == 2 ? "threads" : r == 3 ? "paint_tool" : r == 4 ? "cc" : "create_superstar";
+  if (g == 0xF) return "create_finisher";
+  if (g == 5) return r == 2 ? "practice" : "my_wwe";
+  if (g == 0x11) return "options";
+  if (g == 2 || (g >= 6 && g <= 0xC) || g == 0x18 || (g >= 0x1A && g <= 0x1F) || (g >= 0x22 && g <= 0x27))
+    return "match_setup";
+  return "menus";
 }
 
 void OnlineNoteHelpBar(uint32_t id) {
