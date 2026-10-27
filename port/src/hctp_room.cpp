@@ -114,6 +114,8 @@ struct Climber {
   uint32_t fighter = 0;
   int pressing = 0;    // frames in a row against a 0xDF wall
   int cooldown = 0;    // frames before another try
+  uint32_t frame = 0;  // (the match frame last counted)
+  uint32_t hit = 0;    // (the last match frame he walked into a climb wall, + 1)
 };
 Climber g_climbers[8];
 // Touched attributes that climb besides 0xDF: the standing cage panels (their
@@ -134,19 +136,23 @@ void Climb(PPCContext& ctx, uint8_t* base, uint32_t f) {
     if (Rd32(base + kChars + i * 4) == f) slot = i;
   if (slot < 0) return;
   Climber& c = g_climbers[slot];
-  if (c.fighter != f) c = {f, 0, 0};
-  if (c.cooldown > 0) --c.cooldown;
-  // (the touched attribute is there every other frame while he pushes: the
+  if (c.fighter != f) c = {f};
+  // (walking, or running: +1286; the touched attribute is there every other frame while he pushes: the
   // collision pushes him out, the next frame he walks back in)
-  // (walking, or running: +1286)
   const bool walking = Rd32(base + f + 212) == kWalkBackstage || base[f + 1286];
   const uint8_t touched = base[f + 455];
-  if (!walking)
-    c.pressing = 0;
-  else if (touched == 0xDF || g_climb_attr[touched])
-    c.pressing += 2;
+  const uint32_t frame = Rd32(base + 0x82E3CD0C);  // (the match frames: kMatchFrames, below)
+  if (walking && (touched == 0xDF || g_climb_attr[touched])) c.hit = frame + 1;
+  // (counted once a frame: this runs for each of his collision parts, and only one of them meets the wall)
+  if (frame == c.frame) return;
+  c.frame = frame;
+  if (c.cooldown > 0) --c.cooldown;
+  if (c.hit && c.hit + 1 >= frame)  // (the wall this frame or the one before)
+    ++c.pressing;
   else if (c.pressing > 0)
     --c.pressing;
+  if (g_log && c.pressing && c.pressing % 4 == 0)
+    REXLOG_INFO("hctp: fighter {} presses into a climb wall ({} frames)", slot, c.pressing);
   if (c.pressing < 12 || c.cooldown > 0 || g_no_grab) return;
   const auto saved = ctx;
   ctx.r3.u64 = f;

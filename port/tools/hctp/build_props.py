@@ -1,4 +1,4 @@
-"""An HCTP room's props + climb spots + converted motions -> GMGB package (78H3) for the row mod.
+"""An HCTP room's props + climb spots + converted motions -> GMGB package (78R<n>, or the world's) for the row mod.
 Room 30 by default; others by HCTP_ROOM / HCTP_DX / HCTP_DZ / HCTP_OUT (the mod folder)."""
 import math
 import os
@@ -172,7 +172,7 @@ if SPEC_OUT:
         p['model'] = os.path.abspath(p['model'])
     pickle.dump(dict(spec=spec, spots=spots, tex=tex), open(SPEC_OUT, 'wb'))
 else:
-    hctp_gimmick.build(GM, f'{OUT}/gimmick.pac', entry='78H3', props=spec, textures=tex, report=True,
+    hctp_gimmick.build(GM, f'{OUT}/gimmick.pac', entry=os.environ.get('HCTP_ENTRY', '78R%d' % (ROOM - 30)), props=spec, textures=tex, report=True,
                        records=spots, bank=bank, keep_models=False)
 
 
