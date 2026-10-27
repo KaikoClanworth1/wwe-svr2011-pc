@@ -725,6 +725,19 @@ void OnlineModsFrame(PPCContext& ctx, uint8_t* base) {
   if (LogOn()) REXLOG_INFO("online mods: the lobby's records read again in this game's numbering");
 }
 
+std::vector<std::string> OnlineModsLackedFromHost() {
+  std::lock_guard lock(g_mutex);
+  std::vector<std::string> out;
+  const auto it = g_theirs.find(g_host);
+  if (it != g_theirs.end()) {
+    const Mine& m = MyMods();
+    for (const auto& [key, id] : it->second.id_of)
+      if (!m.id_of.count(key)) out.push_back(it->second.label.count(key) ? it->second.label.at(key) : key);
+  }
+  if (!g_arena_lacking.empty()) out.push_back(g_arena_lacking);
+  return out;
+}
+
 bool OnlineModsMayStart(uint8_t* base, uint32_t L) {
   if (!L) return true;
   const P2PLobby lobby = P2PMatchLobby();

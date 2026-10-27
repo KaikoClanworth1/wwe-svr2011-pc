@@ -47,6 +47,7 @@
 #include "online_net.h"
 #include "graphics_page.h"
 #include "p2p.h"
+#include "mod_transfer.h"
 #include "script_input.h"
 
 // The game's own Xbox LIVE invite path (it restarts itself to join): off - the
@@ -144,6 +145,9 @@ bool g_poll_now = false;
 std::atomic<bool> g_toggle{false}, g_open{false}, g_wait_release{false};
 std::atomic<uint16_t> g_guest_pad{0};  // (OnlineOverlayPad)
 std::atomic<bool> g_relay_dialog{false};  // the relay warning is up (it holds the input)
+std::atomic<bool> g_mods_dialog{false};   // the host's mods question is up (it holds the input too)
+bool LobbyShown();  // (below: a session's lobby is on screen - the join done)
+std::atomic<int> g_leave_yes{0};  // (the mods question's DON'T JOIN / LEAVE: then the lobby's "Leave this session?" YES)
 std::atomic<int> g_press_b{0};            // its BACK: the game reads B for these many more pad reads
 
 // Touches while it's open (a phone): taps, as fractions of the window, for the
@@ -472,6 +476,11 @@ class OnlineOverlay final : public rex::ui::ImGuiDialog {
   void Close();
   void Toast(ImGuiIO& io);
   bool RelayDialog(ImGuiIO& io);  // (true: up - nothing else this frame)
+  // The host's mods this game lacks (mod_transfer.h): DOWNLOAD / DON'T JOIN; through the relay, after a failed
+  // download: STAY / LEAVE; done: OK. (true: up)
+  bool ModsDialog(ImGuiIO& io);
+  void ModsProgress(ImGuiIO& io);  // (a download: bottom right)
+  enum ModsMode { kModsAsk, kModsRelay, kModsFailed, kModsDone };
 
   int sel_ = 0, top_ = 0;
   std::string typed_;  // ADD FRIEND
@@ -491,6 +500,14 @@ class OnlineOverlay final : public rex::ui::ImGuiDialog {
   uint64_t relay_warned_ = 0;  // (the session it was shown for: once each)
   std::string relay_body_;
   Clock::time_point relay_opened_at_{};
+  bool mods_open_ = false, mods_wait_ = false;
+  ModsMode mods_mode_ = kModsAsk;
+  int mods_sel_ = 0;
+  uint16_t mods_prev_ = 0;
+  ModLobbyOffer mods_offer_;
+  std::string mods_title_, mods_body_;
+  Clock::time_point mods_opened_at_{};
+  int mods_phase_ = 0;  // (the download's phase last seen: its end opens the dialog again)
 };
 
 void OnlineOverlay::Close() {
@@ -630,6 +647,173 @@ bool OnlineOverlay::RelayDialog(ImGuiIO& io) {
   return true;
 }
 
+namespace {
+std::string Megabytes(uint64_t n) {
+  char b[32];
+  std::snprintf(b, sizeof b, n < (10ull << 20) ? "%.1f MB" : "%.0f MB", n / 1048576.0);
+  return b;
+}
+// "A, B, C +2" (a line's worth)
+std::string NameList(const std::vector<std::string>& v) {
+  std::string s;
+  size_t k = 0;
+  for (; k < v.size(); ++k) {
+    if (s.size() + v[k].size() > 90 && k) break;
+    s += (k ? ", " : "") + v[k];
+  }
+  if (k < v.size()) s += " +" + std::to_string(v.size() - k);
+  return s;
+}
+}  // namespace
+
+bool OnlineOverlay::ModsDialog(ImGuiIO& io) {
+  using namespace rex::input;
+  auto open = [&](ModsMode mode, std::string title, std::string body) {
+    mods_mode_ = mode, mods_title_ = std::move(title), mods_body_ = std::move(body);
+    mods_sel_ = 0, mods_open_ = true, mods_wait_ = true, mods_opened_at_ = Clock::now();
+    g_mods_dialog = true;
+    REXLOG_INFO("online overlay: mods question ({}): {}", int(mode), mods_title_);
+  };
+  if (!mods_open_) {
+    // (a download that ended: done or failed - said once)
+    const ModDownloadState d = ModDownload();
+    const int phase = int(d.phase);
+    if (phase != mods_phase_) {
+      const bool was_running = mods_phase_ == ModDownloadState::kAsking || mods_phase_ == ModDownloadState::kFetching;
+      mods_phase_ = phase;
+      if (was_running && d.phase == ModDownloadState::kDone)
+        open(kModsDone, "THE MODS ARE DOWNLOADED",
+             std::to_string(d.mods) + (d.mods == 1 ? " mod is" : " mods are") + " on this PC for this session (" +
+                 Megabytes(d.total) + "). They're removed when you leave online.");
+      else if (was_running && d.phase == ModDownloadState::kFailed && d.error != "Cancelled.")
+        open(kModsFailed, "THE MODS DIDN'T DOWNLOAD", d.error + "\n\nYou can stay in the session, but you can't "
+                                                     "play with the mods you don't have.");
+    }
+    ModLobbyOffer offer;
+    // (only once the lobby is up: the question holds the pad, and the game's join needs it until then)
+    if (!mods_open_ && !g_open && LobbyShown() && TakeModLobbyOffer(&offer)) {
+      mods_offer_ = offer;
+      if (offer.relayed) {
+        open(kModsRelay, "THIS MATCH USES MODS YOU DON'T HAVE",
+             "You don't have: " + NameList(offer.lacking) + ".\n\nMods only come straight from the host's game, and "
+             "your connection to the host goes through the relay, so they can't be downloaded. You can stay, but "
+             "you can't play with them.");
+      } else if (offer.mods.empty()) {
+        open(kModsRelay, "THIS MATCH USES MODS THE HOST CAN'T SEND",
+             NameList(offer.unsendable) + "\n\nOnly the game's and mods' own kinds of files travel. You can stay, "
+             "but you can't play with them.");
+      } else {
+        std::vector<std::string> names;
+        for (const ModOffer& m : offer.mods) names.push_back(m.name.empty() ? m.id : m.name);
+        const std::string cant = offer.unsendable.empty() ? std::string()
+                                                          : "\n\nThe host can't send: " + NameList(offer.unsendable) + ".";
+        open(kModsAsk,
+             "THIS MATCH USES " + std::to_string(offer.mods.size()) + (offer.mods.size() == 1 ? " MOD" : " MODS") +
+                 " YOU DON'T HAVE (" + Megabytes(offer.bytes) + ")",
+             NameList(names) + "\n\nDownload " + (offer.mods.size() == 1 ? "it" : "them") +
+                 " from the host? They come straight from the host's game and are removed when you leave "
+                 "online. If you don't, you leave this session." + cant);
+      }
+    }
+    if (!mods_open_) return false;
+  }
+  static const char* const kAsk[] = {"DOWNLOAD", "DON'T JOIN"};
+  static const char* const kStay[] = {"STAY", "LEAVE"};
+  static const char* const kOk[] = {"OK"};
+  const char* const* labels = mods_mode_ == kModsAsk ? kAsk : mods_mode_ == kModsDone ? kOk : kStay;
+  const int count = mods_mode_ == kModsDone ? 1 : 2;
+  const float sc = std::min(io.DisplaySize.x / 1280.0f, io.DisplaySize.y / 720.0f);
+  const float title_size = 28 * sc, size = 21 * sc, pad = 28 * sc, w = 820 * sc;
+  ImFont* font = g_menu_font;
+  ImFont* tfont = g_title_font ? g_title_font : g_menu_font;
+  const float wrap = w - 2 * pad;
+  const ImVec2 body = (font ? font : ImGui::GetFont())->CalcTextSizeA(size, FLT_MAX, wrap, mods_body_.c_str());
+  const ImVec2 tsz = (tfont ? tfont : ImGui::GetFont())->CalcTextSizeA(title_size, FLT_MAX, wrap, mods_title_.c_str());
+  const float button_h = 44 * sc, h = pad + tsz.y + 18 * sc + body.y + 26 * sc + button_h + pad;
+  const ImVec2 a((io.DisplaySize.x - w) * 0.5f, (io.DisplaySize.y - h) * 0.5f), b(a.x + w, a.y + h);
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 140));
+  dl->AddRectFilled(a, b, IM_COL32(10, 10, 14, 245), 8 * sc);
+  dl->AddRectFilled(a, ImVec2(a.x + 8 * sc, b.y), mods_mode_ == kModsAsk || mods_mode_ == kModsDone
+                                                      ? IM_COL32(200, 30, 32, 255) : IM_COL32(230, 160, 30, 255), 8 * sc);
+  dl->AddRect(a, b, IM_COL32(235, 235, 240, 255), 8 * sc, 0, 2 * sc);
+  dl->AddText(tfont ? tfont : ImGui::GetFont(), title_size, ImVec2(a.x + pad, a.y + pad), IM_COL32(255, 255, 255, 255),
+              mods_title_.c_str(), nullptr, wrap);
+  dl->AddText(font ? font : ImGui::GetFont(), size, ImVec2(a.x + pad, a.y + pad + tsz.y + 18 * sc),
+              IM_COL32(225, 225, 230, 255), mods_body_.c_str(), nullptr, wrap);
+  float bw[2], total = 0;
+  for (int k = 0; k < count; ++k) total += bw[k] = TextSize(font, size, labels[k]).x + 40 * sc;
+  total += (count - 1) * 16 * sc;
+  float x = b.x - pad - total;
+  const float y = b.y - pad - button_h;
+  int hovered = -1;
+  ImVec2 box[2][2];
+  for (int k = 0; k < count; ++k) {
+    box[k][0] = ImVec2(x, y), box[k][1] = ImVec2(x + bw[k], y + button_h);
+    if (io.MousePos.x >= x && io.MousePos.x < x + bw[k] && io.MousePos.y >= y && io.MousePos.y < y + button_h) hovered = k;
+    x += bw[k] + 16 * sc;
+  }
+  // input: LEFT / RIGHT move, A chooses, B is the second (DON'T JOIN / LEAVE; OK alone: OK); the mouse
+  const uint16_t buttons = PadButtons();
+  if (mods_wait_) {  // (a button still down from the lobby: not a choice)
+    if (buttons == 0 && Clock::now() - mods_opened_at_ > std::chrono::milliseconds(300)) mods_wait_ = false;
+    mods_prev_ = buttons;
+  }
+  const uint16_t pressed = mods_wait_ ? 0 : uint16_t(buttons & ~mods_prev_);
+  mods_prev_ = buttons;
+  if (pressed & (X_INPUT_GAMEPAD_DPAD_LEFT | X_INPUT_GAMEPAD_DPAD_UP | X_INPUT_GAMEPAD_DPAD_RIGHT |
+                 X_INPUT_GAMEPAD_DPAD_DOWN))
+    mods_sel_ = (mods_sel_ + 1) % count;
+  if (hovered >= 0 && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) mods_sel_ = hovered;
+  int chosen = -1;
+  if (pressed & X_INPUT_GAMEPAD_A) chosen = mods_sel_;
+  if (pressed & X_INPUT_GAMEPAD_B) chosen = count - 1;
+  if (hovered >= 0 && io.MouseClicked[0] && !mods_wait_) chosen = hovered;
+  for (int k = 0; k < count; ++k) {
+    const bool on = k == mods_sel_;
+    dl->AddRectFilled(box[k][0], box[k][1], on ? IM_COL32(200, 30, 32, 255) : IM_COL32(40, 40, 48, 255), 6 * sc);
+    dl->AddRect(box[k][0], box[k][1], IM_COL32(235, 235, 240, on ? 255 : 120), 6 * sc, 0, 1.5f * sc);
+    const ImVec2 ts = TextSize(font, size, labels[k]);
+    Text(dl, font, size, ImVec2((box[k][0].x + box[k][1].x - ts.x) * 0.5f, (box[k][0].y + box[k][1].y - ts.y) * 0.5f),
+         IM_COL32(255, 255, 255, 255), labels[k]);
+  }
+  if (chosen >= 0) {
+    REXLOG_INFO("online overlay: mods question - {}", labels[chosen]);
+    if (mods_mode_ == kModsAsk) AnswerModLobbyOffer(mods_offer_, chosen == 0);
+    // (DON'T JOIN / LEAVE: the lobby's B, a few frames - its EXIT SESSION question)
+    if (mods_mode_ != kModsDone && chosen == 1) g_press_b = 8, g_leave_yes = 1;
+    mods_open_ = false;
+    g_mods_dialog = false;
+    g_wait_release = true;  // (the choosing button: not to the game too)
+  }
+  return true;
+}
+
+void OnlineOverlay::ModsProgress(ImGuiIO& io) {
+  const ModDownloadState d = ModDownload();
+  if (d.phase != ModDownloadState::kAsking && d.phase != ModDownloadState::kFetching) return;
+  const float sc = std::min(io.DisplaySize.x / 1280.0f, io.DisplaySize.y / 720.0f);
+  const float size = 18 * sc, size2 = 15 * sc, pad = 14 * sc, w = 420 * sc, bar_h = 10 * sc;
+  std::string line1 = d.phase == ModDownloadState::kAsking ? "ASKING THE HOST FOR ITS MODS..."
+                                                           : "DOWNLOADING MODS (" + std::to_string(d.mod) + " OF " +
+                                                                 std::to_string(d.mods) + ")";
+  char line2[96];
+  std::snprintf(line2, sizeof line2, "%s OF %s  -  %.1f MB/S", Megabytes(d.done).c_str(), Megabytes(d.total).c_str(),
+                d.rate / 1048576.0);
+  const float h = pad + size + 6 * sc + size2 + 10 * sc + bar_h + pad;
+  const ImVec2 b(io.DisplaySize.x - 24 * sc, io.DisplaySize.y - 24 * sc), a(b.x - w, b.y - h);
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddRectFilled(a, b, IM_COL32(8, 8, 12, 230), 8 * sc);
+  dl->AddRectFilled(a, ImVec2(a.x + 6 * sc, b.y), IM_COL32(200, 30, 32, 255), 8 * sc);
+  dl->AddRect(a, b, IM_COL32(235, 235, 240, 200), 8 * sc, 0, 1.5f * sc);
+  Text(dl, g_menu_font, size, ImVec2(a.x + pad + 6 * sc, a.y + pad), IM_COL32(255, 255, 255, 255), line1.c_str());
+  Text(dl, g_menu_font, size2, ImVec2(a.x + pad + 6 * sc, a.y + pad + size + 6 * sc), IM_COL32(255, 200, 60, 255), line2);
+  const ImVec2 ba(a.x + pad + 6 * sc, b.y - pad - bar_h), bb(b.x - pad, b.y - pad);
+  dl->AddRectFilled(ba, bb, IM_COL32(40, 40, 48, 255), 4 * sc);
+  const float f = d.total ? std::min(1.0f, float(double(d.done) / double(d.total))) : 0.0f;
+  if (f > 0) dl->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * f, bb.y), IM_COL32(200, 30, 32, 255), 4 * sc);
+}
+
 void OnlineOverlay::OnDraw(ImGuiIO& io) {
   using namespace rex::input;
   // BACK + RB opens / closes it (from any screen; closed, the pad as the game
@@ -668,6 +852,8 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
   }
   Toast(io);
   if (RelayDialog(io)) return;
+  ModsProgress(io);
+  if (ModsDialog(io)) return;
   if (!g_open) {
     if (g_wait_release && PadButtons() == 0) g_wait_release = false;
     return;
@@ -1111,7 +1297,9 @@ void OnlineOverlaySayGoodbye() {
 
 void ToggleOnlineOverlay() { g_toggle = true; }
 
-bool OnlineOverlayHoldsInput() { return g_open.load() || g_wait_release.load() || g_relay_dialog.load(); }
+bool OnlineOverlayHoldsInput() {
+  return g_open.load() || g_wait_release.load() || g_relay_dialog.load() || g_mods_dialog.load();
+}
 
 uint16_t OnlineRawPad() { return g_guest_pad.load(); }
 
@@ -1159,6 +1347,16 @@ std::atomic<uint32_t> g_help_bar{0};
 std::atomic<int64_t> g_help_bar_at{0};
 
 int64_t Ticks() { return Clock::now().time_since_epoch().count(); }
+
+// A session's lobby on screen (its help bars are 1200..1239), for a second and a half: the join is done.
+bool LobbyShown() {  // (the overlay's thread)
+  static uint32_t last = 0;
+  static int64_t since = 0;
+  const uint32_t bar = g_help_bar.load();
+  if (bar != last) last = bar, since = Ticks();
+  return bar >= 1200 && bar < 1240 &&
+         Ticks() - since > std::chrono::duration_cast<Clock::duration>(std::chrono::milliseconds(1500)).count();
+}
 
 int64_t SeenAt(uint32_t id) {
   for (size_t k = 0; k < std::size(kWatched); ++k)
@@ -1444,6 +1642,24 @@ uint16_t OnlineOverlayPad(uint16_t buttons) {
   if (g_press_b > 0) {  // (the relay warning's BACK: the lobby's own B)
     if (--g_press_b == 0) return 0;
     return g_press_b > 2 ? uint16_t(X_INPUT_GAMEPAD_B) : 0;
+  }
+  if (g_leave_yes > 0) {  // (its box opens on NO: LEFT to YES, A - for up to ~5 s of pad reads, then left alone)
+    static int reads = 0;
+    const int step = g_leave_yes.load();
+    if (step == 1) {
+      if (g_help_bar.load() == kBarMessage) g_leave_yes = 2, reads = 0;
+      else if (++reads > 300) g_leave_yes = 0, reads = 0;
+      return buttons;
+    }
+    // (the box takes no input while it opens: a wait, then the press held a while, then a gap)
+    ++reads;
+    const int wait = step == 2 ? 45 : 20;
+    if (reads > wait + 10 + 20) {
+      reads = 0;
+      if (step == 3) REXLOG_INFO("online overlay: mods question - YES to the lobby's \"Leave this session?\"");
+      g_leave_yes = step == 3 ? 0 : 3;
+    }
+    return reads > wait && reads <= wait + 10 ? uint16_t(step == 2 ? X_INPUT_GAMEPAD_DPAD_LEFT : X_INPUT_GAMEPAD_A) : 0;
   }
   // An accepted invite's walk: its presses instead of the pad's; BACK stops it.
   {
