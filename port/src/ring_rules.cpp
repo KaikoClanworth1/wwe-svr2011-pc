@@ -208,14 +208,21 @@ REX_HOOK_RAW(sub_8269BA30) {
         ctx.r3.u64 = p;
         return;
       }
-    // (the match's weapons' heap full - OPTIONS -> WEAPONS picks: caw_limits.h kWeaponHeap)
-    if (heap == svr2011::kWeaponHeap && svr2011::BigModelMemory())
-      if (const uint32_t p = svr2011::FallbackBlock(units * 16, true)) {
+    // (the match's weapons' heap full - OPTIONS -> WEAPONS picks: caw_limits.h kWeaponHeap; the stage's heap too:
+    // an arena about 5x the game's own 3D detail (654k vertices) asked it for 322,752 bytes this way, lr 8215140C -
+    // 0, the decoder then wrote to it from the arena load, sub_821878A0; and heap 53 - the game's 25 MB rest, where a
+    // character file is read whole (sub_826A1420, lr 826A14EC): a 547k-vertex superstar's 27 MB ch.pac didn't fit)
+    // (and the wrestlers' model heaps 17-20: the 547k-vertex superstar's model asked one for 28.7 MB this way - GPU
+    // data, so the physical fallback, as model_mem.cpp's model-heap one)
+    const bool model_heap = heap >= 17 && heap <= 20;
+    if ((heap == svr2011::kWeaponHeap || heap == svr2011::kStageHeap || heap == 53 || model_heap) && svr2011::BigModelMemory())
+      if (const uint32_t p = svr2011::FallbackBlock(units * 16, !model_heap)) {
         ctx.r3.u64 = p;
         static int told = 0;
         if (told++ < 5 || told % 200 == 0)
-          REXLOG_INFO("[svr2011] model memory: the weapons' heap ({}) full - {} bytes from the fallback memory ({} so)",
-                      heap, units * 16, told);
+          REXLOG_INFO("[svr2011] model memory: the {} heap ({}) full - {} bytes from the fallback memory ({} so)",
+                      heap == svr2011::kStageHeap ? "stage's" : heap == 53 ? "file" : model_heap ? "model" : "weapons'", heap,
+                      units * 16, told);
         return;
       }
   }
