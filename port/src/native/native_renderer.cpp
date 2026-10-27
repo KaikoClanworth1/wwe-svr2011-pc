@@ -6,6 +6,7 @@
 // (textures.cpp loads the rest from guest memory), and the front buffer is
 // shown at Present.
 
+#include "android_perf.h"
 #include "frame_rate.h"
 #include "native/native_renderer.h"
 
@@ -1721,17 +1722,35 @@ uint64_t VideoMemoryBytes() {
     return best;
   }();
   return bytes;
+#elif defined(__ANDROID__)
+  // (phones: the memory the driver gives the GPU - VK_EXT_memory_budget, shared with the game - at the start)
+  static const uint64_t bytes = [] {
+    uint64_t used = 0, budget = 0;
+    return backend::VideoMemory(&used, &budget) ? budget : uint64_t(0);
+  }();
+  return bytes;
 #else
   return 0;
 #endif
 }
 
 // The highest scale up to `s` that fits (`why`: what lowered it).
+// [svr2011] Phones (supersampling above the screen): the GPU's own image limit
+// (Mali / Adreno: 8192-16384) and a quarter of the GPU memory budget - the
+// game's own textures and buffers share it - from 2x up.
 uint32_t FitRenderScale(uint32_t s, float wide, float tall, const char*& why) {
   const float tw = float(kWidth) * wide, th = float(kHeight) * tall;
-  while (s > 1 && (tw * float(s) > kMaxTargetSide || th * float(s) > kMaxTargetSide)) --s, why = "the 16384 texture limit";
+  float side = kMaxTargetSide;
+  if (const uint32_t gpu_side = backend::VulkanMaxImageSide()) side = std::min(side, float(gpu_side));
+  while (s > 1 && (tw * float(s) > side || th * float(s) > side)) --s, why = "the GPU's texture size limit";
+#if defined(__ANDROID__)
+  constexpr uint32_t kMemoryFrom = 1, kShare = 4;
+#else
+  constexpr uint32_t kMemoryFrom = 4, kShare = 2;
+#endif
   if (const uint64_t vram = VideoMemoryBytes())
-    while (s > 4 && uint64_t(tw * float(s)) * uint64_t(th * float(s)) * kBytesPerScenePixel > vram / 2) --s, why = "video memory";
+    while (s > kMemoryFrom && uint64_t(tw * float(s)) * uint64_t(th * float(s)) * kBytesPerScenePixel > vram / kShare)
+      --s, why = "video memory";
   return s;
 }
 
@@ -4868,6 +4887,7 @@ bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
 
 void OnPresent(uint32_t front_buffer) {
   svr2011::LatencyOnSwap();  // (frame_rate.h: test aid)
+  svr2011::PerfHintFrame(svr2011::FrameRateNow());  // (android_perf.h: the phone's clocks)
   std::lock_guard lock(g_mutex);
   Renderer* r = Get();
   if (!r) return;

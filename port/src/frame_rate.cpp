@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <map>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -69,6 +70,7 @@
 #include "online_overlay.h"
 #include "online_rules.h"
 #include "players.h"
+#include "android_perf.h"
 #include "mem_trace.h"
 #include "superstar_mods.h"
 #if SVR2011_DEBUG_SUITE
@@ -448,7 +450,20 @@ void TestMatchTime(uint8_t* base) {
 // this frame runs (at least one).
 REX_EXTERN(__imp__sub_8269D768);
 REX_HOOK_RAW(sub_8269D768) {
+  svr2011::PerfHintThread();  // (android_perf.h: the world update's thread in the phone's hint session)
   if (!g_kernel) g_kernel = REX_KERNEL_STATE();  // (for the stuck-update thread dump)
+  // Test aid: SVR2011_TEST_GUEST_FAULT=<seconds> - that long after the first world update, one write to guest
+  // address 0 (unmapped: a fault no handler takes) - proves guest_faults.cpp: one log line with the place, then a
+  // crash report and the game closes (Android: no endless retry).
+  static const int fault_secs = [] { const char* v = std::getenv("SVR2011_TEST_GUEST_FAULT"); return v ? std::atoi(v) : 0; }();
+  if (fault_secs > 0) {
+    static const auto first = std::chrono::steady_clock::now();
+    if (std::chrono::steady_clock::now() - first >= std::chrono::seconds(fault_secs)) {
+      REXLOG_WARN("frame rate: SVR2011_TEST_GUEST_FAULT - writing guest address 0 now");
+      rex::FlushLogging();
+      *reinterpret_cast<volatile uint32_t*>(base) = 0x0DEFACED;
+    }
+  }
   // Test aid: SVR2011_TEST_SLOW_MS=<ms> - a slow PC (each frame that much longer).
   static const int slow_ms = [] { const char* v = std::getenv("SVR2011_TEST_SLOW_MS"); return v ? std::atoi(v) : 0; }();
   // (SVR2011_TEST_SLOW_IN_MATCH=1: only while a match runs - the menus at speed for the scripted route)
@@ -1174,27 +1189,53 @@ void LatencyOnPublish() {
 // noted, and a free (operator delete: sub_8269B2D0(ptr, ?)) of a block
 // holding a pending type-24 command's object turns that command into type 0
 // (nothing). The free itself is made as always.
+namespace {
+uint32_t g_queue = 0;  // (the queue: its buffers and size read by sub_826DFFA0's hook)
+std::atomic<uint32_t> g_queue_peak{0};  // (the fullest thread part since RenderQueuePeakTake, %)
+}  // namespace
 REX_EXTERN(__imp__sub_826DFFA0);
 REX_HOOK_RAW(sub_826DFFA0) {
-  const uint32_t queue = ctx.r3.u32;
+  const uint32_t queue = ctx.r3.u32, desc = ctx.r4.u32;
   __imp__sub_826DFFA0(ctx, base);
-  if (!ctx.r3.u32) {  // (the queue's buffer full: the caller writes to 0 - logged with its fill)
-    static int count = 0;
-    if (++count <= 5)
-      REXLOG_WARN("frame rate: render command queue {:08X} full ({} buffers, {} commands each)", queue,
-                  Rd32(base + queue + 88), Rd32(base + queue + 20));
+  if (!ctx.r3.u32) {  // (a thread's part of the buffer full: the caller writes to the 0 - logged)
+    static std::atomic<uint32_t> full{0};
+    if (const uint32_t n = ++full; n <= 5)
+      REXLOG_WARN("frame rate: render command queue {:08X} full ({} units a buffer, a command of {} units)", queue,
+                  Rd32(base + queue + 20), desc ? Rd32(base + desc + 8) + 1 : 0);
+  }
+  // (how full the buffer gets in a match: its record 0 - +0 buffer, +4 units used, +8 units - every 64th command;
+  // in menus and loads the records are laid out otherwise)
+  static std::atomic<uint32_t> calls{0};
+  if (queue == g_queue && ((++calls & 63) == 0 || !ctx.r3.u32) && svr2011::InMatch()) {
+    const uint32_t rec = Rd32(base + queue + 76);
+    const uint32_t used = rec ? Rd32(base + rec + 4) : 0, cap = rec ? Rd32(base + rec + 8) : 0;
+    if (cap) {
+      const uint32_t pct = uint32_t(std::min<uint64_t>(uint64_t(used) * 100 / cap, 100));
+      for (uint32_t was = g_queue_peak.load(); pct > was && !g_queue_peak.compare_exchange_weak(was, pct);) {
+      }
+      static std::atomic<uint32_t> step{0};  // (a new 10% step of the run: logged)
+      if (uint32_t was = step.load(); pct / 10 > was && step.compare_exchange_strong(was, pct / 10))
+        REXLOG_INFO("frame rate: render command queue {}% full in a match ({} of {} units)", pct, used, cap);
+    }
   }
   if (ctx.r3.u32 && std::this_thread::get_id() == g_logic_thread.load() && g_frame_commands.size() < 100000)
     g_frame_commands.push_back(ctx.r3.u32);
 }
 
-// The queue is made once (sub_826DF610, from sub_82578B80): r8 = its commands per buffer (16 bytes each; 393,216 on
-// PC - 6 MB a buffer, twice that is no room at start-up), logged.
+uint32_t svr2011::RenderQueuePeakTake() { return g_queue_peak.exchange(0); }
+
+// The queue is made once (sub_826DF610, from sub_82578B80): r8 = its 16-byte units per buffer (393,216 on PC - 6 MB
+// a buffer; two buffers, +40 / +44). In a match record 0 (+76) is the whole buffer, at times the buffer is split in
+// 30,720-unit thread parts; a command takes one or more units. An arena with too many meshes ran a part full in a 6-man
+// (27 Oct: bg16 x5, 1,770 meshes; the caller wrote to the 0 it got - sub_826DE130 / sub_826DE0A8): the Mod Maker's and
+// the converters' mesh cap (svrfmt/arena.h kMaxArenaMeshesNew) keeps arenas under it. (A 3x buffer didn't help: the
+// parts stay 30,720 units.) Logged: its size, how full it gets in a match (sub_826DFFA0's hook).
 REX_EXTERN(__imp__sub_826DF610);
 REX_HOOK_RAW(sub_826DF610) {
   const uint32_t q = ctx.r3.u32;
   __imp__sub_826DF610(ctx, base);
-  REXLOG_INFO("frame rate: render command queue {:08X}: {} commands per buffer", q, Rd32(base + q + 20));
+  g_queue = q;
+  REXLOG_INFO("frame rate: render command queue {:08X}: {} units per buffer", q, Rd32(base + q + 20));
 }
 
 // And where the render thread runs them (sub_826E02A8(?, command)): a
