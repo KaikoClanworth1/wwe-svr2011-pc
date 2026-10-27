@@ -29,6 +29,7 @@
 #include "mem_trace.h"
 #include "superstar_mods.h"
 #include "mod_transfer.h"
+#include "p2p.h"
 #include "match_box.h"
 #include "superstar_threads.h"
 #include "universe_mods.h"
@@ -1408,6 +1409,36 @@ void RedoHandovers(uint8_t* base, bool frame);
 // a player's mod given that id later never meets its data. Taken at the first apply after a save load.
 std::map<uint32_t, std::vector<uint8_t>> g_temp_saved, g_temp_live;  // id -> record + profile
 
+// The fetched mods' ids as the save FILE has them (<saves>\SaveData.dat, the last one loaded or written - never one
+// with a fetched mod in it: 0x18-byte header; records at file 0x1C + index * 260, profiles at 0x18 + 0x3C160 +
+// index * 1056 - checked against the live tables). Not the live tables nor the in-memory image (*0x82E407B4): the
+// game rebuilds that from the tables, and the start's own apply put the mod in them before (s4save: the base's
+// profile in the save, B vs A). Read before each save is built and at a save load; no file (a new player): the
+// first ApplyRecords' snapshot stays. Proof: a save built with a fetched mod loaded = byte-identical to one without.
+fs::path g_save_file;
+
+void TempFromSave(uint8_t* base) {
+  constexpr size_t kHeader = 0x18, kSaveProfiles = 0x3C160;
+  if (g_save_file.empty() || std::none_of(g_mods.begin(), g_mods.end(), [](const Mod& m) { return m.temp; })) return;
+  svrfmt::Bytes file;
+  if (!svrfmt::ReadFile(g_save_file.string(), file) || file.size() < kHeader + kSaveProfiles + 512 * kProfileSize) return;
+  for (const auto& m : g_mods) {
+    if (!m.temp) continue;
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+    if (si >= 512) continue;
+    const uint8_t* r = file.data() + kHeader + 4 + si * kRecordSize;  // (records: 4 bytes after the header)
+    const uint8_t* p = file.data() + kHeader + kSaveProfiles + si * kProfileSize;
+    std::vector<uint8_t> b(r, r + kRecordSize);
+    b.insert(b.end(), p, p + kProfileSize);
+    g_temp_saved[m.slot] = std::move(b);
+  }
+}
+
+// A mod's record selectable: a fetched one (temp) only while the game is online (its lobby and matches) - the
+// offline game (WWE Universe's own generation at a save load, the other modes) never sees it in the roster, so
+// nothing it makes for the save differs from a start without it.
+uint8_t Selectable(const Mod& m) { return m.temp && !svr2011::P2POnlineMode() ? 0 : 1; }
+
 void ApplyRecords(uint8_t* base) {
   // Test aid: SVR2011_TEST_ID_TABLE=1 - once, the ids whose present flag
   // (0x82DB3AE0 + id, sub_828B7078) is off, with their record index and name.
@@ -1463,7 +1494,7 @@ void ApplyRecords(uint8_t* base) {
     if (have_blank) SetEntranceMedia(sp, m, bp);
     SetSigns(sr, br, m);
     if (!std::strncmp(reinterpret_cast<char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) {
-      sr[kSelectable] = 1, sr[kDlc] = 1;
+      sr[kSelectable] = Selectable(m), sr[kDlc] = 1;
       OwnSelectTile(sr, br);  // (a save from before 2.0.5 has the base's)
       SetHeight(sr, br, m);
       static std::vector<std::pair<uint32_t, uint32_t>> told;  // (slot, its ratings when last logged)
@@ -1513,7 +1544,7 @@ void ApplyRecords(uint8_t* base) {
     PutName(sr, kFullName, m.name);
     PutName(sr, kSecondName, m.name);
     PutName(sr, kShortName, m.short_name);
-    sr[kSelectable] = 1;
+    sr[kSelectable] = Selectable(m);
     sr[kDlc] = 1;
     for (uint32_t off : {kOwnId, kOwnId2, kSamePerson}) sr[off] = uint8_t(m.slot >> 8), sr[off + 1] = uint8_t(m.slot);
     SetSigns(sr, br, m);
@@ -2713,7 +2744,7 @@ REX_EXTERN(__imp__sub_8257A218);
 REX_HOOK_RAW(sub_8257A218) {
   __imp__sub_8257A218(ctx, base);
   const auto r3 = ctx.r3.u64;
-  g_temp_saved.clear();  // (the fetched mods' ids as this save has them: taken again by ApplyRecords)
+  TempFromSave(base);  // (the fetched mods' ids as this save has them: from its image, before they're written)
   ApplyRecords(base);
   g_moves_checked = false;  // (the save's profiles - its kept edits - get CheckModProfiles' move check too)
   svr2011::UniverseModsLoaded(base);  // (the mods' Universe side table for this save)
@@ -3219,6 +3250,9 @@ std::vector<uint32_t> SuperstarModIds(bool with_online) {
 }
 
 void OnlineTempForSave(uint8_t* base, bool saving) {
+  // (the bytes to put back: the save image about to be rebuilt - the last one loaded or written, which never has a
+  // fetched mod in it; the boot's save load doesn't come through sub_8257A218's hook)
+  if (saving) TempFromSave(base);
   // Test aid: SVR2011_TEST_NO_TEMP_BLANK=1 - the fetched mods go into the save as they are (the check's control)
   static const bool off = std::getenv("SVR2011_TEST_NO_TEMP_BLANK") != nullptr;
   if (off) {
@@ -3243,6 +3277,8 @@ void OnlineTempForSave(uint8_t* base, bool saving) {
     REXLOG_INFO("[svr2011] superstar mods: the save is built without the {} fetched mod(s)", g_temp_saved.size());
   if (!saving) g_temp_live.clear();
 }
+
+void SetSuperstarModsSaves(const fs::path& saves) { g_save_file = saves / "SaveData.dat"; }
 
 bool IsOnlineTempSuperstar(uint32_t id) {
   const Mod* m = ModOf(id);
