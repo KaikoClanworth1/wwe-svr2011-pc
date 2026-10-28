@@ -164,6 +164,7 @@ final class OnlinePage {
         forgot_.setOnClickListener(v -> {
             mode_ = kForgot;
             note_ = "";
+            a_.status("");  // (the bottom line: no older "Server saved." through the account steps)
             refreshAccount();
         });
         c.addView(forgot_, a_.fullWidth(10));
@@ -399,11 +400,13 @@ final class OnlinePage {
             busy_ = false;
             if (result[0] instanceof JSONObject) done.run((JSONObject) result[0]);
             else note_ = error(result[0], false);
+            if (!note_.isEmpty()) a_.status(note_);  // (the bottom line: the step's result, not an older "Server saved.")
             refreshAccount();
         });
     }
 
     void primary() {
+        a_.status("");  // (a step pressed: no older "Server saved." under it)
         if (steps()) step();
         else if (mode_ == kSignIn || mode_ == kSignUp) signIn(mode_ == kSignUp);
         else forgotReset();
@@ -412,6 +415,7 @@ final class OnlinePage {
     void secondary() {
         mode_ = mode_ == kSignIn ? kSignUp : kSignIn;
         note_ = "";
+        a_.status("");
         refreshAccount();
     }
 
@@ -555,6 +559,7 @@ final class OnlinePage {
             needsCode_ = false;
             mode_ = kSignIn;
             note_ = settings().save() ? "Signed out." : "Could not save the settings.";
+            a_.status(note_);
             refreshAccount();
         });
     }
