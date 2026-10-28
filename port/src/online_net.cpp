@@ -2,6 +2,7 @@
 // Creations server (see online_net.h).
 
 #include "online_net.h"
+#include "fps_overlay.h"
 #include "online_overlay.h"
 
 #include <algorithm>
@@ -543,10 +544,14 @@ void HandleGp(Socket s) {
       data.erase(0, end + 7);
       const std::string id = GpValue(msg, "id").empty() ? "1" : GpValue(msg, "id");
       if (msg.rfind("\\login\\", 0) == 0) {
-        auto session = ServerRequest("GET", "/api/session");
+        // (client=2: the server's reason in this release's words - its re-activation code, an email to confirm)
+        auto session = ServerRequest("GET", "/api/session?client=2");
         if (!session || session->status != 200 || JsonField(session->body, "ok") != "true") {
           const std::string why = !session ? "the server didn't answer" : JsonField(session->body, "error");
           REXLOG_WARN("online: presence login refused: {}", why.empty() ? "not signed in" : why);
+          // (an account the server keeps off online: why, on screen - the launcher's Online tab does the steps)
+          if (session && session->status == 403 && !why.empty())
+            svr2011::ShowNotice("Online: " + why + " (the launcher's Online tab)", 12.0f);
           SendAll(s, "\\error\\\\err\\260\\fatal\\\\errmsg\\Sign in to Community Creations in the launcher.\\id\\" +
                          id + "\\final\\");
           continue;

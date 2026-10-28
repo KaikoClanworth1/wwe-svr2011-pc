@@ -457,6 +457,15 @@ void SetOnlineModsAllowed(bool on) {
 
 void OnlineServerUnanswered() { g_mods_server = 2; }
 
+std::mutex g_block_mutex;
+std::string g_account_block;  // (the server's reason this account can't play online; "" none)
+
+void SetOnlineAccountBlock(const std::string& why) {
+  std::lock_guard lock(g_block_mutex);
+  if (why != g_account_block && !why.empty()) REXLOG_WARN("online: the server keeps this account off online: {}", why);
+  g_account_block = why;
+}
+
 const std::vector<std::string>& ActiveMatchMods() {
   static const std::vector<std::string> mods = [] {
     std::vector<std::string> out;
@@ -482,6 +491,18 @@ const std::vector<std::string>& ActiveMatchMods() {
 }
 
 std::string ModsOnlineMessage() {
+  {  // (the account first: the server's own words, in lines the dialog shows - about 56 characters)
+    std::lock_guard lock(g_block_mutex);
+    if (!g_account_block.empty()) {
+      std::string out = "Online is off for your account.\n", line;
+      std::istringstream words(g_account_block + " Use the launcher's Online tab.");
+      for (std::string w; words >> w;) {
+        if (!line.empty() && line.size() + 1 + w.size() > 56) out += line + "\n", line.clear();
+        line += (line.empty() ? "" : " ") + w;
+      }
+      return out + line;
+    }
+  }
   const auto& mods = ActiveMatchMods();
   const int server = g_mods_server.load();
   const bool blocked = !mods.empty() && !(server == 1 && g_mods_online.load());

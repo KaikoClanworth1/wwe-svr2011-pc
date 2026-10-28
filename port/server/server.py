@@ -7,7 +7,10 @@ One aiohttp service with two halves:
                     game's GameSpy traffic here over HTTP(S), see
                     port/src/online.cpp); behind Project Index this is its
                     public mount, e.g. https://sho-ti.me/svr
-      api/register, api/login, api/logout     accounts (name + password)
+      api/register, api/login, api/logout     accounts (name + password; sign-up needs an invite code and an
+                                              email - signup.py)
+      api/account, api/email[/confirm|/resend], api/reactivate, api/password/{forgot,reset,change}
+                                              the launcher's account steps (signup.py)
       api/session                             the game's login (profile, ticket)
       api/logo/<hash>, api/logos/wanted       the port's extra Superstar logos
       api/status                              is the server up
@@ -52,10 +55,12 @@ import admin_auth as aa
 import gamespy as gs
 import discovery
 import leaderboards
+import mailer
 import match_names
 import media
 import relay
 import reports
+import signup
 import thumbs
 
 HERE = Path(__file__).resolve().parent
@@ -291,8 +296,9 @@ class Accounts:
         return self.get(account_id), None
 
     def check(self, name, password):
+        by = "email" if "@" in name else "name"  # (the name, or the account's email)
         with self.lock:
-            row = self.db.execute("SELECT id, salt, pwhash, banned FROM accounts WHERE name = ?",
+            row = self.db.execute("SELECT id, salt, pwhash, banned FROM accounts WHERE %s = ? COLLATE NOCASE" % by,
                                   (name.strip(),)).fetchone()
         if not row or not hmac.compare_digest(self.hash_password(password, row[1]), row[2]):
             return None, "Wrong name or password."
@@ -679,6 +685,12 @@ class Service:
         discovery.init(self.store)
         self.mod_upload = asyncio.Lock()  # (one .svrmod stored at a time: they are up to 250 MB, held in memory)
         self.accounts = Accounts(self.store)
+        self.mailer = mailer.Mailer(getattr(args, "mail_config", None) or os.path.join(args.data, "mail.json"),
+                                    args.data, gs.log)
+        self.signup = signup.Signup(self.store, self.accounts, self.mailer, gs.log,
+                                    public_url=getattr(args, "public_url", None) or self.mailer.config.get("public_url", ""),
+                                    open_accounts=bool(getattr(args, "test_open_accounts", False)),
+                                    exempt=(getattr(args, "admin_account", None) or "").strip())
         self.stats = Stats(self.store)
         self.slots = asyncio.Semaphore(args.max_connections)
         self.max_connections = args.max_connections
@@ -724,6 +736,8 @@ class Service:
         if not auth.startswith("Bearer "):
             return None
         account = self.accounts.from_token(auth[7:].strip())
+        if account and not self.signup.online_ok(account):  # (no re-activation code / confirmed email yet)
+            return None
         if account:  # (not presence: a game outside online mode fetches logos / Community Creations too)
             self.stats.day(account["id"])
         return account
@@ -798,20 +812,114 @@ class Service:
         try:
             body = await request.json()
             name, password = str(body.get("name", "")), str(body.get("password", ""))
-        except (ValueError, AttributeError):
+            client = int(body.get("client", 0) or 0)  # (2: a 2.1.6+ launcher - it walks the account steps)
+        except (ValueError, AttributeError, TypeError):
             return web.json_response({"ok": False, "error": "Bad request."}, status=400)
+        if not register and self.signup.limits.hit(("login", name.strip().lower()), 10, 600):
+            return web.json_response({"ok": False, "error": "Too many tries - wait a few minutes."}, status=429)
         loop = asyncio.get_running_loop()
         if register:
-            account, error = await loop.run_in_executor(None, self.accounts.register, name, password, ip)
+            if client < 2 and not self.signup.open:
+                return web.json_response({"ok": False, "error": signup.OLD_NEEDS_EMAIL.replace(
+                    "an email on your account", "an invite code and an email")}, status=403)
+            account, error = await loop.run_in_executor(None, self.signup.register, name, password,
+                                                        str(body.get("email", "")), str(body.get("invite", "")), ip)
         else:
             account, error = await loop.run_in_executor(None, self.accounts.check, name, password)
         if not account:
             return web.json_response({"ok": False, "error": error}, status=403)
+        why = self.signup.blocked_why(account, old_client=client < 2)
+        if why and client < 2:  # (an old launcher: it can't do the steps - it shows this, as it is)
+            gs.log("accounts: %s refused on an old launcher from %s (%s)" % (account["name"], ip, why))
+            return web.json_response({"ok": False, "error": why}, status=403)
         token = self.accounts.new_token(account, ip)
         self.stats.count("registrations" if register else "logins")
         gs.log("accounts: %s %s from %s" % (account["name"], "registered" if register else "signed in", ip))
-        return web.json_response({"ok": True, "token": token, "name": account["name"], "id": account["id"],
-                                  "xuid": "%016X" % Accounts.xuid(account)})
+        return web.json_response(dict(self.signup.account_json(account), ok=True, token=token, id=account["id"],
+                                      xuid="%016X" % Accounts.xuid(account), why=why))
+
+    # the launcher's account steps (signup.py): a token's account, blocked or not
+
+    def raw_account(self, request):
+        auth = request.headers.get("Authorization", "")
+        return self.accounts.from_token(auth[7:].strip()) if auth.startswith("Bearer ") else None
+
+    async def _account_step(self, request, step):
+        account = self.raw_account(request)
+        if not account:
+            return web.json_response({"ok": False, "error": "Not signed in."}, status=401)
+        try:
+            body = await request.json() if request.method == "POST" else {}
+        except ValueError:
+            return web.json_response({"ok": False, "error": "Bad request."}, status=400)
+        ip = self.client_ip(request)
+        error = await asyncio.get_running_loop().run_in_executor(None, step, account, body, ip)
+        account = self.accounts.get(account["id"])
+        return web.json_response(dict(self.signup.account_json(account), ok=not error, error=error or "",
+                                      why=self.signup.blocked_why(account, False)), status=200 if not error else 403)
+
+    async def api_account(self, request):
+        return await self._account_step(request, lambda a, b, ip: "")
+
+    async def api_email(self, request):
+        return await self._account_step(request, lambda a, b, ip: self.signup.set_email(a, str(b.get("email", ""))))
+
+    async def api_email_confirm(self, request):
+        if request.method == "GET":  # (the mail's link)
+            ok = self.signup.confirm_link(request.query.get("t", ""), self.client_ip(request))
+            text = ("Your email is confirmed - you can close this page and play online." if ok else
+                    "That link didn't work (it was used, or it's older than 24 hours): type the code from the "
+                    "mail in the launcher, or press Resend there.")
+            return web.Response(text="<!doctype html><meta charset=utf-8><title>SvR2011 Online</title>"
+                                     "<body style='font:16px sans-serif;margin:3em'><p>%s</p>" % text,
+                                content_type="text/html", headers={"Cache-Control": "no-store",
+                                                                   "Referrer-Policy": "no-referrer"})
+        return await self._account_step(request, lambda a, b, ip: self.signup.confirm(a, str(b.get("code", "")), ip))
+
+    async def api_email_resend(self, request):
+        return await self._account_step(request, lambda a, b, ip: self.signup.resend_confirm(a))
+
+    async def api_reactivate(self, request):
+        return await self._account_step(request, lambda a, b, ip: self.signup.reactivate(a, str(b.get("code", "")), ip))
+
+    async def api_password_change(self, request):
+        token = request.headers.get("Authorization", "")[7:].strip()
+
+        def step(a, b, ip):
+            if self.signup.limits.hit(("login", a["name"].lower()), 10, 600):
+                return "Too many tries - wait a few minutes."
+            if not self.accounts.check(a["name"], str(b.get("password", "")))[0]:
+                return "Your password isn't right."
+            new = str(b.get("new_password", ""))
+            if len(new) < signup.MIN_PASSWORD:
+                return "Passwords need at least %d characters." % signup.MIN_PASSWORD
+            self.signup.set_password(a["id"], new, keep_token=token)
+            gs.log("accounts: %s changed its password (its other sessions ended)" % a["name"])
+            return ""
+        return await self._account_step(request, step)
+
+    async def api_password_forgot(self, request):
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.json_response({"ok": False, "error": "Bad request."}, status=400)
+        await asyncio.get_running_loop().run_in_executor(None, self.signup.forgot, str(body.get("email", "")),
+                                                         self.client_ip(request))
+        # (the same answer whether or not the email has an account)
+        return web.json_response({"ok": True, "message": "If that email has an account, we mailed it a code "
+                                                         "(check spam too)."})
+
+    async def api_password_reset(self, request):
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.json_response({"ok": False, "error": "Bad request."}, status=400)
+        error = await asyncio.get_running_loop().run_in_executor(
+            None, self.signup.reset, str(body.get("email", "")), str(body.get("code", "")),
+            str(body.get("password", "")), self.client_ip(request))
+        if error:
+            return web.json_response({"ok": False, "error": error}, status=403)
+        return web.json_response({"ok": True, "message": "Your password is set: sign in with it."})
 
     async def api_logout(self, request):
         auth = request.headers.get("Authorization", "")
@@ -823,7 +931,9 @@ class Service:
         """The game's login: its profile, a login ticket, its name and XUID."""
         account = self.account(request)
         if not account:
-            return web.json_response({"ok": False, "error": "Not signed in."}, status=401)
+            raw = self.raw_account(request)
+            why = raw and self.signup.blocked_why(raw, old_client=request.query.get("client") != "2")
+            return web.json_response({"ok": False, "error": why or "Not signed in."}, status=403 if why else 401)
         ticket = self.store.new_ticket(account["profileid"])
         self.stats.count("logins")
         return web.json_response({"ok": True, "name": account["name"], "profileid": account["profileid"],
@@ -885,14 +995,16 @@ class Service:
         }
 
     def token_account(self, request):
-        """The signed-in account, without counting it as playing (the launchers)."""
-        auth = request.headers.get("Authorization", "")
-        return self.accounts.from_token(auth[7:].strip()) if auth.startswith("Bearer ") else None
+        """The signed-in account, without counting it as playing (the launchers) - one that may play online."""
+        account = self.raw_account(request)
+        return account if account and self.signup.online_ok(account) else None
 
     async def api_friends(self, request):
         account = self.token_account(request)
         if not account:
-            return web.json_response({"ok": False, "error": "Not signed in."}, status=401)
+            raw = self.raw_account(request)  # (blocked: say why - an old launcher shows the error)
+            why = raw and self.signup.blocked_why(raw, old_client=request.query.get("client") != "2")
+            return web.json_response({"ok": False, "error": why or "Not signed in."}, status=403 if why else 401)
         if request.query.get("bye"):  # (the game closing / leaving online mode: offline now)
             self.stats.recent.pop(account["id"], None)
             self.stats.online_mode.pop(account["id"], None)
@@ -2468,7 +2580,7 @@ class Service:
         out = []
         uploads = collections.Counter(r["ownerid"] for r in self.store.all("UserContent"))
         for a in self.accounts.all():
-            out.append(dict(a, uploads=uploads.get(a["profileid"], 0),
+            out.append(dict(a, **(self.signup.state(a["id"]) or {}), uploads=uploads.get(a["profileid"], 0),
                             storage=self.store.owner_bytes(a["profileid"]),
                             online=a["id"] in self.stats.recent))
         return web.json_response(out)
@@ -2487,10 +2599,46 @@ class Service:
             result["password"] = self.accounts.reset_password(aid)
         elif action == "delete":
             result["removed"] = self.accounts.delete(aid)
+        elif action == "reactivation-code":  # (shown once: only its hash is kept)
+            result["id"], result["code"] = self.signup.make_code("reactivate", "", aid)
+        elif action == "activate":  # (no code: the server owner's own say)
+            self.signup.set_active(aid)
+        elif action == "email":
+            try:
+                email = str((await request.json()).get("email", ""))
+            except ValueError:
+                email = ""
+            error = self.signup.set_email(self.accounts.get(aid), email, by_admin=True)
+            if error:
+                return web.json_response({"ok": False, "error": error}, status=400)
+        elif action == "resend-confirm":
+            error = self.signup.resend_confirm(self.accounts.get(aid))
+            if error:
+                return web.json_response({"ok": False, "error": error}, status=400)
         else:
             return web.json_response({"ok": False}, status=400)
         gs.log("admin: account %d %s" % (aid, action))
         return web.json_response(result)
+
+    @admin_only
+    async def admin_invites(self, request):
+        if request.method == "POST":  # (new sign-up codes: shown once)
+            try:
+                body = await request.json()
+            except ValueError:
+                body = {}
+            n = max(1, min(int(body.get("count", 1) or 1), 50))
+            note = str(body.get("note", ""))
+            codes = [self.signup.make_code("signup", note) for _ in range(n)]
+            gs.log("admin: %d invite code(s) made%s" % (n, " (%s)" % note[:40] if note else ""))
+            return web.json_response({"ok": True, "codes": [{"id": i, "code": c} for i, c in codes]})
+        return web.json_response({"ok": True, "invites": self.signup.invites()})
+
+    @admin_only
+    async def admin_invite_revoke(self, request):
+        ok = self.signup.revoke(int(request.match_info["id"]))
+        gs.log("admin: invite %s revoked" % request.match_info["id"])
+        return web.json_response({"ok": ok})
 
     async def health(self, request):
         return web.json_response({"ok": True})
@@ -2608,6 +2756,14 @@ class Service:
         app.router.add_post(b + "/api/register", self.api_register)
         app.router.add_post(b + "/api/login", self.api_login)
         app.router.add_post(b + "/api/logout", self.api_logout)
+        app.router.add_get(b + "/api/account", self.api_account)
+        app.router.add_post(b + "/api/email", self.api_email)
+        app.router.add_route("*", b + "/api/email/confirm", self.api_email_confirm)  # (GET: the mail's link)
+        app.router.add_post(b + "/api/email/resend", self.api_email_resend)
+        app.router.add_post(b + "/api/reactivate", self.api_reactivate)
+        app.router.add_post(b + "/api/password/forgot", self.api_password_forgot)
+        app.router.add_post(b + "/api/password/reset", self.api_password_reset)
+        app.router.add_post(b + "/api/password/change", self.api_password_change)
         app.router.add_route("*", b + "/api/session", self.api_session)
         app.router.add_get(b + "/api/status", self.api_status)
         app.router.add_get(b + "/api/friends", self.api_friends)
@@ -2668,6 +2824,8 @@ class Service:
             app.router.add_post(p + "/api/admin/restart", self.admin_restart)
             app.router.add_route("*", p + "/api/admin/storage", self.admin_storage)
             app.router.add_post(p + "/api/admin/user/{id}/{action}", self.admin_user_action)
+            app.router.add_route("*", p + "/api/admin/invites", self.admin_invites)
+            app.router.add_post(p + "/api/admin/invite/{id}/revoke", self.admin_invite_revoke)
         app.cleanup_ctx.append(self.background)
         return app
 
@@ -2863,10 +3021,35 @@ def main():
     ap.add_argument("--admin-password-file", default=None, help="where the dashboard password's hash is "
                     "(default: <data>/admin_password)")
     ap.add_argument("--admin-account", default=None,
-                    help="the dashboard's sign-in is this online account's name and password instead")
+                    help="the dashboard's sign-in is this online account's name and password instead (it never "
+                         "needs a re-activation code online)")
+    ap.add_argument("--mail-config", default=None, help="the mail sender's settings (default: <data>/mail.json; "
+                    "none: mails are files in <data>/mail_out - mailer.py)")
+    ap.add_argument("--public-url", default=None, help="this server's public address with its base, for the links "
+                    "in mails (e.g. https://example.com/svr; default: mail.json's public_url, else no link)")
+    ap.add_argument("--test-open-accounts", action="store_true",
+                    help="a private TEST server only: sign-up without an invite code or email, and no "
+                         "re-activation / confirmed email for online play (the accounts' old rules)")
+    ap.add_argument("--activate", default=None, metavar="NAME",
+                    help="let this account play online without a re-activation code (it still needs a "
+                         "confirmed email), then exit")
     args = ap.parse_args()
     if args.set_admin_password:
         return aa.set_password_cli(args.admin_password_file or os.path.join(args.data, "admin_password"))
+    if args.test_open_accounts and args.host not in ("127.0.0.1", "::1", "localhost"):
+        ap.error("--test-open-accounts is for a private test server: only with --host 127.0.0.1")
+    if args.activate and args.role == "storage":
+        ap.error("--activate: a storage node has no accounts (run it where the core's data is)")
+    if args.activate:
+        store = gs.Store(args.data)
+        signup.Signup(store, Accounts(store), mailer.Mailer(os.path.join(args.data, "mail.json"), args.data, print),
+                      print)  # (the columns, if this database is from before)
+        with store.lock:
+            n = store.db.execute("UPDATE accounts SET activated = 1 WHERE name = ? COLLATE NOCASE",
+                                 (args.activate,)).rowcount
+            store.db.commit()
+        print("%s: %s" % (args.activate, "active (online once its email is confirmed)" if n else "no such account"))
+        sys.exit(0 if n else 1)
     if args.relay_edge and (not args.relay_secret or not args.relay_udp_port):
         ap.error("--relay-edge needs --relay-secret and --relay-udp-port")
     # (a storage node never relays: linked to the edge too, it took half the
@@ -2880,6 +3063,8 @@ def main():
     if args.role == "core" and not args.storage_url:
         ap.error("--role core needs --storage-url")
     if args.role == "storage":
+        # (only the blobs: no accounts - no Service, so no signup.py migration or backup, no mail.json, no account
+        # routes; its data folder's community.db, if one is left there, is never opened)
         if args.log:
             gs.LOG = open(args.log, "a", encoding="utf-8")
         if os.path.exists(os.path.join(args.data, NODE_STOPPED)):  # (stopped from the dashboard: stays so)

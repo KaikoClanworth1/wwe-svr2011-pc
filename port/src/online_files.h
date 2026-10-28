@@ -75,6 +75,10 @@ bool OnlineModsAllowed();
 // The friends poll got no answer (no server, an error): as mods_online off
 // for ModsOnlineMessage until it answers again.
 void OnlineServerUnanswered();
+// The friends poll was refused for this account (2.1.6 servers: no re-activation code / confirmed email yet -
+// the launcher's Online tab does the steps): the server's reason, "" when it answers again. ModsOnlineMessage
+// says it first.
+void SetOnlineAccountBlock(const std::string& why);
 
 // The mods on in this run that change match data (Mods/<kind>/<folder>, not
 // "disabled"; the kinds: Superstars - their pack moves are merged into the

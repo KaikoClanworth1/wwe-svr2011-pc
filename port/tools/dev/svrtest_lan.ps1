@@ -81,7 +81,7 @@ foreach ($side in @(@{ n = "host"; from = "test_config_ent_down.toml" }, @{ n = 
 
 # ---- the test server
 $py = "C:\Users\Ranger\AppData\Local\Programs\Python\Python311\python.exe"
-$srv = Start-Process $py -ArgumentList "`"$port\server\server.py`" --host 127.0.0.1 --port $sp --data `"$(Join-Path $root 'lan_srv\data')`" --log `"$out\server.log`"" -PassThru -WindowStyle Hidden
+$srv = Start-Process $py -ArgumentList "`"$port\server\server.py`" --test-open-accounts --host 127.0.0.1 --port $sp --data `"$(Join-Path $root 'lan_srv\data')`" --log `"$out\server.log`"" -PassThru -WindowStyle Hidden
 $procs = @{}
 $timings = [ordered]@{}; $ok = $true; $why = ""
 $t0 = Get-Date

@@ -229,12 +229,15 @@ void Poll() {
   std::string kind;
   const std::string place = PresencePlace(&kind);
   auto r = net::ServerRequest("GET", std::string(online ? "/api/friends?here=1&mode=online" : "/api/friends?here=1") +
-                                         "&place=" + place + (kind.empty() ? "" : "&kind=" + kind));
+                                         "&place=" + place + (kind.empty() ? "" : "&kind=" + kind) + "&client=2");
   State s;
   s.signed_in = true;
   Json j;
+  // (2.1.6 servers: an account without its re-activation code / a confirmed email is refused - 403 and why)
+  if (r && r->status == 403 && JsonReader{r->body}.Value(j) && j["error"]) SetOnlineAccountBlock(j.Str("error"));
   if (r && r->status == 200 && JsonReader{r->body}.Value(j) && j["friends"]) {
     s.answered = true;
+    SetOnlineAccountBlock("");
     if (const Json* c = j["config"]; c && (*c)["mods_online"]) SetOnlineModsAllowed((*c)["mods_online"]->b);
     if (const Json* c = j["config"]; c && (*c)["match_network"]) P2PSetServerNetwork((*c)["match_network"]->s);
     if (const Json* c = j["config"]; c && (*c)["news"]) SetOnlineNews((*c)["news"]->s);
