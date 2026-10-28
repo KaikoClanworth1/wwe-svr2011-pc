@@ -98,6 +98,9 @@ bool g_cas_list = false;    // (the list shown is the Streak's - Create-a-Supers
 // only browse until then - the select's own pick of its first entry as it opens too.
 bool g_pending = false;
 std::string g_pending_folder;
+// The mod the cursor rests on (0: none) and where its pick is kept - the player's record +120, which holds the CAW
+// slot for the story; the select's panel is shown the mod (sub_82466830 below).
+uint32_t g_pick_mod = 0, g_pick_word = 0;
 
 }  // namespace
 
@@ -113,6 +116,7 @@ void RtwmStreakPeople(uint8_t* base, uint32_t match) {
   Choice& c = State();
   if (g_pending) {  // (a new story: the select's last pick)
     g_pending = false;
+    g_pick_mod = 0;  // (the select is gone: its panel no longer shown the mod)
     if (g_pending_folder != c.folder || (!c.folder.empty() && c.caw != int(g_first_caw))) {
       c.folder = g_pending_folder, c.caw = c.folder.empty() ? -1 : int(g_first_caw);
       Save(c);
@@ -204,14 +208,54 @@ REX_HOOK_RAW(sub_82732938) {
   const uint32_t id = ctx.r5.u32;
   static const bool log = std::getenv("SVR2011_TEST_PICK_LOG") != nullptr;
   if (log) REXLOG_INFO("[svr2011] pick: player {} id {:X} (rtwm {})", ctx.r4.u32, id, svr2011::InRoadToWrestleMania());
+  g_pick_mod = 0;
   if (svr2011::InRoadToWrestleMania() && g_cas_list) {
     g_pending = true;
     g_pending_folder = svr2011::IsSuperstarMod(id) ? svr2011::SuperstarModFolder(id) : std::string();
     if (!g_pending_folder.empty()) {
       REXLOG_INFO("[svr2011] rtwm streak: {} picked - the story gets CAW slot {}, its matches the mod", g_pending_folder,
                   g_first_caw);
-      ctx.r5.u64 = g_first_caw;
+      // (the mod's id stored: the panel's picture is filled from it as the cursor moves; the CAW slot replaces it at
+      // the end of the cursor's update - RtwmShowModEnd - before the story copies it)
+      // (the record as the function finds it: state + its table [+13520] * 1352 + player * 204)
+      g_pick_mod = id;
+      g_pick_word = ctx.r3.u32 + Rd32(base + ctx.r3.u32 + 13520) * 1352 + ctx.r4.u32 * 204 + 120;
     }
   }
   __imp__sub_82732938(ctx, base);
 }
+
+// The select panel reads the player's pick (the record's +120) each frame. With a mod under the cursor the record
+// holds the CAW slot the story gets, so the panel showed the CAW (DEFAULT / RAW / 78, 28 Oct): its readers are shown
+// the mod while they run, the CAW slot put back after - the cursor's update (sub_82465038, mystery_opponent.cpp's
+// hook), the "MODDED" badge's sub_82466830 (superstar_mods.cpp), sub_82465E88 and the text's sub_824678C8 (found with
+// SVR2011_WATCH_ADDR + _READ). The story's own copy of the pick is taken outside them: with the mod's id left in +120
+// the story began as the mod; with these it begins as the CAW slot.
+namespace svr2011 {
+bool RtwmShowModBegin(uint8_t* base) {
+  const bool swap = g_pick_mod && g_pick_word && g_cas_list && InRoadToWrestleMania() &&
+                    Rd32(base + g_pick_word) == g_first_caw;
+  if (swap) Wr32(base + g_pick_word, g_pick_mod);
+  return swap;
+}
+void RtwmShowModEnd(uint8_t* base, bool swapped) {
+  if (swapped || (g_pick_mod && g_pick_word && g_cas_list && Rd32(base + g_pick_word) == g_pick_mod))
+    Wr32(base + g_pick_word, g_first_caw);
+}
+}  // namespace svr2011
+namespace {
+template <void (*F)(PPCContext&, uint8_t*)>
+void ShownTheMod(PPCContext& ctx, uint8_t* base) {
+  const bool swapped = svr2011::RtwmShowModBegin(base);
+  F(ctx, base);
+  svr2011::RtwmShowModEnd(base, swapped);
+}
+}  // namespace
+REX_EXTERN(__imp__sub_82466830);
+REX_HOOK_RAW(sub_82466830) { ShownTheMod<__imp__sub_82466830>(ctx, base); }
+REX_EXTERN(__imp__sub_82465E88);
+REX_HOOK_RAW(sub_82465E88) { ShownTheMod<__imp__sub_82465E88>(ctx, base); }
+// (name, brand and overall: sub_824678C8 and under it sub_82465728 / sub_824613E0 - with the others alone the panel
+// had the mod's picture and badge over DEFAULT / 78)
+REX_EXTERN(__imp__sub_824678C8);
+REX_HOOK_RAW(sub_824678C8) { ShownTheMod<__imp__sub_824678C8>(ctx, base); }
