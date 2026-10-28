@@ -906,8 +906,8 @@ class Service:
         await asyncio.get_running_loop().run_in_executor(None, self.signup.forgot, str(body.get("email", "")),
                                                          self.client_ip(request))
         # (the same answer whether or not the email has an account)
-        return web.json_response({"ok": True, "message": "If that email has an account, a code is on its way "
-                                                         "(check the spam folder too). It works for 30 minutes."})
+        return web.json_response({"ok": True, "message": "If that email has an account, we mailed it a code "
+                                                         "(check spam too)."})
 
     async def api_password_reset(self, request):
         try:
