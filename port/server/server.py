@@ -7,10 +7,10 @@ One aiohttp service with two halves:
                     game's GameSpy traffic here over HTTP(S), see
                     port/src/online.cpp); behind Project Index this is its
                     public mount, e.g. https://sho-ti.me/svr
-      api/register, api/login, api/logout     accounts (name + password; sign-up needs an invite code and an
-                                              email - signup.py)
-      api/account, api/email[/confirm|/resend], api/reactivate, api/password/{forgot,reset,change}
-                                              the launcher's account steps (signup.py)
+      api/register, api/login, api/logout     accounts (name + password; 2.1.6 sign-up needs an invite
+                                              code - signup.py)
+      api/account, api/reactivate, api/password/{reset,change}
+                                              the launcher's account steps (signup.py: codes only)
       api/session                             the game's login (profile, ticket)
       api/logo/<hash>, api/logos/wanted       the port's extra Superstar logos
       api/status                              is the server up
@@ -55,7 +55,6 @@ import admin_auth as aa
 import gamespy as gs
 import discovery
 import leaderboards
-import mailer
 import match_names
 import media
 import relay
@@ -136,6 +135,21 @@ SETTINGS_SPEC = {
                               "relay = every match through this server's relay; p2p = matches directly only (the "
                               "relay just helps games find each other) - for when the server struggles. New "
                               "sessions follow it (games ask every 20 s); running matches keep theirs"},
+    # (signup.py: off until 2.1.6 is out - every account plays as before, old launchers sign up as before; the
+    # codes work, to get accounts ready. On: invite sign-up only, and online needs an active account - its sign-up
+    # or re-activation code used)
+    "account_checks": {"default": "off", "choices": ["off", "on"], "live": True,
+                       "help": "the 2.1.6 account rules: off = nobody is blocked (2.1.5 launchers and games as "
+                               "before; codes can be made ready); on = new accounts need an invite code, and "
+                               "accounts from before need their re-activation code to play online - 2.1.5 "
+                               "launchers are told to update. At once"},
+    # (the Online Rollback Netcode chat's: in every /api/friends config; the host latches it into session property
+    # 0x1000F005 at session creation - 0 lockstep, 2 lockstep_vclock, 1 rollback; joiners follow the session's,
+    # none or unknown = lockstep. Games before that ignore it)
+    "netcode": {"default": "lockstep", "choices": ["lockstep", "lockstep_vclock", "rollback"], "live": True,
+                "help": "online matches' netcode for new sessions (the host's game latches it per match): lockstep "
+                        "= today's; lockstep_vclock = lockstep with a fixed 1/60 s clock per world update (both "
+                        "games step alike); rollback = the rollback netcode. Games without one play lockstep"},
     "online_news": {"default": "", "text": True, "max_len": NEWS_MAX, "live": True,
                     "help": "the NEWS panel on the game's ONLINE screen (after the players-online count): plain "
                             "text, new lines kept; characters the game's font lacks are replaced or left out. "
@@ -296,9 +310,8 @@ class Accounts:
         return self.get(account_id), None
 
     def check(self, name, password):
-        by = "email" if "@" in name else "name"  # (the name, or the account's email)
         with self.lock:
-            row = self.db.execute("SELECT id, salt, pwhash, banned FROM accounts WHERE %s = ? COLLATE NOCASE" % by,
+            row = self.db.execute("SELECT id, salt, pwhash, banned FROM accounts WHERE name = ? COLLATE NOCASE",
                                   (name.strip(),)).fetchone()
         if not row or not hmac.compare_digest(self.hash_password(password, row[1]), row[2]):
             return None, "Wrong name or password."
@@ -685,12 +698,10 @@ class Service:
         discovery.init(self.store)
         self.mod_upload = asyncio.Lock()  # (one .svrmod stored at a time: they are up to 250 MB, held in memory)
         self.accounts = Accounts(self.store)
-        self.mailer = mailer.Mailer(getattr(args, "mail_config", None) or os.path.join(args.data, "mail.json"),
-                                    args.data, gs.log)
-        self.signup = signup.Signup(self.store, self.accounts, self.mailer, gs.log,
-                                    public_url=getattr(args, "public_url", None) or self.mailer.config.get("public_url", ""),
+        self.signup = signup.Signup(self.store, self.accounts, gs.log,
                                     open_accounts=bool(getattr(args, "test_open_accounts", False)),
-                                    exempt=(getattr(args, "admin_account", None) or "").strip())
+                                    exempt=(getattr(args, "admin_account", None) or "").strip(),
+                                    checks=lambda: SETTINGS["account_checks"] == "on")
         self.stats = Stats(self.store)
         self.slots = asyncio.Semaphore(args.max_connections)
         self.max_connections = args.max_connections
@@ -736,7 +747,7 @@ class Service:
         if not auth.startswith("Bearer "):
             return None
         account = self.accounts.from_token(auth[7:].strip())
-        if account and not self.signup.online_ok(account):  # (no re-activation code / confirmed email yet)
+        if account and not self.signup.online_ok(account):  # (no re-activation code yet)
             return None
         if account:  # (not presence: a game outside online mode fetches logos / Community Creations too)
             self.stats.day(account["id"])
@@ -818,12 +829,16 @@ class Service:
         if not register and self.signup.limits.hit(("login", name.strip().lower()), 10, 600):
             return web.json_response({"ok": False, "error": "Too many tries - wait a few minutes."}, status=429)
         loop = asyncio.get_running_loop()
-        if register:
-            if client < 2 and not self.signup.open:
-                return web.json_response({"ok": False, "error": signup.OLD_NEEDS_EMAIL.replace(
-                    "an email on your account", "an invite code and an email")}, status=403)
+        if register and client < 2:  # (a 2.1.5 launcher: name and password only)
+            if not self.signup.relaxed():
+                return web.json_response({"ok": False, "error": "New accounts need the 2.1.6 launcher now: "
+                                                                "update to 2.1.6 and sign up there with the invite "
+                                                                "code the server owner gives you."}, status=403)
+            # (account_checks off: as before 2.1.6 - an account without a code: it needs a re-activation code once on)
+            account, error = await loop.run_in_executor(None, self.accounts.register, name, password, ip)
+        elif register:
             account, error = await loop.run_in_executor(None, self.signup.register, name, password,
-                                                        str(body.get("email", "")), str(body.get("invite", "")), ip)
+                                                        str(body.get("invite", "")), ip)
         else:
             account, error = await loop.run_in_executor(None, self.accounts.check, name, password)
         if not account:
@@ -861,24 +876,6 @@ class Service:
     async def api_account(self, request):
         return await self._account_step(request, lambda a, b, ip: "")
 
-    async def api_email(self, request):
-        return await self._account_step(request, lambda a, b, ip: self.signup.set_email(a, str(b.get("email", ""))))
-
-    async def api_email_confirm(self, request):
-        if request.method == "GET":  # (the mail's link)
-            ok = self.signup.confirm_link(request.query.get("t", ""), self.client_ip(request))
-            text = ("Your email is confirmed - you can close this page and play online." if ok else
-                    "That link didn't work (it was used, or it's older than 24 hours): type the code from the "
-                    "mail in the launcher, or press Resend there.")
-            return web.Response(text="<!doctype html><meta charset=utf-8><title>SvR2011 Online</title>"
-                                     "<body style='font:16px sans-serif;margin:3em'><p>%s</p>" % text,
-                                content_type="text/html", headers={"Cache-Control": "no-store",
-                                                                   "Referrer-Policy": "no-referrer"})
-        return await self._account_step(request, lambda a, b, ip: self.signup.confirm(a, str(b.get("code", "")), ip))
-
-    async def api_email_resend(self, request):
-        return await self._account_step(request, lambda a, b, ip: self.signup.resend_confirm(a))
-
     async def api_reactivate(self, request):
         return await self._account_step(request, lambda a, b, ip: self.signup.reactivate(a, str(b.get("code", "")), ip))
 
@@ -898,24 +895,13 @@ class Service:
             return ""
         return await self._account_step(request, step)
 
-    async def api_password_forgot(self, request):
-        try:
-            body = await request.json()
-        except ValueError:
-            return web.json_response({"ok": False, "error": "Bad request."}, status=400)
-        await asyncio.get_running_loop().run_in_executor(None, self.signup.forgot, str(body.get("email", "")),
-                                                         self.client_ip(request))
-        # (the same answer whether or not the email has an account)
-        return web.json_response({"ok": True, "message": "If that email has an account, we mailed it a code "
-                                                         "(check spam too)."})
-
     async def api_password_reset(self, request):
         try:
             body = await request.json()
         except ValueError:
             return web.json_response({"ok": False, "error": "Bad request."}, status=400)
         error = await asyncio.get_running_loop().run_in_executor(
-            None, self.signup.reset, str(body.get("email", "")), str(body.get("code", "")),
+            None, self.signup.reset, str(body.get("name", "")), str(body.get("code", "")),
             str(body.get("password", "")), self.client_ip(request))
         if error:
             return web.json_response({"ok": False, "error": error}, status=403)
@@ -984,6 +970,7 @@ class Service:
         return {
             "ok": True,
             "config": {"mods_online": bool(SETTINGS["mods_online"]), "match_network": SETTINGS["match_network"],
+                       "netcode": SETTINGS["netcode"],
                        # (the NEWS panel's text as the game's Sake fetch gets it: the game shows it at the
                        # next visit to ONLINE, without a restart)
                        "news": self.sake.news_panel()},
@@ -2580,7 +2567,7 @@ class Service:
         out = []
         uploads = collections.Counter(r["ownerid"] for r in self.store.all("UserContent"))
         for a in self.accounts.all():
-            out.append(dict(a, **(self.signup.state(a["id"]) or {}), uploads=uploads.get(a["profileid"], 0),
+            out.append(dict(a, activated=self.signup.activated(a["id"]), uploads=uploads.get(a["profileid"], 0),
                             storage=self.store.owner_bytes(a["profileid"]),
                             online=a["id"] in self.stats.recent))
         return web.json_response(out)
@@ -2603,18 +2590,8 @@ class Service:
             result["id"], result["code"] = self.signup.make_code("reactivate", "", aid)
         elif action == "activate":  # (no code: the server owner's own say)
             self.signup.set_active(aid)
-        elif action == "email":
-            try:
-                email = str((await request.json()).get("email", ""))
-            except ValueError:
-                email = ""
-            error = self.signup.set_email(self.accounts.get(aid), email, by_admin=True)
-            if error:
-                return web.json_response({"ok": False, "error": error}, status=400)
-        elif action == "resend-confirm":
-            error = self.signup.resend_confirm(self.accounts.get(aid))
-            if error:
-                return web.json_response({"ok": False, "error": error}, status=400)
+        elif action == "reset-code":  # (a forgotten password: the player types it in the launcher; 24 h, once)
+            result["id"], result["code"] = self.signup.make_code("reset", "", aid)
         else:
             return web.json_response({"ok": False}, status=400)
         gs.log("admin: account %d %s" % (aid, action))
@@ -2633,6 +2610,13 @@ class Service:
             gs.log("admin: %d invite code(s) made%s" % (n, " (%s)" % note[:40] if note else ""))
             return web.json_response({"ok": True, "codes": [{"id": i, "code": c} for i, c in codes]})
         return web.json_response({"ok": True, "invites": self.signup.invites()})
+
+    @admin_only
+    async def admin_checks(self, request):
+        """The account checks' numbers: how many accounts account_checks on would keep off online now."""
+        blocked, total = await asyncio.get_running_loop().run_in_executor(None, self.signup.blocked_count)
+        return web.json_response({"ok": True, "checks": SETTINGS["account_checks"], "would_block": blocked,
+                                  "accounts": total, "test_open": self.signup.open})
 
     @admin_only
     async def admin_invite_revoke(self, request):
@@ -2757,11 +2741,7 @@ class Service:
         app.router.add_post(b + "/api/login", self.api_login)
         app.router.add_post(b + "/api/logout", self.api_logout)
         app.router.add_get(b + "/api/account", self.api_account)
-        app.router.add_post(b + "/api/email", self.api_email)
-        app.router.add_route("*", b + "/api/email/confirm", self.api_email_confirm)  # (GET: the mail's link)
-        app.router.add_post(b + "/api/email/resend", self.api_email_resend)
         app.router.add_post(b + "/api/reactivate", self.api_reactivate)
-        app.router.add_post(b + "/api/password/forgot", self.api_password_forgot)
         app.router.add_post(b + "/api/password/reset", self.api_password_reset)
         app.router.add_post(b + "/api/password/change", self.api_password_change)
         app.router.add_route("*", b + "/api/session", self.api_session)
@@ -2826,6 +2806,7 @@ class Service:
             app.router.add_post(p + "/api/admin/user/{id}/{action}", self.admin_user_action)
             app.router.add_route("*", p + "/api/admin/invites", self.admin_invites)
             app.router.add_post(p + "/api/admin/invite/{id}/revoke", self.admin_invite_revoke)
+            app.router.add_get(p + "/api/admin/checks", self.admin_checks)
         app.cleanup_ctx.append(self.background)
         return app
 
@@ -3023,16 +3004,11 @@ def main():
     ap.add_argument("--admin-account", default=None,
                     help="the dashboard's sign-in is this online account's name and password instead (it never "
                          "needs a re-activation code online)")
-    ap.add_argument("--mail-config", default=None, help="the mail sender's settings (default: <data>/mail.json; "
-                    "none: mails are files in <data>/mail_out - mailer.py)")
-    ap.add_argument("--public-url", default=None, help="this server's public address with its base, for the links "
-                    "in mails (e.g. https://example.com/svr; default: mail.json's public_url, else no link)")
     ap.add_argument("--test-open-accounts", action="store_true",
-                    help="a private TEST server only: sign-up without an invite code or email, and no "
-                         "re-activation / confirmed email for online play (the accounts' old rules)")
+                    help="a private TEST server only: sign-up without an invite code, and no re-activation "
+                         "code for online play (the accounts' old rules)")
     ap.add_argument("--activate", default=None, metavar="NAME",
-                    help="let this account play online without a re-activation code (it still needs a "
-                         "confirmed email), then exit")
+                    help="let this account play online without a re-activation code, then exit")
     args = ap.parse_args()
     if args.set_admin_password:
         return aa.set_password_cli(args.admin_password_file or os.path.join(args.data, "admin_password"))
@@ -3042,13 +3018,12 @@ def main():
         ap.error("--activate: a storage node has no accounts (run it where the core's data is)")
     if args.activate:
         store = gs.Store(args.data)
-        signup.Signup(store, Accounts(store), mailer.Mailer(os.path.join(args.data, "mail.json"), args.data, print),
-                      print)  # (the columns, if this database is from before)
+        signup.Signup(store, Accounts(store), print)  # (the column, if this database is from before)
         with store.lock:
             n = store.db.execute("UPDATE accounts SET activated = 1 WHERE name = ? COLLATE NOCASE",
                                  (args.activate,)).rowcount
             store.db.commit()
-        print("%s: %s" % (args.activate, "active (online once its email is confirmed)" if n else "no such account"))
+        print("%s: %s" % (args.activate, "active" if n else "no such account"))
         sys.exit(0 if n else 1)
     if args.relay_edge and (not args.relay_secret or not args.relay_udp_port):
         ap.error("--relay-edge needs --relay-secret and --relay-udp-port")
