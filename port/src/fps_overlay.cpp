@@ -12,6 +12,7 @@
 #include <imgui.h>
 
 #include <rex/cvar.h>
+#include <rex/logging.h>
 #include <rex/ui/keybinds.h>
 
 #include "frame_rate.h"
@@ -269,6 +270,10 @@ int PerfOverlayCorner() { return g_corner.load(); }
 
 void ShowNotice(const std::string& text, float seconds) {
   std::lock_guard lock(g_notice_mutex);
+  // (logged when it comes up - not again while the same text is still showing: hidden tests and players' report logs
+  // see what the overlay said; frame shots don't hold the overlay)
+  if (text != g_notice || std::chrono::steady_clock::now() > g_notice_until)
+    REXLOG_INFO("[svr2011] notice on screen: {}", text);
   g_notice = text;
   g_notice_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(int(seconds * 1000));
 }
