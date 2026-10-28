@@ -210,6 +210,7 @@ td.acts { text-align: right; white-space: nowrap; }
   <nav class="tabs" role="tablist" aria-label="Dashboard">
     <button role="tab" id="tab-overview" aria-controls="p-overview">Overview</button>
     <button role="tab" id="tab-players" aria-controls="p-players">Players <span class="count" id="n-players"></span></button>
+    <button role="tab" id="tab-invites" aria-controls="p-invites">Invites <span class="count" id="n-invites"></span></button>
     <button role="tab" id="tab-ping" aria-controls="p-ping">Ping <span class="count live" id="n-ping"></span></button>
     <button role="tab" id="tab-matches" aria-controls="p-matches">Matches <span class="count live" id="n-matches"></span></button>
     <button role="tab" id="tab-cc" aria-controls="p-cc">Community Creations <span class="count" id="n-cc"></span></button>
@@ -278,8 +279,26 @@ td.acts { text-align: right; white-space: nowrap; }
 
     <h2>Accounts <span class="spacer"></span><input class="filter" id="f-acc" placeholder="Filter" aria-label="Filter accounts"></h2>
     <div class="scroll"><table>
-      <thead><tr><th>Name</th><th>Joined</th><th>Last seen</th><th class="num">Uploads</th><th class="num">Storage</th><th></th></tr></thead>
-      <tbody id="users"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
+      <thead><tr><th>Name</th><th>Online access</th><th>Joined</th><th>Last seen</th><th class="num">Uploads</th><th class="num">Storage</th><th></th></tr></thead>
+      <tbody id="users"><tr><td colspan="7" class="empty">Loading&hellip;</td></tr></tbody>
+    </table></div>
+    <p class="note">Online access: accounts from before 2.1.6 need the re-activation code you make here (Re-activation code: it
+      shows once - give it to that player; it works for that account only) and, like every account, a confirmed email.
+      Activate lets an account in without a code. Set email sends the player a confirmation mail.</p>
+  </section>
+
+  <section role="tabpanel" id="p-invites" aria-labelledby="tab-invites" tabindex="0" hidden>
+    <h2>New sign-up codes</h2>
+    <p class="intro">One code per person: it works once, for one new account (with an email it has to confirm).
+      Codes show only here, once - copy them now (the server keeps only their hash).</p>
+    <p><input class="filter" id="inv-note" maxlength="80" placeholder="Who it's for (a name, a note)" aria-label="Who the codes are for">
+      <input class="filter" id="inv-count" type="number" min="1" max="50" value="1" style="width:5em" aria-label="How many codes">
+      <button class="btn" id="inv-make">Make codes</button></p>
+    <pre id="inv-new" hidden></pre>
+    <h2>Codes <span class="spacer"></span><input class="filter" id="f-inv" placeholder="Filter" aria-label="Filter codes"></h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Kind</th><th>For</th><th>Made</th><th>Used by</th><th>State</th><th></th></tr></thead>
+      <tbody id="invites"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
     </table></div>
   </section>
 
@@ -461,6 +480,7 @@ td.acts { text-align: right; white-space: nowrap; }
   function refresh(name) {
     if (name === 'overview') { stats(); live(); node(); }
     else if (name === 'players') loadUsers();
+    else if (name === 'invites') loadInvites();
     else if (name === 'ping') pings();
     else if (name === 'matches') { live(); leaderboard(); }
     else if (name === 'cc') loadUploads();
@@ -607,13 +627,65 @@ td.acts { text-align: right; white-space: nowrap; }
     el('users').innerHTML = rows.length ? rows.map(function (u) {
       return '<tr><td><button class="linkish" data-player="' + esc(u.name) + '">' + esc(u.name) + '</button>' +
         (u.online ? ' <span class="tag on">online</span>' : '') + (u.banned ? ' <span class="tag bad">banned</span>' : '') +
-        '</td><td>' + ago(u.created) + '</td><td>' + ago(u.last_seen) + '</td><td class="num">' + u.uploads +
+        '</td><td>' + access(u) + '</td><td>' + ago(u.created) + '</td><td>' + ago(u.last_seen) + '</td><td class="num">' + u.uploads +
         '</td><td class="num">' + bytes(u.storage) + '</td><td class="acts">' +
+        (u.activated ? '' : '<button class="btn" data-user="' + u.id + '" data-a="reactivation-code">Re-activation code</button>' +
+                            '<button class="btn" data-user="' + u.id + '" data-a="activate">Activate</button>') +
+        '<button class="btn" data-user="' + u.id + '" data-a="email">Set email</button>' +
+        (u.email && !u.email_ok ? '<button class="btn" data-user="' + u.id + '" data-a="resend-confirm">Resend confirm</button>' : '') +
         '<button class="btn" data-user="' + u.id + '" data-a="' + (u.banned ? 'unban' : 'ban') + '">' + (u.banned ? 'Unban' : 'Ban') + '</button>' +
         '<button class="btn" data-user="' + u.id + '" data-a="reset">Reset password</button>' +
         '<button class="btn danger" data-user="' + u.id + '" data-a="delete">Delete</button></td></tr>';
-    }).join('') : '<tr><td colspan="6" class="empty">No accounts.</td></tr>';
+    }).join('') : '<tr><td colspan="7" class="empty">No accounts.</td></tr>';
   }
+  // (online: an active account - its sign-up code, or its re-activation code - with a confirmed email)
+  function access(u) {
+    var tag = !u.activated ? '<span class="tag bad">blocked: needs its code</span>' :
+              !u.email ? '<span class="tag bad">needs an email</span>' :
+              !u.email_ok ? '<span class="tag">email unconfirmed</span>' : '<span class="tag on">ok</span>';
+    return tag + (u.email ? ' <span class="note">' + esc(u.email) + '</span>' : '');
+  }
+  var invites = [];
+  function renderInvites() {
+    var f = el('f-inv').value.toLowerCase();
+    var rows = invites.filter(function (i) {
+      return !f || [i.note, i.account_name, i.used_by_name, i.kind].join(' ').toLowerCase().indexOf(f) >= 0;
+    });
+    el('invites').innerHTML = rows.length ? rows.map(function (i) {
+      var state = i.used_by ? '<span class="tag on">used ' + ago(i.used_at) + '</span>' :
+                  i.revoked ? '<span class="tag bad">revoked</span>' : '<span class="tag">open</span>';
+      return '<tr><td>' + (i.kind === 'reactivate' ? 'Re-activation' : 'Sign-up') + '</td><td>' +
+        esc(i.kind === 'reactivate' ? (i.account_name || '#' + i.account) : (i.note || '')) + '</td><td>' + ago(i.created) +
+        '</td><td>' + (i.used_by_name ? '<button class="linkish" data-player="' + esc(i.used_by_name) + '">' + esc(i.used_by_name) +
+        '</button>' : '') + '</td><td>' + state + '</td><td class="acts">' + (!i.used_by && !i.revoked ?
+        '<button class="btn danger" data-invite="' + i.id + '">Revoke</button>' : '') + '</td></tr>';
+    }).join('') : '<tr><td colspan="6" class="empty">No codes yet.</td></tr>';
+  }
+  function loadInvites() {
+    return api('api/admin/invites').then(function (d) {
+      invites = d.invites || [];
+      el('n-invites').textContent = invites.filter(function (i) { return !i.used_by && !i.revoked; }).length || '';
+      renderInvites();
+    }).catch(function () {});
+  }
+  el('f-inv').addEventListener('input', renderInvites);
+  el('inv-make').addEventListener('click', function () {
+    var n = Math.max(1, Math.min(50, parseInt(el('inv-count').value, 10) || 1));
+    api('api/admin/invites', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                              body: JSON.stringify({note: el('inv-note').value, count: n})}).then(function (r) {
+      el('inv-new').hidden = false;
+      el('inv-new').textContent = 'New code' + (r.codes.length > 1 ? 's' : '') + (el('inv-note').value ? ' for ' + el('inv-note').value : '') +
+        ' (copy now - shown once):\n' + r.codes.map(function (c) { return c.code; }).join('\n');
+      loadInvites();
+    }).catch(function (e) { alert('Not made: ' + e.message); });
+  });
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-invite]');
+    if (!b || !confirm('Revoke this code? It stops working at once.')) return;
+    b.disabled = true;
+    api('api/admin/invite/' + b.dataset.invite + '/revoke', {method: 'POST'}).then(loadInvites)
+      .catch(function (err) { alert(err.message); b.disabled = false; });
+  });
   function loadUsers() {
     return api('api/admin/users').then(function (d) { users = d; el('n-players').textContent = d.length; renderUsers(); }).catch(function () {});
   }
@@ -1093,9 +1165,21 @@ td.acts { text-align: right; white-space: nowrap; }
     if (a === 'delete' && !confirm(what === 'user' ? 'Delete this account and everything it uploaded?' :
                                    what === 'mod' ? 'Delete this mod from Discovery?' : 'Delete this upload?')) return;
     if (a === 'reset' && !confirm('Give this account a new random password? Its sessions are signed out.')) return;
+    if (a === 'reactivation-code' && !confirm('Make a re-activation code for this account? It shows once; an older one ' +
+                                             'it had stops working.')) return;
+    if (a === 'activate' && !confirm('Let this account play online without a re-activation code? (It still needs a ' +
+                                    'confirmed email.)')) return;
+    var opts = {method: 'POST'};
+    if (a === 'email') {
+      var u = users.filter(function (x) { return String(x.id) === String(id); })[0] || {};
+      var mail = prompt('The email for ' + (u.name || 'this account') + ' (the player gets a mail to confirm it):', u.email || '');
+      if (!mail) return;
+      opts = {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email: mail.trim()})};
+    }
     b.disabled = true;
-    api('api/admin/' + what + '/' + id + '/' + a, {method: 'POST'}).then(function (r) {
+    api('api/admin/' + what + '/' + id + '/' + a, opts).then(function (r) {
       if (r.password) prompt('New password (give it to the player):', r.password);
+      if (r.code) prompt('Re-activation code (shown once - give it to the player; it works for this account only):', r.code);
       (what === 'user' ? loadUsers : what === 'mod' ? loadMods : loadUploads)();
     }).catch(function (err) { alert(err.message); b.disabled = false; });
   });
