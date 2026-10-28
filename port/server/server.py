@@ -3038,6 +3038,8 @@ def main():
         return aa.set_password_cli(args.admin_password_file or os.path.join(args.data, "admin_password"))
     if args.test_open_accounts and args.host not in ("127.0.0.1", "::1", "localhost"):
         ap.error("--test-open-accounts is for a private test server: only with --host 127.0.0.1")
+    if args.activate and args.role == "storage":
+        ap.error("--activate: a storage node has no accounts (run it where the core's data is)")
     if args.activate:
         store = gs.Store(args.data)
         signup.Signup(store, Accounts(store), mailer.Mailer(os.path.join(args.data, "mail.json"), args.data, print),
@@ -3061,6 +3063,8 @@ def main():
     if args.role == "core" and not args.storage_url:
         ap.error("--role core needs --storage-url")
     if args.role == "storage":
+        # (only the blobs: no accounts - no Service, so no signup.py migration or backup, no mail.json, no account
+        # routes; its data folder's community.db, if one is left there, is never opened)
         if args.log:
             gs.LOG = open(args.log, "a", encoding="utf-8")
         if os.path.exists(os.path.join(args.data, NODE_STOPPED)):  # (stopped from the dashboard: stays so)
