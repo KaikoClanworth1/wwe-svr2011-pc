@@ -240,6 +240,10 @@ void Poll() {
     SetOnlineAccountBlock("");
     if (const Json* c = j["config"]; c && (*c)["mods_online"]) SetOnlineModsAllowed((*c)["mods_online"]->b);
     if (const Json* c = j["config"]; c && (*c)["match_network"]) P2PSetServerNetwork((*c)["match_network"]->s);
+    P2PSetServerNetcode([&] {  // (a server without it: lockstep)
+      const Json* c = j["config"];
+      return c && (*c)["netcode"] ? (*c)["netcode"]->s : std::string("lockstep");
+    }());
     if (const Json* c = j["config"]; c && (*c)["news"]) SetOnlineNews((*c)["news"]->s);
     for (const Json& f : j["friends"]->items) s.friends.push_back({f.Str("name"), f.Str("status"),
                                                                    f["mutual"] && f["mutual"]->b});
@@ -249,7 +253,7 @@ void Poll() {
       for (const Json& v : a->items) s.invites.push_back({v.Str("from"), v.Str("xuid"), v.Str("session"), v.Str("kind")});
   } else {
     OnlineServerUnanswered();  // (mods_online unknown: online matches with mods stay off - online_files.h)
-    if (!r) P2PSetServerNetwork("auto");  // (no server: today's way - direct, the relay if it answers)
+    if (!r) P2PSetServerNetwork("auto"), P2PSetServerNetcode("lockstep");  // (no server: today's way)
     s.error = !r ? "THE SERVER DIDN'T ANSWER" : r->status == 404 ? "THIS SERVER HAS NO FRIENDS LIST YET"
                                                                  : "THE SERVER REFUSED (" + std::to_string(r->status) + ")";
   }
