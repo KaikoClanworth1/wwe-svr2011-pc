@@ -30,6 +30,7 @@
 #include <wchar.h>
 
 #include "backgrounds.h"
+#include "move_warning.h"
 #include "movie_maker.h"
 #include "music_level.h"
 #include "unzip.h"
@@ -1927,6 +1928,23 @@ static int install_file(const WCHAR *zip)
         wcsncpy_s(kind, 32, backstage ? L"Backstage" : arena ? L"Arenas" : L"Superstars", _TRUNCATE);
     }
 place:
+    /* (a mod with custom moves: asked first - move_warning.h; not the port's own bundled mods, and with no window to
+       ask in - a test, a command line - only logged) */
+    if (!s_bundle_install && move_warning_dir_has_moves(tmp)) {
+        const HWND top = s_wnd ? GetAncestor(s_wnd, GA_ROOT) : NULL;
+        const int headless = !top || !IsWindowVisible(top);
+        if (headless) {  /* (printed by --mods-add; the log line is move_warning's) */
+            swprintf_s(t, 512, L"Warning: \"%s\" has custom moves (ported or made by hand) - experimental and most likely "
+                               L"broken.", m.name[0] ? m.name : m.id);
+            status(t);
+        }
+        if (!move_warning_ask(top, s_game, m.name[0] ? m.name : m.id, headless)) {
+            swprintf_s(t, 512, L"\"%s\" was not installed (it has custom moves).", m.name[0] ? m.name : m.id);
+            status(t);
+            remove_tree(tmp, 0);
+            return 0;
+        }
+    }
     safe_id(m.id);
     swprintf_s(parent, MAX_PATH, L"%s\\Mods\\%s", s_game, kind);
     SHCreateDirectoryExW(NULL, parent, NULL);

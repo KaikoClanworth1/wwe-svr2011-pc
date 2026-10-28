@@ -36,6 +36,7 @@
 #include "json.h"
 #include "session_log.h"
 extern "C" {
+#include "../launcher/move_warning.h"
 #include "../launcher/movie_maker.h"
 }
 #include "imgui_impl_dx11.h"
@@ -487,6 +488,25 @@ void ReleaseOwnFiles() {
 }  // namespace
 
 bool InstallModFiles(const fs::path& dir, const std::vector<ZipEntry>& files, std::string* why) {
+  {  // (a mod with custom moves - a move pack, or a superstar mod's moves\ pack: asked first, as the launcher does;
+     // a hidden test can't answer: only logged - launcher/move_warning.h)
+    bool moves = false;
+    std::string name;
+    for (const auto& f : files) {
+      moves |= f.name == "pack.txt" || f.name == "moves/pack.txt";
+      if (f.name == "manifest.txt") name = Value(std::string(f.data.begin(), f.data.end()), "name");
+    }
+    if (name.empty()) name = PathStr(dir.filename());
+    if (moves) {
+      const fs::path game = dir.parent_path().parent_path().parent_path();  // (<game>\Mods\<type>\<folder>)
+      Log("install: " + name + " has custom moves (experimental, most likely broken)");
+      if (!move_warning_ask(g_wnd, game.c_str(), Wide(name).c_str(), g_behind)) {
+        if (why) *why = "it has custom moves (you chose not to install it).";
+        Log("install: " + name + " not installed (custom moves: No)");
+        return false;
+      }
+    }
+  }
   std::error_code ec;
   const fs::path stage = dir.parent_path() / (L"." + dir.filename().wstring() + L".new");
   const fs::path old = dir.parent_path() / (L"." + dir.filename().wstring() + L".old");

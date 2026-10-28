@@ -109,6 +109,16 @@ Where a pack goes:
 A `disabled` file in the mod or pack folder turns it off. Keys the game
 already has are left alone.
 
+Installing a mod with custom moves (a pack, or a superstar mod's `moves/pack.txt`)
+asks first - "experimental and most likely broken", Yes / No, No the default,
+"Don't warn me again": the launcher (+ and Discovery) and the Mod Maker
+(`launcher/move_warning.c`; the tick is `Mods\.no_move_warning`), the Android
+launcher's Add a mod (`ModsPage.askMoves`; the tick in its preferences). With no
+one to ask (`--mods-add`, a hidden Mod Maker test) it is only logged
+(`Mods\.install.log`, the Mod Maker's log); the port's bundled mods aren't asked
+about. Test aid `SVR2011_MOVE_WARNING_SHOT=<file.bmp>`: the box drawn off-screen,
+saved and answered No.
+
 A pack of its own may carry a `manifest.txt` (`type=moves`, `name=`): its
 entrances are listed in CREATE AN ENTRANCE as `MOD: <name>` (as a superstar
 mod's are), else as the entrance script's name and the game from `pack.txt`'s
