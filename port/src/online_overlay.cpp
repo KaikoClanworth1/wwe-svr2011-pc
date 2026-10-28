@@ -1364,6 +1364,9 @@ constexpr uint32_t kBarMessage = 2;        // a message box (A SELECT)
 std::atomic<int64_t> g_seen[std::size(kWatched)];  // (Clock ticks of each one's last lookup)
 std::atomic<uint32_t> g_help_bar{0};
 std::atomic<int64_t> g_help_bar_at{0};
+std::atomic<int64_t> g_lobby_bar_at{0};  // (the last time a session's lobby bar - 1200..1239 - came up)
+
+bool LobbyBar(uint32_t bar) { return bar >= 1200 && bar < 1240; }
 
 int64_t Ticks() { return Clock::now().time_since_epoch().count(); }
 
@@ -1512,12 +1515,22 @@ void WalkTick() {
   const uint32_t bar = g_help_bar.load();
   // (a session's lobby: its bars are 1200..1239 - one per match size and
   // cursor - and the joining box's)
-  const bool in_lobby = group == kOnlineScreen && ((bar >= 1200 && bar < 1240) || bar == kBarJoining);
+  const bool in_lobby = group == kOnlineScreen && (LobbyBar(bar) || bar == kBarJoining);
   const auto in_step = now - g_walk.step_at;
   switch (g_walk.step) {
     case Step::kWait: {
+      // (in the online menus: from the screen the cursor shows)
+      int64_t t_on = 0, t_ma = 0, t_pm = 0, t_cm = 0;
+      Latest(kOnlineRows, &t_on), Latest(kMatchRows, &t_ma), Latest(kPlayerRows, &t_pm), Latest(kCustomRows, &t_cm);
+      const int64_t newest = std::max({t_on, t_ma, t_pm, t_cm});
       // (a match, an editor, a session's lobby: until the player is at a menu)
-      const bool drivable = menu && (group < 1000 || group == kOnlineScreen) && !in_lobby;
+      const bool at_menu = menu && (group < 1000 || group == kOnlineScreen) && !in_lobby;
+      // (after an online match the game comes back to its PLAYER MATCH menu without a menu select: the menu
+      // object keeps the group it had before - an online menu's row looked up since the last lobby says the
+      // player is in the online menus)
+      const bool after_match = !at_menu && InMatch() && newest > g_lobby_bar_at.load() && !LobbyBar(bar) &&
+                               bar != kBarJoining;
+      const bool drivable = at_menu || after_match;
       if (!drivable) {
         if (!g_walk.told_wait) {
           Say("INVITE ACCEPTED: BACK AT A MENU, THE GAME TAKES YOU TO " + Upper(g_walk.from) + "'S SESSION");
@@ -1532,11 +1545,8 @@ void WalkTick() {
         g_walk.told_wait = false;
         return;
       }
-      if (group < 1000) return Goto(Step::kMainTop);
-      // (in the online menus: from the screen the cursor shows)
-      int64_t t_on = 0, t_ma = 0, t_pm = 0, t_cm = 0;
-      Latest(kOnlineRows, &t_on), Latest(kMatchRows, &t_ma), Latest(kPlayerRows, &t_pm), Latest(kCustomRows, &t_cm);
-      const int64_t newest = std::max({t_on, t_ma, t_pm, t_cm});
+      if (at_menu && group < 1000) return Goto(Step::kMainTop);
+      if (after_match) REXLOG_INFO("online overlay: invite walk: the online menus after a match (no menu select)");
       if (bar == kBarList) return Goto(Step::kList);
       if (!newest) return Goto(Step::kOnline);
       if (newest == t_cm) return Goto(Step::kCustom);
@@ -1617,7 +1627,8 @@ void WalkTick() {
       Press(X_INPUT_GAMEPAD_A, 1500);  // (YES)
       return Goto(Step::kJoining);
     case Step::kJoining:
-      if (in_lobby && bar != kBarJoining) {
+      // (the lobby's bar alone: after an online match the menu object's group isn't the online menus')
+      if (LobbyBar(bar) && g_help_bar_at.load() >= g_walk.step_at.time_since_epoch().count()) {
         REXLOG_INFO("online overlay: invite walk: in {}'s session", g_walk.from);
         Say("JOINED " + Upper(g_walk.from) + "'S SESSION");
         g_walk = Walk{};
@@ -1789,6 +1800,7 @@ std::string PresencePlace(std::string* kind) {
 void OnlineNoteHelpBar(uint32_t id) {
   g_help_bar = id;
   g_help_bar_at = Ticks();
+  if (LobbyBar(id)) g_lobby_bar_at = Ticks();
 }
 
 uint16_t OnlineOverlayPad(uint16_t buttons) {

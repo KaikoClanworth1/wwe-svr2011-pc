@@ -264,9 +264,10 @@ REX_HOOK_RAW(sub_824E6510) {
     PicturesFrame(ctx, base, L);
     g_lobby_seen = std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::steady_clock::now().time_since_epoch()).count();
-    static uint32_t last_state = 0xFFFFFFFF;
+    static uint32_t last_state = 0xFFFFFFFF, last_cursor = 0xFFFFFFFF;
     if (LogOn() && state != last_state) REXLOG_INFO("online cpu: lobby state {} (cursor slot {})", state, j);
-    last_state = state;
+    else if (LogOn() && j != last_cursor) REXLOG_INFO("online cpu: lobby cursor slot {} (state {})", j, state);
+    last_state = state, last_cursor = j;
     if (LogOn()) {  // (the slot records when one changes: state, net player, superstar)
       static std::string last;
       std::string now = fmt::format("joined {} me {}:", Rd32(base + L + 24), Rd32(base + L + 20));
