@@ -23,7 +23,7 @@ function NodeProcs { @(Get-CimInstance Win32_Process -Filter "Name like 'python%
 function WaitFor([scriptblock]$cond, [int]$sec) { for ($i = 0; $i -lt $sec; $i++) { if (& $cond) { return $true }; Start-Sleep 1 }; return $false }
 
 Remove-Item (Join-Path $nt 'data\node.stopped'), (Join-Path $svc 'watchdog.*'), (Join-Path $nt 'core\storage_node.json') -ErrorAction SilentlyContinue
-$coreP = Start-Process $py -ArgumentList "`"$srv\server.py`" --role core --host 127.0.0.1 --port 8496 --data `"$nt\core`" --storage-url http://127.0.0.1:8495 --storage-key `"$svc\key.txt`" --local-admin --log `"$nt\core\server.log`"" -WindowStyle Hidden -PassThru
+$coreP = Start-Process $py -ArgumentList "`"$srv\server.py`" --role core --test-open-accounts --host 127.0.0.1 --port 8496 --data `"$nt\core`" --storage-url http://127.0.0.1:8495 --storage-key `"$svc\key.txt`" --local-admin --log `"$nt\core\server.log`"" -WindowStyle Hidden -PassThru
 Check (WaitFor { try { (Invoke-WebRequest "$core/__health" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200 } catch { $false } } 20) "the core is up"
 
 $d = Storage
@@ -54,7 +54,7 @@ Check (-not (Test-Path (Join-Path $nt 'data\node.stopped'))) "Start: the marker 
 # Stop while the core can't reach the node: the watchdog does it at its next run
 Get-Process -Id $coreP.Id | Stop-Process -Force; Start-Sleep 2
 '{"wanted": "stopped", "changed": 0}' | Set-Content (Join-Path $nt 'core\storage_node.json') -Encoding ascii
-$coreP = Start-Process $py -ArgumentList "`"$srv\server.py`" --role core --host 127.0.0.1 --port 8496 --data `"$nt\core`" --storage-url http://127.0.0.1:8495 --storage-key `"$svc\key.txt`" --local-admin --log `"$nt\core\server.log`"" -WindowStyle Hidden -PassThru
+$coreP = Start-Process $py -ArgumentList "`"$srv\server.py`" --role core --test-open-accounts --host 127.0.0.1 --port 8496 --data `"$nt\core`" --storage-url http://127.0.0.1:8495 --storage-key `"$svc\key.txt`" --local-admin --log `"$nt\core\server.log`"" -WindowStyle Hidden -PassThru
 [void](WaitFor { try { (Invoke-WebRequest "$core/__health" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200 } catch { $false } } 20)
 Watchdog
 Check (WaitFor { (NodeProcs).Count -eq 0 } 20) "a Stop the node missed: the watchdog stops it"

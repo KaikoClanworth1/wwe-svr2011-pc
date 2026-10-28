@@ -96,7 +96,7 @@ $t = (Get-Content (Join-Path $src "test_config_ent_down.toml") -Raw) -replace '(
 # ---- the server, the game
 $py = "C:\Users\Ranger\AppData\Local\Programs\Python\Python311\python.exe"
 $srvLog = Join-Path $out "server.log"
-$srv = Start-Process $py -ArgumentList "`"$port\server\server.py`" --host 127.0.0.1 --port $sp --data `"$(Join-Path $root 'cc_srv\data')`" --log `"$srvLog`"" -PassThru -WindowStyle Hidden
+$srv = Start-Process $py -ArgumentList "`"$port\server\server.py`" --test-open-accounts --host 127.0.0.1 --port $sp --data `"$(Join-Path $root 'cc_srv\data')`" --log `"$srvLog`"" -PassThru -WindowStyle Hidden
 $log = Join-Path $out "game.log"
 $inputFile = Join-Path $out "input.txt"
 Set-Content $inputFile "" -NoNewline
