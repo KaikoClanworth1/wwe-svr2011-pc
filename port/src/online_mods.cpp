@@ -194,6 +194,13 @@ std::vector<std::pair<std::string, int>> g_wpicks;
 // with move packs and mod weapons off (g_packs_off: the list every game can take - none), the CHAT says whose.
 std::map<uint64_t, Clock::time_point> g_echo_since;
 bool g_packs_off = false;
+// When the lobby screen's frame last ran (OnlineModsFrame; Clock ticks): the move packs list is decided and taken
+// only while the lobby shows - kept from the match's load to the lobby's return. (Not !InMatch(): only a menu
+// choice turns that off, and an online match goes back to the lobby without one.)
+std::atomic<Clock::rep> g_lobby_frame{0};
+bool LobbyShows() {
+  return Clock::now().time_since_epoch() - Clock::duration(g_lobby_frame.load()) < std::chrono::milliseconds(1500);
+}
 
 uint64_t HashKeys(const std::vector<std::string>& keys) {
   uint64_t h = 0xCBF29CE484222325ull;
@@ -590,7 +597,13 @@ void Loop() {
         it = std::find(lobby.members.begin(), lobby.members.end(), it->first) == lobby.members.end() ? g_theirs.erase(it)
                                                                                                       : std::next(it);
       g_restricted = lobby.in;
-      if (lobby.in && !svr2011::InMatch()) {
+      const bool shows = lobby.in && LobbyShows();
+      static bool showed = false;
+      if (lobby.in && shows != showed && LogOn())
+        REXLOG_INFO("online mods: the lobby screen {} (in a match: {}) - the move packs list {}",
+                    shows ? "shows" : "is gone", svr2011::InMatch(), shows ? "follows the lobby" : "kept for the match");
+      showed = shows;
+      if (shows) {
         if (lobby.host) {  // (the packs every player in the lobby has)
           std::vector<std::string> keys;
           for (const auto& [key, pack] : MyMods().pack_of) {
@@ -777,6 +790,7 @@ void OnlineModsBlockStore(uint8_t* base, uint32_t data) {
 void OnlineModsFrame(PPCContext& ctx, uint8_t* base) {
   const uint32_t L = Lobby(base);
   if (!L) return;
+  g_lobby_frame = Clock::now().time_since_epoch().count();  // (LobbyShows)
   // The lines waiting go into the lobby's CHAT (its 44-line ring at
   // *0x82EDE92C: sub_828A7B38(chat, text)).
   {
