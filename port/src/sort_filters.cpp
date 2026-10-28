@@ -191,11 +191,16 @@ REX_HOOK_RAW(sub_82734970) {
   __imp__sub_82734970(ctx, base);
   // (not a list of Create-a-Superstar slots: Road to WrestleMania's Streak story lists only those - its master holds
   // slot numbers 0, 1, 2 ..., not roster ids - and NPC / MODS put roster ids in it: they showed, and picking one did
-  // nothing (slot 111...). A roster list has no id 0; its CAS entries have the top bit.)
+  // nothing (slot 111...). A roster list has no id 0; its CAS entries have the top bit. Every id a slot number (under
+  // the 50 CAS slots) and id 0 there - or, in Road to WrestleMania, any slots: a save whose one CAW is in slot 2
+  // listed only {2}, was taken for a roster list and its MODS showed the CAW alone, 28 Oct.)
+  constexpr uint32_t kCasSlots = 50;
   bool slots = false;
   if (lists) {
     const List master{base, lists + 6 * kListSize};
-    for (uint32_t i = 0; i < master.Count() && !slots; ++i) slots = master.Id(i) == 0;
+    bool all_slots = master.Count() > 0, zero = false;
+    for (uint32_t i = 0; i < master.Count(); ++i) all_slots &= master.Id(i) < kCasSlots, zero |= master.Id(i) == 0;
+    slots = all_slots && (zero || svr2011::InRoadToWrestleMania());
   }
   if (lists && !slots) Retag(base, lists);
   if (lists && !slots) svr2011::RtwmCasList(0, false);
