@@ -1167,6 +1167,8 @@ class Sake:
     # (set by the service: whether a Community Creations record without the game's "checked for mods"
     # mark - a build before the check - is refused (True) or only logged)
     refuse_unmarked = None
+    # (set by the service: name_check(owner, values) -> why a record's names are refused (the name filter), or None)
+    name_check = None
 
     def news_panel(self):
         """The NEWS panel's whole text as the game's fetch gets it (the prefix, then
@@ -1233,9 +1235,18 @@ class Sake:
                 out.append(rec)
         return out
 
-    def handle(self, func, call, owner, xuid, modfree=False):
-        """A Sake call from the player with profile `owner` and XUID `xuid`."""
+    def handle(self, func, call, owner, xuid, modfree=False, notes=None):
+        """A Sake call from the player with profile `owner` and XUID `xuid`. `notes` (a list) gets what the
+        player is told on screen (the server's X-Svr-Notice: a refused name)."""
         tableid = text_of(call, "tableid")
+
+        def names_refused(values):
+            why = self.name_check(owner, values) if self.name_check else None
+            if why:
+                log("sake: %s record from %d refused: %s %s" % (tableid, owner, why, short(values)))
+                if notes is not None:
+                    notes.append(why)
+            return why
         fields = [s.text or "" for s in (child(call, "fields") or [])]
 
         def reply(result, extra=""):
@@ -1251,6 +1262,8 @@ class Sake:
                 values["UserID"] = ["binaryDataValue", base64.b64encode(xuid.to_bytes(8, "big")).decode()]
             if self.store.count_owned(tableid, owner) >= RECORD_LIMIT:
                 return reply("RecordLimitReached")
+            if names_refused(values):
+                return reply("NoPermission")
             # a creation from a build that doesn't check for mods (no X-Svr-ModFree from the relay): it may
             # need mods others don't have
             if tableid == "UserContent" and not modfree:
@@ -1291,6 +1304,8 @@ class Sake:
             values = read_values(child(call, "values"))
             values.pop("AuthorName", None)
             values.pop("UserID", None)
+            if names_refused(values):
+                return reply("NoPermission")
             self.store.update(tableid, recordid, values)
             return reply("Success")
         if func == "DeleteRecord":
