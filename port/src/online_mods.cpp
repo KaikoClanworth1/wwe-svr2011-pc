@@ -189,6 +189,10 @@ std::string g_off_said;               // (the CHAT line about packs off, once a 
 // The host's mod weapons for this lobby's Extreme Rules matches that every player has ({key, count}, sorted): the
 // host decides, everyone echoes them with the packs (Echo) - the WEAPONS page's choice online (weapons_page.h).
 std::vector<std::pair<std::string, int>> g_wpicks;
+// (the host) A player's echo not matching since (its xuid -> when first seen so); past 30 s this lobby's match plays
+// with move packs and mod weapons off (g_packs_off: the list every game can take - none), the CHAT says whose.
+std::map<uint64_t, Clock::time_point> g_echo_since;
+bool g_packs_off = false;
 
 uint64_t HashKeys(const std::vector<std::string>& keys) {
   uint64_t h = 0xCBF29CE484222325ull;
@@ -221,7 +225,8 @@ void SetAgreed(std::vector<std::string> keys) {  // (under g_mutex)
     if (!std::binary_search(g_agreed.begin(), g_agreed.end(), key)) off.push_back(MyMods().label.at(key));
   std::string line;
   if (!off.empty()) {
-    line = "Move packs off for this match (not every player has them): ";
+    line = g_packs_off ? "Move packs off for this match (a player's game didn't take the list): "
+                       : "Move packs off for this match (not every player has them): ";
     for (size_t i = 0; i < off.size(); ++i) {
       if (line.size() + off[i].size() > 90) {
         line += " +" + std::to_string(off.size() - i);
@@ -231,7 +236,7 @@ void SetAgreed(std::vector<std::string> keys) {  // (under g_mutex)
     }
   }
   if (line != g_off_said) {
-    if (!line.empty()) g_chat.push_back(line);
+    if (!line.empty() && !g_packs_off) g_chat.push_back(line);  // (packs off: the CHAT already says whose game)
     g_off_said = line;
     if (LogOn() || !line.empty()) REXLOG_INFO("online mods: agreed move packs {} - {}", g_agreed.size(), line.empty() ? "all of this game's" : line);
   }
@@ -492,6 +497,7 @@ void Loop() {
         if (g_session && LogOn()) REXLOG_INFO("online mods: lobby {:016X} over", g_session);
         g_theirs.clear(), g_chat.clear(), g_arena_lacking.clear(), g_host = 0;
         g_agreed.clear(), g_agreed_hash = 0, g_off_said.clear(), g_wpicks.clear();
+        g_echo_since.clear(), g_packs_off = false;
         g_session = lobby.in ? lobby.session : 0;
         apply = true;  // (back to no arena: below)
       }
@@ -511,6 +517,7 @@ void Loop() {
             }
             if (all) keys.push_back(key);
           }
+          if (g_packs_off) keys.clear();  // (a player's game didn't take the list: none for this match)
           SetAgreed(std::move(keys));
           // (this game's mod weapons that every player has)
           std::vector<std::pair<std::string, int>> picks;
@@ -524,9 +531,11 @@ void Loop() {
             if (all) picks.emplace_back(key, n);
           }
           std::sort(picks.begin(), picks.end());
+          if (g_packs_off) picks.clear();
           if (picks != g_wpicks && LogOn()) REXLOG_INFO("online mods: agreed mod weapons {}", picks.size());
           g_wpicks = std::move(picks);
-        } else if (auto h = g_theirs.find(g_host); h != g_theirs.end() && h->second.packs_known) {
+        } else if (auto h = g_theirs.find(g_host); h != g_theirs.end() && h->second.packs_known &&
+                   !std::getenv("SVR2011_TEST_NO_ECHO")) {  // (test aid: a joiner that never takes the host's list)
           SetAgreed(h->second.agreed);
           g_wpicks = h->second.weapons_known ? h->second.wpicks : std::vector<std::pair<std::string, int>>{};
         }
@@ -748,7 +757,7 @@ bool OnlineModsMayStart(uint8_t* base, uint32_t L) {
   if (!L) return true;
   const P2PLobby lobby = P2PMatchLobby();
   if (!lobby.in || lobby.members.size() < 2) return true;
-  std::string why;
+  std::string why, detail;  // (detail: the log's only)
   {
     std::lock_guard lock(g_mutex);
     if (!g_arena_lacking.empty()) why = "You don't have this session's arena: " + g_arena_lacking;
@@ -767,8 +776,26 @@ bool OnlineModsMayStart(uint8_t* base, uint32_t L) {
           why = "a player who just joined is still sending its mods";
           break;
         }
-        if (t->second.packs_known && t->second.echo != Echo()) {
-          why = t->second.name + " is still taking the move packs list";
+        // (nothing to agree - no packs, no mod weapons for this match: a game that never took a list (echo 0) plays
+        // every pack move as its default too, the same as an empty list - Start Without Mods on both, 2.1.5 report)
+        const bool none = g_agreed.empty() && g_wpicks.empty();
+        const bool same = t->second.echo == Echo() || (none && t->second.echo == 0);
+        if (same) {
+          g_echo_since.erase(x);
+          continue;
+        }
+        if (t->second.packs_known) {
+          auto& since = g_echo_since.emplace(x, Clock::now()).first->second;
+          if (!g_packs_off && Clock::now() - since > std::chrono::seconds(30)) {
+            g_packs_off = true;  // (the next frame's list is none: SetAgreed above)
+            g_chat.push_back("Move packs off for this match: " + t->second.name + "'s game didn't take the list");
+            REXLOG_WARN("online mods: {}'s game hasn't taken the move packs list in 30 s (echo {:016X}, this host's "
+                        "{:016X}) - move packs and mod weapons off for this match", t->second.name, t->second.echo, Echo());
+          }
+          why = t->second.name + (g_packs_off ? "'s game doesn't answer the move packs list (it can leave and join again)"
+                                              : " is still taking the move packs list");
+          detail = fmt::format(" (its echo {:016X}, this host's {:016X}; packs {} / {}, weapons {} / {})", t->second.echo,
+                               Echo(), t->second.packs.size(), g_agreed.size(), t->second.wpicks.size(), g_wpicks.size());
           break;
         }
       }
@@ -808,7 +835,7 @@ bool OnlineModsMayStart(uint8_t* base, uint32_t L) {
   static Clock::time_point told_at{};
   if (why != told || Clock::now() - told_at > std::chrono::seconds(20)) {
     ShowNotice("The match can't start: " + why, 6.0f);
-    REXLOG_INFO("online mods: the match waits - {}", why);
+    REXLOG_INFO("online mods: the match waits - {}{}", why, detail);
     told = why, told_at = Clock::now();
   }
   return false;
