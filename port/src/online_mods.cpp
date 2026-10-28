@@ -15,7 +15,8 @@
 //   host's custom arena; "" none), u16 superstars {u16 id, key, label},
 //   u16 arenas {key, label}  (strings: u8 length + bytes), then (games of later versions) move packs, the host's
 //   agreed packs + an echo, backstage mods, weapon mods {key, label} and the host's agreed mod weapons {key, u8 n}
-// and the host tells a refused picker why: u8 2, u64 session, u64 to, text.
+// (a table over 1000 bytes goes in parts: u8 3, ... - SendTable) and the host tells a refused picker why: u8 2,
+// u64 session, u64 to, text.
 // Test aids: SVR2011_TEST_LOBBY_LOG logs the tables and translations;
 // SVR2011_TEST_MOD_HIDE=<folder>[,<folder>] leaves mods out of this game's
 // table (as if not installed).
@@ -341,7 +342,57 @@ void SendTable(const svr2011::P2PLobby& lobby) {
     if (lobby.host)
       for (const auto& [key, n] : g_wpicks) PutStr(o, key), o.push_back(uint8_t(n));
   }
-  svr2011::P2PSendMods(o);
+  // (test aid: SVR2011_TEST_TABLE_PAD=<n> - n made-up superstar mods more in the table, a big mod list)
+  static const int pad = [] {
+    const char* v = std::getenv("SVR2011_TEST_TABLE_PAD");
+    return v ? std::clamp(std::atoi(v), 0, 2000) : 0;
+  }();
+  if (pad) {
+    const size_t at = 1 + 8 + 8 + 1 + 1 + o[18] + 1 + o[19 + o[18]] + 1;  // (the superstars' count)
+    const uint16_t n = uint16_t(o[at] << 8 | o[at + 1]);
+    std::vector<uint8_t> extra;
+    for (int i = 0; i < pad; ++i) {
+      Put16(extra, uint16_t(0xF000 + i));
+      PutStr(extra, "pad_" + std::to_string(i) + "\t1.0\t00000000");
+      PutStr(extra, "Test Pad Superstar " + std::to_string(i) + " 1.0");
+    }
+    o[at] = uint8_t((n + pad) >> 8), o[at + 1] = uint8_t(n + pad);
+    o.insert(o.begin() + at + 2, extra.begin(), extra.end());
+  }
+  // A big table (a long mod list) goes in parts under 1200 bytes with the p2p header - one UDP packet over
+  // 1400 is split by IP and some routers drop the pieces: u8 3, u64 session, u64 xuid, u64 the table's hash,
+  // u8 part, u8 parts, its bytes (games before this ignore kind 3; the version check keeps them apart).
+  constexpr size_t kPart = 1000;
+  if (o.size() <= kPart) {
+    svr2011::P2PSendMods(o);
+    return;
+  }
+  uint64_t h = 0xCBF29CE484222325ull;
+  for (uint8_t c : o) h = (h ^ c) * 0x100000001B3ull;
+  const size_t parts = (o.size() - 1 + kPart - 1) / kPart;  // (the kind byte stays out)
+  if (parts > 255) return;
+  static uint64_t said = 0;
+  if (said != h && LogOn()) REXLOG_INFO("online mods: this game's table {} bytes, sent in {} parts", o.size(), parts);
+  said = h;
+  // (test aid: SVR2011_TEST_TABLE_DROP=<part> - that part left out of the first send: the next one fills it in)
+  static int drop = [] {
+    const char* v = std::getenv("SVR2011_TEST_TABLE_DROP");
+    return v ? std::atoi(v) : -1;
+  }();
+  for (size_t i = 0; i < parts; ++i) {
+    if (int(i) == drop) {
+      REXLOG_INFO("online mods: test - part {} of {} left out", i, parts);
+      drop = -1;
+      continue;
+    }
+    std::vector<uint8_t> c;
+    c.push_back(3);
+    Put64(c, lobby.session), Put64(c, MyXuid()), Put64(c, h);
+    c.push_back(uint8_t(i)), c.push_back(uint8_t(parts));
+    const size_t from = 1 + i * kPart, to = std::min(o.size(), from + kPart);
+    c.insert(c.end(), o.begin() + from, o.begin() + to);
+    svr2011::P2PSendMods(c);
+  }
 }
 
 // Who in the lobby lacks a key (the others' names, with what they have of
@@ -475,11 +526,45 @@ void OnNote(In& r) {
   svr2011::ShowNotice(text, 8.0f);
 }
 
+// A big table's parts (SendTable), per sender: kept across its 2 s resends while the table stays the same (a
+// lost part comes again), read as one once all came.
+struct Parts {
+  uint64_t hash = 0;
+  std::vector<std::vector<uint8_t>> part;
+  size_t got = 0;
+};
+std::mutex g_parts_mutex;
+std::map<uint64_t, Parts> g_parts;
+
+void OnPart(In& r) {
+  const uint64_t session = r.u64(), xuid = r.u64(), hash = r.u64();
+  const uint8_t i = r.u8(), n = r.u8();
+  if (!r.ok || !n || i >= n || !xuid) return;
+  std::vector<uint8_t> whole;
+  {
+    std::lock_guard lock(g_parts_mutex);
+    {
+      std::lock_guard lock2(g_mutex);
+      if (session != g_session) return;
+    }
+    Parts& p = g_parts[xuid];
+    if (p.hash != hash || p.part.size() != n) p = Parts{hash, std::vector<std::vector<uint8_t>>(n), 0};
+    if (!p.part[i].empty() || r.at >= r.n) return;
+    p.part[i].assign(r.p + r.at, r.p + r.n);
+    if (++p.got < n) return;
+    for (const auto& b : p.part) whole.insert(whole.end(), b.begin(), b.end());
+    p = Parts{};  // (the next resend: read again)
+  }
+  In t{whole.data(), whole.size()};
+  OnTable(t);
+}
+
 void OnMessage(const uint8_t* data, size_t size) {
   In r{data, size};
   const uint8_t kind = r.u8();
   if (kind == 1) OnTable(r);
   else if (kind == 2) OnNote(r);
+  else if (kind == 3) OnPart(r);
 }
 
 // Every 2 s: this game's table to the lobby; the others' kept while they're
