@@ -777,9 +777,12 @@ bool OnlineModsMayStart(uint8_t* base, uint32_t L) {
           break;
         }
         // (nothing to agree - no packs, no mod weapons for this match: a game that never took a list (echo 0) plays
-        // every pack move as its default too, the same as an empty list - Start Without Mods on both, 2.1.5 report)
+        // every pack move as its default too, the same as an empty list - Start Without Mods on both, 2.1.5 report;
+        // either side's "none" counts: 0 (no list taken / worked out yet) or the empty list's hash)
+        static const uint64_t kEmpty = HashKeys({});
         const bool none = g_agreed.empty() && g_wpicks.empty();
-        const bool same = t->second.echo == Echo() || (none && t->second.echo == 0);
+        const bool same =
+            t->second.echo == Echo() || (none && (t->second.echo == 0 || t->second.echo == kEmpty));
         if (same) {
           g_echo_since.erase(x);
           continue;
