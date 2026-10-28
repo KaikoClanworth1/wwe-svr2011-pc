@@ -1,13 +1,14 @@
 // WWE SmackDown vs. Raw 2011 - the launcher's Online page: play online, the
 // server (Default: the port's own, its address not shown; Custom: one the
-// player types) and the account on it - sign in (name or email), create one
-// (name, email, password, invite code), forgot password (a mailed code and a
-// new password), sign out (<server>/api/login, /api/register, /api/logout,
-// /api/password/*; JSON). Signing in writes online_token, online_xuid,
-// online_name and online_enabled for the game. An account the server keeps off
-// online (2.1.6, server.py signup.py) shows its steps: the re-activation code
-// from the server owner (accounts from before 2.1.6), an email, the code mailed
-// to confirm it (/api/account, /api/reactivate, /api/email[/confirm|/resend]).
+// player types) and the account on it - sign in, create one (name, password,
+// invite code), forgot password (the reset code the server owner made for the
+// account, and a new password), sign out (<server>/api/login, /api/register,
+// /api/logout, /api/password/reset; JSON). Signing in writes online_token,
+// online_xuid, online_name and online_enabled for the game. An account the
+// server keeps off online (2.1.6 with its account checks on, server.py
+// signup.py) shows its step: the re-activation code from the server owner
+// (accounts from before 2.1.6; /api/account, /api/reactivate). Codes only - no
+// email.
 // Friends: the account's list on the server (/api/friends) - who's online (in
 // the game's ONLINE menus) or in an online match, and who added the player;
 // refreshed every 20 seconds while the page shows.
@@ -38,19 +39,19 @@ final class OnlinePage {
     static final String kDefaultServer = "https://sho-ti.me/svr";
     static final String kCustomServer = "127.0.0.1:8411";
     // The account card's modes, signed out.
-    static final int kSignIn = 0, kSignUp = 1, kForgot = 2, kForgotCode = 3;
+    static final int kSignIn = 0, kSignUp = 1, kForgot = 2;
 
     private final LauncherActivity a_;
     private Spinner kind_;
-    private LinearLayout addressBox_, signedIn_, nameRow_, passwordRow_, emailRow_, codeRow_;
-    private EditText address_, name_, password_, email_, code_;
+    private LinearLayout addressBox_, signedIn_, nameRow_, passwordRow_, codeRow_;
+    private EditText address_, name_, password_, code_;
     private TextView who_, accountStatus_;
     private Button signIn_, create_, signOut_, forgot_;
     private boolean busy_;
     private int mode_ = kSignIn;
-    // (signed in: what the server says the account still needs to play online; checked once a start)
-    private boolean needsCode_, needsEmail_, needsConfirm_, checked_;
-    private String serverEmail_ = "", note_ = "";
+    // (signed in: the server says the account still needs its re-activation code; checked once a start)
+    private boolean needsCode_, checked_;
+    private String note_ = "";
     private LinearLayout friendsCard_, friendRows_;
     private View friendsHeading_;
     private EditText friendName_;
@@ -142,10 +143,8 @@ final class OnlinePage {
         who_.setPadding(0, a_.dp(12), 0, a_.dp(12));
         signedIn_.addView(who_);
         account.addView(signedIn_);
-        name_ = a_.field("Name or email", 254, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        name_ = a_.field("Name", 15, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         nameRow_ = fieldRow(account, "Name", name_);
-        email_ = a_.field("Email", 254, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-        emailRow_ = fieldRow(account, "Email", email_);
         password_ = a_.field("Password", 100, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         passwordRow_ = fieldRow(account, "Password", password_);
         code_ = a_.field("Code", 20, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
@@ -165,8 +164,6 @@ final class OnlinePage {
         forgot_.setOnClickListener(v -> {
             mode_ = kForgot;
             note_ = "";
-            String typed = name_.getText().toString().trim();  // (an email typed to sign in: the one to reset)
-            if (typed.contains("@")) email_.setText(typed);
             refreshAccount();
         });
         c.addView(forgot_, a_.fullWidth(10));
@@ -311,8 +308,8 @@ final class OnlinePage {
 
     boolean signedIn() { return !settings().getString("online_token", "").isEmpty(); }
 
-    // (signed in, an account the server keeps off online: its steps show)
-    boolean steps() { return signedIn() && (needsCode_ || needsEmail_ || needsConfirm_); }
+    // (signed in, an account the server keeps off online: its step shows)
+    boolean steps() { return signedIn() && needsCode_; }
 
     static void show(View v, boolean on) { v.setVisibility(on ? View.VISIBLE : View.GONE); }
 
@@ -320,45 +317,37 @@ final class OnlinePage {
         boolean in = signedIn(), steps = steps();
         String name = settings().getString("online_name", "");
         show(signedIn_, in);
-        String who = "Signed in as " + name + (isCustom(server()) ? " on " + server() : "") + ".";
-        String status = "";
-        if (needsCode_) status = " Online needs the re-activation code the server owner made for your account.";
-        else if (needsEmail_) status = " Online needs an email on your account now (we mail a code to confirm it).";
-        else if (needsConfirm_) status = " Type the code we mailed you (no mail? check spam, or fix the email and "
-            + "resend).";
-        who_.setText(who + (steps ? status : ""));
+        who_.setText("Signed in as " + name + (isCustom(server()) ? " on " + server() : "") + "."
+            + (steps ? " Online needs the re-activation code the server owner made for your account." : ""));
         if (!in && name_.getText().length() == 0 && mode_ == kSignIn) name_.setText(name);
-        show(nameRow_, !in && (mode_ == kSignIn || mode_ == kSignUp));
-        show(passwordRow_, !in && mode_ != kForgot);
-        show(emailRow_, (!in && mode_ != kSignIn) || (steps && !needsCode_));
-        show(codeRow_, (!in && (mode_ == kSignUp || mode_ == kForgotCode)) || (steps && (needsCode_ || !needsEmail_)));
-        name_.setHint(mode_ == kSignUp ? "3-15 characters" : "Name or email");
-        password_.setHint(mode_ == kSignUp || mode_ == kForgotCode ? "8 or more characters" : "Password");
-        code_.setHint(!in ? (mode_ == kSignUp ? "Invite code" : "Code from the mail")
-            : needsCode_ ? "Re-activation code" : "Code from the mail");
+        show(nameRow_, !in);
+        show(passwordRow_, !in);
+        show(codeRow_, (!in && mode_ != kSignIn) || steps);
+        name_.setHint(mode_ == kSignUp ? "3-15 characters" : "Name");
+        password_.setHint(mode_ == kSignIn ? "Password" : "8 or more characters");
+        code_.setHint(steps ? "Re-activation code" : mode_ == kSignUp ? "Invite code" : "Reset code");
         String primary = "Sign in", secondary = "Create account";
         if (steps) {
-            primary = needsCode_ ? "Re-activate" : needsEmail_ ? "Add email" : "Confirm";
-            secondary = "Resend the mail";
+            primary = "Re-activate";
         } else if (mode_ == kSignUp) {
             primary = "Create account";
             secondary = "Back";
-        } else if (mode_ == kForgot || mode_ == kForgotCode) {
-            primary = mode_ == kForgot ? "Mail me a code" : "Set password";
+        } else if (mode_ == kForgot) {
+            primary = "Set password";
             secondary = "Back";
         }
         signIn_.setText(primary);
         create_.setText(secondary);
         show(signIn_, !in || steps);
-        show(create_, !in || (steps && !needsCode_ && !needsEmail_));
+        show(create_, !in);
         show((View) signIn_.getParent(), !in || steps);
         show(forgot_, !in && mode_ == kSignIn);
         show(signOut_, in);
         String fallback = "";
         if (!in && mode_ == kSignIn) fallback = "Sign in, or create an account (it needs an invite code).";
         else if (!in && mode_ == kSignUp) fallback = "A new account needs an invite code from the server owner.";
-        else if (!in && mode_ == kForgot) fallback = "We mail a code to your account's email.";
-        else if (!in) fallback = "Type the code from the mail (it works for 30 minutes) and a new password.";
+        else if (!in) fallback = "Ask the server owner for a reset code for your account (it works once, for 24 "
+            + "hours), then choose a new password.";
         accountStatus_.setText(note_.isEmpty() ? fallback : note_);
         // (an account works on the server that made it: sign out to change servers)
         kind_.setEnabled(!in);
@@ -386,14 +375,8 @@ final class OnlinePage {
         return true;
     }
 
-    // An account answer's steps (api/login, api/account, ...).
-    void readSteps(JSONObject r) {
-        needsCode_ = r.optBoolean("needs_code");
-        needsEmail_ = r.optBoolean("needs_email");
-        needsConfirm_ = r.optBoolean("needs_confirm");
-        serverEmail_ = r.optString("email", "");
-        if (!serverEmail_.isEmpty()) email_.setText(serverEmail_);
-    }
+    // An account answer's step (api/login, api/account, ...).
+    void readSteps(JSONObject r) { needsCode_ = r.optBoolean("needs_code"); }
 
     interface Done { void run(JSONObject r); }
 
@@ -423,15 +406,10 @@ final class OnlinePage {
     void primary() {
         if (steps()) step();
         else if (mode_ == kSignIn || mode_ == kSignUp) signIn(mode_ == kSignUp);
-        else if (mode_ == kForgot) forgotSend();
         else forgotReset();
     }
 
     void secondary() {
-        if (steps()) {
-            resend();
-            return;
-        }
         mode_ = mode_ == kSignIn ? kSignUp : kSignIn;
         note_ = "";
         refreshAccount();
@@ -440,14 +418,14 @@ final class OnlinePage {
     void signIn(boolean create) {
         if (busy_) return;
         final String name = name_.getText().toString().trim(), password = password_.getText().toString();
-        final String email = email_.getText().toString().trim(), invite = code_.getText().toString().trim();
-        if (create ? !validName(name) : !(validName(name) || name.contains("@"))) {
-            note_ = "Names are 3-15 letters, digits, spaces or _ . -" + (create ? "" : " (or type your email)");
+        final String invite = code_.getText().toString().trim();
+        if (!validName(name)) {
+            note_ = "Names are 3-15 letters, digits, spaces or _ . -";
             refreshAccount();
             return;
         }
-        if (create && (password.length() < 8 || email.isEmpty() || invite.isEmpty())) {
-            note_ = "Type your email, a password (8 or more characters) and your invite code.";
+        if (create && (password.length() < 8 || invite.isEmpty())) {
+            note_ = "Type a password (8 or more characters) and your invite code.";
             refreshAccount();
             return;
         }
@@ -461,11 +439,8 @@ final class OnlinePage {
         try {
             body.put("name", name);
             body.put("password", password);
-            body.put("client", 2);  // (this app walks the account's steps; older ones get a text to update)
-            if (create) {
-                body.put("email", email);
-                body.put("invite", invite);
-            }
+            body.put("client", 2);  // (this app walks the account's step; older ones get a text to update)
+            if (create) body.put("invite", invite);
         } catch (org.json.JSONException e) {
             return;
         }
@@ -481,8 +456,7 @@ final class OnlinePage {
                 checked_ = true;
                 mode_ = kSignIn;
                 note_ = !settings().save() ? "Could not save the settings."
-                    : create ? "Account made. We mailed a code to " + email + ": type it here."
-                    : steps() ? "" : "Signed in - online play is on.";
+                    : steps() ? "" : (create ? "Account made. " : "") + "Signed in - online play is on.";
                 a_.refresh();
             } else {
                 note_ = error(r, create);
@@ -490,38 +464,25 @@ final class OnlinePage {
         });
     }
 
-    // The account's next step: its re-activation code, an email, the mailed code.
+    // The account's step: its re-activation code.
     void step() {
-        final String code = code_.getText().toString().trim(), email = email_.getText().toString().trim();
-        final boolean wasEmail = !needsCode_ && needsEmail_;
-        if (wasEmail ? email.isEmpty() : code.isEmpty()) {
-            note_ = wasEmail ? "Type your email." : "Type the code.";
+        final String code = code_.getText().toString().trim();
+        if (code.isEmpty()) {
+            note_ = "Type the code.";
             refreshAccount();
             return;
         }
         JSONObject body = new JSONObject();
-        String path;
         try {
-            if (needsCode_) {
-                path = "/api/reactivate";
-                body.put("code", code);
-            } else if (needsEmail_) {
-                path = "/api/email";
-                body.put("email", email);
-            } else {
-                path = "/api/email/confirm";
-                body.put("code", code);
-            }
+            body.put("code", code);
         } catch (org.json.JSONException e) {
             return;
         }
-        call(path, body, true, r -> {
+        call("/api/reactivate", body, true, r -> {
             if (r.optBoolean("ok")) {
                 readSteps(r);
                 code_.setText("");
-                note_ = wasEmail ? "We mailed a code to " + email + ": type it here."
-                    : needsEmail_ ? "Account re-activated. Now add your email."
-                    : steps() ? "" : "All set: you can play online.";
+                note_ = steps() ? "" : "Account re-activated: you can play online.";
                 if (!steps()) fetchFriends(null);
             } else {
                 note_ = error(r, false);
@@ -529,28 +490,8 @@ final class OnlinePage {
         });
     }
 
-    // Resend the confirm mail (to the email typed: a changed one becomes the account's).
-    void resend() {
-        final String email = email_.getText().toString().trim();
-        final boolean changed = !email.isEmpty() && !email.equalsIgnoreCase(serverEmail_);
-        JSONObject body = new JSONObject();
-        try {
-            if (changed) body.put("email", email);
-        } catch (org.json.JSONException e) {
-            return;
-        }
-        call(changed ? "/api/email" : "/api/email/resend", body, true, r -> {
-            if (r.optBoolean("ok")) {
-                readSteps(r);
-                note_ = "We mailed a new code to " + (changed ? email : serverEmail_) + ".";
-            } else {
-                note_ = error(r, false);
-            }
-        });
-    }
-
-    // The signed-in account's steps, from the server: once a start. A token the server ended (the password changed
-    // or was reset elsewhere) signs out.
+    // The signed-in account's step, from the server: once a start. A token the server ended (the password changed
+    // or was reset) signs out.
     void checkAccount() {
         call("/api/account", null, true, r -> {
             int code = r.optInt("_status", 0);
@@ -560,42 +501,24 @@ final class OnlinePage {
                 settings().setString("online_token", "");
                 settings().setString("online_xuid", "");
                 settings().save();
-                needsCode_ = needsEmail_ = needsConfirm_ = false;
+                needsCode_ = false;
                 note_ = "Signed out: your password was changed or reset. Sign in again.";
             }
         });
     }
 
-    void forgotSend() {
-        final String email = email_.getText().toString().trim();
-        if (email.isEmpty()) {
-            note_ = "Type your account's email.";
-            refreshAccount();
-            return;
-        }
-        JSONObject body = new JSONObject();
-        try {
-            body.put("email", email);
-        } catch (org.json.JSONException e) {
-            return;
-        }
-        call("/api/password/forgot", body, false, r -> {
-            if (r.optBoolean("ok")) mode_ = kForgotCode;
-            note_ = r.optBoolean("ok") ? r.optString("message", "") : error(r, false);
-        });
-    }
-
+    // A forgotten password: the reset code the server owner made for the account, and a new one.
     void forgotReset() {
-        final String email = email_.getText().toString().trim(), code = code_.getText().toString().trim();
+        final String name = name_.getText().toString().trim(), code = code_.getText().toString().trim();
         final String password = password_.getText().toString();
-        if (email.isEmpty() || code.isEmpty() || password.isEmpty()) {
-            note_ = "Type the code from the mail and a new password.";
+        if (name.isEmpty() || code.isEmpty() || password.isEmpty()) {
+            note_ = "Type your account's name, the reset code and a new password.";
             refreshAccount();
             return;
         }
         JSONObject body = new JSONObject();
         try {
-            body.put("email", email);
+            body.put("name", name);
             body.put("code", code);
             body.put("password", password);
         } catch (org.json.JSONException e) {
@@ -604,7 +527,6 @@ final class OnlinePage {
         call("/api/password/reset", body, false, r -> {
             if (r.optBoolean("ok")) {
                 mode_ = kSignIn;
-                name_.setText(email);
                 password_.setText("");
                 code_.setText("");
                 note_ = r.optString("message", "Your password is set: sign in with it.");
@@ -630,7 +552,7 @@ final class OnlinePage {
             busy_ = false;
             settings().setString("online_token", "");
             settings().setString("online_xuid", "");
-            needsCode_ = needsEmail_ = needsConfirm_ = false;
+            needsCode_ = false;
             mode_ = kSignIn;
             note_ = settings().save() ? "Signed out." : "Could not save the settings.";
             refreshAccount();
