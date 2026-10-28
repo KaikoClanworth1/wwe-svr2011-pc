@@ -174,6 +174,11 @@ td.acts { text-align: right; white-space: nowrap; }
 .set textarea { grid-column: 2 / 4; width: 100%; min-height: 120px; resize: vertical; }
 .set .wide { grid-column: 2 / 4; }
 .row { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+.names { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; }
+.names textarea { width: 100%; min-height: 260px; resize: vertical; box-sizing: border-box;
+                  font: 13px/1.45 ui-monospace, Consolas, monospace; }
+.names label { display: block; font-weight: 600; margin-bottom: 4px; }
+.mark { background: var(--bad-bg); color: var(--bad); border-radius: 3px; padding: 0 2px; }
 .row .btn { margin-left: 0; }
 .viewer { position: fixed; inset: 0; background: rgba(0,0,0,.72); display: none; align-items: center;
           justify-content: center; z-index: 10; padding: 16px; }
@@ -192,6 +197,7 @@ td.acts { text-align: right; white-space: nowrap; }
   .tabs { padding: 0 6px; }
   .set { grid-template-columns: 1fr; }
   .set textarea, .set .wide { grid-column: auto; }
+  .names { grid-template-columns: 1fr; }
   .charts { grid-template-columns: 1fr; }
   .tile .v { font-size: 22px; }
   input.filter { width: 100%; }
@@ -215,6 +221,7 @@ td.acts { text-align: right; white-space: nowrap; }
     <button role="tab" id="tab-matches" aria-controls="p-matches">Matches <span class="count live" id="n-matches"></span></button>
     <button role="tab" id="tab-cc" aria-controls="p-cc">Community Creations <span class="count" id="n-cc"></span></button>
     <button role="tab" id="tab-discovery" aria-controls="p-discovery">Discovery <span class="count" id="n-discovery"></span></button>
+    <button role="tab" id="tab-names" aria-controls="p-names">Names <span class="count" id="n-names"></span></button>
     <button role="tab" id="tab-reports" aria-controls="p-reports">Reports <span class="count" id="n-reports"></span></button>
     <button role="tab" id="tab-settings" aria-controls="p-settings">Settings</button>
     <button role="tab" id="tab-logs" aria-controls="p-logs">Logs</button>
@@ -357,6 +364,41 @@ td.acts { text-align: right; white-space: nowrap; }
     <div id="audit"></div>
   </section>
 
+  <section role="tabpanel" id="p-names" aria-labelledby="tab-names" tabindex="0" hidden>
+    <h2>Name filter <span class="spacer"></span><span class="note" id="nf-note"></span></h2>
+    <p class="intro">Checked on everything players put on the server: Community Creations titles, tags and comments,
+      Discovery mods' names / tags / descriptions, entrance song and movie names, and account names (at sign-up, and an
+      uploader's own name at each upload). A refused upload tells the player why ("That name isn't allowed on Community
+      Creations"); nothing already on the server is changed - see Flagged names below.</p>
+    <p><label class="note"><input type="checkbox" id="nf-on"> <b>Filter on</b> (off: nothing is refused; Flagged names
+      still lists what the list would catch)</label></p>
+    <div class="names">
+      <div><label for="nf-words">Words <span class="note" id="nf-count"></span></label>
+        <textarea class="filter" id="nf-words" spellcheck="false" aria-describedby="nf-help"></textarea>
+        <p class="note" id="nf-help">One per line. Under 5 letters: a whole word only (and "f a g" spelled out), so
+          "Scunthorpe" is fine; 5 or more: inside words too, and across words ("hit ler"). <b>=word</b> whole word
+          only, <b>*word</b> inside words too, <b>two words</b> a phrase, <b># ...</b> a note. Case, leetspeak (h1tl3r,
+          @, $), repeated letters, dots / spaces / underscores between letters and look-alike letters are read
+          through.</p></div>
+      <div><label for="nf-allow">Allow list</label>
+        <textarea class="filter" id="nf-allow" spellcheck="false"></textarea>
+        <p class="note">Words never flagged though a listed word is inside them (e.g. snigger). One per line.</p></div>
+    </div>
+    <div class="row"><button class="btn primary" id="nf-save">Save list</button><span class="note" id="nf-saved"></span></div>
+
+    <h2>Test a name</h2>
+    <p><input class="filter" id="nf-test" placeholder="Would this name pass?" aria-label="A name to test" style="width:320px">
+      <button class="btn" id="nf-try">Test</button> <span id="nf-result" role="status"></span></p>
+
+    <h2>Flagged names <span class="spacer"></span><button class="btn" id="nf-scan">Scan again</button></h2>
+    <p class="intro">What is on the server now that the saved list catches. Nothing is deleted on its own: decide each one
+      (Delete / Hide here are the same as on the Community Creations, Discovery and Players tabs).</p>
+    <div class="scroll"><table>
+      <thead><tr><th>What</th><th>Text</th><th>Matched</th><th>By</th><th></th></tr></thead>
+      <tbody id="nf-flagged"><tr><td colspan="5" class="empty">Open this tab to scan.</td></tr></tbody>
+    </table></div>
+  </section>
+
   <section role="tabpanel" id="p-reports" aria-labelledby="tab-reports" tabindex="0" hidden>
     <h2>Problem reports <span class="spacer"></span>
       <label class="note"><input type="checkbox" id="rp-open" checked> Hide done / duplicates</label>
@@ -487,6 +529,7 @@ td.acts { text-align: right; white-space: nowrap; }
     else if (name === 'matches') { live(); leaderboard(); }
     else if (name === 'cc') loadUploads();
     else if (name === 'discovery') loadMods();
+    else if (name === 'names') { loadNames(); loadFlagged(); }
     else if (name === 'reports') loadReports();
     else if (name === 'settings') { if (!settingsList.length) settings(); }
     else if (name === 'logs') log();
@@ -914,6 +957,82 @@ td.acts { text-align: right; white-space: nowrap; }
     }).catch(function () {});
   }
 
+  // ---- the name filter: its list, a test, what is on the server now that it catches
+  var namesDirty = false;
+  function loadNames() {
+    if (namesDirty) return;  // (an unsaved edit: kept)
+    return api('api/admin/names').then(function (d) {
+      el('nf-on').checked = d.enabled;
+      el('nf-words').value = d.words.join('\n');
+      el('nf-allow').value = d.allow.join('\n');
+      el('nf-count').textContent = d.terms + ' word' + (d.terms === 1 ? '' : 's');
+      el('nf-note').innerHTML = d.enabled ? '<span class="tag on">on</span>' : '<span class="tag bad">off</span>';
+    }).catch(function () {});
+  }
+  ['nf-words', 'nf-allow'].forEach(function (id) {
+    el(id).addEventListener('input', function () { namesDirty = true; el('nf-saved').textContent = 'not saved'; });
+  });
+  function saveNames(body, done) {
+    return api('api/admin/names', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                   body: JSON.stringify(body)}).then(function (d) {
+      namesDirty = false;
+      el('nf-saved').textContent = 'saved - in use now';
+      loadNames(); loadFlagged();
+      if (done) done(d);
+    }).catch(function (e) { alert('Not saved: ' + e.message); loadNames(); });
+  }
+  el('nf-save').addEventListener('click', function () {
+    saveNames({words: el('nf-words').value.split('\n'), allow: el('nf-allow').value.split('\n')});
+  });
+  el('nf-on').addEventListener('change', function () {
+    var on = this.checked;
+    if (!on && !confirm('Turn the name filter off? Uploads with any name are let through until it is on again.')) {
+      this.checked = true; return;
+    }
+    saveNames({enabled: on});
+  });
+  function testName() {
+    var t = el('nf-test').value;
+    if (!t.trim()) { el('nf-result').textContent = ''; return; }
+    api('api/admin/names/test', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                 body: JSON.stringify({text: t})}).then(function (d) {
+      el('nf-result').innerHTML = (d.passes ? '<span class="tag on">passes</span>'
+                                            : '<span class="tag bad">refused</span> matched <b>' + esc(d.term) + '</b>') +
+        ' <span class="note">read as: ' + esc(d.readings.join(' / ')) + (namesDirty ? ' (the saved list)' : '') + '</span>';
+    }).catch(function (e) { el('nf-result').textContent = e.message; });
+  }
+  el('nf-try').addEventListener('click', testName);
+  el('nf-test').addEventListener('keydown', function (e) { if (e.key === 'Enter') testName(); });
+  var KINDS = {upload: 'Community Creations', mod: 'Discovery mod', entrance: 'Entrance', account: 'Account'};
+  function loadFlagged() {
+    el('nf-scan').disabled = true;
+    return api('api/admin/names/flagged').then(function (d) {
+      var rows = d.flagged;
+      el('n-names').textContent = rows.length || '';
+      el('nf-flagged').innerHTML = rows.length ? rows.map(function (r) {
+        var acts = '';
+        if (r.kind === 'upload' || (r.kind === 'entrance' && r.id)) {
+          acts = '<button class="btn" data-up="' + r.id + '" data-a="hide">Hide</button>' +
+                 '<button class="btn danger" data-up="' + r.id + '" data-a="delete">Delete</button>';
+        } else if (r.kind === 'mod') {
+          acts = '<button class="btn" data-mod="' + r.id + '" data-a="hide">Hide</button>' +
+                 '<button class="btn danger" data-mod="' + r.id + '" data-a="delete">Delete</button>';
+        } else if (r.kind === 'account') {
+          acts = '<button class="btn" data-user="' + r.id + '" data-a="' + (r.banned ? 'unban' : 'ban') + '">' +
+                 (r.banned ? 'Unban' : 'Ban') + '</button>' +
+                 '<button class="btn danger" data-user="' + r.id + '" data-a="delete">Delete</button>';
+        }
+        return '<tr><td>' + esc(KINDS[r.kind] || r.kind) + ' <span class="note">' + esc(r.field) + '</span>' +
+          (r.title && r.title !== r.text ? '<div class="note">' + esc(r.title) + '</div>' : '') +
+          '</td><td>' + esc(r.text) + '</td><td><span class="mark">' + esc(r.term) + '</span></td><td>' + esc(r.author || '') +
+          '</td><td class="acts">' + acts + '</td></tr>';
+      }).join('') : '<tr><td colspan="5" class="empty">Nothing on the server matches the list.</td></tr>';
+    }).catch(function (e) {
+      el('nf-flagged').innerHTML = '<tr><td colspan="5" class="empty">' + esc(e.message) + '</td></tr>';
+    }).finally(function () { el('nf-scan').disabled = false; });
+  }
+  el('nf-scan').addEventListener('click', loadFlagged);
+
   // ---- problem reports, grouped by signature (newest group first)
   var reportRows = [], reportError = '', modStore = null;
   // (a report's match: the match folder's summary, its zip, the mods with it, and the replay pack of both)
@@ -1201,6 +1320,7 @@ td.acts { text-align: right; white-space: nowrap; }
                                             : 'Re-activation code (shown once - give it to the player; it works for this ' +
                                               'account only):', r.code);
       (what === 'user' ? loadUsers : what === 'mod' ? loadMods : loadUploads)();
+      if (current === 'names') loadFlagged();
     }).catch(function (err) { alert(err.message); b.disabled = false; });
   });
   el('f-up').addEventListener('input', renderUploads);

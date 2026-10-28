@@ -18,7 +18,8 @@ One aiohttp service with two halves:
       api/relay/<id>                          the online match relay (relay.py)
   /                 the admin dashboard: connections, bandwidth, storage,
                     players, uploads and accounts (Project Index admins, or
-                    anyone on this PC when run on its own)
+                    anyone on this PC when run on its own); the name filter's
+                    list (namefilter.py, docs/NAME_FILTER.md)
 
 Everything a player does is tied to their account (a bearer token from
 api/login): the game's own identities - its XUID, login ticket - are not
@@ -57,6 +58,7 @@ import discovery
 import leaderboards
 import match_names
 import media
+import namefilter
 import relay
 import reports
 import signup
@@ -261,6 +263,7 @@ class Accounts:
             """)
             self.db.commit()
         self.cache = {}  # token hash -> (account row, cached at)
+        self.names = None  # (the name filter - the service's)
 
     @staticmethod
     def hash_password(password, salt):
@@ -292,6 +295,9 @@ class Accounts:
         name = name.strip()
         if not NAME_RE.match(name):
             return None, "Names are 3-15 letters, digits, spaces, dots, dashes or underscores."
+        if self.names and self.names.check(name):
+            gs.log("accounts: sign-up as %r from %s refused: the name filter" % (name, ip))
+            return None, "That account name isn't allowed - pick another."
         if len(password) < 6:
             return None, "Passwords need at least 6 characters."
         salt = secrets.token_hex(16)
@@ -698,6 +704,9 @@ class Service:
         discovery.init(self.store)
         self.mod_upload = asyncio.Lock()  # (one .svrmod stored at a time: they are up to 250 MB, held in memory)
         self.accounts = Accounts(self.store)
+        # (the name filter: Community Creations names, Discovery mods, entrances, account names - namefilter.py)
+        self.names = namefilter.NameFilter(args.data, gs.log)
+        self.accounts.names = self.names
         self.signup = signup.Signup(self.store, self.accounts, gs.log,
                                     open_accounts=bool(getattr(args, "test_open_accounts", False)),
                                     exempt=(getattr(args, "admin_account", None) or "").strip(),
@@ -719,6 +728,7 @@ class Service:
         self.sake.news_text = lambda: news_fields(SETTINGS["online_news"])
         self.sake.refuse_unmarked = lambda: SETTINGS["cc_unmarked"] == "refuse" and release_at_least(
             SETTINGS["latest_release"], MODFREE_SINCE)
+        self.sake.name_check = self.sake_names
         self.invites = collections.defaultdict(dict)  # account id -> {inviter id: invite} (in memory)
         self.max_connections = args.max_connections
         self.attempts = collections.defaultdict(collections.deque)  # ip -> login/register times
@@ -1368,6 +1378,12 @@ class Service:
             m = body.get(kind)
             if not isinstance(m, dict):
                 continue
+            # (the names land on the downloader's PC - the playlist's, the files': the name filter first)
+            why = self.names_why(account, *(str(m.get(n, "")) for n in names))
+            if why:
+                gs.log("entrance: file %d by %s refused: %s (%s)" % (fileid, account["name"], why,
+                                                                    ", ".join(str(m.get(n, "")) for n in names)))
+                return web.json_response({"ok": False, "error": why}, status=400, headers={"X-Svr-Notice": why})
             sent = str(m.get("sha", "")).lower()
             sha = self.store.stored_media(sent)
             if not sha:
@@ -1425,11 +1441,15 @@ class Service:
                 xml = gs.login(self.store, func, call, account["profileid"], account["name"])
             elif path.endswith("sakestorageserver/storageserver.asmx"):
                 modfree = request.headers.get("X-Svr-ModFree") == "1"  # (the game's relay: checked for mods)
+                notes = []
                 xml = await loop.run_in_executor(None, self.sake.handle, func, call, account["profileid"], xuid,
-                                                 modfree)
+                                                 modfree, notes)
                 result = re.search(rb"<%sResult>([^<]*)<" % func.encode(), xml)
                 gs.log("sake: %s %s %s by %s -> %s" % (func, gs.text_of(call, "tableid"), gs.text_of(call, "recordid", ""),
                                                      account["name"], result.group(1).decode() if result else "?"))
+                if notes:  # (the game's relay shows it on screen: 2.1.6 on)
+                    return web.Response(body=xml, content_type="text/xml", charset="utf-8",
+                                        headers={"X-Svr-Notice": notes[0]})
             elif path.endswith("competitionservice/competitionservice.asmx"):
                 xml = gs.competition(func, call)
             else:
@@ -1602,6 +1622,10 @@ class Service:
                 order = None
         if not why and not fields and order is None:
             why = "Nothing to change."
+        if not why:
+            why = self.names_why(account, *fields.values())
+            if why:
+                gs.log("discovery: edit of mod %d from %s refused: %s" % (mid, account["name"], why))
         if why:
             return web.json_response({"ok": False, "error": why}, status=400)
         loop = asyncio.get_running_loop()
@@ -1652,6 +1676,8 @@ class Service:
                     why = "Give the update a version."
                 elif fields["version"] == (old or {}).get("version"):
                     why = "Give the update a new version (it is %s now)." % old["version"]
+            if not why:
+                why = self.names_why(account, *fields.values())
             if not why:
                 manifest, why = await loop.run_in_executor(None, discovery.check_svrmod, data)
             if not why:
@@ -1775,6 +1801,8 @@ class Service:
                         break
             loop = asyncio.get_running_loop()
             if not why:
+                why = self.names_why(account, *(fields.get(k, "") for k in discovery.MAX_TEXT))
+            if not why:
                 manifest, why = await loop.run_in_executor(None, discovery.check_svrmod, data)
             if not why:
                 why = self.mod_quota_why(account, len(data))
@@ -1789,6 +1817,117 @@ class Service:
             gs.log("discovery: mod %d \"%s\" %s (%d bytes, %s) from %s" % (
                 mid, fields["name"], fields["version"], len(data), manifest.get("type", "?"), account["name"]))
             return web.json_response(dict({"ok": True, "id": mid, "size": len(data)}, **self.mod_size_warning(len(data))))
+
+    # -- the name filter (namefilter.py; the dashboard's Names tab) --------------------------------------------
+
+    STRING_TYPES = ("asciiStringValue", "unicodeStringValue")
+    NOT_NAMES = ("AuthorName", "UserID")  # (the game's ids, not text a player wrote)
+
+    def names_why(self, account, *texts):
+        """Why these texts (and the uploader's account name) are refused, or None."""
+        why = self.names.check(*texts)
+        if not why and account and self.names.check(account["name"]):
+            why = namefilter.ACCOUNT_REASON
+        return why
+
+    def sake_names(self, owner, values):
+        """A Community Creations record's texts - its title, tags and comments - and its uploader's name."""
+        texts = [str(v) for k, (t, v) in values.items() if t in self.STRING_TYPES and k not in self.NOT_NAMES]
+        return self.names_why(self.accounts.by_profile(owner), *texts)
+
+    def names_flagged(self):
+        """What is on the server now that the list flags (whatever the switch): uploads, Discovery mods,
+        entrances, accounts. Nothing is changed - the dashboard's Delete buttons are the owner's say."""
+        nf, out = self.names, []
+        by_profile = {a["profileid"]: a for a in self.accounts.all()}
+
+        def who(profileid):
+            a = by_profile.get(profileid)
+            return a["name"] if a else "profile %d" % profileid
+
+        files = {}  # (an entrance's Superstar file -> its upload)
+        for rec in self.store.all("UserContent"):
+            f = rec["fields"]
+            fid = int((f.get("F00") or [None, 0])[1] or 0)
+            if fid:
+                files[fid] = rec["recordid"]
+            for k, (t, v) in sorted(f.items()):
+                term = nf.match(v) if t in self.STRING_TYPES and k not in self.NOT_NAMES else None
+                if term:
+                    out.append({"kind": "upload", "id": rec["recordid"], "field": k, "text": str(v)[:200],
+                                "term": term, "author": who(rec["ownerid"]),
+                                "title": str((f.get("Title") or [None, ""])[1] or "")[:80]})
+                    break
+        with self.store.lock:
+            mods = self.store.db.execute("SELECT id, name, tags, description, version, author FROM mods").fetchall()
+            entrances = self.store.db.execute("SELECT fileid, ownerid, info FROM entrances").fetchall()
+        for mid, *texts, author in mods:
+            for k, v in zip(("name", "tags", "description", "version"), texts):
+                term = nf.match(v)
+                if term:
+                    out.append({"kind": "mod", "id": mid, "field": k, "text": str(v)[:200], "term": term,
+                                "author": author, "title": texts[0]})
+                    break
+        for fileid, ownerid, info in entrances:
+            try:
+                info = json.loads(info)
+            except ValueError:
+                continue
+            hits = [(kind + " " + k, str(v)) for kind, m in sorted(info.items()) if isinstance(m, dict)
+                    for k, v in sorted(m.items()) if k in ("playlist", "file", "name") and nf.match(v)]
+            if hits:
+                out.append({"kind": "entrance", "id": files.get(fileid), "file": fileid, "field": hits[0][0],
+                            "text": hits[0][1][:200], "term": nf.match(hits[0][1]), "author": who(ownerid),
+                            "title": ""})
+        for a in by_profile.values():
+            term = nf.match(a["name"])
+            if term:
+                out.append({"kind": "account", "id": a["id"], "field": "name", "text": a["name"], "term": term,
+                            "author": a["name"], "title": "", "banned": bool(a["banned"])})
+        return out
+
+    @admin_only
+    async def admin_names(self, request):
+        """GET: the list, the allow list, the switch. POST {enabled?, words?, allow?}: saved, used at once."""
+        if request.method == "POST":
+            try:
+                body = await request.json()
+            except ValueError:
+                body = None
+            if not isinstance(body, dict):
+                return web.json_response({"ok": False, "error": "Send a JSON object."}, status=400)
+            lists = {}
+            for k in ("words", "allow"):
+                v = body.get(k)
+                if v is None:
+                    continue
+                v = v.splitlines() if isinstance(v, str) else v
+                if not isinstance(v, list) or len(v) > 5000 or any(len(str(w)) > 100 for w in v):
+                    return web.json_response({"ok": False, "error": "%s: at most 5000 lines of 100 characters" % k},
+                                             status=400)
+                lists[k] = [str(w).strip() for w in v if str(w).strip()]
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: self.names.save(body.get("enabled"), lists.get("words"), lists.get("allow")))
+            gs.log("admin: name filter saved (%s, %d words, %d allowed)" % (
+                "on" if self.names.enabled else "off", len(self.names.word_lines), len(self.names.allow_lines)))
+        return web.json_response(dict({"ok": True}, **self.names.state()))
+
+    @admin_only
+    async def admin_names_test(self, request):
+        """POST {text}: would this name pass? (the list as it is saved; the switch aside)"""
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        text = str((body or {}).get("text", ""))[:2000]
+        term = self.names.match(text)
+        return web.json_response({"ok": True, "passes": term is None, "term": term,
+                                  "readings": [" ".join(r) for r in namefilter.words(text)]})
+
+    @admin_only
+    async def admin_names_flagged(self, request):
+        rows = await asyncio.get_running_loop().run_in_executor(None, self.names_flagged)
+        return web.json_response({"ok": True, "enabled": self.names.enabled, "flagged": rows})
 
     # Problem reports (reports.py, docs/REPORTS_API.md): anyone may send one (a Bearer account is noted);
     # 5 in 10 minutes and 20 a day per address, and per account.
@@ -2807,6 +2946,9 @@ class Service:
             app.router.add_route("*", p + "/api/admin/invites", self.admin_invites)
             app.router.add_post(p + "/api/admin/invite/{id}/revoke", self.admin_invite_revoke)
             app.router.add_get(p + "/api/admin/checks", self.admin_checks)
+            app.router.add_route("*", p + "/api/admin/names", self.admin_names)  # (GET; POST: save)
+            app.router.add_post(p + "/api/admin/names/test", self.admin_names_test)
+            app.router.add_get(p + "/api/admin/names/flagged", self.admin_names_flagged)
         app.cleanup_ctx.append(self.background)
         return app
 

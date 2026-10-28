@@ -915,7 +915,12 @@ std::optional<Response> ServerRequest(const std::string& method, const std::stri
                                       Headers headers) {
   const std::string token = rex::cvar::Query<std::string>("online_token");
   if (!token.empty()) headers.emplace_back("Authorization", "Bearer " + token);
-  return Request(method, ServerBase() + path, headers, body);
+  auto r = Request(method, ServerBase() + path, headers, body);
+  // (the server's word for the player - a Community Creations name its filter refused: on screen)
+  if (r)
+    if (auto it = r->headers.find("x-svr-notice"); it != r->headers.end() && !it->second.empty())
+      svr2011::ShowNotice(it->second, 8.0f);
+  return r;
 }
 
 void SetTransferListener(TransferListener listener) { g_transfer = listener; }
