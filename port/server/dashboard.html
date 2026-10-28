@@ -282,15 +282,17 @@ td.acts { text-align: right; white-space: nowrap; }
       <thead><tr><th>Name</th><th>Online access</th><th>Joined</th><th>Last seen</th><th class="num">Uploads</th><th class="num">Storage</th><th></th></tr></thead>
       <tbody id="users"><tr><td colspan="7" class="empty">Loading&hellip;</td></tr></tbody>
     </table></div>
-    <p class="note">Online access: accounts from before 2.1.6 need the re-activation code you make here (Re-activation code: it
-      shows once - give it to that player; it works for that account only) and, like every account, a confirmed email.
-      Activate lets an account in without a code. Set email sends the player a confirmation mail.</p>
+    <p class="note">Online access (once the account_checks setting is on): accounts from before 2.1.6 need the
+      re-activation code you make here - it shows once; give it to that player, it works for that account only. Activate
+      lets an account in without a code. Reset code: for a forgotten password - the player types it in the launcher's
+      Forgot password with a new one (once, for 24 hours; every session of the account ends).</p>
   </section>
 
   <section role="tabpanel" id="p-invites" aria-labelledby="tab-invites" tabindex="0" hidden>
+    <p class="note" id="checks-line"></p>
     <h2>New sign-up codes</h2>
-    <p class="intro">One code per person: it works once, for one new account (with an email it has to confirm).
-      Codes show only here, once - copy them now (the server keeps only their hash).</p>
+    <p class="intro">One code per person: it works once, for one new account. Codes show only here, once - copy them
+      now (the server keeps only their hash).</p>
     <p><input class="filter" id="inv-note" maxlength="80" placeholder="Who it's for (a name, a note)" aria-label="Who the codes are for">
       <input class="filter" id="inv-count" type="number" min="1" max="50" value="1" style="width:5em" aria-label="How many codes">
       <button class="btn" id="inv-make">Make codes</button></p>
@@ -631,20 +633,17 @@ td.acts { text-align: right; white-space: nowrap; }
         '</td><td class="num">' + bytes(u.storage) + '</td><td class="acts">' +
         (u.activated ? '' : '<button class="btn" data-user="' + u.id + '" data-a="reactivation-code">Re-activation code</button>' +
                             '<button class="btn" data-user="' + u.id + '" data-a="activate">Activate</button>') +
-        '<button class="btn" data-user="' + u.id + '" data-a="email">Set email</button>' +
-        (u.email && !u.email_ok ? '<button class="btn" data-user="' + u.id + '" data-a="resend-confirm">Resend confirm</button>' : '') +
+        '<button class="btn" data-user="' + u.id + '" data-a="reset-code">Reset code</button>' +
         '<button class="btn" data-user="' + u.id + '" data-a="' + (u.banned ? 'unban' : 'ban') + '">' + (u.banned ? 'Unban' : 'Ban') + '</button>' +
         '<button class="btn" data-user="' + u.id + '" data-a="reset">Reset password</button>' +
         '<button class="btn danger" data-user="' + u.id + '" data-a="delete">Delete</button></td></tr>';
     }).join('') : '<tr><td colspan="7" class="empty">No accounts.</td></tr>';
   }
-  // (online: an active account - its sign-up code, or its re-activation code - with a confirmed email)
+  // (online, once account_checks is on: an active account - its sign-up code, or its re-activation code, used)
   function access(u) {
-    var tag = !u.activated ? '<span class="tag bad">blocked: needs its code</span>' :
-              !u.email ? '<span class="tag bad">needs an email</span>' :
-              !u.email_ok ? '<span class="tag">email unconfirmed</span>' : '<span class="tag on">ok</span>';
-    return tag + (u.email ? ' <span class="note">' + esc(u.email) + '</span>' : '');
+    return u.activated ? '<span class="tag on">ok</span>' : '<span class="tag bad">needs its re-activation code</span>';
   }
+  var KIND = {signup: 'Sign-up', reactivate: 'Re-activation', reset: 'Password reset'};
   var invites = [];
   function renderInvites() {
     var f = el('f-inv').value.toLowerCase();
@@ -653,19 +652,33 @@ td.acts { text-align: right; white-space: nowrap; }
     });
     el('invites').innerHTML = rows.length ? rows.map(function (i) {
       var state = i.used_by ? '<span class="tag on">used ' + ago(i.used_at) + '</span>' :
-                  i.revoked ? '<span class="tag bad">revoked</span>' : '<span class="tag">open</span>';
-      return '<tr><td>' + (i.kind === 'reactivate' ? 'Re-activation' : 'Sign-up') + '</td><td>' +
-        esc(i.kind === 'reactivate' ? (i.account_name || '#' + i.account) : (i.note || '')) + '</td><td>' + ago(i.created) +
+                  i.revoked ? '<span class="tag bad">revoked</span>' :
+                  i.expired ? '<span class="tag bad">expired</span>' : '<span class="tag">open</span>';
+      return '<tr><td>' + (KIND[i.kind] || esc(i.kind)) + '</td><td>' +
+        esc(i.kind !== 'signup' ? (i.account_name || '#' + i.account) : (i.note || '')) + '</td><td>' + ago(i.created) +
         '</td><td>' + (i.used_by_name ? '<button class="linkish" data-player="' + esc(i.used_by_name) + '">' + esc(i.used_by_name) +
-        '</button>' : '') + '</td><td>' + state + '</td><td class="acts">' + (!i.used_by && !i.revoked ?
+        '</button>' : '') + '</td><td>' + state + '</td><td class="acts">' + (!i.used_by && !i.revoked && !i.expired ?
         '<button class="btn danger" data-invite="' + i.id + '">Revoke</button>' : '') + '</td></tr>';
     }).join('') : '<tr><td colspan="6" class="empty">No codes yet.</td></tr>';
   }
   function loadInvites() {
+    checksLine();
     return api('api/admin/invites').then(function (d) {
       invites = d.invites || [];
-      el('n-invites').textContent = invites.filter(function (i) { return !i.used_by && !i.revoked; }).length || '';
+      el('n-invites').textContent = invites.filter(function (i) { return !i.used_by && !i.revoked && !i.expired; }).length || '';
       renderInvites();
+    }).catch(function () {});
+  }
+  // (the account_checks setting: what it does now, how many accounts on would keep off online)
+  function checksLine() {
+    return api('api/admin/checks').then(function (d) {
+      el('checks-line').innerHTML = (d.test_open ? '<b>A test server (--test-open-accounts): nobody is ever blocked.</b> ' : '') +
+        'Account checks: <b>' + esc(d.checks.toUpperCase()) + '</b> (Settings: account_checks) - ' +
+        (d.checks === 'on' ? 'new accounts need a sign-up code; ' + d.would_block + ' of ' + d.accounts +
+                             ' accounts are kept off online until their re-activation code.'
+                           : 'nobody is blocked; ' + d.would_block + ' of ' + d.accounts + ' accounts would be, if it were on ' +
+                             '(they need their re-activation code: make them below, on the Players tab).');
+      return d;
     }).catch(function () {});
   }
   el('f-inv').addEventListener('input', renderInvites);
@@ -1115,9 +1128,18 @@ td.acts { text-align: right; white-space: nowrap; }
     document.querySelectorAll('[data-set]').forEach(function (i) {
       body[i.dataset.set] = i.type === 'checkbox' ? i.checked : i.tagName === 'SELECT' || i.tagName === 'TEXTAREA' ? i.value : Number(i.value);
     });
-    api('api/admin/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
-      .then(function () { el('set-note').textContent = 'Saved ' + new Date().toLocaleTimeString(); settings(); })
-      .catch(function (e) { el('set-note').textContent = 'Not saved: ' + e.message; });
+    function save() {
+      api('api/admin/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+        .then(function () { el('set-note').textContent = 'Saved ' + new Date().toLocaleTimeString(); settings(); })
+        .catch(function (e) { el('set-note').textContent = 'Not saved: ' + e.message; });
+    }
+    var was = (settingsList.filter(function (x) { return x.key === 'account_checks'; })[0] || {}).saved;
+    if (body.account_checks !== 'on' || was === 'on') return save();
+    api('api/admin/checks').then(function (d) {
+      if (confirm('Turn account checks ON? At once:\n- ' + d.would_block + ' of ' + d.accounts + ' accounts are kept off ' +
+                  'online until their re-activation code (make them on the Players tab first);\n- new accounts need ' +
+                  'a sign-up code, and 2.1.5 launchers are told to update to 2.1.6.')) save();
+    }).catch(function (e) { el('set-note').textContent = 'Not saved: ' + e.message; });
   });
   el('restart').addEventListener('click', function () {
     if (!confirm('Restart the online service? Players in the menus are back in seconds; matches in progress keep playing (P2P), relayed ones may drop.')) return;
@@ -1167,19 +1189,17 @@ td.acts { text-align: right; white-space: nowrap; }
     if (a === 'reset' && !confirm('Give this account a new random password? Its sessions are signed out.')) return;
     if (a === 'reactivation-code' && !confirm('Make a re-activation code for this account? It shows once; an older one ' +
                                              'it had stops working.')) return;
-    if (a === 'activate' && !confirm('Let this account play online without a re-activation code? (It still needs a ' +
-                                    'confirmed email.)')) return;
+    if (a === 'activate' && !confirm('Let this account play online without a re-activation code?')) return;
+    if (a === 'reset-code' && !confirm('Make a password reset code for this account? It shows once, works once for 24 ' +
+                                      'hours (an older one stops working); the new password ends all its sessions.')) return;
     var opts = {method: 'POST'};
-    if (a === 'email') {
-      var u = users.filter(function (x) { return String(x.id) === String(id); })[0] || {};
-      var mail = prompt('The email for ' + (u.name || 'this account') + ' (the player gets a mail to confirm it):', u.email || '');
-      if (!mail) return;
-      opts = {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email: mail.trim()})};
-    }
     b.disabled = true;
     api('api/admin/' + what + '/' + id + '/' + a, opts).then(function (r) {
       if (r.password) prompt('New password (give it to the player):', r.password);
-      if (r.code) prompt('Re-activation code (shown once - give it to the player; it works for this account only):', r.code);
+      if (r.code) prompt(a === 'reset-code' ? 'Reset code (shown once - give it to the player: Forgot password in the ' +
+                                              'launcher, with a new password; 24 hours):'
+                                            : 'Re-activation code (shown once - give it to the player; it works for this ' +
+                                              'account only):', r.code);
       (what === 'user' ? loadUsers : what === 'mod' ? loadMods : loadUploads)();
     }).catch(function (err) { alert(err.message); b.disabled = false; });
   });
