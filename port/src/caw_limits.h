@@ -46,6 +46,9 @@ constexpr uint32_t kStageHeap = 10;
 // loading screen, 24 Oct). With BigModelMemory a failed allocation in it takes the fallback memory too
 // (ring_rules.cpp's sub_8269BA30 and sub_8269A8D8 hooks).
 constexpr uint32_t kWeaponHeap = 38;
+// A match is loading (true: sub_823EEB98, the load's start; false: the match starts) - model_mem.cpp's load watch:
+// only a match's load that waits on a loading screen after physical memory ran out ends the game with a message.
+void NoteMatchLoading(bool loading);
 // A block CawHeapFallback gave is freed (operator delete's hook,
 // frame_rate.cpp): true when it was one of them (freed here).
 bool CawHeapFree(uint32_t ptr);

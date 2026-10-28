@@ -18,6 +18,7 @@
 #include <string>
 #include <mutex>
 #include <set>
+#include <thread>
 
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -27,6 +28,8 @@
 #include "arena_mods.h"
 #include "caw_limits.h"
 #include "frame_rate.h"
+#include "native/native_renderer.h"
+#include "fps_overlay.h"
 #include "mem_trace.h"
 #include "generated/default/svr2011_init.h"
 
@@ -123,6 +126,93 @@ bool HoldBlockWindows(const char* when) {
 
 namespace svr2011 {
 void InstallModelMem(rex::memory::Memory* memory) { g_memory = memory; }
+}  // namespace svr2011
+
+// The load watch: physical memory with no room anywhere for a block (above) is often survived - the caller has a
+// fallback, or does without - but a load can also wait on it for ever: a silent loading screen (27 Oct, six
+// 1,489-page superstars in an arena past the mesh cap). So after such a failure, 90 s of nothing but a loading
+// screen (a handful of draws a frame) ends the game with a plain "out of game memory" message, the window and the
+// physical memory left in the log, and a crash report - not an endless loading screen. A scene drawn in between
+// (more draws: entrances, the match) disarms it, and only a match's load counts (NoteMatchLoading: the menus draw a
+// handful too). Test aids: SVR2011_TEST_OOM_WATCH_S=<seconds> (90; Android 180), SVR2011_TEST_OOM_ARM=1.
+namespace {
+std::mutex g_oom_mutex;
+std::string g_oom_what;  // (the first failure since the last scene: window, size, physical pages free)
+std::atomic<bool> g_oom_armed{false};
+std::atomic<bool> g_match_loading{false};  // (NoteMatchLoading)
+void StartLoadWatch(uint32_t lo, uint32_t hi, uint32_t size);
+
+void NoteOutOfRoom(uint32_t lo, uint32_t hi, uint32_t size) {
+  if (g_oom_armed.exchange(true)) return;
+  StartLoadWatch(lo, hi, size);
+}
+
+void StartLoadWatch(uint32_t lo, uint32_t hi, uint32_t size) {
+  auto* phys = g_memory ? g_memory->GetPhysicalHeap() : nullptr;
+  {
+    std::lock_guard lock(g_oom_mutex);
+    g_oom_what = fmt::format("{} bytes in the window {:08X}-{:08X}; physical memory {} of {} 4K pages free", size, lo, hi,
+                             phys ? phys->GetUnreservedPageCount() : 0, phys ? phys->GetTotalPageCount() : 0);
+  }
+  static std::once_flag started;
+  std::call_once(started, [] {
+    std::thread([] {
+      static const int limit_s = [] {
+        const char* v = std::getenv("SVR2011_TEST_OOM_WATCH_S");
+#if defined(__ANDROID__)
+        constexpr int kDefault = 180;  // (a phone's loads are slower)
+#else
+        constexpr int kDefault = 90;
+#endif
+        return v && std::atoi(v) > 0 ? std::atoi(v) : kDefault;
+      }();
+      int quiet_s = 0;
+      uint64_t frames = 0;
+      for (;;) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (!g_oom_armed.load()) {
+          quiet_s = 0;
+          continue;
+        }
+        // (only frames this renderer counted: one that doesn't count them never trips it)
+        const uint64_t now = svr2011::native::FramesShown();
+        if (now == frames) continue;
+        frames = now;
+        // (a frame with a scene: disarmed - the load got through, or it's the match / menus)
+        if (svr2011::native::LastFrameDraws() > 5) {
+          g_oom_armed = false, quiet_s = 0;
+          continue;
+        }
+        if (!g_match_loading.load()) {  // (the menus draw a handful too: only a match's load counts)
+          quiet_s = 0;
+          continue;
+        }
+        if (++quiet_s < limit_s) continue;
+        std::string what;
+        {
+          std::lock_guard lock(g_oom_mutex);
+          what = g_oom_what;
+        }
+        REXLOG_ERROR("[svr2011] out of game memory: a load has waited {} s on a loading screen since physical memory had "
+                     "no room for {} - the mods / arena in this match are too much for the game's 512 MB; ending the "
+                     "game (crash report)", quiet_s, what);
+        svr2011::ShowNotice("Out of game memory: this match's superstars and arena are too big to load together. "
+                            "The game will close - pick lighter mods or another arena.", 10.0f);
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+        std::abort();  // (the crash reporter writes the report, the log carries the line above)
+      }
+    }).detach();
+  });
+}
+}  // namespace
+
+namespace svr2011 {
+void NoteMatchLoading(bool loading) {
+  g_match_loading = loading;
+  // Test aid SVR2011_TEST_OOM_ARM=1: armed at every match load, as if physical memory had run out (the message path)
+  static const bool arm = std::getenv("SVR2011_TEST_OOM_ARM") != nullptr;
+  if (loading && arm && !g_oom_armed.exchange(true)) StartLoadWatch(0, 0, 0);
+}
 }  // namespace svr2011
 
 REX_EXTERN(__imp__sub_82914DD0);
@@ -283,6 +373,7 @@ REX_HOOK_RAW(sub_8215A380) {
     __imp__sub_8215A380(ctx, base);
     REXLOG_WARN("[svr2011] model memory: ... its window full: {}", ctx.r3.u32 ? fmt::format("placed at {:08X} instead", ctx.r3.u32)
                                                                           : std::string("no room anywhere either"));
+    if (!ctx.r3.u32) NoteOutOfRoom(lo, hi, size);
   }
 }
 
