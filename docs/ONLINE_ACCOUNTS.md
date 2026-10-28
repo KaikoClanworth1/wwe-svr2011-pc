@@ -1,86 +1,93 @@
-# Online accounts (2.1.6): invite codes, re-activation, email, password reset
+# Online accounts (2.1.6): sign-up, re-activation and reset codes
 
-The Community Creations server (`port/server/server.py`, the rules in `signup.py`, the mail in `mailer.py`)
-lets only invited players online.
+The Community Creations server (`port/server/server.py`, with the rules in `signup.py`) uses **codes only, no email**. The server owner makes every code on the dashboard and gives it to the player.
 
-## The rules
+## The switch: account_checks (dashboard → Settings)
+
+- **off** (the default, until 2.1.6 is out): nobody is blocked.
+  - 2.1.5 launchers and games sign in, play online and sign up as before.
+  - The codes already work, so accounts can be prepared ahead of time.
+  - A 2.1.6 launcher signs up with an invite code even while the switch is off.
+- **on:** the rules below, at once, with no restart. Before it saves, the dashboard warns how many accounts would be kept off online at that moment.
+
+## The rules (account_checks on)
 
 | Who | To play online |
 |---|---|
-| A new player | Signs up in the launcher's (or the Android app's) Online tab with a name, an email, a password and a **one-use invite code** from the server owner, then types the code mailed to that email. |
-| An account from before 2.1.6 | Blocked online until, in the 2.1.6 launcher, the player types the **re-activation code** the server owner made for that one account, then adds an email and confirms it. |
-| The `--admin-account` account | Needs no re-activation code (it still needs a confirmed email). |
+| A new player | Signs up in the 2.1.6 launcher's (or the Android app's) Online tab with a name, a password and a **one-use invite code** from the server owner. |
+| An account from before 2.1.6 | Blocked online until, in the 2.1.6 launcher, the player types the **re-activation code** the server owner made for that one account. |
+| The `--admin-account` account | Needs no re-activation code. |
+| An account signed up from a 2.1.5 launcher while the switch was off | Treated like an account from before: it needs a re-activation code. |
 
-- **Online:** "online" means the game's sign-in (`/api/session`), presence and friends, matches (the relay) and Community Creations. The launcher's own account steps work before that, so an account can still add its email.
+- **Forgotten password:**
+  1. The server owner makes a **reset code** for that account (the Players tab → its row → Reset code).
+  2. The player types it in the launcher's Forgot password, with their name and a new password.
+  - The code works once, for 24 hours.
+  - The new password ends every session of the account.
 - **Codes:**
-  - Invite and re-activation codes look like `XXXX-XXXX-XXXX`, without 0/O/1/I. Each works once.
-  - A re-activation code works only for its own account, never for a sign-up. Making a new one stops the old one.
-- **Mails:** each carries an 8-character code, typed in the launcher.
-  - A confirm code lasts 24 hours and its mail also has a one-click link. A reset code lasts 30 minutes.
-  - Each code works once, and a newer one replaces the older.
-- **Storage:** the server keeps every code and token only as a SHA-256 hash.
-- **Sessions:**
-  - A password reset ends all of the account's sessions.
-  - A password change ends the others but keeps the one that made it.
-  - A reset also counts the email as confirmed: the mail reached its owner.
+  - They look like `XXXX-XXXX-XXXX`, without 0/O/1/I; letter case and spacing don't matter.
+  - Each works once, and the server keeps only a SHA-256 hash.
+  - A re-activation or reset code works only for its own account. A sign-up code works only for a new account.
+  - Making a new re-activation or reset code stops that account's older open one.
+- **Online** means:
+  - the game's sign-in (`/api/session`);
+  - presence and friends;
+  - matches (the relay);
+  - Community Creations.
+
+  The launcher's own account requests work before that, so a blocked player can still enter their code.
+- **Password change** (`/api/password/change`) ends the account's other sessions.
 - **Rate limits** (memory only):
   - sign-up: 5 an hour per IP;
   - sign-in: 10 per 10 minutes per IP and per name;
-  - confirm: 10 per 30 minutes per account;
-  - forgot: 5 an hour per IP, 3 an hour per email;
-  - reset: 10 per 30 minutes per email;
-  - re-activation: 8 per 30 minutes per account.
-- **Forgot password** gives the same answer whether or not the email has an account.
-- **Names and emails** are unique in any letter case. Emails are checked for a valid form.
+  - re-activation: 8 per 30 minutes per account;
+  - reset: 10 per 30 minutes per name, 20 per IP.
+- **Names** are unique in any letter case.
 - **Old clients** never fail silently:
-  - A 2.1.5 launcher signing in gets the server's text, such as "Online needs the 2.1.6 launcher now: update, then sign in there with the re-activation code the server owner gives you, and add an email."
-  - A 2.1.5 game in ONLINE gets the same text in the server's answer, though it shows its own "Sign in…" message.
+  - A 2.1.5 launcher gets "Online needs the 2.1.6 launcher now: update to 2.1.6, then sign in there with the re-activation code the server owner gives you." (or, signing up, the invite-code version).
+  - A 2.1.5 game gets the same text from the server, though it shows its own "Sign in…" message.
   - A 2.1.6 game shows the server's reason in the ONLINE dialog.
 
-## The server owner
+## The dashboard
 
-**Dashboard → Invites:**
+**Invites tab:**
+- **The account checks line:** the switch's state, and how many accounts are (or would be) kept off online.
 - **Make codes:** a note ("who it's for") and how many. They show **once**, so copy them then.
-- **Codes:** every sign-up and re-activation code, with who used it and when. Revoke an open one.
+- **Codes:** every sign-up, re-activation and password reset code, with who used it and when (reset codes expire after 24 hours). Revoke an open one.
 
-**Dashboard → Players, Accounts:**
-- **Online access** for each account: blocked (needs its code) / needs an email / email unconfirmed / ok, with the email.
+**Players tab → Accounts:**
+- **Online access:** ok, or needs its re-activation code.
 - **Re-activation code:** made for that account and shown once. Give it to that player.
 - **Activate:** lets the account in without a code.
-- **Set email:** the account gets a confirmation mail. An email set here still has to be confirmed by the player.
-- **Resend confirm.**
+- **Reset code:** a forgotten password, shown once.
 
-**On the server's machine:**
-- `server.py --data <data> --activate NAME` lets an account in without a code, then exits.
+**On the server's machine:** `server.py --data <data> --activate NAME` lets an account in without a code, then exits.
 
-## Mail
+## Netcode (dashboard → Settings → netcode)
 
-- `<data>/mail.json` picks the sender. Without it, mails are `.eml` files in `<data>/mail_out/` (tests, your own server). Examples:
-
-  ```json
-  {"service": "brevo",   "from": "SvR2011 Online <no-reply@your-domain>", "api_key_file": "/etc/svr2011/mail_key",
-   "public_url": "https://your-domain/svr"}
-  {"service": "resend",  "from": "...", "api_key_file": "..."}
-  {"service": "mailgun", "from": "...", "api_key_file": "...", "domain": "mg.your-domain", "region": "eu"}
-  ```
-
-- **The API key** is in its own file (`api_key_file`), readable by the service's user only. It never goes in `mail.json` or the repo.
-- **`public_url`** (or `--public-url`) is the address the confirm link uses. Without it the mail has only the code.
-- **Sending** happens on a worker thread. A failure is logged (`mail: ... failed: ...`) and never breaks the request.
-- **The sender address's domain** must be verified at the mail service (its SPF/DKIM DNS records), or the mails land in spam.
+- **Values:** `lockstep` (the default) | `lockstep_vclock` | `rollback`.
+- **How it reaches the games:** every `/api/friends` config sends it.
+  - The host's game latches it into session property 0x1000F005 when it creates the session (0 = lockstep, 2 = lockstep_vclock, 1 = rollback).
+  - Joiners follow the session's value. A missing or unknown value means lockstep.
+  - Games that don't have a mode play lockstep.
 
 ## Deploying
 
-1. **Before the update:** the user makes the mail service account and its API key, and puts `mail.json` and the key file in place on the server. Then the user gives the go on the VPS update.
-2. **Install:** `vps_install.sh` installs `mailer.py` and `signup.py` with the other files.
-3. **First start:** the database is backed up to `<data>/backups/community-<time>-before-email.db`. Then the columns are added (`email`, `email_ok`, `activated`) and the tables are made (`invites`, `mail_codes`). No data is removed. From then on every account from before is blocked online until its code and email.
-4. **Re-activation:** the server owner makes re-activation codes for the players who keep playing, and invite codes for new ones.
+1. **The new files:** `vps_install.sh` installs `signup.py` with the other files.
+2. **First start:**
+   - The database is backed up to `<data>/backups/community-<time>-before-codes.db`.
+   - One column is added (`accounts.activated`) and the `invites` table is made. Nothing is removed.
+   - With account_checks off, nothing changes for players.
+3. **The storage node** (`--role storage`) has no accounts. It never opens `community.db`: no migration, no backup.
+4. **Before the switch goes on** (when 2.1.6 is out): make re-activation codes for the players who keep playing, and invite codes for new ones. Then switch account_checks on.
 
 ## Tests
 
-- **`port/server/test_signup.py`:** starts its own server on a temporary data folder with a 2.1.5-style database and the file sender, then checks every flow above (50 checks).
-- **`--test-open-accounts`:** the old rules (no codes, no email) for private test servers on 127.0.0.1 only. It refuses any other `--host`. The repo's test scripts and `tools/test_server.ps1` start their servers with it.
+- **`port/server/test_signup.py`:** starts its own server on a temporary data folder with a 2.1.5-style database (port 8561), then checks:
+  - the switch off (2.1.5 launcher and game as before);
+  - switching it on live;
+  - every flow above.
+- **`--test-open-accounts`:** the old rules for private test servers on 127.0.0.1 only; it refuses any other `--host`. The repo's test scripts and `tools/test_server.ps1` start their servers with it.
 - **The launcher's Online tab:** `--capture online <file.bmp>` with `SVR2011_CAPTURE_ONLINE=<step>;<step>...`:
-  - fields: `name=`, `password=`, `email=`, `code=`;
-  - clicks: `click=register|forgot|back|step|resend|signin`;
-  - `mode=forgot_code` opens the forgot form's code step.
+  - fields: `name=`, `password=`, `code=`;
+  - clicks: `click=register|forgot|back|step|signin`.
