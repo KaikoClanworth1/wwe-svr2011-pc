@@ -94,9 +94,11 @@ constexpr uint32_t kContextGameType = 0x0000800A;  // X_CONTEXT_GAME_TYPE (ranke
 constexpr uint32_t kContextGameMode = 0x0000800B;  // X_CONTEXT_GAME_MODE
 // The port's session properties (0x1000F00x, XUSER type 1 ints the host's session carries to joiners):
 // 0x1000F001 PORT RULES (here), 0x1000F002 the WEAPONS page's set (weapons_page.cpp), 0x1000F003 mod weapons
-// (Arena Porting, planned), 0x1000F004 the match network (here).
+// (Arena Porting, planned), 0x1000F004 the match network (here), 0x1000F005 the netcode (here; the Online Rollback
+// Netcode chat's modes read P2PNetcode).
 constexpr uint32_t kPortRules = 0x1000F001;        // the port's match rules (match_types: mode << 16 | set)
 constexpr uint32_t kNetMode = 0x1000F004;          // the host's match network (NetMode)
+constexpr uint32_t kNetcode = 0x1000F005;          // the host's netcode (0 lockstep, 1 rollback, 2 lockstep_vclock)
 constexpr uint8_t kVersion = 1;
 enum : uint8_t {
   kSearch = 1, kSessions = 2, kQosRequest = 3, kQosReply = 4, kHello = 5, kData = 6,
@@ -295,6 +297,13 @@ std::atomic<uint8_t> g_match_net{kNetAuto};   // (this match session's)
 const char* NetName(uint8_t m) { return m == kNetRelay ? "relay" : m == kNetP2P ? "p2p" : "auto"; }
 bool ForceRelay() { return REXCVAR_GET(p2p_force_relay) || g_match_net == kNetRelay; }
 bool NoRelayData() { return g_match_net == kNetP2P && !REXCVAR_GET(p2p_force_relay); }  // (p2p)
+// The netcode (the server's netcode setting, P2PSetServerNetcode): latched the same way - the host's in kNetcode,
+// joiners follow it, a host without it (an older game) or a value this game doesn't know: lockstep; outside a match
+// session, lockstep.
+constexpr uint8_t kNetcodeMax = 2;
+std::atomic<uint8_t> g_server_netcode{0};  // (the server's answer; lockstep when it can't be reached)
+std::atomic<uint8_t> g_match_netcode{0};   // (this match session's)
+const char* NetcodeName(uint8_t m) { return m == 1 ? "rollback" : m == 2 ? "lockstep_vclock" : "lockstep"; }
 
 struct Peer {
   XnAddr xnaddr{};
@@ -2004,6 +2013,13 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
           s.properties.push_back(Property{kNetMode, 1, {0, 0, 0, mode}});
           g_match_net = mode;
           REXLOG_INFO("p2p: match network {} (host; the server's {})", NetName(mode), NetName(g_server_net));
+          const uint8_t netcode = g_server_netcode;
+          s.properties.erase(std::remove_if(s.properties.begin(), s.properties.end(),
+                                            [](const Property& p) { return p.id == kNetcode; }),
+                             s.properties.end());
+          s.properties.push_back(Property{kNetcode, 1, {0, 0, 0, netcode}});
+          g_match_netcode = netcode;
+          REXLOG_INFO("p2p: netcode {} (host; the server's)", NetcodeName(netcode));
         }
         // X_PROPERTY_GAMER_HOSTNAME (LIVE filled it in: the host's name, UTF-16)
         Property name{0x40008109, 4, {}};
@@ -2014,16 +2030,18 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
         s.id = Be64(Guest(info));
         {
           std::lock_guard found_lock(g_mutex);
-          uint8_t mode = kNetAuto;  // (a host without it - an older game: auto)
+          uint8_t mode = kNetAuto, netcode = 0;  // (a host without them - an older game: auto, lockstep)
           if (auto f = g_found.find(s.id); f != g_found.end())
             for (const auto& p : f->second.properties) {
               if (p.id == kPortRules && p.value.size() >= 4)
                 REXLOG_INFO("p2p: port rules {:08X} (joiner)", Be32(p.value.data()));
               if (p.id == kNetMode && p.value.size() >= 4 && p.value[3] <= kNetP2P) mode = p.value[3];
+              if (p.id == kNetcode && p.value.size() >= 4 && p.value[3] <= kNetcodeMax) netcode = p.value[3];
             }
           if (flags & 0x20) {
             g_match_net = mode;
-            REXLOG_INFO("p2p: match network {} (joiner; the host's)", NetName(mode));
+            g_match_netcode = netcode;
+            REXLOG_INFO("p2p: match network {}, netcode {} (joiner; the host's)", NetName(mode), NetcodeName(netcode));
           }
         }
         std::memcpy(s.host.data(), Guest(info) + 8, 36);
@@ -2047,7 +2065,7 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
         REXLOG_INFO("p2p: session {:016X} deleted", it->second.session.id);
         g_sessions.erase(it);
         if (std::none_of(g_sessions.begin(), g_sessions.end(), [](const auto& l) { return (l.second.session.flags & 0x20) != 0; }))
-          g_match_net = kNetAuto;
+          g_match_net = kNetAuto, g_match_netcode = 0;
         UpdateLockstep();
         return kOk;
       }
@@ -2252,6 +2270,13 @@ void P2PSetServerNetwork(const std::string& mode) {
   const uint8_t m = mode == "relay" ? kNetRelay : mode == "p2p" ? kNetP2P : kNetAuto;
   if (g_server_net.exchange(m) != m) REXLOG_INFO("p2p: the server's match network is {} (new sessions)", NetName(m));
 }
+
+void P2PSetServerNetcode(const std::string& mode) {
+  const uint8_t m = mode == "rollback" ? 1 : mode == "lockstep_vclock" ? 2 : 0;  // (unknown: lockstep)
+  if (g_server_netcode.exchange(m) != m) REXLOG_INFO("p2p: the server's netcode is {} (new sessions)", NetcodeName(m));
+}
+
+int P2PNetcode() { return g_match_netcode.load(); }
 
 P2PLobby P2PMatchLobby() {
   P2PLobby out;

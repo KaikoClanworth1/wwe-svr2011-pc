@@ -82,6 +82,12 @@ std::optional<uint32_t> PortRules();
 // "relay" (every peer through the relay) or "p2p" (match traffic direct only). A session this game
 // hosts from then on carries it (property 0x1000F004); joiners follow the host's.
 void P2PSetServerNetwork(const std::string& mode);
+// The server's netcode (its netcode setting, from the presence poll): "lockstep", "lockstep_vclock" or
+// "rollback" (unknown: lockstep). A match session this game hosts from then on carries it (property 0x1000F005);
+// joiners follow the host's (a host without it: lockstep).
+void P2PSetServerNetcode(const std::string& mode);
+// This match session's netcode: 0 lockstep, 1 rollback, 2 lockstep_vclock; 0 outside a match session.
+int P2PNetcode();
 // The match kind the game set for its online sessions (XUserSetContext
 // X_CONTEXT_GAME_TYPE, set as the player enters RANKED MATCH / PLAYER MATCH,
 // before CREATE SESSION): true Ranked, false Player Match; nullopt: not set yet.
