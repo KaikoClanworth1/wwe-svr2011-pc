@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -302,13 +303,47 @@ REX_HOOK_RAW(sub_8287CFB0) {
   std::vector<uint8_t> out;
   const uint8_t* all = base + rows_at;
   out.insert(out.end(), all + (count - n) * kListItemSize, all + count * kListItemSize);
+  // (test aid: SVR2011_TEST_FAKE_REELS=1 keeps the empty reel slots, shown as saved - a full reel list)
+  static const bool fake_reels = std::getenv("SVR2011_TEST_FAKE_REELS") != nullptr;
   for (uint32_t i = 0; i < count - n; ++i) {
     const uint8_t* row = all + i * kListItemSize;
-    if (Rd32(base, rows_at + i * kListItemSize + 4) == 0) out.insert(out.end(), row, row + kListItemSize);
+    if (fake_reels) {
+      out.insert(out.end(), row, row + kListItemSize);
+      std::memset(&out[out.size() - kListItemSize + 4], 0, 4);
+    } else if (Rd32(base, rows_at + i * kListItemSize + 4) == 0) {
+      out.insert(out.end(), row, row + kListItemSize);
+    }
   }
   std::memcpy(base + rows_at, out.data(), out.size());
   Wr32(base, list, uint32_t(out.size() / kListItemSize));
   ctx.r3.u64 = reels + uint32_t(n);
+}
+
+// The sub-list's page: sub_8287FD08(menu) fills the rows of the page shown
+// (view = menu+380: page +276, rows a page +32; the widget menu+16) with
+// sub_8272C228(widget, page, row, item) and stops at the list's end - the
+// highlight reels were always 2 full pages, so the rows after it kept the
+// page shown before ("38 39 40" under 47 movies). Here: those rows hidden
+// (sub_8272C228 with no item hides a row).
+REX_EXTERN(__imp__sub_8287FD08);
+REX_HOOK_RAW(sub_8287FD08) {
+  const uint32_t menu = ctx.r3.u32;
+  __imp__sub_8287FD08(ctx, base);
+  const uint32_t view = Rd32(base, menu + 380);
+  if (!view) return;
+  auto call = ctx;
+  call.r3.u64 = view;
+  sub_8287BE70(call, base);  // (the row count, as sub_8287FD08 reads it)
+  const int32_t count = call.r3.s32;
+  const int32_t per_page = int32_t(Rd32(base, view + 32)), page = int32_t(Rd32(base, view + 276));
+  if (per_page <= 0 || per_page > 64 || page < 0) return;
+  for (int32_t row = std::max(0, count - page * per_page); row < per_page; ++row) {
+    call.r3.u64 = menu + 16;
+    call.r4.u64 = uint32_t(page);
+    call.r5.u64 = uint32_t(row);
+    call.r6.u64 = 0;
+    sub_8272C228(call, base);
+  }
 }
 
 // An entrance's movie -> the CREATE AN ENTRANCE menus (B16). Two loaders put
