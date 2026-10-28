@@ -185,14 +185,17 @@ one backstage row each whose rooms the fighters walk between through HCTP's own 
 - Game (hctp_room.cpp): after each CFRS update (match_types.cpp hook) only the current room's models
   (sub_8252FF40) and its records' objects (sub_824B4198) are shown; the other rooms' collision triangles are
   lifted away (as DropCollision) and their climb spots inactive (sub_824B8FE0); only its props run. A player at a
-  gate (within 10 on each axis, as HCTP; an older door line: within 22, 4 up or down; on his feet: motion 0 /
+  gate (within 10 on each axis in HCTP, 16 across here: 2011's walls keep him 12 from room 30's roof gate;
+  an older door line: within 22, 4 up or down; on his feet: motion 0 /
   stance 20 / walking / running) sees the prompt "<Y> GO TO <room>" (DoorPromptOverlay, match_hud.h's panel;
   the button as his pad names it: Y, TRIANGLE or his keybind_y key) and goes through with Y; a CPU (port
   char+1152 >= 4) walks or runs into one for 30 frames (its AI chasing - CPU-vs-CPU keeps changing rooms);
   ROOF=walkin gives players the walk-in too. He plays the gate's exit act there facing out (held placement at
-  the point; through once his motion is no longer the act, 200 frames at most, at once if the bank lacks it;
-  the others get act 0 and are kept where they stood meanwhile - HCTP stops the pads; the acts' screen fade,
-  event op 18, is dropped by hctp2ymks.py: HCTP's next stage load fades back in, 2011 stayed black),
+  the point; through once his motion is no longer the act or its frames have played - the act holds its last
+  frame - at once if the bank lacks it; the others get act 0 and are kept where they stood meanwhile - HCTP
+  stops the pads; the acts' screen fade, event op 18, is dropped by hctp2ymks.py: HCTP's next stage load fades
+  back in, 2011 stayed black - DoorPromptOverlay draws the fade instead: black over the act's last 20 frames,
+  back in over 20 in the new room),
   then every fighter goes through (in HCTP the opponent came along): fighter i at the other gate's spot i
   (older lines: side by side at its entry), the fight box moved to that room (SetFightBox), the camera's eye
   put at the framed target +

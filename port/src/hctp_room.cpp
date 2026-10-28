@@ -8,6 +8,7 @@
 // (sub_82306B10, fighter's touched attribute at +455), the walk-into-wall
 // gimmick search (sub_824B6A70, T22) and the motion-key lookups it makes
 // (sub_82394520(bank, key, x, y)) are logged.
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -2402,6 +2403,12 @@ struct Going {
   std::array<std::array<float, 4>, 8> wait{};  // (where the others stand meanwhile: x, y, z, yaw)
 };
 Going g_going;
+// The screen's fade at a gate (HCTP's exit acts fade to black - their event op 18, dropped: 2011 never
+// faded back in): black over the act's last kFadeFrames, back in over kFadeFrames in the new room.
+// Set by the game's frame, drawn by DoorPromptOverlay.
+constexpr int kFadeFrames = 20;
+std::atomic<float> g_fade{0.0f};
+int g_fade_in = 0;
 
 void SetPoles() {
   g_poles.clear();
@@ -2621,6 +2628,8 @@ class DoorPromptOverlay final : public rex::ui::ImGuiDialog {
 
  protected:
   void OnDraw(ImGuiIO& io) override {
+    if (const float a = g_fade.load(); a > 0.0f && svr2011::MatchHudVisible())
+      ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, int(a * 255.0f)));
     std::string room;
     uint32_t port = 0;
     {
@@ -2635,6 +2644,7 @@ class DoorPromptOverlay final : public rex::ui::ImGuiDialog {
 
 void UpdateWorld(PPCContext& ctx, uint8_t* base) {
   if (!World()) return;
+  if (g_fade_in > 0) g_fade.store(float(--g_fade_in) / kFadeFrames);
   // (once the stage and the package are there: only the first room's collision and climb spots)
   if (!g_world_set && Rd32(base + kGimmickMgr)) {
     g_world_set = true;
@@ -2659,8 +2669,16 @@ void UpdateWorld(PPCContext& ctx, uint8_t* base) {
         const auto& w = g_going.wait[i];
         PlaceBody(base, o, w[0], w[1], w[2], w[3]);
       }
-    if (!f || (g_going.frames > 2 && Rd32(base + f + 212) != g_going.door->act) || g_going.frames >= 200)
+    const int n = std::min(Frames(g_going.door->act, 60), 200);
+    g_fade.store(std::clamp(float(g_going.frames - (n - kFadeFrames)) / kFadeFrames, 0.0f, 1.0f));
+    // (the act holds its last frame: through once its frames have played, not at the 200 cap - a second black)
+    if (!f || (g_going.frames > 2 && Rd32(base + f + 212) != g_going.door->act) || g_going.frames >= n + 2) {
+      const int frames = g_going.frames;
       GoThrough(ctx, base, *g_going.door, g_going.who);
+      g_fade_in = g_fade.load() > 0.0f ? int(g_fade.load() * kFadeFrames) : 0;
+      if (g_fade_in == 0) g_fade.store(0.0f);
+      REXLOG_INFO("hctp: through after {} of the act's {} frames - black {:.2f}, back in over {} frames", frames, n, g_fade.load(), g_fade_in);
+    }
     PublishPrompt(nullptr);
     return;
   }
@@ -2688,10 +2706,12 @@ void UpdateWorld(PPCContext& ctx, uint8_t* base) {
     const bool moving = m == kWalkBackstage || base[f + 1286];
     const float x = RdF(base + f + 288), y = RdF(base + f + 292), z = RdF(base + f + 296);
     const Door* door = nullptr;
-    // (a gate: within 10 on each axis - CGate4::Action; an older door: 22 around, 4 up or down)
+    // (a gate: CGate4::Action's 10 on each axis, 16 across here - 2011's walls keep a wrestler further from
+    // some of HCTP's gate marks: room 30's roof gate 202 stopped him 12 away, so the gate seemed missing;
+    // an older door: 22 around, 4 up or down)
     for (const Door& d : Cur().doors)
       if (d.spots.empty() ? (x - d.x) * (x - d.x) + (z - d.z) * (z - d.z) < 22.0f * 22.0f && std::fabs(y - d.y) <= 4.0f
-                          : std::fabs(x - d.x) < 10.0f && std::fabs(y - d.y) < 10.0f && std::fabs(z - d.z) < 10.0f)
+                          : std::fabs(x - d.x) < 16.0f && std::fabs(y - d.y) < 10.0f && std::fabs(z - d.z) < 16.0f)
         door = &d;
     // a player: Y at the door (HCTP's own way; the prompt shows meanwhile); the CPU: walking into it for
     // half a second (its AI walks after its opponent - CPU-vs-CPU and chases keep moving)
@@ -2772,6 +2792,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
       for (Held& h : g_held) h = {};
       REXLOG_INFO("hctp: room unloaded (held placements, door hold cleared)");
       g_going = {};
+      g_fade.store(0.0f), g_fade_in = 0;
       std::fill(std::begin(g_door_hold), std::end(g_door_hold), 0);
     }
     Cur().loaded = false;
@@ -2791,6 +2812,7 @@ void HctpRoomUpdate(PPCContext& ctx, uint8_t* base) {
     g_stash.assign(g_rooms.size(), Stash{});
     g_door_cd = 0;
     g_going = {};  // (its door was in the rooms just replaced)
+    g_fade.store(0.0f), g_fade_in = 0;
     g_box_set = false;
     g_world_set = false;
     for (Held& h : g_held) h = {};
