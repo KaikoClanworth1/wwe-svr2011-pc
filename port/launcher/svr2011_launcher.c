@@ -138,8 +138,7 @@ enum {
     ID_FR_LIST, ID_FR_NAME, ID_FR_ADD, ID_FR_REMOVE, ID_FR_STATUS, ID_FR_GROUP, ID_FR_INFO,
     ID_ON_SHARE, ID_ON_MODS_FOLD, ID_ON_MODS_GROUP, ID_ON_UP_KBS, ID_ON_UP_PEERS, ID_ON_MOD_MB, ID_ON_MODS_MB,
     ID_ON_MODS_L1, ID_ON_MODS_L2, ID_ON_MODS_L3, ID_ON_MODS_L4, ID_ON_MODS_INFO,
-    ID_ON_L_NAME, ID_ON_L_PASS, ID_ON_L_EMAIL, ID_ON_L_CODE, ID_ON_EMAIL, ID_ON_CODE, ID_ON_STEP, ID_ON_BACK,
-    ID_ON_FORGOT, ID_ON_RESEND, ID_ON_INFO,
+    ID_ON_L_NAME, ID_ON_L_PASS, ID_ON_L_CODE, ID_ON_CODE, ID_ON_STEP, ID_ON_BACK, ID_ON_FORGOT, ID_ON_INFO,
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
     ID_PROGRESS, ID_INSTALL_STATUS, ID_VERIFY, ID_VERIFY_REPAIR, ID_VERIFY_MARK, ID_VERIFY_STATUS,
@@ -1581,23 +1580,22 @@ static void toml_quote_ctl(int id, int max, char *out, size_t n)
 static char s_online_token[128], s_online_xuid[32];
 static int s_tab_visible_online;  /* (the Online tab is showing) */
 
-/* The account box's modes: sign in (name or email), create an account (name, email, password, invite code),
-   forgot password (the email, then the mailed code and a new password), signed in. Signed in, an account the
-   server keeps off online (2.1.6, server.py signup.py) shows its steps instead: the re-activation code from the
-   server owner (accounts from before 2.1.6), an email, the code mailed to confirm it. */
-enum { ON_SIGNIN, ON_SIGNUP, ON_FORGOT, ON_FORGOT_CODE };
+/* The account box's modes: sign in, create an account (name, password, invite code), forgot password (the name,
+   the reset code the server owner made for it, a new password), signed in. Signed in, an account the server keeps
+   off online (2.1.6 with its account checks on, server.py signup.py) shows its step instead: the re-activation code
+   from the server owner (accounts from before 2.1.6). Codes only - no email. */
+enum { ON_SIGNIN, ON_SIGNUP, ON_FORGOT };
 static int s_on_mode;
-static int s_on_needs_code, s_on_needs_email, s_on_needs_confirm;  /* (signed in: the server's answer) */
-static char s_on_email[256];  /* (the account's email, as the server has it; UTF-8) */
+static int s_on_needs_code;   /* (signed in: the server's answer) */
 static WCHAR s_on_note[300];  /* (the status line, kept across a re-layout) */
 
 static void on_place(int id, int x, int y, int w, int h);  /* (below: the layout's X0, as add()) */
 
 static void online_account_show(void)
 {
-    static const int box[] = { ID_ON_L_NAME, ID_ON_NAME, ID_ON_L_PASS, ID_ON_PASSWORD, ID_ON_L_EMAIL, ID_ON_EMAIL,
-                               ID_ON_L_CODE, ID_ON_CODE, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_STEP,
-                               ID_ON_BACK, ID_ON_FORGOT, ID_ON_RESEND, ID_ON_INFO };
+    static const int box[] = { ID_ON_L_NAME, ID_ON_NAME, ID_ON_L_PASS, ID_ON_PASSWORD, ID_ON_L_CODE, ID_ON_CODE,
+                               ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_STEP, ID_ON_BACK, ID_ON_FORGOT,
+                               ID_ON_INFO };
     WCHAR name[64], text[300];
     const WCHAR *info = L"";
     const int signed_in = s_online_token[0] != 0;
@@ -1607,66 +1605,35 @@ static void online_account_show(void)
         ShowWindow(ctl(box[i]), SW_HIDE);
     GetWindowTextW(ctl(ID_ON_NAME), name, 64);
     text[0] = 0;
-    if (signed_in && (s_on_needs_code || s_on_needs_email || s_on_needs_confirm)) {
-        if (s_on_needs_code) {
-            set_text(ID_ON_L_CODE, L"Re-activation code");
-            on_place(ID_ON_L_CODE, 16, 144, 130, 20), on_place(ID_ON_CODE, 150, 140, 220, 24);
-            set_text(ID_ON_STEP, L"Re-activate");
-            swprintf_s(text, 300, L"Signed in as %s. Online needs the re-activation code the server owner made "
-                                  L"for your account.", name);
-        } else if (s_on_needs_email) {
-            set_text(ID_ON_L_EMAIL, L"Email");
-            on_place(ID_ON_L_EMAIL, 16, 144, 130, 20), on_place(ID_ON_EMAIL, 150, 140, 220, 24);
-            set_text(ID_ON_STEP, L"Add email");
-            swprintf_s(text, 300, L"Signed in as %s. Online needs an email on your account now (we mail a code "
-                                  L"to confirm it).", name);
-        } else {
-            set_text(ID_ON_L_CODE, L"Code from the mail");
-            on_place(ID_ON_L_CODE, 16, 144, 130, 20), on_place(ID_ON_CODE, 150, 140, 220, 24);
-            set_text(ID_ON_L_EMAIL, L"Email");
-            on_place(ID_ON_L_EMAIL, 16, 174, 130, 20), on_place(ID_ON_EMAIL, 150, 170, 220, 24);
-            set_text(ID_ON_STEP, L"Confirm");
-            on_place(ID_ON_RESEND, 384, 169, 162, 26);
-            swprintf_s(text, 300, L"Signed in as %s. Type the code we mailed (no mail? check spam, or fix the "
-                                  L"email and resend).", name);
-        }
+    if (signed_in && s_on_needs_code) {
+        set_text(ID_ON_L_CODE, L"Re-activation code");
+        on_place(ID_ON_L_CODE, 16, 144, 130, 20), on_place(ID_ON_CODE, 150, 140, 220, 24);
+        set_text(ID_ON_STEP, L"Re-activate");
         on_place(ID_ON_STEP, 384, 139, 162, 26);
         on_place(ID_ON_SIGNOUT, 384, 199, 162, 24), bx = 384;
+        swprintf_s(text, 300, L"Signed in as %s. Online needs the re-activation code the server owner made for your "
+                              L"account.", name);
     } else if (signed_in) {
         set_text(ID_ON_L_NAME, L"Name");
         on_place(ID_ON_L_NAME, 16, 144, 130, 20), on_place(ID_ON_NAME, 150, 140, 220, 24);
         on_place(ID_ON_SIGNOUT, 384, 139, 162, 26);
         swprintf_s(text, 300, L"Signed in as %s.", name);
         info = L"The name is what other players see. The same account works on any PC or phone.";
-    } else if (s_on_mode == ON_SIGNUP) {
-        set_text(ID_ON_L_NAME, L"Name"), set_text(ID_ON_L_EMAIL, L"Email"), set_text(ID_ON_L_PASS, L"Password");
-        set_text(ID_ON_L_CODE, L"Invite code");
+    } else if (s_on_mode == ON_SIGNUP || s_on_mode == ON_FORGOT) {
+        const int signup = s_on_mode == ON_SIGNUP;
+        set_text(ID_ON_L_NAME, L"Name"), set_text(ID_ON_L_PASS, signup ? L"Password" : L"New password");
+        set_text(ID_ON_L_CODE, signup ? L"Invite code" : L"Reset code");
         on_place(ID_ON_L_NAME, 16, 144, 60, 20), on_place(ID_ON_NAME, 80, 140, 160, 24);
-        on_place(ID_ON_L_EMAIL, 252, 144, 50, 20), on_place(ID_ON_EMAIL, 306, 140, 240, 24);
-        on_place(ID_ON_L_PASS, 16, 174, 60, 20), on_place(ID_ON_PASSWORD, 80, 170, 160, 24);
-        on_place(ID_ON_L_CODE, 252, 174, 76, 20), on_place(ID_ON_CODE, 330, 170, 216, 24);
-        set_text(ID_ON_STEP, L"Create");
-        on_place(ID_ON_STEP, 366, 199, 88, 24), on_place(ID_ON_BACK, 460, 199, 86, 24), bx = 366;
-        wcscpy_s(text, 300, L"An invite code from the server owner. Name: 3-15 characters (what players see); "
-                            L"password: 8 or more.");
-    } else if (s_on_mode == ON_FORGOT || s_on_mode == ON_FORGOT_CODE) {
-        set_text(ID_ON_L_EMAIL, L"Your account's email");
-        on_place(ID_ON_L_EMAIL, 16, 144, 130, 20), on_place(ID_ON_EMAIL, 150, 140, 220, 24);
-        if (s_on_mode == ON_FORGOT_CODE) {
-            set_text(ID_ON_L_CODE, L"Code"), set_text(ID_ON_L_PASS, L"New password");
-            on_place(ID_ON_L_CODE, 16, 174, 50, 20), on_place(ID_ON_CODE, 70, 170, 120, 24);
-            on_place(ID_ON_L_PASS, 200, 174, 90, 20), on_place(ID_ON_PASSWORD, 290, 170, 256, 24);
-            set_text(ID_ON_STEP, L"Set password");
-            on_place(ID_ON_STEP, 366, 199, 100, 24), on_place(ID_ON_BACK, 472, 199, 74, 24), bx = 366;
-            wcscpy_s(text, 300, L"Type the code from the mail (it works for 30 minutes) and a new password.");
-        } else {
-            set_text(ID_ON_STEP, L"Mail me a code");
-            on_place(ID_ON_STEP, 384, 139, 162, 26), on_place(ID_ON_BACK, 384, 169, 162, 26);
-            wcscpy_s(text, 300, L"We mail a code to your account's email.");
-            info = L"The code works once, for 30 minutes.";
-        }
+        on_place(ID_ON_L_CODE, 252, 144, 76, 20), on_place(ID_ON_CODE, 330, 140, 216, 24);
+        on_place(ID_ON_L_PASS, 16, 174, 90, 20), on_place(ID_ON_PASSWORD, 110, 170, 130, 24);
+        set_text(ID_ON_STEP, signup ? L"Create" : L"Set password");
+        on_place(ID_ON_STEP, 346, 199, 108, 24), on_place(ID_ON_BACK, 460, 199, 86, 24), bx = 346;
+        wcscpy_s(text, 300, signup ? L"An invite code from the server owner. Name: 3-15 characters (what players "
+                                     L"see); password: 8 or more."
+                                   : L"Ask the server owner for a reset code for your account (it works once, for 24 "
+                                     L"hours), then choose a new password.");
     } else {
-        set_text(ID_ON_L_NAME, L"Name or email"), set_text(ID_ON_L_PASS, L"Password");
+        set_text(ID_ON_L_NAME, L"Name"), set_text(ID_ON_L_PASS, L"Password");
         on_place(ID_ON_L_NAME, 16, 144, 130, 20), on_place(ID_ON_NAME, 150, 140, 220, 24);
         on_place(ID_ON_L_PASS, 16, 174, 130, 20), on_place(ID_ON_PASSWORD, 150, 170, 220, 24);
         on_place(ID_ON_SIGNIN, 384, 139, 162, 26), on_place(ID_ON_REGISTER, 384, 169, 162, 26);
@@ -1680,7 +1647,6 @@ static void online_account_show(void)
         on_place(ID_ON_ACCOUNT, 16, 200, 530, 18);
         on_place(ID_ON_INFO, 16, 219, 530, 18);
     }
-    SendMessageW(ctl(ID_ON_NAME), EM_LIMITTEXT, !signed_in && s_on_mode == ON_SIGNIN ? 254 : 15, 0);
     set_text(ID_ON_ACCOUNT, s_on_note[0] ? s_on_note : text);
     set_text(ID_ON_INFO, info);
     EnableWindow(ctl(ID_ON_NAME), !signed_in);
@@ -1903,43 +1869,33 @@ static void online_note_answer(int status, const char *answer, const WCHAR *what
     online_note(msg);
 }
 
-/* An account answer's steps (api/login, api/account, ...): what the account still needs to play online. */
+/* An account answer's step (api/login, api/account, ...): the account still needs its re-activation code. */
 static void online_steps_read(const char *answer)
 {
-    WCHAR w[256];
     s_on_needs_code = json_true(answer, "needs_code");
-    s_on_needs_email = json_true(answer, "needs_email");
-    s_on_needs_confirm = json_true(answer, "needs_confirm");
-    json_copy(answer, "email", s_on_email, sizeof s_on_email);
-    MultiByteToWideChar(CP_UTF8, 0, s_on_email, -1, w, 256);
-    if (w[0] || !s_on_needs_email)
-        set_text(ID_ON_EMAIL, w);
 }
 
-/* Sign in (register: create the account - name, email, password, invite code) with what's typed. */
+/* Sign in (register: create the account - name, password, invite code) with what's typed. */
 static void online_sign_in(int register_account)
 {
-    WCHAR name[300], password[128], email[256], code[32];
-    char qname[700], qpass[300], qemail[600], qcode[80], body[1800], answer[2048], token[128], xuid[32], account[64];
+    WCHAR name[64], password[128], code[32];
+    char qname[160], qpass[300], qcode[80], body[700], answer[2048], token[128], xuid[32], account[64];
     HCURSOR old;
     int status;
-    GetWindowTextW(ctl(ID_ON_NAME), name, 300);
+    GetWindowTextW(ctl(ID_ON_NAME), name, 64);
     GetWindowTextW(ctl(ID_ON_PASSWORD), password, 128);
-    GetWindowTextW(ctl(ID_ON_EMAIL), email, 256);
     GetWindowTextW(ctl(ID_ON_CODE), code, 32);
-    if (!name[0] || !password[0] || (register_account && (!email[0] || !code[0]))) {
-        online_note(register_account ? L"Type a name, your email, a password and your invite code."
-                                     : L"Type your account's name (or email) and password.");
+    if (!name[0] || !password[0] || (register_account && !code[0])) {
+        online_note(register_account ? L"Type a name, a password and your invite code."
+                                     : L"Type your account's name and password.");
         return;
     }
     json_quote(name, qname, sizeof qname);
     json_quote(password, qpass, sizeof qpass);
-    json_quote(email, qemail, sizeof qemail);
     json_quote(code, qcode, sizeof qcode);
-    /* ("client": 2 - this launcher walks the account's steps; older ones get a text to update) */
+    /* ("client": 2 - this launcher walks the account's step; older ones get a text to update) */
     if (register_account)
-        sprintf_s(body, sizeof body, "{\"name\": %s, \"password\": %s, \"email\": %s, \"invite\": %s, \"client\": 2}",
-                  qname, qpass, qemail, qcode);
+        sprintf_s(body, sizeof body, "{\"name\": %s, \"password\": %s, \"invite\": %s, \"client\": 2}", qname, qpass, qcode);
     else
         sprintf_s(body, sizeof body, "{\"name\": %s, \"password\": %s, \"client\": 2}", qname, qpass);
     online_note(register_account ? L"Creating the account\x2026" : L"Signing in\x2026");
@@ -1963,13 +1919,7 @@ static void online_sign_in(int register_account)
     set_text(ID_ON_CODE, L"");
     online_steps_read(answer);
     s_on_mode = ON_SIGNIN;
-    if (register_account) {
-        WCHAR msg[300];
-        swprintf_s(msg, 300, L"Account made. We mailed a code to %s: type it here.", email);
-        online_note(msg);
-    } else {
-        online_note(L"");
-    }
+    online_note(register_account ? L"Account made: you can play online." : L"");
     CheckDlgButton(s_wnd, ID_ON_ENABLE, BST_CHECKED);
     online_account_show();
     settings_save();
@@ -1977,8 +1927,8 @@ static void online_sign_in(int register_account)
     friends_fetch(NULL);
 }
 
-/* The signed-in account's steps, from the server (api/account): when the Online tab opens. A token the server
-   ended (the password changed or was reset elsewhere) signs out. */
+/* The signed-in account's step, from the server (api/account): when the Online tab opens. A token the server
+   ended (the password changed or was reset) signs out. */
 static void online_account_refresh(void)
 {
     char answer[2048];
@@ -1990,25 +1940,24 @@ static void online_account_refresh(void)
         online_steps_read(answer);
     } else if (status == 401) {
         s_online_token[0] = s_online_xuid[0] = 0;
-        s_on_needs_code = s_on_needs_email = s_on_needs_confirm = 0;
+        s_on_needs_code = 0;
         settings_save();
         online_note(L"Signed out: your password was changed or reset. Sign in again.");
     }
 }
 
-/* The step button: create the account, mail a reset code, set the new password - or, signed in, the account's
-   next step (its re-activation code, an email, the mailed code). */
+/* The step button: create the account, set a new password with the reset code - or, signed in, the account's
+   re-activation code. */
 static void online_step(void)
 {
-    WCHAR email[256], code[32], password[128];
-    char qemail[600], qcode[80], qpass[300], body[1200], answer[2048];
+    WCHAR name[64], code[32], password[128];
+    char qname[160], qcode[80], qpass[300], body[700], answer[2048];
     HCURSOR old;
     int status;
-    const char *path;
-    GetWindowTextW(ctl(ID_ON_EMAIL), email, 256);
+    GetWindowTextW(ctl(ID_ON_NAME), name, 64);
     GetWindowTextW(ctl(ID_ON_CODE), code, 32);
     GetWindowTextW(ctl(ID_ON_PASSWORD), password, 128);
-    json_quote(email, qemail, sizeof qemail);
+    json_quote(name, qname, sizeof qname);
     json_quote(code, qcode, sizeof qcode);
     json_quote(password, qpass, sizeof qpass);
     if (!s_online_token[0]) {
@@ -2016,25 +1965,11 @@ static void online_step(void)
             online_sign_in(1);
             return;
         }
-        if (!email[0]) {
-            online_note(L"Type your account's email.");
+        if (!name[0] || !code[0] || !password[0]) {
+            online_note(L"Type your account's name, the reset code and a new password.");
             return;
         }
-        if (s_on_mode == ON_FORGOT) {
-            sprintf_s(body, sizeof body, "{\"email\": %s}", qemail);
-            status = online_post("/api/password/forgot", body, NULL, answer, sizeof answer);
-            if (status == 200) {
-                s_on_mode = ON_FORGOT_CODE;
-                online_account_show();
-            }
-            online_note_answer(status, answer, NULL);
-            return;
-        }
-        if (!code[0] || !password[0]) {
-            online_note(L"Type the code from the mail and a new password.");
-            return;
-        }
-        sprintf_s(body, sizeof body, "{\"email\": %s, \"code\": %s, \"password\": %s}", qemail, qcode, qpass);
+        sprintf_s(body, sizeof body, "{\"name\": %s, \"code\": %s, \"password\": %s}", qname, qcode, qpass);
         old = SetCursor(LoadCursor(NULL, IDC_WAIT));
         status = online_post("/api/password/reset", body, NULL, answer, sizeof answer);
         SetCursor(old);
@@ -2042,7 +1977,6 @@ static void online_step(void)
         SecureZeroMemory(body, sizeof body);
         if (status == 200) {
             s_on_mode = ON_SIGNIN;
-            set_text(ID_ON_NAME, email);
             set_text(ID_ON_PASSWORD, L"");
             set_text(ID_ON_CODE, L"");
             online_account_show();
@@ -2050,59 +1984,20 @@ static void online_step(void)
         online_note_answer(status, answer, NULL);
         return;
     }
-    if (s_on_needs_code) {
-        path = "/api/reactivate";
-        sprintf_s(body, sizeof body, "{\"code\": %s}", qcode);
-    } else if (s_on_needs_email) {
-        path = "/api/email";
-        sprintf_s(body, sizeof body, "{\"email\": %s}", qemail);
-    } else {
-        path = "/api/email/confirm";
-        sprintf_s(body, sizeof body, "{\"code\": %s}", qcode);
-    }
-    if (!(!s_on_needs_code && s_on_needs_email ? email[0] : code[0])) {
-        online_note(!s_on_needs_code && s_on_needs_email ? L"Type your email." : L"Type the code.");
+    if (!code[0]) {
+        online_note(L"Type the code.");
         return;
     }
+    sprintf_s(body, sizeof body, "{\"code\": %s}", qcode);
     old = SetCursor(LoadCursor(NULL, IDC_WAIT));
-    status = online_post(path, body, s_online_token, answer, sizeof answer);
+    status = online_post("/api/reactivate", body, s_online_token, answer, sizeof answer);
     SetCursor(old);
     if (status == 200) {
-        WCHAR msg[300];
-        const int was_email = !s_on_needs_code && s_on_needs_email;
         online_steps_read(answer);
         set_text(ID_ON_CODE, L"");
-        if (was_email)
-            swprintf_s(msg, 300, L"We mailed a code to %s: type it here.", email);
-        else if (s_on_needs_email)
-            wcscpy_s(msg, 300, L"Account re-activated. Now add your email.");
-        else
-            wcscpy_s(msg, 300, s_on_needs_code || s_on_needs_confirm ? L"" : L"All set: you can play online.");
-        online_note(msg);
+        online_note(s_on_needs_code ? L"" : L"Account re-activated: you can play online.");
         online_account_show();
         friends_fetch(NULL);
-    } else {
-        online_note_answer(status, answer, NULL);
-    }
-}
-
-/* Resend the confirm mail (to the email typed: a changed one becomes the account's). */
-static void online_resend(void)
-{
-    WCHAR email[256], cur[256], msg[300];
-    char qemail[600], body[700], answer[2048];
-    int status, changed;
-    GetWindowTextW(ctl(ID_ON_EMAIL), email, 256);
-    MultiByteToWideChar(CP_UTF8, 0, s_on_email, -1, cur, 256);
-    changed = email[0] && _wcsicmp(email, cur) != 0;
-    json_quote(email, qemail, sizeof qemail);
-    sprintf_s(body, sizeof body, "{\"email\": %s}", qemail);
-    status = changed ? online_post("/api/email", body, s_online_token, answer, sizeof answer)
-                     : online_post("/api/email/resend", "{}", s_online_token, answer, sizeof answer);
-    if (status == 200) {
-        online_steps_read(answer);
-        swprintf_s(msg, 300, L"We mailed a new code to %s.", changed ? email : cur);
-        online_note(msg);
     } else {
         online_note_answer(status, answer, NULL);
     }
@@ -2115,7 +2010,7 @@ static void online_sign_out(void)
         online_post("/api/logout", "{}", s_online_token, answer, sizeof answer);
     s_online_token[0] = 0;
     s_online_xuid[0] = 0;
-    s_on_needs_code = s_on_needs_email = s_on_needs_confirm = 0;
+    s_on_needs_code = 0;
     s_on_mode = ON_SIGNIN;
     online_note(L"");
     online_account_show();
@@ -4397,9 +4292,6 @@ static void build_ui(void)
     h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | ES_PASSWORD | WS_BORDER | WS_TABSTOP, X0 + 150, 170, 220, 24,
             ID_ON_PASSWORD);
     SendMessageW(h, EM_LIMITTEXT, 100, 0);
-    add(TAB_ONLINE, L"Static", L"Email", SS_LEFT, X0 + 16, 144, 130, 20, ID_ON_L_EMAIL);
-    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 140, 220, 24, ID_ON_EMAIL);
-    SendMessageW(h, EM_LIMITTEXT, 254, 0);
     add(TAB_ONLINE, L"Static", L"Code", SS_LEFT, X0 + 16, 174, 130, 20, ID_ON_L_CODE);
     h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | ES_UPPERCASE | WS_BORDER | WS_TABSTOP, X0 + 150, 170, 220, 24,
             ID_ON_CODE);
@@ -4411,7 +4303,6 @@ static void build_ui(void)
     add(TAB_ONLINE, L"Button", L"", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 139, 162, 26, ID_ON_STEP);
     add(TAB_ONLINE, L"Button", L"Back", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 169, 162, 26, ID_ON_BACK);
     add(TAB_ONLINE, L"Button", L"Forgot password?", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 199, 162, 24, ID_ON_FORGOT);
-    add(TAB_ONLINE, L"Button", L"Resend the mail", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 169, 162, 26, ID_ON_RESEND);
     add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 200, 530, 18, ID_ON_ACCOUNT);
     add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 219, 530, 18, ID_ON_INFO);
     add(TAB_ONLINE, L"Button", L"Server", BS_GROUPBOX, X0, 248, 560, 74, 0);
@@ -9069,12 +8960,6 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_ON_FORGOT:
             s_on_mode = ON_FORGOT;
             online_note(L"");
-            {
-                WCHAR w[300];  /* (an email typed to sign in: the one to reset) */
-                GetWindowTextW(ctl(ID_ON_NAME), w, 300);
-                if (wcschr(w, L'@'))
-                    set_text(ID_ON_EMAIL, w);
-            }
             online_account_show();
             break;
         case ID_ON_BACK:
@@ -9084,9 +8969,6 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             break;
         case ID_ON_STEP:
             online_step();
-            break;
-        case ID_ON_RESEND:
-            online_resend();
             break;
         case ID_ON_SIGNOUT:
             online_sign_out();
@@ -10100,18 +9982,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         online_sign_in(capture_account[0][2] == L'r');
     }
     {   /* (tests, with --capture online) SVR2011_CAPTURE_ONLINE=<step>;<step>...: the account box's fields and
-           buttons - name=, password=, email=, code= (typed), click=register|forgot|back|step|resend|signin */
+           buttons - name=, password=, code= (typed), click=register|forgot|back|step|signin */
         const char *v = capture_file ? getenv("SVR2011_CAPTURE_ONLINE") : NULL;
         WCHAR w[1024], *ctx = NULL, *t;
         if (v && *v) {
             MultiByteToWideChar(CP_UTF8, 0, v, -1, w, 1024);
             for (t = wcstok_s(w, L";", &ctx); t; t = wcstok_s(NULL, L";", &ctx)) {
                 static const struct { const WCHAR *k; int id; } fields[] = {
-                    { L"name=", ID_ON_NAME }, { L"password=", ID_ON_PASSWORD }, { L"email=", ID_ON_EMAIL },
-                    { L"code=", ID_ON_CODE } };
+                    { L"name=", ID_ON_NAME }, { L"password=", ID_ON_PASSWORD }, { L"code=", ID_ON_CODE } };
                 static const struct { const WCHAR *k; int id; } clicks[] = {
                     { L"click=register", ID_ON_REGISTER }, { L"click=forgot", ID_ON_FORGOT }, { L"click=back", ID_ON_BACK },
-                    { L"click=step", ID_ON_STEP }, { L"click=resend", ID_ON_RESEND }, { L"click=signin", ID_ON_SIGNIN } };
+                    { L"click=step", ID_ON_STEP }, { L"click=signin", ID_ON_SIGNIN } };
                 size_t i;
                 for (i = 0; i < sizeof fields / sizeof fields[0]; i++)
                     if (!wcsncmp(t, fields[i].k, wcslen(fields[i].k)))
@@ -10119,8 +10000,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                 for (i = 0; i < sizeof clicks / sizeof clicks[0]; i++)
                     if (!wcscmp(t, clicks[i].k))
                         SendMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(clicks[i].id, BN_CLICKED), (LPARAM)ctl(clicks[i].id));
-                if (!wcscmp(t, L"mode=forgot_code"))  /* (a code mailed before: its form) */
-                    s_on_mode = ON_FORGOT_CODE, online_account_show();
             }
         }
     }
