@@ -227,7 +227,11 @@ page (`port/docs/MOVE_MODDING.md`).
   - **a dive's template by a rare name word** (`dive_kin`: a word at most 2 of 2011's dives have): WWE '13's
     Diving Corkscrew Splash -> Diving Corkscrew Body 3624. On 450 Splash 3559 (upright at the start; the corkscrew
     starts flipped) the game dropped its base to the mat in 16 frames, never carried it to the target, and it
-    landed a torso short. "Splash" is in half of them: not a match (the 450 stays on 3570).
+    landed a torso short. "Splash" is in half of them: not a match (the 450 stays on 3570); nor "star" (a
+    Shooting Star Press is no Five Star Frog Splash). WWE '12's Springboard Moonsault -> Diving Moonsault 2 3621.
+  - **no floor dive for a dive in the ring** (`ringside=False`): Leap of Faith 3591 flies out to the floor (its
+    flights x 110 / 111, no x 50). WWE '12's Springboard Moonsault had it (closest length), was turned 161 degrees to
+    its heading and, from the turnbuckle, flipped away from the victim and out of the ring (Release Testing F11).
   - a dive given as the template (`--template`, the Mod Maker's pick) is ported as a dive: before, its flight,
     branches, turn and travel scaling were left out and the source's x 30 took x 0.
 - Khali Bomb plays through: throat grab, lift, hold, drop - the victim lands about 2 m in front (TEST_VIEW didn't

@@ -909,7 +909,7 @@ def heading_turn(st, tt, min_travel=200.0, min_angle=0.35):
 
 
 def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attacker_end_y=None, reversals=True,
-                    with_score=False, need_x=()):
+                    with_score=False, need_x=(), ringside=True):
     """the 2011 move in MVMT/<cat> (YMKs only, x0 y0 and x0 y1 both there) most like the source:
     the attacker / victim start distance (a running move needs a running template), for a dive where the
     attacker ends (low: on a lying victim) and the length"""
@@ -949,6 +949,10 @@ def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attac
                 # (a dive's branches where the source has them: Leap of Faith keeps its miss in x 110, so a ported
                 # dive judged a miss flew again with Leap of Faith's own miss flight)
                 if need_x and not set(need_x) <= {x for p, kd, ks in g11.banks_of(e['id']) for x, y in ks if y == 0}:
+                    continue
+                # (nor, for a dive in the ring, one that flies out to the floor - Leap of Faith, flights x 110 / 111:
+                # WWE '12's Springboard Moonsault, turned to its heading, flipped away from the victim out of the ring)
+                if not ringside and any(x in (110, 111) for p, kd, ks in g11.banks_of(e['id']) for x, y in ks):
                     continue
                 score = abs(e['frames'] - frames) / 10.0
                 if gap is not None:
@@ -1029,7 +1033,8 @@ def dive_kin(g11, name):
     ids = {i for i in ids if usable11(g11.waze, i)}
 
     def words(s):
-        return set(re.findall(r'[a-z]{3,}', (s or '').lower())) - {'diving', 'pin', 'top', 'rope'}
+        # ("star": a Shooting Star Press is no Five Star Frog Splash - WWE '12's lands on 3570)
+        return set(re.findall(r'[a-z]{3,}', (s or '').lower())) - {'diving', 'pin', 'top', 'rope', 'star'}
     count = collections.Counter(w for i in ids for w in words(g11.waze[i][1]))
     # (a rare word only: "splash" names half of them - WWE '13's 450 Splash moved off 3570, the template it lands on)
     mine = [w for w in words(name) if 0 < count[w] <= 2]
@@ -1236,9 +1241,9 @@ def convert(a, rep):
         dive = tid if opt_dive else next(
             (t for allowed in ([kin] if kin else []) + [None] for t in (
                 choose_template(g11, ['CORN'], nf, None, allowed, paired=False, attacker_end_y=att_keys[-1][0][1],
-                                need_x=branches),
+                                need_x=branches, ringside=False),
                 choose_template(g11, ['CORN'], nf, None, allowed, paired=False,   # (dives are corner moves; SPE1
-                                attacker_end_y=att_keys[-1][0][1])) if t), None)   # has strikes)
+                                attacker_end_y=att_keys[-1][0][1], ringside=False)) if t), None)   # has strikes)
         if kin and dive in kin and not opt_dive:
             rep['notes'].append('template: a 2011 dive of a like name (%s)' % g11.waze[dive][1])
         if dive:
