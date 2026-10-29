@@ -19,6 +19,7 @@ banks), on a free record in the template's thousand: moves_port's YMBs path. Sub
 keep the base's.
 """
 import collections
+import glob
 import json
 import os
 import shutil
@@ -154,7 +155,10 @@ def port_moveset(c):
                                                              'porting off'), base[to // 2]))
     pack = None
     if to_port:
-        free = [i for i in sorted(w11) if i not in g11m.moved and i > 1000 and i not in in_slot]   # (never a stock one's)
+        # (never a stock one's, nor one another mod's pack already defines: packs are merged by move id - Mankind's
+        # signature 2437 was Maria's and Bob Orton's 2437 too, whose waze line took its signature bits, 29 Oct)
+        taken = other_pack_ids(c.pac11)
+        free = [i for i in sorted(w11) if i not in g11m.moved and i > 1000 and i not in in_slot and i not in taken]
         used = set()
         pdir = os.path.join(c.work, 'moveset_port')
         if os.path.exists(pdir) and not getattr(c, 'dry', False):
@@ -226,6 +230,15 @@ def port_moveset(c):
                 area[to // 2] = new_id
                 rows.append((None, to, v, nm, 'ported (template %s)' % r.get('template'), new_id))
             lines += open(os.path.join(r['folder'], 'pack.txt')).read().splitlines()
+            # (a signature / finisher: the record needs categories 2 and 3 - every one of 2011's roster's has them; a
+            # template without them left the slot empty - Mankind's Double Arm DDT 2 on Spin Fisherman Suplex 1)
+            tb = w11.get(int(r.get('template') or 0), (b'', ''))[0]
+            if any(to in SPECIAL_SLOTS for to in tos) and len(tb) == 16 and not (tb[0] & 0x0C) == 0x0C:
+                bits = bytearray(tb)
+                bits[0] |= 0x0C
+                lines.append('waze %d %s' % (new_id, bits.hex()))
+                c.rep['notes'].append('moveset: "%s" given the signature / finisher categories (its template %s had '
+                                      'none)' % (nm, r.get('template')))
             motions.append(os.path.join(r['folder'], 'motions'))
         if lines:
             pack = os.path.join(c.work, 'moveset_pack')
@@ -238,6 +251,33 @@ def port_moveset(c):
             open(os.path.join(pack, 'pack.txt'), 'w', newline='\n').write('\n'.join(lines) + '\n')
     moves_txt = ['0x%03X=%d' % (k * 2, v) for k, v in enumerate(area) if v != base[k]]
     return {'moves_txt': moves_txt, 'rows': rows, 'pack': pack}
+
+
+SPECIAL_SLOTS = (0x1E, 0x20, 0x22, 0x24)   # (2011's signature 1/2 and finisher 1/2 - pro_slots.json)
+
+
+def other_pack_ids(pac11):
+    """the move ids the move packs beside the game define (waze / wazecopy / wazename lines): the Bundled Mods'
+    .svrmod files and the installed Mods' folders of the game folder that holds pac11"""
+    import re
+    import zipfile
+    game = os.path.dirname(os.path.abspath(pac11))
+    pat = re.compile(r'^(?:waze|wazecopy|wazename)\s+(\d+)\s', re.M)
+    ids = set()
+    for f in glob.glob(os.path.join(game, 'Bundled Mods', '*.svrmod')):
+        try:
+            with zipfile.ZipFile(f) as z:
+                for n in z.namelist():
+                    if n.endswith('pack.txt'):
+                        ids.update(int(x) for x in pat.findall(z.read(n).decode('utf-8', 'replace')))
+        except (OSError, zipfile.BadZipFile):
+            continue
+    for f in glob.glob(os.path.join(game, 'Mods', '**', 'pack.txt'), recursive=True):
+        try:
+            ids.update(int(x) for x in pat.findall(open(f, encoding='utf-8', errors='replace').read()))
+        except OSError:
+            continue
+    return ids
 
 
 def merge_pack(pack, mod):
