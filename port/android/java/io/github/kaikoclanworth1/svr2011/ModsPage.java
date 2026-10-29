@@ -50,6 +50,22 @@ final class ModsPage {
     static File attiresFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Attires"); }
     static File backgroundsFolder() { return Backgrounds.folder(); }
 
+    // This app's version: the game's (the app installs the game of its own release).
+    static String gameVersion(android.content.Context ctx) {
+        try {
+            return ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    // A mod's needs= (docs/SVRMOD_FORMAT.md: the oldest game version that plays it - a big model or arena) is newer
+    // than this game: older games leave a big model out, and crash loading a big arena (the PC's mods_tab.c).
+    static boolean needsNewer(android.content.Context ctx, String needs) {
+        String v = gameVersion(ctx);
+        return needs != null && !needs.trim().isEmpty() && v != null && !v.isEmpty() && Updater.newer(needs.trim(), v);
+    }
+
     View view() {
         LinearLayout c = a_.column();
         TextView about = a_.text("Custom arenas and superstars made with the SvR2011 Mod Maker on the PC. Arenas are "
@@ -142,6 +158,7 @@ final class ModsPage {
                 + (attire ? "Attire " + m.get("attire") + " for " + starName(m.get("superstar")) : pic ? "Menu background" : matchType ? (d.getName().equals("free_roaming_backstage") ? "Match type - REMOVED: FREE-ROAMING BACKSTAGE isn't in the game for now" : "Match type") : backPack ? "Backstage area - OFF: backstage mods are switched off, Backstage Brawl plays the stock backstage" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
                 + (m.containsKey("author") && !m.get("author").isEmpty() ? " by " + m.get("author") : "")
                 + (m.containsKey("version") ? ", v" + m.get("version") : "")
+                + (needsNewer(a_, m.get("needs")) ? " - NEEDS GAME " + m.get("needs") : "")
                 + (signPack || mediaPack || matchType || pic ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : attire ? "attire.pac" : "arena.pac").length()));
             LinearLayout controls = new LinearLayout(a_);
             Switch on = new Switch(a_);
@@ -402,6 +419,11 @@ final class ModsPage {
         return yes[0];
     }
 
+    // The player said No (the custom-moves question): not a failure.
+    static final class Declined extends IOException {
+        Declined(String why) { super(why); }
+    }
+
     // Where a mod went (Mods/<kind>/<id>), whether it was there already, and
     // for a bundled one whether the player's newer copy was kept instead.
     static final class Installed {
@@ -472,7 +494,7 @@ final class ModsPage {
             if (ask != null && !ask.install(nm)) {
                 deleteTree(stage);
                 android.util.Log.i("SvR2011", "mods: \"" + nm + "\" not installed (custom moves: No)");
-                throw new IOException("it has custom moves (you chose not to install it)");
+                throw new Declined("it has custom moves (you chose not to install it)");
             }
         }
         String id = m.containsKey("id") ? m.get("id").replaceAll("[^A-Za-z0-9_\\-]", "_") : "";
@@ -533,6 +555,9 @@ final class ModsPage {
             }
             r.note = attireGuard(dest);
         }
+        if (needsNewer(ctx, m.get("needs")))
+            r.note = ("It needs game version " + m.get("needs").trim() + " or newer - this one is " + gameVersion(ctx)
+                + ": update the game first. " + r.note).trim();
         return r;
     }
 

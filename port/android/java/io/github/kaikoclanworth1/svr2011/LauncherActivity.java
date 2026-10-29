@@ -113,6 +113,8 @@ public class LauncherActivity extends Activity {
         addPage(tabRow, content, "DLC", dlc.view(), dlc::refresh);
         ModsPage mods = new ModsPage(this);
         addPage(tabRow, content, "Mods", mods.view(), mods::refresh);
+        DiscoverPage discover = new DiscoverPage(this, mods);
+        addPage(tabRow, content, "Discovery", discover.view(), discover::onShow);
         MoviesPage movies = new MoviesPage(this);
         addPage(tabRow, content, "Movies", movies.view(), movies::refresh);
         InstallPage install = new InstallPage(this);
