@@ -25,6 +25,7 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "cae_mod_motions.h"
 #include "generated/default/svr2011_init.h"
 #include "rtwm_streak.h"
 #include "superstar_mods.h"
@@ -208,6 +209,7 @@ REX_HOOK_RAW(sub_82732938) {
   const uint32_t id = ctx.r5.u32;
   static const bool log = std::getenv("SVR2011_TEST_PICK_LOG") != nullptr;
   if (log) REXLOG_INFO("[svr2011] pick: player {} id {:X} (rtwm {})", ctx.r4.u32, id, svr2011::InRoadToWrestleMania());
+  svr2011::CaeNotePick(id);  // (CREATE AN ENTRANCE: the picked mod's own MOD: row - cae_mod_motions.cpp)
   g_pick_mod = 0;
   if (svr2011::InRoadToWrestleMania() && g_cas_list) {
     g_pending = true;

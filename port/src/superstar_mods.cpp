@@ -3285,6 +3285,18 @@ bool IsOnlineTempSuperstar(uint32_t id) {
   return m && m->temp;
 }
 
+std::vector<SuperstarModEntrance> SuperstarModEntrances() {
+  std::vector<SuperstarModEntrance> out;
+  for (const auto& m : g_mods) {
+    if (m.temp) continue;
+    SuperstarModEntrance e{m.slot, m.name.empty() ? m.folder : m.name, {}};
+    for (int n : {m.entrance, m.attire_entrance[0], m.attire_entrance[1], m.attire_entrance[2], m.attire_entrance[3]})
+      if (n > 0 && std::find(e.numbers.begin(), e.numbers.end(), n) == e.numbers.end()) e.numbers.push_back(n);
+    if (!e.numbers.empty()) out.push_back(std::move(e));
+  }
+  return out;
+}
+
 bool IsSuperstarMod(uint32_t id) { return ModOf(id) != nullptr; }
 std::string SuperstarModFolder(uint32_t id) {
   const Mod* m = ModOf(id);
