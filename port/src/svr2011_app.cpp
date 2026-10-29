@@ -756,11 +756,14 @@ void Svr2011App::OnPostLoadXexImage() {
     if (std::string t = Env("SVR2011_TEST_MOVIE"); t.size() > 4 && t.substr(t.size() - 4) == ".mp4")
       svr2011::PrepareHdMovie(movies, "hdtest.bik", t);  // (tests: user_movies.cpp)  // (arenas branch: superstar_mods.h)
     svr2011::CopyMediaMovies(movies);      // (arenas branch: media_mods.h)
+    // (before the mount too: its scan writes the folder's own .mp4s' stubs and
+    // renames accented names - files made after it don't open until the next
+    // start: a new USER MOVIES .mp4 stayed black)
+    svr2011::InstallUserMovies(runtime()->memory(), movies);
     auto device = std::make_unique<rex::filesystem::HostPathDevice>("\\USERMOVIES", movies, true);
     auto* fs = runtime()->file_system();
     if (device->Initialize() && fs->RegisterDevice(std::move(device))) {
       fs->RegisterSymbolicLink("umovie:", "\\USERMOVIES");
-      svr2011::InstallUserMovies(runtime()->memory(), movies);
     } else {
       REXLOG_WARN("could not mount the Custom Movies folder {}", movies.string());
     }
