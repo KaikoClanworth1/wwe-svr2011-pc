@@ -277,10 +277,7 @@ REX_EXTERN(__imp__sub_825344E0);
 REX_HOOK_RAW(sub_825344E0) {
   const uint32_t want = ctx.r3.u32;
   __imp__sub_825344E0(ctx, base);
-  if (ctx.r3.u32 || !g_swap_id || want != g_swap_caw || !svr2011::InRoadToWrestleMania()) return;
-  // (the character built from the swapped person - characters-table entry = person - when his id, as the lookup
-  // reads it, is the mod's or its base's: the mod's record is a copy of its base's, so it reads as the base, 104
-  // for the test mod; the base himself may be in the scene too, so only that entry)
+  if (ctx.r3.u32 || !g_swap_id || !svr2011::InRoadToWrestleMania()) return;
   const uint32_t c = g_swap_person < 9 ? Rd32(base + 0x82E3CC50 + g_swap_person * 4) : 0;
   if (!c) return;
   const auto saved = ctx;
@@ -288,12 +285,20 @@ REX_HOOK_RAW(sub_825344E0) {
   sub_828B7028(ctx, base);
   const uint32_t is = ctx.r3.u32;
   ctx = saved;
-  if (is == g_swap_id || is == svr2011::SuperstarModBase(g_swap_id)) {
-    ctx.r3.u64 = c;
-    static bool said = false;
-    if (!said) {
-      said = true;
-      REXLOG_INFO("[svr2011] rtwm streak: the story's player (CAW {}) is the mod's character (id {})", want, is);
-    }
+  if (want != g_swap_caw) {  // (another person's id finds nobody: the game's own answer stands - logged)
+    static uint32_t said = 0;
+    if (said++ < 5)
+      REXLOG_INFO("[svr2011] rtwm streak: no character for person id {} (the player's {} reads {})", int32_t(want),
+                  g_swap_caw, is);
+    return;
+  }
+  // (the swapped person's character - characters-table entry = person - whatever his id reads: the mod's id, its
+  // base's (the mod's record is a copy of the base's), or another later on - JBL's walk read neither some seconds
+  // in and crashed as before, 29 Oct)
+  ctx.r3.u64 = c;
+  static uint32_t said = 0;
+  if (said < 4 && (said == 0 || (is != g_swap_id && is != svr2011::SuperstarModBase(g_swap_id)))) {
+    ++said;
+    REXLOG_INFO("[svr2011] rtwm streak: the story's player (CAW {}) is the mod's character (his id reads {})", want, is);
   }
 }
