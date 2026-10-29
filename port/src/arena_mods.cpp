@@ -1531,6 +1531,13 @@ int BackstageWeaponModel(std::string token, const std::string& row) {
 void LoadBackstage() {
   if (svr2011::NoMods()) return;  // (Start Without Mods: no_mods.h)
   std::error_code ec;
+  if (svr2011::BackstageModsOff()) {  // (no_mods.h: the stock backstage only - each installed one named)
+    for (const auto& e : fs::directory_iterator(g_game / "Mods" / "Backstage", ec))
+      if (e.is_directory() && fs::exists(e.path() / "arena.pac", ec))
+        REXLOG_INFO("[svr2011] arena mods: backstage mod '{}' skipped - backstage mods are off, the stock backstage "
+                    "plays", e.path().filename().string());
+    return;
+  }
   std::vector<fs::path> found;
   std::vector<fs::path> dirs;
   for (const auto& e : fs::directory_iterator(g_game / "Mods" / "Backstage", ec))

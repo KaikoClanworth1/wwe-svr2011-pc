@@ -1530,7 +1530,7 @@ const std::string& PacListFolder() { return g_folder; }
 constexpr size_t kMaxGimmickPacs = 8;
 std::string GimmickPacName(size_t i) { return i ? "bsgimmick" + std::to_string(i + 1) + ".pac" : "bsgimmick.pac"; }
 std::vector<fs::path> BackstageGimmickPacs(const fs::path& game) {
-  if (svr2011::NoMods()) return {};  // (Start Without Mods: no_mods.h)
+  if (svr2011::NoMods() || svr2011::BackstageModsOff()) return {};  // (Start Without Mods / backstage mods off: no_mods.h)
   std::error_code ec;
   std::vector<fs::path> dirs;
   for (const auto& e : fs::directory_iterator(game / "Mods" / "Backstage", ec))
