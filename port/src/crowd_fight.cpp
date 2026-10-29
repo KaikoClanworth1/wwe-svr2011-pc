@@ -27,7 +27,6 @@
 #include <rex/ppc.h>
 
 #include "arena_mods.h"
-#include "match_types.h"
 #include "weapons_page.h"
 
 #include "generated/default/svr2011_init.h"
@@ -336,15 +335,15 @@ REX_HOOK_RAW(sub_8281E540) {
   }
 }
 
-// The crowd area in the people's wall grids. sub_8281EA18 builds a wall grid (sub_8281E540: the stage collision's
-// walls into cells) for each rectangle of a fixed table of the game's - sub_821E4A18 (0x82D9E0B0), 4A28 (0x82D9DCC0)
-// and 4A38 (0x82D9E1A0), by the match's mode: 20-byte records {u32 type, 4 floats}, type -1 last. The rectangles
-// are 2011's ringside and aisle (stage coordinates: the HMD's x and z), so an SvR 2008 crowd area beyond them gets no
-// walls in any grid and people walk through them. In crowd matches the table comes back as a copy with one rectangle
-// more: the arena mod's crowd_area=<x0>,<z0>,<x1>,<z1> (stage x / z, from the arena's crowd collision - see
-// tools/crowd_walkway.py), laid out and typed like the table's ringside rectangle (the one around (0, 0)). Online the
-// table depends only on the arena (its mod's manifest) and the rule (crowd matches: g_crowd, the same decision as the
-// crowd collision's), so every peer builds the same grids.
+// The crowd area in the people's wall grids. sub_8281B118 sets up the stage's wall grids (people's walls: sub_8281E540
+// puts the stage collision's walls into cells - 10 bytes each at +32, byte +3 blocked; +36 x +40 cells of +44 x +48
+// from +64, +68, in stage coordinates: the HMD's x and z). The first grid is the ringside's: (-70, -100)..(70, 90) in
+// 35 x 35 cells - an SvR 2008 crowd area beyond it gets no walls in any grid and people walk through them. In crowd
+// matches that grid is stretched over the arena mod's crowd_area=<x0>,<z0>,<x1>,<z1> too (stage x / z, from the
+// arena's crowd collision - tools/crowd_walkway.py): the same cells, larger (origin and cell size only - every
+// reader takes them from the grid), before its walls go in. Online the grid depends only on the arena (its mod's
+// manifest) and the rule (crowd matches: g_crowd, the same decision as the crowd collision's), so every peer builds
+// the same grids.
 namespace {
 
 bool CrowdAreaRect(float r[4]) {
@@ -360,58 +359,23 @@ bool CrowdAreaRect(float r[4]) {
   return false;
 }
 
-void CrowdAreaTable(PPCContext& ctx, uint8_t* base) {
-  if (!g_crowd.load()) return;
-  float r[4];
-  if (!CrowdAreaRect(r)) return;
-  const uint32_t table = ctx.r3.u32;
-  uint32_t n = 0, ring = ~0u;
-  bool by_axis = false;  // (the floats x0 x1 z0 z1, not x0 z0 x1 z1)
-  for (; n < 64 && Rd32(base + table + n * 20) != 0xFFFFFFFFu; ++n) {
-    float f[4];
-    for (int i = 0; i < 4; ++i) f[i] = RdF(base + table + n * 20 + 4 + i * 4);
-    if (ring == ~0u && f[0] < 0 && f[2] > 0 && f[1] < 0 && f[3] > 0) ring = n;
-    else if (ring == ~0u && f[0] < 0 && f[1] > 0 && f[2] < 0 && f[3] > 0) ring = n, by_axis = true;
-  }
-  if (n >= 64 || ring == ~0u) return;
-  struct Copy { uint32_t table; float r[4]; uint32_t at; };
-  static Copy copies[4];
-  static std::atomic<uint32_t> made{0};
-  for (const Copy& c : copies)
-    if (c.at && c.table == table && !std::memcmp(c.r, r, sizeof r)) { ctx.r3.u64 = c.at; return; }
-  const uint32_t at = svr2011::GuestHeapAlloc((n + 2) * 20);
-  if (!at) return;
-  std::memcpy(base + at, base + table, n * 20);
-  std::memcpy(base + at + n * 20, base + table + ring * 20, 4);  // (the ringside's type)
-  const float o[4] = {r[0], by_axis ? r[2] : r[1], by_axis ? r[1] : r[2], r[3]};
-  for (int i = 0; i < 4; ++i) {
-    uint32_t v;
-    std::memcpy(&v, &o[i], 4);
-    base[at + n * 20 + 4 + i * 4] = uint8_t(v >> 24), base[at + n * 20 + 5 + i * 4] = uint8_t(v >> 16);
-    base[at + n * 20 + 6 + i * 4] = uint8_t(v >> 8), base[at + n * 20 + 7 + i * 4] = uint8_t(v);
-  }
-  std::memcpy(base + at + (n + 1) * 20, base + table + n * 20, 20);  // (the -1 record)
-  const uint32_t k = made++;
-  if (k < 4) copies[k] = {table, {r[0], r[1], r[2], r[3]}, at};
-  REXLOG_INFO("crowd fight: the wall grids' table {:08X} + the crowd area ({}, {})..({}, {}) (type {:08X}, {} rectangles)",
-              table, r[0], r[1], r[2], r[3], Rd32(base + table + ring * 20), n + 1);
-  ctx.r3.u64 = at;
-}
-
 }  // namespace
 
-REX_EXTERN(__imp__sub_821E4A18);
-REX_HOOK_RAW(sub_821E4A18) {
-  __imp__sub_821E4A18(ctx, base);
-  CrowdAreaTable(ctx, base);
-}
-REX_EXTERN(__imp__sub_821E4A28);
-REX_HOOK_RAW(sub_821E4A28) {
-  __imp__sub_821E4A28(ctx, base);
-  CrowdAreaTable(ctx, base);
-}
-REX_EXTERN(__imp__sub_821E4A38);
-REX_HOOK_RAW(sub_821E4A38) {
-  __imp__sub_821E4A38(ctx, base);
-  CrowdAreaTable(ctx, base);
+REX_EXTERN(__imp__sub_8281B118);
+REX_HOOK_RAW(sub_8281B118) {
+  const uint32_t g = ctx.r3.u32;
+  float r[4];
+  if (g && g_crowd.load() && CrowdAreaRect(r)) {
+    const int32_t w = int32_t(Rd32(base + g + 36)), h = int32_t(Rd32(base + g + 40));
+    const float ox = RdF(base + g + 64), oz = RdF(base + g + 68), cx = RdF(base + g + 44), cz = RdF(base + g + 48);
+    if (w > 0 && h > 0 && cx > 0 && cz > 0 && (r[0] < ox || r[1] < oz || r[2] > ox + w * cx || r[3] > oz + h * cz)) {
+      const float x0 = std::min(ox, r[0]), z0 = std::min(oz, r[1]);
+      const float x1 = std::max(ox + w * cx, r[2]), z1 = std::max(oz + h * cz, r[3]);
+      WrF(base + g + 64, x0), WrF(base + g + 68, z0);
+      WrF(base + g + 44, (x1 - x0) / float(w)), WrF(base + g + 48, (z1 - z0) / float(h));
+      REXLOG_INFO("crowd fight: the ringside wall grid ({}, {})..({}, {}) stretched over the crowd area: ({}, {})..({}, {})",
+                  ox, oz, ox + w * cx, oz + h * cz, x0, z0, x1, z1);
+    }
+  }
+  __imp__sub_8281B118(ctx, base);
 }

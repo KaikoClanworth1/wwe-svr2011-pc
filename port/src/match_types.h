@@ -26,8 +26,6 @@ void LastMatch(uint32_t* rule, uint32_t* arena);
 uint32_t MatchPlacements();
 // A backstage match's rule (its rooms are bg78 - where backstage mods play).
 bool BackstageRule(uint32_t rule);
-// Guest memory from the system heap (0 before the match types are installed).
-uint32_t GuestHeapAlloc(uint32_t size);
 
 // Match type mods: each match type the port adds is on unless
 // <game>\Mods\MatchTypes\<id>\disabled exists (the launcher's Mods tab; read

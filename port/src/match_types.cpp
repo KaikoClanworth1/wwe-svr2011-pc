@@ -3729,7 +3729,3 @@ void SetFightBox(uint8_t* base, float cx, float cz, float hx, float hz) {
 void SnapMatchCamera() { g_camera_snap = kSnapFrames; }
 
 }  // namespace svr2011
-
-namespace svr2011 {
-uint32_t GuestHeapAlloc(uint32_t size) { return g_memory ? g_memory->SystemHeapAlloc(size) : 0; }
-}  // namespace svr2011
