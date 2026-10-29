@@ -179,7 +179,15 @@ class DecoderBase {
     const Frame* best = nullptr;
     for (const Frame& f : frames_)
       if (f.ready && f.time <= seconds + 0.5 / kFps && (!best || f.time > best->time)) best = &f;
+    // (the game showing the movie 3 s with no frame from the decoder: said once - the
+    // screen is the stub's black)
+    if (!best && !shown_ && !told_ && seconds >= 3.0) {
+      told_ = true;
+      REXLOG_WARN("[svr2011] hd movies: {} has shown 3 s with no decoded frame (black)",
+                  movie_.mp4.filename().string());
+    }
     if (!best) return;
+    shown_ = true;
     for (uint32_t r = 0; r < h_; ++r) std::memcpy(y + size_t(r) * ypitch, best->nv12.data() + size_t(r) * w_, w_);
     const uint8_t* uv = best->nv12.data() + size_t(w_) * h_;
     for (uint32_t r = 0; r < h_ / 2; ++r) {
@@ -231,6 +239,7 @@ class DecoderBase {
  private:
   std::thread thread_;
   std::atomic<double> want_{0.0};
+  bool shown_ = false, told_ = false;  // (Write's: a frame shown; the no-frame warning given)
   std::mutex mutex_;
   Frame frames_[3];
 };
@@ -250,24 +259,39 @@ bool MfOn() {
 // The GPU's video decoder for the readers: a D3D11 device (video support,
 // shared by the movies' threads) in a DXGI device manager - without one
 // Media Foundation decodes H.264 and scales on the CPU, next to the game's
-// own threads. nullptr: none (no such GPU / driver): the CPU then.
-IMFDXGIDeviceManager* GpuManager() {
-  static std::once_flag once;
+// own threads. nullptr: none (no such GPU / driver): the CPU then. A device
+// the driver lost (removed: a driver reset, the GPU's power state) is made
+// again - every reader on the lost one gives no pictures.
+ComPtr<IMFDXGIDeviceManager> GpuManager() {
+  static std::mutex mutex;
+  static ComPtr<ID3D11Device> device;
   static ComPtr<IMFDXGIDeviceManager> manager;
-  std::call_once(once, [] {
-    ComPtr<ID3D11Device> device;
-    D3D_FEATURE_LEVEL level;
-    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, nullptr,
-                                 0, D3D11_SDK_VERSION, &device, &level, nullptr)))
-      return;
-    ComPtr<ID3D10Multithread> mt;
-    if (SUCCEEDED(device.As(&mt))) mt->SetMultithreadProtected(TRUE);
-    UINT token = 0;
-    ComPtr<IMFDXGIDeviceManager> m;
-    if (FAILED(MFCreateDXGIDeviceManager(&token, &m)) || FAILED(m->ResetDevice(device.Get(), token))) return;
-    manager = m;
-  });
-  return manager.Get();
+  static bool failed = false;
+  std::lock_guard lock(mutex);
+  if (device && device->GetDeviceRemovedReason() != S_OK) {
+    REXLOG_WARN("[svr2011] hd movies: the GPU video device was lost (0x{:08X}) - made again",
+                uint32_t(device->GetDeviceRemovedReason()));
+    device.Reset(), manager.Reset();
+  }
+  if (manager || failed) return manager;
+  D3D_FEATURE_LEVEL level;
+  ComPtr<ID3D11Device> d;
+  ComPtr<IMFDXGIDeviceManager> m;
+  UINT token = 0;
+  if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, nullptr,
+                               0, D3D11_SDK_VERSION, &d, &level, nullptr)) ||
+      FAILED(MFCreateDXGIDeviceManager(&token, &m))) {
+    failed = true;
+    return nullptr;
+  }
+  ComPtr<ID3D10Multithread> mt;
+  if (SUCCEEDED(d.As(&mt))) mt->SetMultithreadProtected(TRUE);
+  if (FAILED(m->ResetDevice(d.Get(), token))) {
+    failed = true;
+    return nullptr;
+  }
+  device = d, manager = m;
+  return manager;
 }
 
 // A source reader for `mp4` giving NV12 at w x h (scaled by the reader; on
@@ -275,10 +299,10 @@ IMFDXGIDeviceManager* GpuManager() {
 ComPtr<IMFSourceReader> OpenReader(const fs::path& mp4, uint32_t w, uint32_t h, bool gpu = false) {
   ComPtr<IMFAttributes> attrs;
   ComPtr<IMFSourceReader> reader;
-  IMFDXGIDeviceManager* manager = gpu ? GpuManager() : nullptr;
+  ComPtr<IMFDXGIDeviceManager> manager = gpu ? GpuManager() : nullptr;
   if (gpu && !manager) return nullptr;
   if (FAILED(MFCreateAttributes(&attrs, 3)) ||
-      (manager && FAILED(attrs->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, manager))) ||
+      (manager && FAILED(attrs->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, manager.Get()))) ||
       FAILED(attrs->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE)) ||
       FAILED(attrs->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE)) ||  // (the GPU's decoder where it has one)
       FAILED(MFCreateSourceReaderFromURL(mp4.wstring().c_str(), attrs.Get(), &reader)))
@@ -333,37 +357,41 @@ class Decoder : public DecoderBase {
     // (below the game's own threads: a frame late on the titantron is better
     // than a frame late in the match)
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-    if (!MfOn()) return;
-    // (the GPU's decoder where it has one, else the CPU's)
+    if (!MfOn()) {
+      REXLOG_WARN("[svr2011] hd movies: no Media Foundation on the decoder's thread - {} stays black",
+                  movie_.mp4.filename().string());
+      return;
+    }
+    // (the GPU's decoder where it has one, else the CPU's; a GPU reader that
+    // gives no picture - no frame in kGpuWait, a failed read or copy before
+    // the first - goes over to the CPU's: a black screen otherwise)
+    constexpr auto kGpuWait = std::chrono::milliseconds(1500);
     bool gpu = true;
     ComPtr<IMFSourceReader> reader = OpenReader(movie_.mp4, w_, h_, true);
-    if (!reader) {
-      gpu = false;
-      reader = OpenReader(movie_.mp4, w_, h_);
-      // (the CPU's: its decoder on 2 threads - its own work queue took half
-      // a core next to the game's threads)
-      ComPtr<IMFSourceReaderEx> ex;
-      ComPtr<IMFTransform> decoder;
-      ComPtr<ICodecAPI> codec;
-      GUID category = {};
-      if (reader && SUCCEEDED(reader.As(&ex)) &&
-          SUCCEEDED(ex->GetTransformForStream(DWORD(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, &category, &decoder)) &&
-          SUCCEEDED(decoder.As(&codec))) {
-        VARIANT v;
-        VariantInit(&v);
-        v.vt = VT_UI4;
-        v.ulVal = 2;
-        codec->SetValue(&CODECAPI_AVDecNumWorkerThreads, &v);
-      }
-    }
+    if (!reader) gpu = false, reader = OpenCpuReader();
     if (!reader) {
       REXLOG_WARN("[svr2011] hd movies: can't decode {}", movie_.mp4.string());
       return;
     }
     if (LogOn()) REXLOG_INFO("[svr2011] hd movies: decoding {} at {}x{} ({})", movie_.mp4.string(), w_, h_, gpu ? "GPU" : "CPU");
+    auto opened = std::chrono::steady_clock::now();
+    bool pictured = false;  // (a frame decoded and copied)
+    const auto to_cpu = [&](const char* why) {
+      REXLOG_WARN("[svr2011] hd movies: {} gave no picture on the GPU ({}) - decoding on the CPU",
+                  movie_.mp4.filename().string(), why);
+      reader = OpenCpuReader();
+      gpu = false;
+      opened = std::chrono::steady_clock::now();
+      return reader != nullptr;
+    };
     double last = -1;
     bool ended = false;
     while (!stop_) {
+      if (gpu && !pictured && std::chrono::steady_clock::now() - opened > kGpuWait) {
+        if (!to_cpu("nothing in 1.5 s")) break;
+        last = -1, ended = false;
+        Clear();
+      }
       if (Looped(last)) {
         PROPVARIANT p;
         PropVariantInit(&p);
@@ -381,14 +409,26 @@ class Decoder : public DecoderBase {
       DWORD flags = 0;
       LONGLONG t = 0;
       ComPtr<IMFSample> sample;
-      if (FAILED(reader->ReadSample(DWORD(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, nullptr, &flags, &t, &sample)) ||
-          (flags & MF_SOURCE_READERF_ENDOFSTREAM)) {
+      const HRESULT read =
+          reader->ReadSample(DWORD(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, nullptr, &flags, &t, &sample);
+      if (FAILED(read) || (flags & MF_SOURCE_READERF_ENDOFSTREAM)) {
+        if (!pictured && gpu) {
+          if (!to_cpu(FAILED(read) ? "a failed read" : "no frame before the end")) break;
+          last = -1;
+          continue;
+        }
+        if (!pictured && !ended)
+          REXLOG_WARN("[svr2011] hd movies: {}: no frame decoded (0x{:08X}) - it stays black",
+                      movie_.mp4.filename().string(), uint32_t(read));
         ended = true;  // (the end: the last frame stays until the game loops or closes)
         continue;
       }
       if (!sample) continue;
       ComPtr<IMFMediaBuffer> buffer;
-      if (FAILED(sample->ConvertToContiguousBuffer(&buffer))) continue;
+      if (FAILED(sample->ConvertToContiguousBuffer(&buffer))) {
+        if (!pictured && gpu && !to_cpu("a frame it couldn't copy")) break;
+        continue;
+      }
       Frame f;
       f.nv12.resize(size_t(w_) * h_ * 3 / 2);
       ComPtr<IMF2DBuffer> b2;
@@ -410,12 +450,44 @@ class Decoder : public DecoderBase {
           copied = true;
         }
       }
-      if (!copied) continue;
+      // (test aid: SVR2011_TEST_HD_NO_GPU_FRAMES=1 - the GPU's frames dropped, as if it gave none)
+      static const bool no_gpu_frames = std::getenv("SVR2011_TEST_HD_NO_GPU_FRAMES") != nullptr;
+      if (gpu && no_gpu_frames) copied = false;
+      if (!copied) {
+        if (!pictured && gpu && !to_cpu("a frame it couldn't copy")) break;
+        continue;
+      }
+      if (!pictured && (gpu ? LogOn() : true))
+        REXLOG_INFO("[svr2011] hd movies: {}: first frame after {} ms ({})", movie_.mp4.filename().string(),
+                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - opened)
+                        .count(),
+                    gpu ? "GPU" : "CPU");
+      pictured = true;
       f.time = double(t) / 1e7;
       f.ready = true;
       last = f.time;
       Push(std::move(f));
     }
+  }
+
+  // The CPU's reader: its decoder on 2 threads (its own work queue took half
+  // a core next to the game's threads).
+  ComPtr<IMFSourceReader> OpenCpuReader() {
+    ComPtr<IMFSourceReader> reader = OpenReader(movie_.mp4, w_, h_);
+    ComPtr<IMFSourceReaderEx> ex;
+    ComPtr<IMFTransform> decoder;
+    ComPtr<ICodecAPI> codec;
+    GUID category = {};
+    if (reader && SUCCEEDED(reader.As(&ex)) &&
+        SUCCEEDED(ex->GetTransformForStream(DWORD(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, &category, &decoder)) &&
+        SUCCEEDED(decoder.As(&codec))) {
+      VARIANT v;
+      VariantInit(&v);
+      v.vt = VT_UI4;
+      v.ulVal = 2;
+      codec->SetValue(&CODECAPI_AVDecNumWorkerThreads, &v);
+    }
+    return reader;
   }
 };
 
