@@ -15,8 +15,8 @@
 // An HD movie is an .mp4: the game opens a stub .bik of its size and length
 // (every frame "all skip": nearly free to decode) and after each step the
 // decoder's frame for that time is written over the set Bink just decoded.
-// Size: the mod's .bik fallback's (320 / 640 / 1024), else a square .mp4's
-// (the first of those it fits), else 1024 - the
+// Size: 320 for a 320 .bik fallback or a square .mp4 up to 320, else 1024 (640's
+// luma drew shifted: not used) - the
 // game's own movie layout at that size (the big screen the top size*220/320
 // rows, shown at 16:9, the stage strip below): a square .mp4 is taken as
 // laid out so, any other fills the big screen (stretched to it) over a black
@@ -189,10 +189,15 @@ class DecoderBase {
     if (!best) return;
     shown_ = true;
     for (uint32_t r = 0; r < h_; ++r) std::memcpy(y + size_t(r) * ypitch, best->nv12.data() + size_t(r) * w_, w_);
+    // (cR / cB rows go `down` rows below their luma rows: the game's
+    // Bink planes have them so - its own decodes measured: 12 rows at 320, 6 at
+    // 1024 - and the screens draw them back up; level, the colour sat that far
+    // above the picture: pink and green edges)
+    const uint32_t down = w_ == 320 ? 12 : 6;
     const uint8_t* uv = best->nv12.data() + size_t(w_) * h_;
-    for (uint32_t r = 0; r < h_ / 2; ++r) {
-      uint8_t* u = cb + size_t(r) * cpitch;
-      uint8_t* v = cr + size_t(r) * cpitch;
+    for (uint32_t r = 0; r < h_ / 2 && r + down < w_ / 2; ++r) {
+      uint8_t* u = cb + size_t(r + down) * cpitch;
+      uint8_t* v = cr + size_t(r + down) * cpitch;
       const uint8_t* s = uv + size_t(r) * w_;
       for (uint32_t x = 0; x < w_ / 2; ++x) u[x] = s[2 * x], v[x] = s[2 * x + 1];
     }
@@ -714,7 +719,8 @@ bool PrepareHdMovie(const fs::path& movies, const std::string& file, const fs::p
   m.square = sw * 10 / sh >= 9 && sw * 10 / sh <= 11;
   // (no .bik: a square .mp4 - a shrunk 320 x 320 entrance .bik, movie_shrink.py - at the
   // first of the game's sizes it fits, not 1024: ten times the pixels to decode for nothing)
-  m.size = fallback ? fallback : !m.square ? 1024 : sw <= 320 ? 320 : sw <= 640 ? 640 : 1024;
+  // (640: its luma drew a third of a screen to the right - 1024 instead)
+  m.size = (fallback ? fallback == 320 : m.square && sw <= 320) ? 320 : 1024;
   const int frames = std::max(1, int(seconds * kFps + 0.5));
   const fs::path stub = movies / kHdFolder / file;
   // (made again when the mp4 or the size changed: the stub's own size and
@@ -812,8 +818,8 @@ REX_HOOK_RAW(sub_82592B90) {
   static int told = 0;
   if (LogOn() && told < 3) {
     ++told;
-    REXLOG_INFO("[svr2011] hd movies: frame {} set {} Y {:08X}/{} cR {:08X} cB {:08X}/{} planes {}x{}", frame, i, y, yp, cr,
-                cb, cp, Rd32(base + sets + 132), Rd32(base + sets + 136));
+    REXLOG_INFO("[svr2011] hd movies: frame {} set {} Y {:08X}/{} cR {:08X} cB {:08X}/{} planes {}x{} chroma {}x{}", frame, i, y, yp, cr,
+                cb, cp, Rd32(base + sets + 132), Rd32(base + sets + 136), Rd32(base + sets + 140), Rd32(base + sets + 144));
   }
   it->second->Write(double(frame - 1) / kFps, base + y, yp, base + cr, base + cb, cp);
 }
