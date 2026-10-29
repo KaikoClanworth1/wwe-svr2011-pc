@@ -10,10 +10,17 @@
 // goes to the Mods tab's install (ModsPage.install: the custom-moves question,
 // needs=). Each mod downloaded is remembered (its "updated", else "created",
 // and the folder it went to) so the list marks a newer version: "Update".
+// The player's own mod (the server's "mine" on its page, asked with the token
+// the Online tab signed in with - checked again whenever the tab is shown, and
+// never for another token): Edit (name, version, tags, description, types),
+// the picture shown replaced or made the first, a new version of the file
+// (a new version number with it) and Delete (docs/DISCOVERY_API.md).
 
 package io.github.kaikoclanworth1.svr2011;
 
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Typeface;
@@ -24,6 +31,7 @@ import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -75,6 +83,12 @@ final class DiscoverPage {
     private volatile boolean cancel_;
     private boolean downloading_, shown_;
     private long lastVisit_;                        // (the previous visit: "Updated" since then)
+    private LinearLayout owner_, edit_;             // (the player's own mod: its buttons; the edit form)
+    private EditText eName_, eVersion_, eTags_, eDesc_;
+    private final CheckBox[] eTypes_ = new CheckBox[4];
+    private boolean mine_, busy_;                   // (the server said it's the player's; a change is being sent)
+    private String mineToken_ = "";                 // (the token the page was asked with)
+    private String note_;                           // (what a change said: kept over the next page's "Looking…")
 
     DiscoverPage(LauncherActivity a, ModsPage mods) {
         a_ = a;
@@ -171,6 +185,8 @@ final class DiscoverPage {
         download_ = a_.button("Download and install", LauncherActivity.kRed);
         download_.setOnClickListener(v -> download());
         buttons_.addView(download_, a_.fullWidth(10));
+        ownerViews();
+        a_.onRefresh(this::updateOwner);  // (the settings read again - the app back from another: signed out?)
 
         // A download running: its bar, what it's at, Cancel (in the buttons' place; on both views).
         progress_ = new LinearLayout(a_);
@@ -210,7 +226,11 @@ final class DiscoverPage {
 
     // The tab shown: the list the first time (and the visit remembered: "Updated" since the last one).
     void onShow() {
-        if (shown_) return;
+        if (shown_) {  // (again: the page asked once more - signed out or in as someone else meanwhile?)
+            updateOwner();
+            if (cur_ != null && page_.getVisibility() == View.VISIBLE && !busy_ && !downloading_) openRow(cur_);
+            return;
+        }
         shown_ = true;
         lastVisit_ = prefs().getLong("last_visit", 0);
         prefs().edit().putLong("last_visit", System.currentTimeMillis() / 1000).apply();
@@ -292,6 +312,9 @@ final class DiscoverPage {
         String e = json(r).optString("error", "");
         if (!e.isEmpty()) return what + ": " + e;
         if (r.status == 404) return what + ": not found (it may have been removed).";
+        if (r.status == 401) return what + ": not signed in - sign in again on the Online tab.";
+        if (r.status == 403) return what + ": only the mod's uploader can change it.";
+        if (r.status == 429) return what + ": too many changes in an hour - try again later.";
         if (r.status == 502 || r.status == 503 || r.status == 504) return what + ": the server is busy - try again in a minute.";
         return what + ": the server said " + r.status + ".";
     }
@@ -354,7 +377,9 @@ final class DiscoverPage {
         next_.setEnabled((page_n_ + 1) * kPerPage < total_);
         prev_.setAlpha(prev_.isEnabled() ? 1f : 0.4f);
         next_.setAlpha(next_.isEnabled() ? 1f : 0.4f);
-        if (!downloading_) a_.status(total_ + " mod" + (total_ == 1 ? "" : "s") + " found. Tap one for its page.");
+        if (!downloading_) a_.status((note_ != null ? note_ + " " : "") + total_ + " mod" + (total_ == 1 ? "" : "s")
+            + " found. Tap one for its page.");
+        note_ = null;
         // then the pictures, one after the other
         final List<JSONObject> rows = new ArrayList<>(mods_list_);
         a_.background(() -> {
@@ -452,8 +477,10 @@ final class DiscoverPage {
     }
 
     void open(int index) {
-        if (index < 0 || index >= mods_list_.size()) return;
-        final JSONObject row = mods_list_.get(index);
+        if (index >= 0 && index < mods_list_.size()) openRow(mods_list_.get(index));
+    }
+
+    void openRow(final JSONObject row) {
         final int gen = ++gen_;
         cur_ = row;
         for (int k = 0; k < 4; k++) pics_[k] = null;
@@ -461,6 +488,10 @@ final class DiscoverPage {
         picture_.setImageBitmap(null);
         fitPicture();
         picLabel_.setText("1 / 4");
+        mine_ = false;  // (only on the server's word, asked with the token signed in now)
+        mineToken_ = token();
+        edit_.setVisibility(View.GONE);
+        updateOwner();
         fillInfo(row, "");
         grid_.setVisibility(View.GONE);
         page_.setVisibility(View.VISIBLE);
@@ -477,8 +508,11 @@ final class DiscoverPage {
             }
             JSONObject m = json(r[0]);
             cur_ = m;
+            mine_ = m.optBoolean("mine", false);
+            updateOwner();
             fillInfo(m, m.optString("description"));
-            if (!downloading_) a_.status("");
+            if (!downloading_) a_.status(note_ != null ? note_ : "");
+            note_ = null;
             a_.background(() -> {
                 for (int i = 0; i < 4 && gen == gen_; i++) {
                     Answer p = get(path + "/img/" + i + "?v=" + v, 2 << 20, gen);
@@ -707,5 +741,421 @@ final class DiscoverPage {
         }
         if (cancel_ && !done) why = "cancelled";
         return done ? "" : why.isEmpty() ? "the connection kept breaking" : why;
+    }
+
+    // ── the player's own mod ─────────────────────────────────────────────
+
+    void ownerViews() {
+        owner_ = new LinearLayout(a_);
+        owner_.setOrientation(LinearLayout.VERTICAL);
+        owner_.setVisibility(View.GONE);
+        buttons_.addView(owner_);
+        LinearLayout card = a_.card(owner_, "Your mod");
+        TextView hint = a_.text("You uploaded this mod: change it for everyone, or delete it.", 13, LauncherActivity.kDim);
+        hint.setPadding(0, a_.dp(8), 0, a_.dp(8));
+        card.addView(hint);
+        Button edit = a_.button("Edit the details", LauncherActivity.kCard);
+        edit.setOnClickListener(v -> editForm());
+        Button file = a_.button("New version…", LauncherActivity.kCard);
+        file.setOnClickListener(v -> pickNewVersion());
+        owner_.addView(a_.pair(edit, file), a_.fullWidth(8));
+        Button first = a_.button("Make this picture first", LauncherActivity.kCard);
+        first.setOnClickListener(v -> makeFirst());
+        Button pic = a_.button("Replace this picture…", LauncherActivity.kCard);
+        pic.setOnClickListener(v -> pickPicture());
+        owner_.addView(a_.pair(first, pic), a_.fullWidth(8));
+        Button delete = a_.button("Delete my mod", 0xFF5A1A22);
+        delete.setOnClickListener(v -> deleteMine());
+        owner_.addView(delete, a_.fullWidth(8));
+
+        edit_ = new LinearLayout(a_);
+        edit_.setOrientation(LinearLayout.VERTICAL);
+        edit_.setVisibility(View.GONE);
+        buttons_.addView(edit_);
+        LinearLayout form = a_.card(edit_, "Edit the details");
+        eName_ = formField(form, "Name", 60, InputType.TYPE_CLASS_TEXT);
+        eVersion_ = formField(form, "Version", 20, InputType.TYPE_CLASS_TEXT);
+        eTags_ = formField(form, "Tags (commas between)", 200, InputType.TYPE_CLASS_TEXT);
+        eDesc_ = formField(form, "Description", 2000, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        eDesc_.setSingleLine(false);
+        eDesc_.setMinLines(3);
+        LinearLayout types = new LinearLayout(a_);
+        types.setOrientation(LinearLayout.HORIZONTAL);
+        for (int k = 0; k < 4; k++) {
+            eTypes_[k] = new CheckBox(a_);
+            eTypes_[k].setText(kTypeNames[k + 1]);
+            eTypes_[k].setTextColor(LauncherActivity.kText);
+            eTypes_[k].setButtonTintList(android.content.res.ColorStateList.valueOf(LauncherActivity.kRed));
+            types.addView(eTypes_[k], new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        }
+        form.addView(types, a_.fullWidth(6));
+        Button save = a_.button("Save", LauncherActivity.kRed), cancel = a_.button("Cancel", LauncherActivity.kCard);
+        save.setOnClickListener(v -> saveEdit());
+        cancel.setOnClickListener(v -> {
+            edit_.setVisibility(View.GONE);
+            updateOwner();
+        });
+        edit_.addView(a_.pair(save, cancel), a_.fullWidth(8));
+    }
+
+    EditText formField(LinearLayout card, String label, int max, int type) {
+        TextView l = a_.text(label, 13, LauncherActivity.kDim);
+        l.setPadding(0, a_.dp(8), 0, 0);
+        card.addView(l);
+        EditText e = a_.field("", max, type);
+        e.setGravity(Gravity.START);
+        card.addView(e, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return e;
+    }
+
+    // The page shows the player's own mod: the server said so ("mine") for the token signed in now - not for one
+    // from before a sign-out or another account's sign-in (its changes would be refused: 403).
+    boolean ownerNow() {
+        String t = token();
+        return mine_ && cur_ != null && !t.isEmpty() && t.equals(mineToken_);
+    }
+
+    void updateOwner() {
+        boolean mine = ownerNow();
+        if (!mine) edit_.setVisibility(View.GONE);
+        boolean editing = edit_.getVisibility() == View.VISIBLE;
+        owner_.setVisibility(mine && !editing ? View.VISIBLE : View.GONE);
+        download_.setVisibility(editing ? View.GONE : View.VISIBLE);
+    }
+
+    void editForm() {
+        if (!ownerNow() || busy_) return;
+        JSONObject m = cur_;
+        eName_.setText(m.optString("name"));
+        eVersion_.setText(m.optString("version"));
+        eTags_.setText(tagText(m));
+        eDesc_.setText(m.optString("description"));
+        JSONArray ty = m.optJSONArray("types");
+        for (int k = 0; k < 4; k++) {
+            boolean on = false;
+            for (int i = 0; ty != null && i < ty.length(); i++) on |= kTypes[k + 1].equals(ty.optString(i));
+            eTypes_[k].setChecked(on);
+        }
+        edit_.setVisibility(View.VISIBLE);
+        updateOwner();
+    }
+
+    static String tagText(JSONObject m) {
+        JSONArray tags = m.optJSONArray("tags");
+        StringBuilder t = new StringBuilder();
+        for (int i = 0; tags != null && i < tags.length(); i++) t.append(i > 0 ? ", " : "").append(tags.optString(i));
+        return t.toString();
+    }
+
+    // Save on the edit form: only what changed (PATCH).
+    void saveEdit() {
+        if (!ownerNow() || busy_) return;
+        JSONObject m = cur_, body = new JSONObject();
+        try {
+            String name = eName_.getText().toString().trim(), ver = eVersion_.getText().toString().trim();
+            if (name.isEmpty() || ver.isEmpty()) {
+                a_.status("The name and the version can't be empty.");
+                return;
+            }
+            if (!name.equals(m.optString("name"))) body.put("name", name);
+            if (!ver.equals(m.optString("version"))) body.put("version", ver);
+            String tags = eTags_.getText().toString().trim();
+            if (!tags.equals(tagText(m))) body.put("tags", tags);
+            String desc = eDesc_.getText().toString();
+            if (!desc.equals(m.optString("description"))) body.put("description", desc);
+            JSONArray types = new JSONArray();
+            for (int k = 0; k < 4; k++) if (eTypes_[k].isChecked()) types.put(kTypes[k + 1]);
+            if (types.length() == 0) {
+                a_.status("Choose the mod's type.");
+                return;
+            }
+            if (!types.toString().equals(String.valueOf(m.optJSONArray("types")))) body.put("types", types);
+        } catch (org.json.JSONException e) {
+            return;
+        }
+        if (body.length() == 0) {
+            a_.status("Nothing changed.");
+            return;
+        }
+        change("Saving", "PATCH", "", "application/json", body.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    void makeFirst() {
+        if (!ownerNow() || busy_) return;
+        if (pic_ == 0) {
+            a_.status("This picture is the first already.");
+            return;
+        }
+        JSONArray order = new JSONArray();
+        order.put(pic_);
+        for (int i = 0; i < 4; i++) if (i != pic_) order.put(i);
+        String body = "{\"picture_order\":" + order + "}";
+        change("Saving", "PATCH", "", "application/json", body.getBytes(StandardCharsets.UTF_8));
+    }
+
+    void pickPicture() {
+        if (!ownerNow() || busy_) return;
+        final int n = pic_;
+        Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        pick.addCategory(Intent.CATEGORY_OPENABLE);
+        pick.setType("image/*");
+        a_.startForResult(pick, (code, data) -> {
+            if (code != android.app.Activity.RESULT_OK || data == null || data.getData() == null) return;
+            final Uri uri = data.getData();
+            final byte[][] jpg = new byte[1][];
+            a_.status("Making the picture (1024 x 768)…");
+            a_.background(() -> jpg[0] = jpeg43(uri), () -> {
+                if (jpg[0] == null) {
+                    a_.status("That picture could not be read.");
+                    return;
+                }
+                change("Picture " + (n + 1), "PUT", "/pictures/" + n, "image/jpeg", jpg[0]);
+            });
+        });
+    }
+
+    // A picture cut to 4:3 from its middle, 1024 x 768, a JPEG of 1 MB at most (the server's rule; the PC's fit_43).
+    byte[] jpeg43(Uri uri) {
+        try {
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            try (InputStream in = a_.getContentResolver().openInputStream(uri)) {
+                BitmapFactory.decodeStream(in, null, o);
+            }
+            if (o.outWidth <= 0 || o.outHeight <= 0) return null;
+            int sample = 1;
+            while (o.outWidth / (sample * 2) >= 1024 && o.outHeight / (sample * 2) >= 768) sample *= 2;
+            BitmapFactory.Options o2 = new BitmapFactory.Options();
+            o2.inSampleSize = sample;
+            Bitmap b;
+            try (InputStream in = a_.getContentResolver().openInputStream(uri)) {
+                b = BitmapFactory.decodeStream(in, null, o2);
+            }
+            if (b == null) return null;
+            int w = b.getWidth(), h = b.getHeight(), x = 0, y = 0;
+            if ((double) w / h > 4.0 / 3.0) {
+                int cw = h * 4 / 3;
+                x = (w - cw) / 2;
+                w = cw;
+            } else {
+                int ch = w * 3 / 4;
+                y = (h - ch) / 2;
+                h = ch;
+            }
+            Bitmap out = Bitmap.createScaledBitmap(Bitmap.createBitmap(b, x, y, w, h), 1024, 768, true);
+            for (int q = 90; q >= 40; q -= 10) {
+                ByteArrayOutputStream s = new ByteArrayOutputStream();
+                out.compress(Bitmap.CompressFormat.JPEG, q, s);
+                if (s.size() <= 1 << 20) return s.toByteArray();
+            }
+        } catch (IOException | RuntimeException e) {
+            android.util.Log.w("SvR2011", "discovery: picture not made: " + e);
+        }
+        return null;
+    }
+
+    void pickNewVersion() {
+        if (!ownerNow() || busy_) return;
+        Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        pick.addCategory(Intent.CATEGORY_OPENABLE);
+        pick.setType("*/*");
+        a_.startForResult(pick, (code, data) -> {
+            if (code != android.app.Activity.RESULT_OK || data == null || data.getData() == null || !ownerNow()) return;
+            final Uri uri = data.getData();
+            String name = "mod.svrmod";
+            long size = -1;
+            try (android.database.Cursor q = a_.getContentResolver().query(uri, new String[] {
+                    android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE}, null, null, null)) {
+                if (q != null && q.moveToFirst()) {
+                    if (q.getString(0) != null) name = q.getString(0);
+                    if (!q.isNull(1)) size = q.getLong(1);
+                }
+            } catch (Exception ignored) {
+            }
+            if (!name.toLowerCase(java.util.Locale.ROOT).endsWith(".svrmod")) {
+                a_.status("Choose a .svrmod file (made with the Mod Maker).");
+                return;
+            }
+            final String fileName = name;
+            final long fileSize = size;
+            final EditText ver = a_.field("New version", 20, InputType.TYPE_CLASS_TEXT);
+            ver.setGravity(Gravity.START);
+            ver.setText(cur_.optString("version") + ".1");
+            LinearLayout box = new LinearLayout(a_);
+            box.setPadding(a_.dp(20), a_.dp(4), a_.dp(20), 0);
+            box.addView(ver, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            new android.app.AlertDialog.Builder(a_, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                .setTitle("A new version of \"" + cur_.optString("name") + "\"")
+                .setMessage(fileName + (fileSize >= 0 ? " (" + FileOps.human(fileSize) + ")" : "")
+                    + "\nIts version number (now " + cur_.optString("version") + "):")
+                .setView(box)
+                .setPositiveButton("Send", (d, w) -> sendNewVersion(uri, fileName, fileSize, ver.getText().toString().trim()))
+                .setNegativeButton("Cancel", null)
+                .show();
+        });
+    }
+
+    void deleteMine() {
+        if (!ownerNow() || busy_) return;
+        a_.confirm("Delete \"" + cur_.optString("name") + "\" from Discovery for everyone? Its file and pictures go "
+            + "too; players who installed it keep their copy.", "Delete", () -> change("Delete", "DELETE", "", null, null));
+    }
+
+    // An owner's change (PATCH / PUT a picture / DELETE) to /api/mods/<id><sub>; then the page again (or the list).
+    void change(final String what, final String method, final String sub, final String ctype, final byte[] body) {
+        if (!ownerNow() || busy_) return;
+        busy_ = true;
+        final int id = cur_.optInt("id");
+        final String t = token();
+        a_.status(what + "…");
+        final Answer[] r = new Answer[1];
+        a_.background(() -> r[0] = send(method, "/api/mods/" + id + sub, ctype, body, t), () -> {
+            busy_ = false;
+            changed(r[0], what, id, method.equals("DELETE"));
+        });
+    }
+
+    void changed(Answer r, String what, int id, boolean deleted) {
+        if (r.status != 200) {
+            a_.status(why(r, what));
+            android.util.Log.w("SvR2011", "discovery: mod " + id + " " + what + " refused (" + r.status + ")");
+            updateOwner();
+            return;
+        }
+        if (deleted) {
+            android.util.Log.i("SvR2011", "discovery: mod " + id + " deleted by its owner");
+            note_ = "Deleted from Discovery.";
+            showList();
+            return;
+        }
+        edit_.setVisibility(View.GONE);
+        JSONObject row = json(r).optJSONObject("mod");
+        String warning = json(r).optString("warning", "");
+        android.util.Log.i("SvR2011", "discovery: mod " + id + " changed by its owner (" + what + ")");
+        note_ = "Saved - everyone sees it now." + (warning.isEmpty() ? "" : " " + warning);
+        a_.status(note_);
+        if (row != null) openRow(row);
+        else if (cur_ != null) openRow(cur_);
+    }
+
+    // One request with a body (null: none) and the token; the answer as it came (not tried again: a change).
+    Answer send(String method, String path, String ctype, byte[] body, String token) {
+        Answer r = new Answer();
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(base() + path).openConnection();
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(60000);
+            c.setRequestMethod(method);  // (Android's HttpURLConnection takes PATCH)
+            c.setRequestProperty("Authorization", "Bearer " + token);
+            if (body != null) {
+                c.setDoOutput(true);
+                c.setRequestProperty("Content-Type", ctype);
+                c.setFixedLengthStreamingMode(body.length);
+                try (OutputStream os = c.getOutputStream()) {
+                    os.write(body);
+                }
+            }
+            r.status = c.getResponseCode();
+            r.data = readAll(r.status < 400 ? c.getInputStream() : c.getErrorStream());
+        } catch (IOException e) {
+            r.status = 0;
+            r.why = e.getMessage() != null ? e.getMessage() : "no answer";
+        } finally {
+            if (c != null) c.disconnect();
+        }
+        return r;
+    }
+
+    static byte[] readAll(InputStream in) throws IOException {
+        ByteArrayOutputStream b = new ByteArrayOutputStream();
+        if (in == null) return b.toByteArray();
+        try (InputStream is = in) {
+            byte[] buf = new byte[1 << 15];
+            for (int n; (n = is.read(buf)) > 0 && b.size() <= 1 << 20; ) b.write(buf, 0, n);
+        }
+        return b.toByteArray();
+    }
+
+    // PUT /api/mods/<id>/file: the new .svrmod (multipart: version, svrmod) with the bar; Cancel stops it.
+    void sendNewVersion(final Uri uri, final String fileName, final long size, final String version) {
+        if (!ownerNow() || busy_ || downloading_) return;
+        if (version.isEmpty() || version.equals(cur_.optString("version"))) {
+            a_.status("A new version of the file needs a new version number.");
+            return;
+        }
+        busy_ = true;
+        downloading_ = true;  // (the bar and Cancel in the buttons' place, as a download's)
+        cancel_ = false;
+        final int id = cur_.optInt("id");
+        final String t = token();
+        buttons_.setVisibility(View.GONE);
+        progress_.setVisibility(View.VISIBLE);
+        bar_.setProgress(0);
+        progressText_.setText("Sending the new version…");
+        final Answer r = new Answer();
+        a_.background(() -> {
+            String b = "----svr" + Long.toHexString(System.nanoTime());
+            byte[] head = ("--" + b + "\r\nContent-Disposition: form-data; name=\"version\"\r\n\r\n" + version + "\r\n--" + b
+                + "\r\nContent-Disposition: form-data; name=\"svrmod\"; filename=\"" + fileName.replace("\"", "")
+                + "\"\r\nContent-Type: application/zip\r\n\r\n").getBytes(StandardCharsets.UTF_8);
+            byte[] tail = ("\r\n--" + b + "--\r\n").getBytes(StandardCharsets.UTF_8);
+            HttpURLConnection c = null;
+            try (InputStream in = a_.getContentResolver().openInputStream(uri)) {
+                if (in == null) throw new IOException("can't read the file");
+                c = (HttpURLConnection) new URL(base() + "/api/mods/" + id + "/file").openConnection();
+                c.setConnectTimeout(10000);
+                c.setReadTimeout(300000);  // (the server stores it before it answers)
+                c.setRequestMethod("PUT");
+                c.setDoOutput(true);
+                c.setRequestProperty("Authorization", "Bearer " + t);
+                c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + b);
+                if (size >= 0) c.setFixedLengthStreamingMode(head.length + size + tail.length);
+                else c.setChunkedStreamingMode(1 << 16);
+                long sent = 0, last = 0;
+                try (OutputStream os = c.getOutputStream()) {
+                    os.write(head);
+                    byte[] buf = new byte[1 << 16];
+                    for (int n; (n = in.read(buf)) > 0; ) {
+                        if (cancel_) throw new IOException("cancelled");
+                        os.write(buf, 0, n);
+                        sent += n;
+                        long now = System.currentTimeMillis();
+                        if (now - last >= 200) {
+                            last = now;
+                            final long s0 = sent;
+                            final int at = size > 0 ? (int) (s0 * 1000 / size) : 0;
+                            a_.runOnUiThread(() -> {
+                                bar_.setProgress(at);
+                                if (!cancel_) progressText_.setText("Sending the new version - " + FileOps.human(s0)
+                                    + (size > 0 ? " of " + FileOps.human(size) : ""));
+                            });
+                        }
+                    }
+                    os.write(tail);
+                }
+                a_.runOnUiThread(() -> progressText_.setText("Sent - the server is storing it…"));
+                r.status = c.getResponseCode();
+                r.data = readAll(r.status < 400 ? c.getInputStream() : c.getErrorStream());
+            } catch (IOException e) {
+                r.status = 0;
+                r.why = cancel_ ? "cancelled" : e.getMessage() != null ? e.getMessage() : "no answer";
+            } finally {
+                if (c != null) c.disconnect();
+            }
+        }, () -> {
+            busy_ = false;
+            downloading_ = false;
+            boolean cancelled = cancel_;
+            cancel_ = false;
+            progress_.setVisibility(View.GONE);
+            buttons_.setVisibility(View.VISIBLE);
+            if (cancelled) {
+                a_.status("Sending the new version cancelled - the mod is unchanged.");
+                updateOwner();
+                return;
+            }
+            changed(r, "The new version", id, false);
+        });
     }
 }
