@@ -805,18 +805,20 @@ uint64_t Fnv(const uint8_t* p, size_t n) {
 // The entrance's title card (show logo + city, sub_8277E928): pac/evt/evtgdhd.pac ETEX <arena number, 4 digits> -
 // a PACH of BPE parts; parts 0 and 10 are DDS sets (PACH) whose pictures layouts 10000 / 10010 (AG2D: u32 count at
 // +0x10, its 16-byte names from the offset at +0x14) name in order. A custom arena shows its base's card; with a
-// card picture the base's logo pictures ("logo") get it, fitted, and its build-up / effect frames (fire, anime,
-// spiral, loop, light, numbered frames; RAW's logo strip hd_RAW01) are cleared - plates and bars stay.
+// card picture the base's logo pictures ("logo") get it, fitted (RAW's hd_RAW01: a strip of 4 logo steps, one in
+// each quarter), and its build-up / effect frames (fire, anime, spiral, loop, light, numbered frames) are cleared -
+// plates and bars stay.
 struct CardPic {
   size_t size = 0;
   uint64_t hash = 0;
-  int role = 0;  // 1 logo, 2 cleared
+  int role = 0;  // 1 logo, 2 cleared, 3 a strip of 4 logos (one under the other)
   svrfmt::DdsInfo info;
 };
 int CardRole(std::string n) {
   for (auto& ch : n) ch = char(std::tolower(uint8_t(ch)));
   if (n.find("logo") != std::string::npos) return 1;
-  for (const char* p : {"fire", "anime", "spiral", "loop", "light", "hd_raw01"})
+  if (n == "hd_raw01") return 3;
+  for (const char* p : {"fire", "anime", "spiral", "loop", "light"})
     if (n.find(p) != std::string::npos) return 2;
   if (n.size() == 2 && std::isdigit(uint8_t(n[0])) && std::isdigit(uint8_t(n[1]))) return 2;
   return 0;
@@ -873,11 +875,12 @@ void CardSwaps(DecodeSwaps& t, int arena, const svrfmt::Image& logo) {
     svrfmt::Image img;
     img.w = cp.info.w, img.h = cp.info.h;
     img.rgba.assign(size_t(img.w) * img.h * 4, 0);
-    if (cp.role == 1 && logo.w > 0 && logo.h > 0) {
-      const float k = std::min(img.w * 0.96f / logo.w, img.h * 0.96f / logo.h);
+    const int rows = cp.role == 3 ? 4 : 1, rh = img.h / rows;
+    for (int r = 0; r < rows && cp.role != 2 && logo.w > 0 && logo.h > 0 && rh > 0; ++r) {
+      const float k = std::min(img.w * 0.96f / logo.w, rh * 0.96f / logo.h);
       const int w = std::max(1, int(logo.w * k)), h = std::max(1, int(logo.h * k));
       const svrfmt::Image s = svrfmt::Resize(logo, w, h);
-      const int x0 = (img.w - w) / 2, y0 = (img.h - h) / 2;
+      const int x0 = (img.w - w) / 2, y0 = r * rh + (rh - h) / 2;
       for (int y = 0; y < h; ++y)
         std::memcpy(&img.rgba[(size_t(y0 + y) * img.w + x0) * 4], &s.rgba[size_t(y) * w * 4], size_t(w) * 4);
     }
@@ -1444,7 +1447,10 @@ REX_HOOK_RAW(sub_8277E928) {
   const bool city_card = (uint32_t(s[0]) << 24 | uint32_t(s[1]) << 16 | uint32_t(s[2]) << 8 | s[3]) == 4;
   __imp__sub_8277E928(ctx, base);
   const auto* c = static_cast<const CustomArena*>(g_redirected_custom);
-  if (!city_card || !c) return;
+  if (!city_card) return;
+  static int shown = 0;
+  if (shown++ < 4) REXLOG_INFO("[svr2011] arena mods: title card shown{}", c ? " (" + c->id + ")" : std::string());
+  if (!c) return;
   std::string city;
   for (size_t at = 0; at < c->manifest.size();) {
     size_t end = c->manifest.find('\n', at);
