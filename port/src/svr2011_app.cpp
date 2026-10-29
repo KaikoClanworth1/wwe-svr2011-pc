@@ -39,6 +39,7 @@
 #include "weapon_mods.h"
 #include "caw_logos.h"
 #include "paint_pages.h"
+#include "crowd_fight.h"
 #include "match_types.h"
 #include "online_rules.h"
 #include "port_map.h"
@@ -848,6 +849,7 @@ void Svr2011App::OnPostLoadXexImage() {
     svr2011::InstallPaintPagesOverlay(imgui_drawer());
     svr2011::InstallSlobberKnockerOverlay(imgui_drawer());  // (match_types.h)
     svr2011::InstallHctpOverlay(imgui_drawer());            // (match_types.h: HCTP door prompts)
+    svr2011::InstallCrowdOverlay(imgui_drawer());           // (crowd_fight.h: the climb into the crowd)
     svr2011::InstallGauntletEliminatorOverlay(imgui_drawer());
     svr2011::InstallOnlineRulesOverlay(imgui_drawer());  // (online_rules.h)
     svr2011::InstallThreeStagesOverlay(imgui_drawer());

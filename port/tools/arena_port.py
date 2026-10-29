@@ -197,6 +197,16 @@ def stage_vertices(data, meshes_out=None):
     return n
 
 
+def crowd_area_line(data):
+    """the manifest's crowd_area= line from an SvR 2008 arena's own crowd fighting areas ('' when it has none)"""
+    import crowd_walkway
+    try:
+        area = crowd_walkway.crowd_area(data)
+    except Exception:  # (an arena without the stage text)
+        return ''
+    return 'crowd_area=%s\n' % area if area else ''
+
+
 def needs_line(data, host_size):
     """the manifest's needs= line for an arena bigger than its slot's file or with more 3D detail ('' when neither);
     BadInput for more meshes than the game can draw (MAX_MESHES)"""
@@ -432,7 +442,7 @@ def svr2010_convert(disc, key, out, base=None, name=None, pac11=None, year='2010
     with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
         f.write('type=arena\nid=%s\nname=%s\nauthor=SvR %s arena %s, ported by port tools\nversion=1.0\nbase=%s\n'
                 % (mod_id, name, year, 'bg%02d' % n, BASE_NAMES[base]) + needs_line(arena, host_size)
-                + ('vs_theme=%s\n' % vs_theme if vs_theme else ''))
+                + ('vs_theme=%s\n' % vs_theme if vs_theme else '') + crowd_area_line(arena))
     progress(80, 'packing')
     import wwe13_pack
     svrmod = os.path.join(out, mod_id + '.svrmod')
@@ -712,6 +722,9 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     os.makedirs(os.path.join(mod, 'vs'), exist_ok=True)
     with open(os.path.join(mod, 'arena.pac'), 'wb') as f:
         f.write(data)
+    if game == 'svr2008':  # (its crowd area opened for 2011's crowd fighting: a walkway, the climb's area)
+        import crowd_walkway
+        notes.append('crowd area: %s' % crowd_walkway.patch_pac(os.path.join(mod, 'arena.pac')))
     progress(85, 'pictures')
     art = None
     if disc.exists('pac/menu/MatchHD.pac'):
@@ -763,7 +776,8 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         os.rmdir(os.path.join(mod, 'vs'))
     with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
         f.write('type=arena\nid=%s\nname=%s\nauthor=%s arena bg%02d, ported by port tools\nversion=1.0\nbase=%s\n'
-                % (mod_id, name, label, n, BASE_NAMES[base]) + needs_line(data, len(host)))
+                % (mod_id, name, label, n, BASE_NAMES[base]) + needs_line(data, len(host))
+                + (crowd_area_line(data) if game == 'svr2008' else ''))
     progress(92, 'packing the mod')
     import wwe13_pack
     svrmod = os.path.join(out, mod_id + '.svrmod')
