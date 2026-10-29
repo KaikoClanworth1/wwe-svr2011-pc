@@ -36,7 +36,7 @@ struct Mod {
   std::string text;  // manifest.txt
   std::string name, version, author, made_with;
   bool off = false;  // the launcher's "disabled" file
-  bool locked = false;  // a backstage mod: the game loads none (src/no_mods.h BackstageModsOff) - shown off
+  bool locked = false;  // a backstage mod (src/no_mods.h BackstageModsOff) or the removed free_roaming_backstage type: shown off
 };
 std::vector<Mod> g_mods;
 std::wstring g_scanned_for;
@@ -59,7 +59,7 @@ void Scan() {
       m.name = Value(m.text, "name");
       if (m.name.empty()) m.name = Utf8(e.path().filename().wstring());
       m.version = Value(m.text, "version"), m.author = Value(m.text, "author"), m.made_with = Value(m.text, "made_with");
-      m.locked = m.kind == "Backstage";
+      m.locked = m.kind == "Backstage" || (m.kind == "MatchTypes" && e.path().filename() == L"free_roaming_backstage");
       m.off = m.locked || fs::exists(e.path() / L"disabled", ec);
       found.push_back(std::move(m));
     }
@@ -546,8 +546,11 @@ void Draw() {
   }
   // the actions: only on a click
   if (m.locked)
-    ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.25f, 1), "Backstage mods are switched off: Backstage Brawl plays the game's own "
-                       "backstage. This one stays installed but the game doesn't load it.");
+    ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.25f, 1), "%s",
+                       m.kind == "Backstage" ? "Backstage mods are switched off: Backstage Brawl plays the game's own "
+                                               "backstage. This one stays installed but the game doesn't load it."
+                                             : "FREE-ROAMING BACKSTAGE is removed from the game for now: this stays "
+                                               "installed but the game doesn't use it.");
   bool on = !m.off;
   ImGui::BeginDisabled(m.locked);
   const bool flipped = ImGui::Checkbox("Switched on", &on);

@@ -139,7 +139,7 @@ final class ModsPage {
             boolean pic = d.getParentFile().getName().equals("Backgrounds");
             boolean attire = d.getParentFile().getName().equals("Attires");
             String hint = (star && leftOut.contains(d.getName()) ? "NOT IN GAME - over the " + superstarLimit() + " limit. " : "")
-                + (attire ? "Attire " + m.get("attire") + " for " + starName(m.get("superstar")) : pic ? "Menu background" : matchType ? "Match type" : backPack ? "Backstage area - OFF: backstage mods are switched off, Backstage Brawl plays the stock backstage" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
+                + (attire ? "Attire " + m.get("attire") + " for " + starName(m.get("superstar")) : pic ? "Menu background" : matchType ? (d.getName().equals("free_roaming_backstage") ? "Match type - REMOVED: FREE-ROAMING BACKSTAGE isn't in the game for now" : "Match type") : backPack ? "Backstage area - OFF: backstage mods are switched off, Backstage Brawl plays the stock backstage" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
                 + (m.containsKey("author") && !m.get("author").isEmpty() ? " by " + m.get("author") : "")
                 + (m.containsKey("version") ? ", v" + m.get("version") : "")
                 + (signPack || mediaPack || matchType || pic ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : attire ? "attire.pac" : "arena.pac").length()));

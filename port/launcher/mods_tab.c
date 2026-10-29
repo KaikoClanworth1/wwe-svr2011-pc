@@ -174,6 +174,15 @@ static unsigned long long folder_bytes(const WCHAR *dir)
 }
 
 static int exists(const WCHAR *p) { return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES; }
+
+/* a mod the game doesn't load whatever its switch: backstage mods (src/no_mods.h BackstageModsOff) and the removed
+   FREE-ROAMING BACKSTAGE match type (src/match_types.cpp MatchTypeSwitches) */
+static int removed_mod(const Mod *m)
+{
+    const WCHAR *leaf = wcsrchr(m->folder, L'\\');
+    return !_wcsicmp(m->type, L"backstage") || wcsstr(m->folder, L"\\Mods\\Backstage\\") ||
+           (leaf && !_wcsicmp(leaf + 1, L"free_roaming_backstage"));
+}
 static int maker_present(void);
 
 static void scan(void)
@@ -207,8 +216,9 @@ static void scan(void)
             }
             if (!m->name[0]) wcsncpy_s(m->name, 128, m->id, _TRUNCATE);
             swprintf_s(off, MAX_PATH, L"%s\\disabled", m->folder);
-            /* backstage mods are switched off in the game (src/no_mods.h BackstageModsOff): shown off */
-            m->enabled = !exists(off) && _wcsicmp(types[t], L"Backstage");
+            /* backstage mods are switched off in the game (src/no_mods.h BackstageModsOff), and the FREE-ROAMING
+               BACKSTAGE match type is removed (src/match_types.cpp MatchTypeSwitches): shown off */
+            m->enabled = !exists(off) && !removed_mod(m);
             m->bytes = folder_bytes(m->folder);
             s_nmods++;
         } while (FindNextFileW(h, &fd));
@@ -2112,8 +2122,10 @@ static void set_enabled(int i, int on)
 {
     WCHAR off[MAX_PATH];
     if (i < 0 || i >= s_nmods || s_mods[i].enabled == on) return;
-    if (on && !_wcsicmp(s_mods[i].type, L"backstage")) {  /* (switched off in the game: src/no_mods.h) */
-        status(L"Backstage mods are switched off for now: Backstage Brawl plays the game's own backstage.");
+    if (on && removed_mod(&s_mods[i])) {  /* (switched off in the game: src/no_mods.h, src/match_types.cpp) */
+        status(!_wcsicmp(s_mods[i].type, L"backstage")
+                   ? L"Backstage mods are switched off for now: Backstage Brawl plays the game's own backstage."
+                   : L"FREE-ROAMING BACKSTAGE is removed from the game for now.");
         return;
     }
     swprintf_s(off, MAX_PATH, L"%s\\disabled", s_mods[i].folder);

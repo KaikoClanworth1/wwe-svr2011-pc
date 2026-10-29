@@ -910,7 +910,12 @@ const std::map<std::string, bool>& MatchTypeSwitches() {
                           "gauntlet_eliminator", "cage_weapons", "inferno_weapons", "online_first_blood"}) {
       // (Start Without Mods: none - they count as mods for online, online_files.h ActiveMatchMods)
       m[k] = !NoMods() && !std::filesystem::exists(dir / k / "disabled", ec);
-      if (!m[k]) REXLOG_INFO("match types: {} off ({})", k, NoMods() ? "started without mods" : "mod switched off");
+      // (FREE-ROAMING BACKSTAGE is removed - the user's call for 2.1.6: its rows never added, its rules played as
+      // a named room at set-up, sub_827374A0 below)
+      const bool removed = std::string(k) == "free_roaming_backstage";
+      if (removed) m[k] = false;
+      if (!m[k])
+        REXLOG_INFO("match types: {} off ({})", k, removed ? "removed" : NoMods() ? "started without mods" : "mod switched off");
     }
     return m;
   }();
@@ -1201,6 +1206,15 @@ REX_HOOK_RAW(sub_827374A0) {
   svr2011::SetMatchLoading(true);  // (arena_mods: a custom arena's loading pictures)
   RestoreRule(base);
   g_lumberjacks_chosen = false;
+  // FREE-ROAMING BACKSTAGE is removed (its rows: MatchTypeSwitches): a whole-backstage rule reaching here anyway - a
+  // saved match, Universe, a CPU set-up - plays the first named room instead (PARKING LOT: 0x1B, 2 on 2: 0x70).
+  // Road to WrestleMania's own uses (its story context) stay the game's.
+  if ((rule == kWholeBackstage || rule == kWholeBackstage2) && !Rd32(base + kStoryContext)) {
+    const uint32_t room = rule == kWholeBackstage ? kBackstage1v1FirstRule : 0x70u;
+    REXLOG_INFO("match types: rule {:02X} (free-roaming backstage, removed) played as rule {:02X}", rule, room);
+    rule = room;
+    ctx.r4.u64 = rule;
+  }
   g_free_roam = (rule == kWholeBackstage || rule == kWholeBackstage2) && !Rd32(base + kStoryContext);
   // A backstage mod's own row: its bg78 for this match (any other: the usual)
   {
