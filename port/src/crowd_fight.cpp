@@ -480,7 +480,7 @@ SVR_BOX_HUNT(sub_82BB83A0)
 // The game keeps people who are at the ring inside a box around it (about +-64, one way: whoever is outside it
 // walks freely - the crowd area's floor and walls hold them there, and the walkway's opening leads back out), so
 // nobody walks into the crowd area. A player at the barricade in front of it (inside the box near its edge, within
-// kVaultReach of the arena mod's crowd_area=) sees "Y: CLIMB INTO THE CROWD"; Y plays a climb (kVaultMotion, the
+// kVaultReach of the arena mod's crowd_area=) sees "Y: HOLD - CLIMB INTO THE CROWD"; Y held kVaultPress frames plays a climb (kVaultMotion, the
 // stock climb up from the floor) and then puts him on the crowd area's floor - its nearest point kVaultInset inside
 // crowd_area= - with the body's three place copies, held kVaultHold frames, outside the ring (area +441 / +444 1),
 // standing (motion 0). Players only (port < 4, or every wrestler online - each game reads the same synced pad,
@@ -493,11 +493,15 @@ constexpr float kBox = 54.f;         // (inside the box near its edge: max(|x|, 
 constexpr float kVaultReach = 25.f;  // (the crowd area this near)
 constexpr float kVaultInset = 25.f;  // (landing this far inside crowd_area=)
 constexpr uint32_t kVaultMotionDefault = 15180, kVaultFrames = 50, kVaultHold = 10;
+// (Y held this long: a press is 2011's own action button - picking up the weapon a fan handed over at the barricade
+// - and its move breaks the hold, so the climb never takes a press from it)
+constexpr uint32_t kVaultPress = 20;
 constexpr uint32_t kButtonY = 0x10;  // (the pad word at FighterInput + 52)
 
 struct Vault {
   uint32_t f = 0;
   uint32_t frames = 0;  // (since the climb started; 0 none)
+  uint32_t held = 0;    // (frames Y has been held in the spot)
   float x = 0, z = 0, yaw = 0;
 };
 Vault g_vault[8];
@@ -563,7 +567,7 @@ class CrowdPromptOverlay final : public rex::ui::ImGuiDialog {
       port = g_vault_prompt_port;
     }
     if (!svr2011::MatchHudVisible()) return;
-    svr2011::DrawHudPanel(io.DisplaySize.x, io.DisplaySize.y, VaultButton(port), "CLIMB INTO THE CROWD");
+    svr2011::DrawHudPanel(io.DisplaySize.x, io.DisplaySize.y, VaultButton(port), "HOLD - CLIMB INTO THE CROWD");
   }
 };
 
@@ -608,6 +612,9 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
       continue;
     }
     const float x = RdF(base + f + 288), z = RdF(base + f + 296);
+    // (Y's hold: kept only while it stays held in the spot, on his feet)
+    const uint32_t held = v.held;
+    v.held = 0;
     if (std::max(std::fabs(x), std::fabs(z)) < kBox) continue;
     const float nx = std::clamp(x, a[0], a[1]), nz = std::clamp(z, a[2], a[3]);
     if ((nx - x) * (nx - x) + (nz - z) * (nz - z) > kVaultReach * kVaultReach) continue;
@@ -617,13 +624,13 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
     if (!(m == 0 || m == 20 || m == 20400 || m == 20500 || base[f + 1286])) continue;  // (on his feet, not in a move)
     if (!prompt && port < 4) prompt = true, prompt_port = port;  // (this PC's own players see it)
     const uint32_t input = FighterInput(f);
-    const bool pressed = input && (Rd32(base + input + 52) & kButtonY);
+    if (input && (Rd32(base + input + 52) & kButtonY)) v.held = held + 1;
     const bool test = test_person == int(i) && frames == test_at;
-    if (!pressed && !test) continue;
+    if (v.held < kVaultPress && !test) continue;
     // (the landing: the crowd area's nearest point, kVaultInset inside it; facing away from the ring)
     const float lx = std::clamp(x, std::min(a[0] + kVaultInset, a[1]), std::max(a[1] - kVaultInset, a[0]));
     const float lz = std::clamp(z, std::min(a[2] + kVaultInset, a[3]), std::max(a[3] - kVaultInset, a[2]));
-    v = {f, 1, lx, lz, std::atan2(lx - x, lz - z)};
+    v = {f, 1, 0, lx, lz, std::atan2(lx - x, lz - z)};
     WrF(base + f + 276, v.yaw);
     StartMotion(ctx, base, f, VaultMotion());
     REXLOG_INFO("crowd fight: person {} climbs into the crowd from ({:.0f}, {:.0f}) (motion {} -> {}{})", i, x, z,
