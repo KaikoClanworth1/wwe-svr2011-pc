@@ -159,7 +159,7 @@ def port_moveset(c):
         # signature 2437 was Maria's and Bob Orton's 2437 too, whose waze line took its signature bits, 29 Oct)
         taken = other_pack_ids(c.pac11)
         free = [i for i in sorted(w11) if i not in g11m.moved and i > 1000 and i not in in_slot and i not in taken]
-        used = set()
+        used = set(taken)   # (moves_port's own re-pick under a bank's id limit avoids them too: _avoid)
         pdir = os.path.join(c.work, 'moveset_port')
         if os.path.exists(pdir) and not getattr(c, 'dry', False):
             shutil.rmtree(pdir)
