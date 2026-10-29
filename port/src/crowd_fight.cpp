@@ -381,3 +381,33 @@ REX_HOOK_RAW(sub_8281B118) {
   }
   __imp__sub_8281B118(ctx, base);
 }
+
+// Test aid (walk-in research): SVR2011_TEST_CLAMP_LOG=1 - in crowd matches, each time the per-body clamp
+// sub_821E5408 (r4 the body: place +16 / +24; r5 its result: +0 / +8) moves a body beyond 40 from the middle: before ->
+// after (at most 300 lines); and once, the clamp's half sizes (0x82D9E9D4..E0) and the wall grids' table 0x82D9E0B0.
+REX_EXTERN(__imp__sub_821E5408);
+REX_HOOK_RAW(sub_821E5408) {
+  static const bool log = std::getenv("SVR2011_TEST_CLAMP_LOG") != nullptr;
+  if (!log || !g_crowd.load() || !ctx.r4.u32 || !ctx.r5.u32) {
+    __imp__sub_821E5408(ctx, base);
+    return;
+  }
+  static std::atomic<bool> told{false};
+  if (!told.exchange(true)) {
+    REXLOG_INFO("crowd: clamp half sizes {:.1f} {:.1f} {:.1f} {:.1f}", RdF(base + 0x82D9E9D4), RdF(base + 0x82D9E9D8),
+                RdF(base + 0x82D9E9DC), RdF(base + 0x82D9E9E0));
+    for (uint32_t k = 0; k < 64 && Rd32(base + 0x82D9E0B0 + k * 20) != 0xFFFFFFFFu; ++k) {
+      const uint32_t r = 0x82D9E0B0 + k * 20;
+      REXLOG_INFO("crowd: area table {} type {:08X} {:.1f} {:.1f} {:.1f} {:.1f}", k, Rd32(base + r), RdF(base + r + 4),
+                  RdF(base + r + 8), RdF(base + r + 12), RdF(base + r + 16));
+    }
+  }
+  const uint32_t body = ctx.r4.u32, out = ctx.r5.u32;
+  const float bx = RdF(base + body + 16), bz = RdF(base + body + 24), x0 = RdF(base + out), z0 = RdF(base + out + 8);
+  __imp__sub_821E5408(ctx, base);
+  const float x1 = RdF(base + out), z1 = RdF(base + out + 8);
+  static std::atomic<uint32_t> lines{0};
+  if ((x1 != x0 || z1 != z0) && (std::fabs(bx) > 40 || std::fabs(bz) > 40) && lines++ < 300)
+    REXLOG_INFO("crowd: clamp body {:08X} at ({:.1f}, {:.1f}): ({:.1f}, {:.1f}) -> ({:.1f}, {:.1f})", body, bx, bz, x0, z0, x1,
+                z1);
+}
