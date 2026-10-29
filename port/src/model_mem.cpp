@@ -10,6 +10,7 @@
 // Every failed allocation is logged once per caller with its size, so a
 // model that doesn't fit shows what it asked for.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -413,6 +414,7 @@ struct CacheAlloc {
   bool active = false, stuck = false, given = false;
   uint32_t size = 0, tries = 0;
   std::chrono::steady_clock::time_point t0;
+  std::string name;  // (the file it is for: noted when it is found stuck)
 };
 thread_local CacheAlloc t_alloc;
 thread_local uint32_t t_request = 0;  // (the loader's request in sub_826A1C70: its file name at +50)
@@ -453,6 +455,17 @@ REX_EXTERN(__imp__sub_826A1C70);
 REX_HOOK_RAW(sub_826A1C70) {
   const bool loader = uint32_t(ctx.lr) == 0x826A1F1C;  // (sub_826A1D38's file read: r31 = the request)
   if (loader) t_request = ctx.r31.u32;
+  // (SVR2011_TEST_EMD_LOG=1: each model read - the request's first 50 bytes and its size: which pac a scene's
+  // character model is looked up in - research for the Streak walk's mod, rtwm_streak.cpp)
+  if (static const bool emd_log = std::getenv("SVR2011_TEST_EMD_LOG") != nullptr; emd_log && loader) {
+    const std::string name = GuestName(base, t_request + 50);
+    if (name.rfind("/EMD/", 0) == 0) {
+      std::string hex;
+      for (uint32_t k = 0; k < 50; ++k) hex += fmt::format("{}{:02X}", k % 4 ? "" : " ", base[t_request + k]);
+      REXLOG_INFO("[svr2011] file cache: read {} - {} bytes, request {:08X}:{} (caller {:08X})", name,
+                  uint64_t(Rd32(base, t_request + 44)) << 8, t_request, hex, uint32_t(ctx.lr));
+    }
+  }
   // A redirected arena's stage entry is read at the served file's size, not the mounted directory's (the shipped
   // file's): request +44 = size / 0x100, which this buffer and the read take (arena_mods.h ServedStageUnits).
   if (loader) {
@@ -506,6 +519,7 @@ REX_HOOK_RAW(sub_826B9FB8) {
   const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - r.t0).count();
   if (s < 3.0) return;
   r.stuck = true;
+  r.name = RequestName(base);
   LogLoaderCache(base, cache, r, s);
 }
 
@@ -522,7 +536,13 @@ bool LoaderCacheForcedFull(uint32_t size) {
 uint32_t LoaderCacheFallback(uint32_t size) {
   CacheAlloc& r = t_alloc;
   if (!r.active || !r.stuck) return 0;
-  const uint32_t p = FallbackBlock(size);
+  // (a request of 0 bytes: a file no mounted pac has - its directory entry not found, size 0 - e.g. a character's
+  // model under a name no pac carries. It never fits nothing, so it spun forever: a small zeroed block instead,
+  // the read empty - the load goes on, and the log names the missing file)
+  const uint32_t p = FallbackBlock(std::max(size, 2048u));
+  if (!size && !r.given)
+    REXLOG_ERROR("[svr2011] file cache: {} is in no pac (0 bytes) - read as an empty file so the load goes on",
+                 r.name);
   if (!r.given) {
     r.given = true;
     REXLOG_WARN("[svr2011] file cache: {} bytes {}", size,

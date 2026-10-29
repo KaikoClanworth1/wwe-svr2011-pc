@@ -6,8 +6,9 @@
 // hands the story a CAW (the list's first) so it starts, and the new story remembers the mod (UserData/
 // rtwm_streak.txt: the mod's folder and the CAW slot the story got - kept for CONTINUE). In its matches, the person
 // who is that CAW becomes the mod (the match's people, test_match.cpp's hook: RtwmStreakPeople). Undertaker stays
-// himself. Scenes with the player alone (the backstage walks) keep the CAW: with the mod there the walk never loaded
-// (its loader spun at the night-drive scene). Picking a CAW plays the story as it is.
+// himself. The scenes with the player alone (the backstage walks) are the mod's too (29 Oct): the walk's load spun on
+// '/EMD/<id>00' - a CAW's pick ends in kind 0, which no model pac has (the swap now writes kind 2) - and then the
+// walk found no player character by the CAW's id (sub_825344E0's hook, below). Picking a CAW plays the story as it is.
 
 #include <cmath>
 #include <cstdint>
@@ -50,7 +51,10 @@ void WrF(uint8_t* p, float f) {
   std::memcpy(&v, &f, 4);
   Wr32(p, v);
 }
-uint32_t g_solo_frames = 0;  // (world frames since the last scene with the player alone was set up; 0: none)
+uint32_t g_solo_frames = 0;
+// The swap in force: the story's player is the CAW (its person id, the save slot) but his character carries the
+// mod's id - sub_825344E0 below finds him by either (0 / 0: none)
+uint32_t g_swap_caw = 0, g_swap_id = 0, g_swap_person = 0;  // (world frames since the last scene with the player alone was set up; 0: none)
 
 std::filesystem::path StateFile() {
   std::filesystem::path dir = rex::filesystem::GetExecutableFolder() / "UserData";
@@ -138,18 +142,22 @@ void RtwmStreakPeople(uint8_t* base, uint32_t match) {
   constexpr uint32_t kSlots = 432, kSlotSize = 2116, kNoPick = 51200;
   uint32_t people = 0;
   for (uint32_t i = 0; i < 6; ++i) people += Rd32(base + match + kSlots + i * kSlotSize + 8) != kNoPick;
-  if (people < 2) {  // (the player alone: a backstage walk - the CAW, see above)
+  if (people < 2) {  // (the player alone: a backstage walk - the mod plays it too)
     g_solo_frames = 1;  // (SVR2011_TEST_RTWM_WARP counts from here)
     static uint32_t said = 0;
-    if (said++ < 3) REXLOG_INFO("[svr2011] rtwm streak: a scene with the player alone - the CAW plays it (the mod {} in matches)", c.folder);
-    return;
+    if (said++ < 3) REXLOG_INFO("[svr2011] rtwm streak: a scene with the player alone - the mod {} plays it", c.folder);
   }
   for (uint32_t i = 0; i < 6; ++i) {
     uint8_t* slot = base + match + kSlots + i * kSlotSize;
     const uint32_t v = Rd32(slot + 8);
     if (v == kNoPick || v / 100 != uint32_t(c.caw)) continue;
-    Wr32(slot + 8, id * 100 + v % 100);  // (the attire digits kept: the mod's attire 1 for the CAW's first)
+    // (the attire digit kept - the mod's attire 1 for the CAW's first - and the model kind always 2, a real
+    // model's EMD "<id>x2": a CAW's pick ends in 0 in the solo scenes - the walk asked for '/EMD/00011100', which
+    // no pac has, and the loader spun on its 0 bytes; in matches it ends in 2 already)
+    static const bool kind0 = std::getenv("SVR2011_TEST_RTWM_KIND0") != nullptr;  // (test: the old digits - the 0-byte guard)
+    Wr32(slot + 8, kind0 ? id * 100 + v % 100 : id * 100 + (v % 100) / 10 * 10 + 2);
     Wr16(slot + 54, id);
+    g_swap_caw = uint32_t(c.caw), g_swap_id = id, g_swap_person = i;
     REXLOG_INFO("[svr2011] rtwm streak: person {} - the CAW (slot {}) plays as the mod {} (id {})", i, c.caw, c.folder, id);
   }
 }
@@ -261,3 +269,31 @@ REX_HOOK_RAW(sub_82465E88) { ShownTheMod<__imp__sub_82465E88>(ctx, base); }
 // had the mod's picture and badge over DEFAULT / 78)
 REX_EXTERN(__imp__sub_824678C8);
 REX_HOOK_RAW(sub_824678C8) { ShownTheMod<__imp__sub_824678C8>(ctx, base); }
+
+// The story finds its player's character by his person id (sub_825344E0(id): the characters table, each one's
+// person +80 -> sub_828B7028). That id is the CAW's; the character playing him is the mod's: without this the walk
+// found no player (sub_82535018 -> 0) and crashed reading its +304 (sub_825484A0, 29 Oct).
+REX_EXTERN(__imp__sub_825344E0);
+REX_HOOK_RAW(sub_825344E0) {
+  const uint32_t want = ctx.r3.u32;
+  __imp__sub_825344E0(ctx, base);
+  if (ctx.r3.u32 || !g_swap_id || want != g_swap_caw || !svr2011::InRoadToWrestleMania()) return;
+  // (the character built from the swapped person - characters-table entry = person - when his id, as the lookup
+  // reads it, is the mod's or its base's: the mod's record is a copy of its base's, so it reads as the base, 104
+  // for the test mod; the base himself may be in the scene too, so only that entry)
+  const uint32_t c = g_swap_person < 9 ? Rd32(base + 0x82E3CC50 + g_swap_person * 4) : 0;
+  if (!c) return;
+  const auto saved = ctx;
+  ctx.r3.u64 = Rd32(base + c + 80);
+  sub_828B7028(ctx, base);
+  const uint32_t is = ctx.r3.u32;
+  ctx = saved;
+  if (is == g_swap_id || is == svr2011::SuperstarModBase(g_swap_id)) {
+    ctx.r3.u64 = c;
+    static bool said = false;
+    if (!said) {
+      said = true;
+      REXLOG_INFO("[svr2011] rtwm streak: the story's player (CAW {}) is the mod's character (id {})", want, is);
+    }
+  }
+}
