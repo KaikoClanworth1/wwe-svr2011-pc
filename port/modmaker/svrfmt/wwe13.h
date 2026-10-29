@@ -77,6 +77,13 @@ std::set<int> DarkLightSets(const Bytes& bank);
 Bytes ReplaceLightSets(const Bytes& bank, const Bytes& host, const std::set<int>& ids,
                        std::vector<int>* replaced = nullptr);
 
+// The announce tables' lid (SvR2011 puts set 0x192's ji_top on it): WWE '13's
+// ji_top is the black cloth its separate desk (ji_desk) covers, so on
+// SvR2011's table the whole lid shows black. A dark ji_top is tinted with the
+// desk's colour (mid grey without a brighter ji_desk), its grain and logo
+// kept -> pictures changed (0: none dark).
+int LiftTableLids(Arena& a);
+
 // ---- the whole arena
 struct Wwe13Options {
   bool host_ring = true;     // SvR2011's ring models (ids, bones, sizes: the ring code and rope physics)

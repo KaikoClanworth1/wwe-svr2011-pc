@@ -1495,6 +1495,51 @@ void ArrangeScreens(std::map<uint32_t, Model>& pending, std::string& flags, Wwe1
 
 }  // namespace
 
+int LiftTableLids(Arena& a) {
+  auto lum = [](const uint8_t* p) { return (p[0] + p[1] + p[2]) / 3.0f; };
+  const BundleTexture* desk = nullptr;
+  for (const auto& b : a.bundles)
+    for (const auto& t : b.textures)
+      if (Lower(t.name) == "ji_desk") desk = &t;
+  int n = 0;
+  for (auto& b : a.bundles) {
+    if (b.id != 0x192) continue;
+    for (auto& t : b.textures) {
+      if (Lower(t.name) != "ji_top") continue;
+      Image img;
+      DdsInfo info;
+      if (!DdsInfoOf(t.data, info) || !DdsDecode(t.data, img) || img.rgba.empty()) continue;
+      // the cloth: the median brightness (the logo is a small part)
+      std::vector<float> l;
+      for (size_t k = 0; k < img.rgba.size(); k += 16) l.push_back(lum(&img.rgba[k]));
+      std::nth_element(l.begin(), l.begin() + l.size() / 2, l.end());
+      const float cloth = std::max(l[l.size() / 2], 1.0f);
+      if (cloth >= 60) continue;  // (SvR2011's own lids: a picture)
+      float tint[3] = {96, 96, 96};
+      Image d;
+      if (desk && DdsDecode(desk->data, d) && !d.rgba.empty()) {
+        double s[3] = {};
+        for (size_t k = 0; k < d.rgba.size(); k += 4)
+          for (int c = 0; c < 3; ++c) s[c] += d.rgba[k + size_t(c)];
+        const size_t px = d.rgba.size() / 4;
+        const float m[3] = {float(s[0] / px), float(s[1] / px), float(s[2] / px)};
+        if ((m[0] + m[1] + m[2]) / 3 >= cloth * 1.5f) tint[0] = m[0], tint[1] = m[1], tint[2] = m[2];
+      }
+      for (size_t k = 0; k < img.rgba.size(); k += 4) {
+        uint8_t* p = &img.rgba[k];
+        const int sat = std::max({p[0], p[1], p[2]}) - std::min({p[0], p[1], p[2]});
+        if (sat > 40 || std::fabs(lum(p) - cloth) > 60) continue;  // (the logo)
+        const float g = std::min(lum(p) / cloth, 2.0f);
+        for (int c = 0; c < 3; ++c) p[c] = uint8_t(std::min(255.0f, tint[c] * g));
+      }
+      t.data = DdsEncode(img, info.format == DxtFormat::kUnknown ? DxtFormat::kDxt1 : info.format, info.mips > 1);
+      b.changed = true;
+      ++n;
+    }
+  }
+  return n;
+}
+
 bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13Options& opt, Bytes& out,
                          Wwe13Report& rep, std::string* error) {
   auto fail = [&](const std::string& why) { if (error) *error = why; return false; };
@@ -2102,6 +2147,7 @@ bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13
       b.changed = true;
     }
   }
+  if (LiftTableLids(a)) rep.notes.push_back("announce table lid (ji_top) tinted with the desk's colour: WWE '13's is the black cloth its desk covers");
   for (auto& b : a.bundles) {
     if (!main_set || &b == main_set || !b.original_raw) continue;
     while (set_size(b) > b.original_raw && b.textures.size() > 1) {
