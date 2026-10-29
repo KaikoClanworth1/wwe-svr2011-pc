@@ -304,3 +304,33 @@ REX_HOOK_RAW(sub_826AB2E8) {
               mover, x0, y0, z0, RdF(base + mover + 16), RdF(base + mover + 20), RdF(base + mover + 24),
               list ? count : -1, Rd32(base + hmd + 176), Rd32(base + mover + 36), ctx.r3.u32, hits);
 }
+
+// Test aid (walk-in research): SVR2011_TEST_GRID_DUMP=<folder> - each wall grid sub_8281E540 marks from the stage
+// collision (walls into 10-byte cells, byte +3 = blocked): its size (+36 x +40), cell size (+44, +48), origin (+64,
+// +68) and blocked count before / after in the log, and the blocked map as grid_<n>.pgm in that folder (first 16).
+REX_EXTERN(__imp__sub_8281E540);
+REX_HOOK_RAW(sub_8281E540) {
+  static const char* dump = std::getenv("SVR2011_TEST_GRID_DUMP");
+  const uint32_t g = ctx.r3.u32;
+  const int32_t w = dump && g ? int32_t(Rd32(base + g + 36)) : 0, h = dump && g ? int32_t(Rd32(base + g + 40)) : 0;
+  const uint32_t cells = dump && g ? Rd32(base + g + 32) : 0;
+  const bool look = cells && w > 0 && h > 0 && w <= 4096 && h <= 4096;
+  auto blocked = [&] {
+    uint32_t n = 0;
+    for (int32_t i = 0; i < w * h; ++i) n += base[cells + uint32_t(i) * 10 + 3] != 0;
+    return n;
+  };
+  const uint32_t before = look ? blocked() : 0;
+  __imp__sub_8281E540(ctx, base);
+  if (!look) return;
+  static std::atomic<uint32_t> told{0};
+  const uint32_t k = told++;
+  if (k >= 16) return;
+  REXLOG_INFO("crowd: wall grid {} at {:08X}: {} x {} cells of ({:.2f}, {:.2f}) from ({:.1f}, {:.1f}), blocked {} -> {}", k, g,
+              w, h, RdF(base + g + 44), RdF(base + g + 48), RdF(base + g + 64), RdF(base + g + 68), before, blocked());
+  if (FILE* f = std::fopen(fmt::format("{}/grid_{}.pgm", dump, k).c_str(), "wb")) {
+    std::fprintf(f, "P5\n%d %d\n255\n", h, w);  // (rows = the first index (+36), columns = the second (+40))
+    for (int32_t i = 0; i < w * h; ++i) std::fputc(base[cells + uint32_t(i) * 10 + 3] ? 255 : 0, f);
+    std::fclose(f);
+  }
+}
