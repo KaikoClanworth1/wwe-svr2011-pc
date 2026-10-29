@@ -36,6 +36,7 @@ struct Project {
   svrfmt::Bytes opened_pac;
   int opened_edits = -1;
   Picture load;                     // the loading screen (1024 x 512), optional
+  Picture card;                     // the entrance title card's logo (card.dds), optional
   // backstage: an area of its own (arena_mods.cpp / match_types.cpp read these)
   bool own_area = false;
   char row[32] = "";                // row=<label>: its row in ONE ON ONE -> BACKSTAGE
