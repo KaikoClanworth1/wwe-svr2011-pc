@@ -195,7 +195,12 @@ FILE* g_trail_test = nullptr;  // (SVR2011_TEST_TRAIL)
 fs::path LogsDir() {
   const std::string log = rex::cvar::Query<std::string>("log_file");
   std::error_code ec;
-  return log.empty() ? fs::current_path(ec) / "logs" : fs::u8path(log).parent_path();
+  if (!log.empty()) return fs::u8path(log).parent_path();
+#if defined(__ANDROID__)
+  return rex::filesystem::GetExecutableFolder() / "logs";  // (the SDK's logs: the game folder's - the current one is "/")
+#else
+  return fs::current_path(ec) / "logs";
+#endif
 }
 
 std::string Safe(const std::string& name) {  // (a folder-name part: letters, digits, '-')

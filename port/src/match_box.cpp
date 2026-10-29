@@ -20,6 +20,7 @@
 
 #include <fmt/format.h>
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
@@ -396,8 +397,13 @@ void MatchBoxMatchEnded() {
   namespace fs = std::filesystem;
   const std::string log = rex::cvar::Query<std::string>("log_file");
   std::error_code ec;
-  // (the log's folder: log_file's, else the SDK's own sequential logs in <the current folder>\logs)
+  // (the log's folder: log_file's, else the SDK's own sequential logs in <the current folder>\logs - on Android
+  // <the game folder>/logs, the current one being "/")
+#if defined(__ANDROID__)
+  const fs::path dir = log.empty() ? rex::filesystem::GetExecutableFolder() / "logs" : fs::u8path(log).parent_path();
+#else
   const fs::path dir = log.empty() ? fs::current_path(ec) / "logs" : fs::u8path(log).parent_path();
+#endif
   // logs\matchbox_<n>.txt: the newest 3 kept (1 newest)
   for (int k = 3; k > 1; --k) fs::rename(dir / fmt::format("matchbox_{}.txt", k - 1), dir / fmt::format("matchbox_{}.txt", k), ec);
   if (FILE* f = std::fopen((dir / "matchbox_1.txt").string().c_str(), "wb")) {
