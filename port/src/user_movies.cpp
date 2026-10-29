@@ -398,7 +398,9 @@ thread_local int t_page_movie = -1;
 REX_EXTERN(__imp__sub_8287E960);
 REX_HOOK_RAW(sub_8287E960) {
   const uint32_t slots = ctx.r3.u32, e = ctx.r4.u32;
+  svr2011::CaeLoadingEntrance(true);  // (the edited mod's own scene parts: "MOD: <name>" - cae_mod_motions.cpp)
   __imp__sub_8287E960(ctx, base);
+  svr2011::CaeLoadingEntrance(false);
   if (!g_memory || !slots || !e) return;
   const int id = uint16_t(Rd16(base, e + 14));
   if (id < kFirstId || id > kLastId) return;
@@ -422,7 +424,7 @@ REX_HOOK_RAW(sub_828823E0) {
     if (const int row = svr2011::CaeMissingRow(ctx, base, list, value); row >= 0) ctx.r3.u64 = uint32_t(row);
   // (a number several rows have: the edited mod's own row)
   if (ctx.r3.s32 >= 0)
-    if (const int row = svr2011::CaePreferredRow(base, list, value); row >= 0) ctx.r3.u64 = uint32_t(row);
+    if (const int row = svr2011::CaePreferredRow(ctx, base, list, value); row >= 0) ctx.r3.u64 = uint32_t(row);
 }
 REX_EXTERN(__imp__sub_82875320);
 REX_HOOK_RAW(sub_82875320) {
