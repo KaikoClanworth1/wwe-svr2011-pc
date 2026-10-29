@@ -14,19 +14,28 @@
 
 #include <atomic>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 
 #include <fmt/format.h>
+#include <imgui.h>
 
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
+#include <rex/cvar.h>
+#include <rex/ui/imgui_dialog.h>
 
 #include "arena_mods.h"
+#include "match_hud.h"
+#include "match_types.h"
+#include "p2p.h"
+#include "pad_types.h"
 #include "weapons_page.h"
 
 #include "generated/default/svr2011_init.h"
@@ -194,6 +203,7 @@ void CrowdHandoffUpdate(PPCContext& ctx, uint8_t* base) {
   }
   g_last_frames = frames;
   TestGiveWeapon(ctx, base, frames, new_match);
+  CrowdVaultUpdate(ctx, base, frames, new_match);
   if (!g_crowd.load()) return;
   for (int person = 0; person < 6 && g_given < kMax; ++person) {
     const uint32_t c = Rd32(base + kChars + uint32_t(person) * 4);
@@ -464,3 +474,163 @@ SVR_BOX_HUNT(sub_8281FAE0)
 SVR_BOX_HUNT(sub_82BB8348)
 SVR_BOX_HUNT(sub_82BB83A0)
 #undef SVR_BOX_HUNT
+
+// -- Into the crowd: the climb over the barricade --------------------------------------------------------------------
+//
+// The game keeps people who are at the ring inside a box around it (about +-64, one way: whoever is outside it
+// walks freely - the crowd area's floor and walls hold them there, and the walkway's opening leads back out), so
+// nobody walks into the crowd area. A player at the barricade in front of it (inside the box near its edge, within
+// kVaultReach of the arena mod's crowd_area=) sees "Y: CLIMB INTO THE CROWD"; Y plays a climb (kVaultMotion, the
+// stock climb up from the floor) and then puts him on the crowd area's floor - its nearest point kVaultInset inside
+// crowd_area= - with the body's three place copies, held kVaultHold frames, outside the ring (area +441 / +444 1),
+// standing (motion 0). Players only (port < 4, or every wrestler online - each game reads the same synced pad,
+// FighterInput: the climb is an input like any move); CPUs walk in through the walls the AI grid now has.
+// Test aid: SVR2011_TEST_VAULT_MOTION=<motion> - another climb motion; SVR2011_TEST_VAULT=<person> - that person
+// climbs once at match frame SVR2011_TEST_PLACE_AT + 120 if he is in the spot (as if Y).
+namespace {
+
+constexpr float kBox = 54.f;         // (inside the box near its edge: max(|x|, |z|) beyond this)
+constexpr float kVaultReach = 25.f;  // (the crowd area this near)
+constexpr float kVaultInset = 25.f;  // (landing this far inside crowd_area=)
+constexpr uint32_t kVaultMotionDefault = 15180, kVaultFrames = 50, kVaultHold = 10;
+constexpr uint32_t kButtonY = 0x10;  // (the pad word at FighterInput + 52)
+
+struct Vault {
+  uint32_t f = 0;
+  uint32_t frames = 0;  // (since the climb started; 0 none)
+  float x = 0, z = 0, yaw = 0;
+};
+Vault g_vault[8];
+
+std::mutex g_vault_prompt_mutex;
+uint32_t g_vault_prompt_port = 0;
+std::chrono::steady_clock::time_point g_vault_prompt_at;
+
+uint32_t VaultMotion() {
+  static const uint32_t m = [] {
+    const char* v = std::getenv("SVR2011_TEST_VAULT_MOTION");
+    return v ? uint32_t(std::strtoul(v, nullptr, 10)) : kVaultMotionDefault;
+  }();
+  return m;
+}
+
+// The crowd area in game coordinates (x0, x1, z0, z1: crowd_area= is the stage's x / z - the game's z / x).
+bool VaultArea(float a[4]) {
+  float r[4];
+  if (!CrowdAreaRect(r)) return false;
+  a[0] = r[1], a[1] = r[3], a[2] = r[0], a[3] = r[2];
+  return true;
+}
+
+// A fighter put somewhere: his place (+288..+296), facing (+276), the body's place (*(+304)) and its two other
+// copies (+704, +768 - as hctp_room.cpp's PlaceBody: without them the body eased him back).
+void PutBody(uint8_t* base, uint32_t f, float x, float y, float z, float yaw) {
+  WrF(base + f + 288, x), WrF(base + f + 292, y), WrF(base + f + 296, z);
+  WrF(base + f + 276, yaw);
+  if (const uint32_t body = Rd32(base + f + 304))
+    for (uint32_t at : {0u, 704u, 768u}) WrF(base + body + at, x), WrF(base + body + at + 4, y), WrF(base + body + at + 8, z);
+}
+
+void StartMotion(PPCContext& ctx, uint8_t* base, uint32_t f, uint32_t motion) {
+  PPCContext c = ctx;
+  c.r3.u64 = f, c.r4.u64 = motion, c.r5.u64 = 0, c.r6.u64 = 0, c.f1.f64 = 0.0;
+  sub_82396E80(c, base);
+}
+
+std::string VaultButton(uint32_t port) {
+  switch (svr2011::PlayerPadType(port)) {
+    case svr2011::PadType::kPlayStation: return "TRIANGLE";
+    case svr2011::PadType::kKeyboard: {
+      std::string k = rex::cvar::Query<std::string>("keybind_y");
+      k = k.substr(0, k.find(','));
+      std::transform(k.begin(), k.end(), k.begin(), [](unsigned char c) { return char(std::toupper(c)); });
+      return k.empty() ? "Y" : k;
+    }
+    default: return "Y";
+  }
+}
+
+class CrowdPromptOverlay final : public rex::ui::ImGuiDialog {
+ public:
+  explicit CrowdPromptOverlay(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
+
+ protected:
+  void OnDraw(ImGuiIO& io) override {
+    uint32_t port = 0;
+    {
+      std::lock_guard<std::mutex> lock(g_vault_prompt_mutex);
+      if (std::chrono::steady_clock::now() - g_vault_prompt_at > std::chrono::milliseconds(300)) return;
+      port = g_vault_prompt_port;
+    }
+    if (!svr2011::MatchHudVisible()) return;
+    svr2011::DrawHudPanel(io.DisplaySize.x, io.DisplaySize.y, VaultButton(port), "CLIMB INTO THE CROWD");
+  }
+};
+
+}  // namespace
+
+namespace svr2011 {
+
+void InstallCrowdOverlay(rex::ui::ImGuiDrawer* drawer) { new CrowdPromptOverlay(drawer); }
+
+void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_match) {
+  if (new_match)
+    for (Vault& v : g_vault) v = {};
+  float a[4];
+  if (!g_crowd.load() || !VaultArea(a)) return;
+  static const int test_person = [] {
+    const char* v = std::getenv("SVR2011_TEST_VAULT");
+    return v ? std::atoi(v) : -1;
+  }();
+  static const uint32_t test_at = [] {
+    const char* v = std::getenv("SVR2011_TEST_PLACE_AT");
+    return uint32_t(v ? std::atoi(v) : 300) + 120;
+  }();
+  bool prompt = false;
+  uint32_t prompt_port = 0;
+  for (uint32_t i = 0; i < 8; ++i) {
+    const uint32_t f = Rd32(base + kChars + i * 4);
+    Vault& v = g_vault[i];
+    if (!f) {
+      v = {};
+      continue;
+    }
+    if (v.frames) {  // (climbing: then the landing, held)
+      ++v.frames;
+      if (v.frames == kVaultFrames || (v.frames > 2 && v.frames < kVaultFrames && Rd32(base + f + 212) != VaultMotion())) {
+        v.frames = kVaultFrames;
+        StartMotion(ctx, base, f, 0);
+        base[f + 441] = 1, base[f + 444] = 1;
+        REXLOG_INFO("crowd fight: person {} lands in the crowd at ({:.0f}, {:.0f})", i, v.x, v.z);
+      }
+      if (v.frames >= kVaultFrames) PutBody(base, f, v.x, 0.f, v.z, v.yaw);
+      if (v.frames >= kVaultFrames + kVaultHold) v = {};
+      continue;
+    }
+    const float x = RdF(base + f + 288), z = RdF(base + f + 296);
+    if (std::max(std::fabs(x), std::fabs(z)) < kBox) continue;
+    const float nx = std::clamp(x, a[0], a[1]), nz = std::clamp(z, a[2], a[3]);
+    if ((nx - x) * (nx - x) + (nz - z) * (nz - z) > kVaultReach * kVaultReach) continue;
+    const uint32_t port = Rd32(base + f + 1152);
+    if (!(port < 4 || P2POnlineMode())) continue;  // (CPUs: the AI grid)
+    const uint32_t m = Rd32(base + f + 212);
+    if (!(m == 0 || m == 20 || m == 20400 || m == 20500 || base[f + 1286])) continue;  // (on his feet, not in a move)
+    if (!prompt && port < 4) prompt = true, prompt_port = port;  // (this PC's own players see it)
+    const uint32_t input = FighterInput(f);
+    const bool pressed = input && (Rd32(base + input + 52) & kButtonY);
+    const bool test = test_person == int(i) && frames == test_at;
+    if (!pressed && !test) continue;
+    // (the landing: the crowd area's nearest point, kVaultInset inside it; facing away from the ring)
+    const float lx = std::clamp(x, std::min(a[0] + kVaultInset, a[1]), std::max(a[1] - kVaultInset, a[0]));
+    const float lz = std::clamp(z, std::min(a[2] + kVaultInset, a[3]), std::max(a[3] - kVaultInset, a[2]));
+    v = {f, 1, lx, lz, std::atan2(lx - x, lz - z)};
+    WrF(base + f + 276, v.yaw);
+    StartMotion(ctx, base, f, VaultMotion());
+    REXLOG_INFO("crowd fight: person {} climbs into the crowd from ({:.0f}, {:.0f}) (motion {} -> {}{})", i, x, z,
+                VaultMotion(), Rd32(base + f + 212), test ? ", test" : "");
+  }
+  std::lock_guard<std::mutex> lock(g_vault_prompt_mutex);
+  if (prompt) g_vault_prompt_port = prompt_port, g_vault_prompt_at = std::chrono::steady_clock::now();
+}
+
+}  // namespace svr2011
