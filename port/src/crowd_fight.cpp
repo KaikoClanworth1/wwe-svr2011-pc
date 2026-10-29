@@ -684,7 +684,7 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
     // (Y's hold: kept only while it stays held in the spot, on his feet)
     const uint32_t held = v.held;
     v.held = 0;
-    if (std::max(std::fabs(x), std::fabs(z)) < kBox) continue;
+    if (std::max(std::fabs(x), std::fabs(z)) < kBox || InRect(x, z, a)) continue;  // (in the crowd already: no climb)
     const uint32_t port = Rd32(base + f + 1152);
     const bool player = port < 4 || P2POnlineMode();  // (online every wrestler is a player - his synced pad)
     const float nx = std::clamp(x, a[0], a[1]), nz = std::clamp(z, a[2], a[3]);
