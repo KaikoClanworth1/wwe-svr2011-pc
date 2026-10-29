@@ -1076,13 +1076,25 @@ int PatchWaze(uint8_t* w, size_t size, const std::map<uint16_t, Bytes>& waze, in
     uint8_t* r = w + 272 + size_t(k) * 160;
     if (std::all_of(r, r + 160, [](uint8_t b) { return b == 0; })) continue;
     const uint16_t id = Le16(r + 0x90);
-    if (const auto nm = names.find(id); nm != names.end()) {  // (the name: 64 bytes at +0x10)
+    if (const auto nm = names.find(id); nm != names.end()) {  // (the name: 64 bytes at +0x10, "MOD: " first - below)
       uint8_t buf[64] = {};
-      std::memcpy(buf, nm->second.data(), std::min<size_t>(nm->second.size(), 63));
+      const std::string want = nm->second.rfind("MOD: ", 0) == 0 ? nm->second : "MOD: " + nm->second;
+      std::memcpy(buf, want.data(), std::min<size_t>(want.size(), 63));
       if (std::memcmp(r + 0x10, buf, 64)) std::memcpy(r + 0x10, buf, 64), ++set;
     }
     const auto f = waze.find(id);
     if (f != waze.end() && std::memcmp(r, f->second.data(), 16)) std::memcpy(r, f->second.data(), 16), ++set;
+    // (a pack's move is named "MOD: <name>" wherever the game lists it - as CREATE AN ENTRANCE's MOD: rows; once:
+    // the overlay's records come through here again)
+    if (names.count(id) || copies.count(id) || f != waze.end()) {
+      static const char kMod[] = "MOD: ";
+      char* nm = reinterpret_cast<char*>(r + 0x10);
+      if (nm[0] && std::strncmp(nm, kMod, 5)) {
+        char buf[64] = {};
+        std::snprintf(buf, sizeof buf, "%s%.*s", kMod, 58, nm);
+        std::memcpy(r + 0x10, buf, 64), ++set;
+      }
+    }
   }
   uint32_t count[128] = {};
   for (uint32_t k = 0; k < records; ++k)
