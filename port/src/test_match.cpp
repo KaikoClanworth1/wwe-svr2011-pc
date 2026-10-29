@@ -35,6 +35,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "arena_mods.h"
+#include "fast_start.h"
 #include "p2p.h"
 #include "rtwm_streak.h"
 #include "script_input.h"
@@ -307,4 +308,5 @@ REX_HOOK_RAW(sub_828BC5E8) {
     svr2011::SetSuperstarLoading(load);
   }
   __imp__sub_828BC5E8(ctx, base);
+  svr2011::FastStartPeopleCommitted(base);  // (back from Road to WrestleMania: on to the main menu)
 }
