@@ -259,7 +259,9 @@ bool PrepareBuild(BuildJob& job) {
                  (g_proj.source.empty() ? std::string() : "source=" + g_proj.source + "\n") +
                  (g_proj.theme_pac.empty() ? std::string() : "vs_theme=" + g_proj.theme_label + "\n") +
                  (g_proj.theme_pac.empty() || g_proj.theme_font.empty() ? std::string() : "vs_font=" + g_proj.theme_font + "\n") +
-                 (g_proj.city[0] ? std::string("city=") + g_proj.city + "\n" : std::string()) + editor::ManifestLines();
+                 (g_proj.city[0] ? std::string("city=") + g_proj.city + "\n" : std::string()) +
+                 (g_proj.crowd_area[0] ? std::string("crowd_area=") + g_proj.crowd_area + "\n" : std::string()) +
+                 editor::ManifestLines();
   return true;
 }
 
@@ -463,6 +465,10 @@ void DetailsFields() {
   TextField("Version (optional)", g_proj.version, sizeof g_proj.version, "1.0");
   if (g_proj.backstage < 0 && g_page != PageId::kBackstage)
     TextField("City (optional)", g_proj.city, sizeof g_proj.city, "the entrance title card's city, e.g. PITTSBURGH, PA");
+  if (g_proj.backstage < 0 && g_page != PageId::kBackstage)
+    TextField("Crowd area (optional)", g_proj.crowd_area, sizeof g_proj.crowd_area,
+              "crowd fighting beyond the barricade (Extreme Rules): x0,z0,x1,z1 in the stage's x / z, e.g. 75,-135,190,-40 - "
+              "a player at the barricade there holds Y to climb in");
 }
 
 struct VsTexture {
@@ -618,7 +624,7 @@ void PickTheme(const std::string& game, const std::wstring& src, const std::stri
 
 // Test aid (--vs-test "<step>;<step>..."): the VS screen tab's steps on the opened mod, as its buttons do -
 // theme=<game>,<src>,<n>[,<label>] (Pick a theme), font=<game>,<src>,<n>[,<label>] (Font from another theme), replace=<picture>,<png>
-// (Replace...), version=<v>, city=<text>, card=<picture>, save=<file.svrmod> (the mod made, then the Mod Maker closes; the log beside it).
+// (Replace...), version=<v>, city=<text>, crowd_area=<x0,z0,x1,z1>, card=<picture>, save=<file.svrmod> (the mod made, then the Mod Maker closes; the log beside it).
 std::vector<std::string> g_vs_test;
 size_t g_vs_test_at = 0;
 int g_vs_test_wait = 0;  // frames (an opened mod settles first)
@@ -652,6 +658,9 @@ void VsTestStep() {
     else Log("vs test: no picture " + arg);
   } else if (what == "city") {
     std::snprintf(g_proj.city, sizeof g_proj.city, "%s", arg.c_str());
+    Touch();
+  } else if (what == "crowd_area") {
+    std::snprintf(g_proj.crowd_area, sizeof g_proj.crowd_area, "%s", arg.c_str());
     Touch();
   } else if (what == "version") {
     std::snprintf(g_proj.version, sizeof g_proj.version, "%s", arg.c_str());
@@ -1189,6 +1198,7 @@ bool ReadModOrProject(const ProjectIn& in, bool mod) {
   std::snprintf(g_proj.author, sizeof g_proj.author, "%s", in.Get("author").c_str());
   std::snprintf(g_proj.version, sizeof g_proj.version, "%s", in.Get("version").c_str());
   std::snprintf(g_proj.city, sizeof g_proj.city, "%s", in.Get("city").c_str());
+  std::snprintf(g_proj.crowd_area, sizeof g_proj.crowd_area, "%s", in.Get("crowd_area").c_str());
   if (!g_proj.version[0]) std::snprintf(g_proj.version, sizeof g_proj.version, "1.0");
   g_proj.vs.clear();
   for (const auto& e : in.files)
@@ -1257,6 +1267,7 @@ void WriteProject(ProjectOut& out) {
   out.Key("author", g_proj.author);
   out.Key("version", g_proj.version);
   out.Key("city", g_proj.city);
+  out.Key("crowd_area", g_proj.crowd_area);
   if (g_proj.backstage >= 0) out.Key("area", g_proj.backstage);
   else if (g_proj.arena >= 0) out.Key("base", g_arenas[g_proj.arena].banner), out.Key("tile", g_proj.arena);
   out.Key("fbx", g_proj.fbx);

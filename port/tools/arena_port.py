@@ -722,6 +722,9 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     os.makedirs(os.path.join(mod, 'vs'), exist_ok=True)
     with open(os.path.join(mod, 'arena.pac'), 'wb') as f:
         f.write(data)
+    if game == 'svr2008':  # (its crowd area opened for 2011's crowd fighting: a walkway, the climb's area)
+        import crowd_walkway
+        notes.append('crowd area: %s' % crowd_walkway.patch_pac(os.path.join(mod, 'arena.pac')))
     progress(85, 'pictures')
     art = None
     if disc.exists('pac/menu/MatchHD.pac'):
@@ -773,7 +776,8 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         os.rmdir(os.path.join(mod, 'vs'))
     with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
         f.write('type=arena\nid=%s\nname=%s\nauthor=%s arena bg%02d, ported by port tools\nversion=1.0\nbase=%s\n'
-                % (mod_id, name, label, n, BASE_NAMES[base]) + needs_line(data, len(host)))
+                % (mod_id, name, label, n, BASE_NAMES[base]) + needs_line(data, len(host))
+                + (crowd_area_line(data) if game == 'svr2008' else ''))
     progress(92, 'packing the mod')
     import wwe13_pack
     svrmod = os.path.join(out, mod_id + '.svrmod')
