@@ -2017,6 +2017,42 @@ REX_HOOK_RAW(sub_82216C58) {
       break;
     }
   __imp__sub_82216C58(ctx, base);
+  // A fighter on the floor outside (+444 area 1, base y near 0) never stands under the ring, yet a paired move started
+  // by the apron could have its pair's places redone into the ring's footprint (a ported Double Arm DDT 2 from the
+  // floor by the apron: the victim's base at (13.4, 8.4), the attacker's slid to 15 from it), and when the move ended
+  // the game played the ring entry from there - the victim floated at ring height and climbed in (item 10, 29 Oct).
+  // Such a base goes back to the fighter's last one on the floor outside: the move plays where it started.
+  if (fighter && fighter < 0xF0000000u) {
+    struct Floor {
+      uint32_t fighter;
+      float x, z;
+    };
+    static Floor floor_at[16] = {};
+    constexpr float kRopes = 28.8f;  // (the ring's footprint: inside the ropes)
+    const float x = RdF(base + fighter + 288), y = RdF(base + fighter + 292), z = RdF(base + fighter + 296);
+    Floor* f = nullptr;
+    for (Floor& s : floor_at)
+      if (s.fighter == fighter || (!f && !s.fighter)) f = &s;
+    if (f && f->fighter != fighter) *f = {fighter, 0.f, 0.f};
+    const bool outside = base[fighter + 444] == 1 && y > -4.f;
+    auto clear = [&](float px, float pz) { return std::fabs(px) >= kRopes || std::fabs(pz) >= kRopes; };
+    const uint32_t body = Rd32(base + fighter + 304);
+    if (f && outside && clear(x, z)) {
+      f->x = x, f->z = z;
+    } else if (f && outside) {
+      // (the move's first frame: the base is redone already, the body still where he stood - Cena thrown out by a
+      // test the same frame had no floor place yet, and his slid partner was put back again and again)
+      if (body && RdF(base + body + 4) > -4.f && clear(RdF(base + body), RdF(base + body + 8)) && f->x == 0.f && f->z == 0.f)
+        f->x = RdF(base + body), f->z = RdF(base + body + 8);
+      if (f->x != 0.f || f->z != 0.f) {
+        static int logged = 0;
+        if (logged++ < 24)
+          REXLOG_INFO("match types: fighter {:08X} on the floor outside with his base under the ring ({:.1f}, {:.1f}): "
+                      "back to ({:.1f}, {:.1f})", fighter, x, z, f->x, f->z);
+        WrF(base + fighter + 288, f->x), WrF(base + fighter + 296, f->z);
+      }
+    }
+  }
   // Test aid: SVR2011_TEST_MOTION_LOG=1 - each fighter's motion (+212) when
   // it changes, with the person, the match frame, where he is (+288) and his
   // area (+444: 0 the ring, 1 outside).
