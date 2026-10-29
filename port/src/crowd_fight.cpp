@@ -537,6 +537,11 @@ Vault g_vault[8];
 // nearest point when a step leaves them. Others outside the box (the aisle, the referee, the announcers) are left be.
 constexpr float kArenaBox = 64.5f;
 bool g_in_crowd[8];
+// (put back: a walking person's place written once was walked on from the game's own the next frame - he is
+// stopped (standing, motion 0) and held there kKeepHold frames, as the climb's landing)
+constexpr uint32_t kKeepHold = 6;
+struct KeepHold { uint32_t frames = 0; float x = 0, z = 0; };
+KeepHold g_keep[8];
 
 bool InRect(float x, float z, const float r[4]) { return x >= r[0] && x <= r[1] && z >= r[2] && z <= r[3]; }
 
@@ -612,6 +617,7 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
   if (new_match) {
     for (Vault& v : g_vault) v = {};
     std::fill(std::begin(g_in_crowd), std::end(g_in_crowd), false);
+    for (KeepHold& k : g_keep) k = {};
   }
   float a[4];
   if (!g_crowd.load() || !VaultArea(a)) return;
@@ -645,6 +651,11 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
       if (v.frames >= kVaultFrames + kVaultHold) v = {};
       continue;
     }
+    if (g_keep[i].frames) {  // (put back: held there)
+      --g_keep[i].frames;
+      PutBody(base, f, g_keep[i].x, RdF(base + f + 292), g_keep[i].z, RdF(base + f + 276));
+      continue;
+    }
     const float x = RdF(base + f + 288), z = RdF(base + f + 296);
     {  // (kept in: the box, the crowd area and the strip between them)
       const float box[4] = {-kArenaBox, kArenaBox, -kArenaBox, kArenaBox};
@@ -658,7 +669,9 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
       else if (g_in_crowd[i] && !InRect(x, z, bridge)) {
         float bx = x, bz = z, best = 1e30f;
         Nearest(x, z, a, bx, bz, best), Nearest(x, z, bridge, bx, bz, best), Nearest(x, z, box, bx, bz, best);
+        StartMotion(ctx, base, f, 0);
         PutBody(base, f, bx, RdF(base + f + 292), bz, RdF(base + f + 276));
+        g_keep[i] = {kKeepHold, bx, bz};
         static uint32_t told = 0, told_at = ~0u;
         if (told < 40 && frames != told_at && frames % 30 == 0) {
           told_at = frames;
@@ -672,10 +685,12 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
     const uint32_t held = v.held;
     v.held = 0;
     if (std::max(std::fabs(x), std::fabs(z)) < kBox) continue;
-    const float nx = std::clamp(x, a[0], a[1]), nz = std::clamp(z, a[2], a[3]);
-    if ((nx - x) * (nx - x) + (nz - z) * (nz - z) > kVaultReach * kVaultReach) continue;
     const uint32_t port = Rd32(base + f + 1152);
     const bool player = port < 4 || P2POnlineMode();  // (online every wrestler is a player - his synced pad)
+    const float nx = std::clamp(x, a[0], a[1]), nz = std::clamp(z, a[2], a[3]);
+    // (a CPU anywhere at the box's edge while someone is in the crowd: his way after them ends there)
+    const bool someone_in = std::any_of(std::begin(g_in_crowd), std::end(g_in_crowd), [](bool b) { return b; });
+    if ((nx - x) * (nx - x) + (nz - z) * (nz - z) > kVaultReach * kVaultReach && (player || !someone_in)) continue;
     const uint32_t m = Rd32(base + f + 212);
     const bool walking = m == 20400 || m == 20500 || base[f + 1286];
     if (!(m == 0 || m == 20 || walking)) continue;  // (on his feet, not in a move)
