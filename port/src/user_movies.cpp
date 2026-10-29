@@ -420,6 +420,9 @@ REX_HOOK_RAW(sub_828823E0) {
   // (an entrance motion list missing the stored number - a removed mod's: a MISSING MOD row keeps it)
   if (ctx.r3.s32 < 0)
     if (const int row = svr2011::CaeMissingRow(ctx, base, list, value); row >= 0) ctx.r3.u64 = uint32_t(row);
+  // (a number several rows have: the edited mod's own row)
+  if (ctx.r3.s32 >= 0)
+    if (const int row = svr2011::CaePreferredRow(base, list, value); row >= 0) ctx.r3.u64 = uint32_t(row);
 }
 REX_EXTERN(__imp__sub_82875320);
 REX_HOOK_RAW(sub_82875320) {

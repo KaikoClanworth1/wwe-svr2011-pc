@@ -38,6 +38,14 @@ void SetSuperstarModsSaves(const std::filesystem::path& saves);
 // the save had them, false (after the build) the mods again.
 void OnlineTempForSave(uint8_t* base, bool saving);
 bool IsSuperstarMod(uint32_t id);
+// The installed mods' entrance numbers (manifest entrance= and attire<N>_entrance=, without the fetched ones): the
+// CREATE AN ENTRANCE rows "MOD: <name>" (cae_mod_motions.cpp).
+struct SuperstarModEntrance {
+  uint32_t id;
+  std::string name;
+  std::vector<int> numbers;
+};
+std::vector<SuperstarModEntrance> SuperstarModEntrances();
 // A mod's folder in Mods/Superstars ("" for no mod).
 std::string SuperstarModFolder(uint32_t id);
 // A mod's loading picture file (manifest loading=, else its load.dds; "" for none).
