@@ -66,6 +66,20 @@ void WrF(uint8_t* p, float f) {
   Wr32(p, v);
 }
 
+// A fighter put somewhere: his place (+288..+296), facing (+276), the body's place (*(+304)) and its two other
+// copies (+704, +768 - as hctp_room.cpp's PlaceBody: without them the body eased him back).
+void PutBody(uint8_t* base, uint32_t f, float x, float y, float z, float yaw) {
+  WrF(base + f + 288, x), WrF(base + f + 292, y), WrF(base + f + 296, z);
+  WrF(base + f + 276, yaw);
+  if (const uint32_t body = Rd32(base + f + 304))
+    for (uint32_t at : {0u, 704u, 768u}) WrF(base + body + at, x), WrF(base + body + at + 4, y), WrF(base + body + at + 8, z);
+}
+
+// Test placements held (as the climb's landing) for kPlaceHold frames.
+constexpr uint32_t kPlaceHold = 10;
+struct TestHold { uint32_t f = 0, frames = 0; float x = 0, z = 0; };
+TestHold g_test_hold[6];
+
 // The fan's hand-off (crowd_fight.h). People: *0x82E3CC50 + 4i (+288 / +292 / +296 x y z: the floor y 0, the ring
 // -12). A taunt asked (slots 9-12) by one of them on the floor at the barricade (beyond 62 from the ring's middle on
 // x or z; the crowd area behind it too) - once per kCooldown match frames each, kMax a match.
@@ -154,7 +168,7 @@ void CrowdMoveAsked(uint32_t fighter, uint32_t slot) {
 
 // Test aids (crowd fighting): SVR2011_TEST_PLACE="<person>:<x>,<z>[;<person>:<x>,<z>...]" - at match frame
 // SVR2011_TEST_PLACE_AT (300) those people are put there on the floor (the real position vector *(+304), its copy
-// +288; y 0; the area +444 1, outside the ring), once a match; SVR2011_TEST_CROWD_LOG=1 - each half second people 0-3: place, area bytes (+441, +444),
+// +288 and the body's other copies, held 10 frames; y 0; the area +441 / +444 1, outside the ring), once a match; SVR2011_TEST_CROWD_LOG=1 - each half second people 0-3: place, area bytes (+441, +444),
 // motion (+212).
 void CrowdTestAids(uint8_t* base, uint32_t frames, bool new_match) {
   static const std::string place = [] { const char* v = std::getenv("SVR2011_TEST_PLACE"); return std::string(v ? v : ""); }();
@@ -171,14 +185,16 @@ void CrowdTestAids(uint8_t* base, uint32_t frames, bool new_match) {
       float x = 0, z = 0;
       if (std::sscanf(place.substr(at, semi - at).c_str(), "%d:%f,%f", &person, &x, &z) == 3 && person >= 0 && person < 6)
         if (const uint32_t c = Rd32(base + kChars + uint32_t(person) * 4)) {
-          if (const uint32_t v = Rd32(base + c + 304)) WrF(base + v, x), WrF(base + v + 4, 0.f), WrF(base + v + 8, z);
-          WrF(base + c + 288, x), WrF(base + c + 292, 0.f), WrF(base + c + 296, z);
-          base[c + 444] = 1;  // (outside the ring: 0 is in it, 10 the cell's roof)
+          PutBody(base, c, x, 0.f, z, RdF(base + c + 276));
+          g_test_hold[person] = {c, kPlaceHold, x, z};
+          base[c + 441] = 1, base[c + 444] = 1;  // (outside the ring: 0 is in it, 10 the cell's roof)
           REXLOG_INFO("crowd: test - person {} put at ({}, {})", person, x, z);
         }
       at = semi + 1;
     }
   }
+  for (TestHold& h : g_test_hold)
+    if (h.frames && h.f) --h.frames, PutBody(base, h.f, h.x, 0.f, h.z, RdF(base + h.f + 276));
   static uint32_t logged_at = ~0u;
   if (log && g_crowd.load() && frames && frames % 30 == 0 && frames != logged_at) {
     logged_at = frames;
@@ -524,15 +540,6 @@ bool VaultArea(float a[4]) {
   if (!CrowdAreaRect(r)) return false;
   a[0] = r[1], a[1] = r[3], a[2] = r[0], a[3] = r[2];
   return true;
-}
-
-// A fighter put somewhere: his place (+288..+296), facing (+276), the body's place (*(+304)) and its two other
-// copies (+704, +768 - as hctp_room.cpp's PlaceBody: without them the body eased him back).
-void PutBody(uint8_t* base, uint32_t f, float x, float y, float z, float yaw) {
-  WrF(base + f + 288, x), WrF(base + f + 292, y), WrF(base + f + 296, z);
-  WrF(base + f + 276, yaw);
-  if (const uint32_t body = Rd32(base + f + 304))
-    for (uint32_t at : {0u, 704u, 768u}) WrF(base + body + at, x), WrF(base + body + at + 4, y), WrF(base + body + at + 8, z);
 }
 
 void StartMotion(PPCContext& ctx, uint8_t* base, uint32_t f, uint32_t motion) {
