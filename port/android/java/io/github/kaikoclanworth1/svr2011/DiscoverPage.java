@@ -147,7 +147,6 @@ final class DiscoverPage {
         page_.addView(back_, a_.fullWidth(6));
         picture_ = new ImageView(a_);
         picture_.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        picture_.setAdjustViewBounds(true);
         picture_.setBackground(a_.rounded(LauncherActivity.kCard, 12));
         picture_.setOnClickListener(v -> showPic(pic_ + 1));
         page_.addView(picture_, a_.fullWidth(10));
@@ -460,7 +459,7 @@ final class DiscoverPage {
         for (int k = 0; k < 4; k++) pics_[k] = null;
         pic_ = 0;
         picture_.setImageBitmap(null);
-        picture_.setMinimumHeight(a_.dp(180));
+        fitPicture();
         picLabel_.setText("1 / 4");
         fillInfo(row, "");
         grid_.setVisibility(View.GONE);
@@ -499,6 +498,15 @@ final class DiscoverPage {
         View p = (View) page_.getParent();
         while (p != null && !(p instanceof android.widget.ScrollView)) p = p.getParent() instanceof View ? (View) p.getParent() : null;
         if (p != null) ((android.widget.ScrollView) p).scrollTo(0, 0);
+    }
+
+    // The picture 4:3 across the page, but never taller than about half the screen (a phone on its side, the cover
+    // screen): then narrower, centred.
+    void fitPicture() {
+        android.util.DisplayMetrics d = a_.getResources().getDisplayMetrics();
+        int w = d.widthPixels - a_.dp(32), h = Math.min(w * 3 / 4, d.heightPixels * 11 / 20);
+        picture_.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h));
+        ((LinearLayout.LayoutParams) picture_.getLayoutParams()).topMargin = a_.dp(10);
     }
 
     void showPic(int n) {
@@ -573,6 +581,8 @@ final class DiscoverPage {
                 result[0] = "Installed \"" + r.name + "\" - it's on the Mods tab and loads the next time the game starts."
                     + (r.note.isEmpty() ? "" : " " + r.note);
                 android.util.Log.i("SvR2011", "discovery: mod " + id + " \"" + name + "\" installed to " + r.dest);
+            } catch (ModsPage.Declined e) {
+                result[0] = "Downloaded \"" + name + "\" - not installed: " + e.getMessage() + ".";
             } catch (Exception e) {
                 result[0] = "Downloaded \"" + name + "\", but it could not be installed: " + e.getMessage();
                 android.util.Log.w("SvR2011", "discovery: mod " + id + " not installed: " + e.getMessage());

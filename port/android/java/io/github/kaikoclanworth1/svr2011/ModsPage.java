@@ -419,6 +419,11 @@ final class ModsPage {
         return yes[0];
     }
 
+    // The player said No (the custom-moves question): not a failure.
+    static final class Declined extends IOException {
+        Declined(String why) { super(why); }
+    }
+
     // Where a mod went (Mods/<kind>/<id>), whether it was there already, and
     // for a bundled one whether the player's newer copy was kept instead.
     static final class Installed {
@@ -489,7 +494,7 @@ final class ModsPage {
             if (ask != null && !ask.install(nm)) {
                 deleteTree(stage);
                 android.util.Log.i("SvR2011", "mods: \"" + nm + "\" not installed (custom moves: No)");
-                throw new IOException("it has custom moves (you chose not to install it)");
+                throw new Declined("it has custom moves (you chose not to install it)");
             }
         }
         String id = m.containsKey("id") ? m.get("id").replaceAll("[^A-Za-z0-9_\\-]", "_") : "";
