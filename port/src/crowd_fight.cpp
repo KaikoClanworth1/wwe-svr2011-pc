@@ -642,6 +642,10 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
         float bx = x, bz = z, best = 1e30f;
         Nearest(x, z, a, bx, bz, best), Nearest(x, z, bridge, bx, bz, best), Nearest(x, z, box, bx, bz, best);
         PutBody(base, f, bx, RdF(base + f + 292), bz, RdF(base + f + 276));
+        static uint32_t told = 0;
+        if (told < 40 && frames % 30 == 0)
+          ++told, REXLOG_INFO("crowd fight: person {} kept in: ({:.1f}, {:.1f}) -> ({:.1f}, {:.1f}), motion {}", i, x, z, bx, bz,
+                              Rd32(base + f + 212));
       }
     }
     // (Y's hold: kept only while it stays held in the spot, on his feet)
