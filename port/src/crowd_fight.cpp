@@ -169,21 +169,27 @@ void CrowdMoveAsked(uint32_t fighter, uint32_t slot) {
 // Test aids (crowd fighting): SVR2011_TEST_PLACE="<person>:<x>,<z>[;<person>:<x>,<z>...]" - at match frame
 // SVR2011_TEST_PLACE_AT (300) those people are put there on the floor (the real position vector *(+304), its copy
 // +288 and the body's other copies, held 10 frames; y 0; the area +441 / +444 1, outside the ring), once a match; SVR2011_TEST_CROWD_LOG=1 - each half second people 0-3: place, area bytes (+441, +444),
-// motion (+212).
+// motion (+212). SVR2011_TEST_PLACE_ANY=<every s> - in any match, not only crowd ones, and again every <s> seconds
+// (0: once) - CPUs fighting on the floor outside (item 10: a grapple outside the ring)
 void CrowdTestAids(uint8_t* base, uint32_t frames, bool new_match) {
   static const std::string place = [] { const char* v = std::getenv("SVR2011_TEST_PLACE"); return std::string(v ? v : ""); }();
   static const uint32_t place_at = [] { const char* v = std::getenv("SVR2011_TEST_PLACE_AT"); return uint32_t(v ? std::atoi(v) : 300); }();
+  static const char* any_env = std::getenv("SVR2011_TEST_PLACE_ANY");
+  static const uint32_t place_every = any_env ? uint32_t(std::atoi(any_env)) * 60 : 0;
   static const bool log = std::getenv("SVR2011_TEST_CROWD_LOG") != nullptr;
   static bool placed = false;
+  static uint32_t placed_frame = 0;
   if (new_match) placed = false;
+  if (placed && place_every && frames >= placed_frame + place_every) placed = false;
+  const bool crowd = g_crowd.load() || any_env;
   // (and only once people 0 and 1 are on their feet - the match's intro over: placed during it they were put back)
   auto ready = [&](uint32_t i) {
     const uint32_t c = Rd32(base + kChars + i * 4);
     const uint32_t m = c ? Rd32(base + c + 212) : 0;
     return !c || m == 0 || m == 20 || m == 20400 || m == 20500;
   };
-  if (!place.empty() && !placed && frames >= place_at && g_crowd.load() && ready(0) && ready(1)) {  // (crowd matches only)
-    placed = true;
+  if (!place.empty() && !placed && frames >= place_at && crowd && ready(0) && ready(1)) {  // (crowd matches only)
+    placed = true, placed_frame = frames;
     for (size_t at = 0; at < place.size();) {
       size_t semi = place.find(';', at);
       if (semi == std::string::npos) semi = place.size();
@@ -202,7 +208,7 @@ void CrowdTestAids(uint8_t* base, uint32_t frames, bool new_match) {
   for (TestHold& h : g_test_hold)
     if (h.frames && h.f) --h.frames, PutBody(base, h.f, h.x, 0.f, h.z, RdF(base + h.f + 276));
   static uint32_t logged_at = ~0u;
-  if (log && g_crowd.load() && frames && frames % 30 == 0 && frames != logged_at) {
+  if (log && crowd && frames && frames % 30 == 0 && frames != logged_at) {
     logged_at = frames;
     std::string line;
     for (uint32_t i = 0; i < 4; ++i)
