@@ -23,12 +23,14 @@
 #include "pad_icons.h"
 #include "mystery_opponent.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -81,6 +83,9 @@ rex::memory::Memory* g_memory = nullptr;
 uint8_t* g_base = nullptr;
 bool g_enabled = false;
 thread_local int t_owner = -1;
+// (character select's bottom bar being drawn: each controller picture's draws so far - record, count)
+thread_local bool t_in_bar = false;
+thread_local std::vector<std::pair<uint32_t, int>> t_bar_draws;
 
 // The kind of pictures for the text / picture being drawn: its player's
 // controller (the match HUD, the character select panels), or - shared by
@@ -813,25 +818,55 @@ uint32_t VersionOf(uint32_t object, Kind kind) {
 std::mutex g_records_mutex;
 
 // A texture record's picture for a player's kind: the version's copy for
-// PlayStation / keyboard (record -> {the game's object, our copy}). The copy
-// is only put in the record while the record is bound for drawing
-// (sub_826E6060, below): a copy left in the record was freed by the game
-// with the record (a match with a keyboard player crashed at load: the
-// game's heap free of an object from the port's system heap).
-struct RecordWant {
+// PlayStation / keyboard. The copy is only put in the record while the
+// record is bound for drawing (sub_826E6060, below): a copy left in the
+// record was freed by the game with the record (a match with a keyboard
+// player crashed at load: the game's heap free of an object from the port's
+// system heap).
+// Per command, in order: the game records its 2D "set texture" commands
+// (sub_826DE6B0) and plays them back later, binding each one's record - and
+// one record can be drawn for several players in a frame (character select's
+// bottom bar: a controller picture per player, players in the same state
+// share it; the COM panel shares one with it). So every command on a texture
+// record queues the version it wants (0: the game's own) and each bind of the
+// record takes the oldest (record -> {the game's object, our copy}, ...).
+struct QueuedWant {
   uint32_t original, copy;
+  bool own;  // (a player's Xbox picture: the game's own, not the last pressed controller's - SetTexture below)
 };
-std::map<uint32_t, RecordWant> g_record_want;
+thread_local bool t_keep_own = false;
+std::unordered_map<uint32_t, std::deque<QueuedWant>> g_record_queue;
+constexpr size_t kMaxQueued = 64;  // (commands recorded and never played back: dropped)
+std::atomic<uint64_t> g_queued{0}, g_bound{0};  // (debug: SVR2011_PAD_ICONS_LOG - the two keep step)
 
-void SwapRecordObject(uint32_t record, Kind kind) {
+void QueueRecordObject(uint32_t record, Kind kind, bool owned) {
   constexpr uint32_t kTextureRecord = 0x8205CF48;  // (vtable)
   if (!Readable(record) || Rd32(g_base + record) != kTextureRecord || Rd32(g_base + record + 52) != 0) return;
   const uint32_t original = Rd32(g_base + record + 80);
-  uint32_t want = 0;
-  if (kind == kPlayStation || kind == kKeyboard) want = VersionOf(original, kind);
+  const uint32_t want = kind == kPlayStation || kind == kKeyboard ? VersionOf(original, kind) : 0;
   std::lock_guard lock(g_records_mutex);
-  if (want) g_record_want[record] = RecordWant{original, want};
-  else g_record_want.erase(record);
+  if (g_record_queue.size() > 4096)  // (records long gone: their queues emptied by now)
+    for (auto it = g_record_queue.begin(); it != g_record_queue.end();) it = it->second.empty() ? g_record_queue.erase(it) : std::next(it);
+  auto& q = g_record_queue[record];
+  if (q.size() >= kMaxQueued) {
+    static const bool debug = std::getenv("SVR2011_PAD_ICONS_LOG") != nullptr;
+    static std::set<uint32_t> logged;
+    if (debug && logged.size() < 32 && logged.insert(record).second)
+      REXLOG_INFO("[svr2011] pad icons: record {:08X} (object {:08X}): {} commands never bound - dropped", record, original,
+                  q.size());
+    q.clear();
+  }
+  q.push_back(QueuedWant{original, want, owned && !want});
+  ++g_queued;
+}
+
+// Character select's bottom bar draws its controller pictures in layers - the
+// outline for each player with a controller, then the filled one for each, in
+// player order: a picture's k-th draw in the bar is that player's (-1: none).
+int BarIconOwner(int k) {
+  for (uint32_t player = 0; player < kMaxPlayers; ++player)
+    if (PlayerPadType(player) != PadType::kNone && k-- == 0) return int(player);
+  return -1;
 }
 
 // The player behind a character select slot: its setup record's controller
@@ -927,14 +962,30 @@ REX_HOOK_RAW(sub_826DE6B0) {
   // (the player's version goes into the record itself, +80: playback binds
   // the record the game keeps, not a copy put in the command - a copy left
   // the picture with no texture of its own, drawn with the font page bound
-  // before it: the "glitched" keyboard picture on character select)
-  // (per record: a copy of the record in the sprite's pair - +0x110, its own -
-  // isn't bound at playback either, the picture showed the font page again;
-  // so the COM panel, which shares player 1's bottom bar record, shows player
-  // 1's version too)
-  if (g_enabled && t_owner >= 0 && ctx.r4.u32) {
+  // before it: the "glitched" keyboard picture on character select; a copy
+  // of the record in the sprite's pair - +0x110, its own - isn't bound at
+  // playback either, the picture showed the font page again)
+  if (g_enabled && ctx.r4.u32) {
     const uint32_t record = Readable(ctx.r4.u32) ? Rd32(base + ctx.r4.u32 + 4) : 0;
-    if (record) SwapRecordObject(record, CurrentKind(false));
+    // (the bottom bar's controller pictures: each its own player's - the
+    // keyboard player's showed as an Xbox pad, the bar's player 1's)
+    std::optional<OwnerScope> bar_owner;
+    if (record && t_in_bar && Readable(record) && VersionOf(Rd32(base + record + 80), kKeyboard)) {
+      auto it = std::find_if(t_bar_draws.begin(), t_bar_draws.end(), [&](const auto& d) { return d.first == record; });
+      if (it == t_bar_draws.end()) it = t_bar_draws.insert(t_bar_draws.end(), {record, 0});
+      const int k = it->second++;
+      const int owner = BarIconOwner(k);
+      if (owner >= 0) bar_owner.emplace(owner);
+      if (debug) {
+        static std::set<uint64_t> logged;
+        const uint64_t key = uint64_t(record) << 16 | uint64_t(k) << 8 | uint8_t(owner + 1) << 4 |
+                             uint8_t(PlayerPadType(uint32_t(std::max(owner, 0))));
+        if (logged.size() < 64 && logged.insert(key).second)
+          REXLOG_INFO("[svr2011] pad icons: bottom bar record {:08X} draw {} is player {}'s (type {})", record, k, owner + 1,
+                      int(PlayerPadType(uint32_t(std::max(owner, 0)))));
+      }
+    }
+    if (record) QueueRecordObject(record, t_owner >= 0 ? CurrentKind(false) : kXbox, t_owner >= 0);
   }
   __imp__sub_826DE6B0(ctx, base);
 }
@@ -1044,17 +1095,39 @@ REX_HOOK_RAW(sub_826E6060) {
   using namespace svr2011;
   const uint32_t record = ctx.r3.u32;
   uint32_t original = 0, copy = 0;
+  bool own = false;
   if (g_enabled) {
     std::lock_guard lock(g_records_mutex);
-    if (auto it = g_record_want.find(record); it != g_record_want.end()) {
-      if (Rd32(base + record + 80) == it->second.original && Rd32(base + record + 52) == 0)
-        original = it->second.original, copy = it->second.copy;
-      else
-        g_record_want.erase(it);  // (the record holds another picture now)
+    if (auto it = g_record_queue.find(record); it != g_record_queue.end() && !it->second.empty()) {
+      auto& q = it->second;
+      const uint32_t now = Rd32(base + record + 80);
+      while (!q.empty() && q.front().original != now) q.pop_front();  // (the record holds another picture now)
+      if (!q.empty()) {
+        if (q.front().copy && Rd32(base + record + 52) == 0) original = q.front().original, copy = q.front().copy;
+        own = q.front().own;
+        static const bool debug_bind = std::getenv("SVR2011_PAD_ICONS_LOG") != nullptr;
+        static std::set<uint64_t> logged;
+        if (debug_bind && (copy || own) && logged.size() < 64 && logged.insert(uint64_t(record) << 32 | copy).second)
+          REXLOG_INFO("[svr2011] pad icons: bind of record {:08X}: {}", record,
+                      copy ? fmt::format("copy {:08X}", copy) : std::string("the game's own (an owner's Xbox picture)"));
+        q.pop_front();
+        ++g_bound;
+      }
+    }
+    static const bool debug = std::getenv("SVR2011_PAD_ICONS_LOG") != nullptr;
+    static auto last = std::chrono::steady_clock::now();
+    if (debug && std::chrono::steady_clock::now() - last > std::chrono::seconds(10)) {
+      last = std::chrono::steady_clock::now();
+      size_t waiting = 0;
+      for (const auto& [r, q] : g_record_queue) waiting += q.size();
+      REXLOG_INFO("[svr2011] pad icons: set-texture commands queued {}, bound {}, waiting {}", g_queued.load(),
+                  g_bound.load(), waiting);
     }
   }
   if (copy) Wr32(base + record + 80, copy);
+  t_keep_own = own;
   __imp__sub_826E6060(ctx, base);
+  t_keep_own = false;
   if (copy) Wr32(base + record + 80, original);
 }
 
@@ -1067,12 +1140,17 @@ REX_HOOK_RAW(sub_82467C18) {
   __imp__sub_82467C18(ctx, base);
 }
 
-// - character select's bottom bar ("contro02_1P"): player 1's slot.
+// - character select's bottom bar ("contro02_1P"): player 1's slot; its
+//   controller pictures, one per player with a controller: each that
+//   player's (in the set-texture hook above).
 REX_EXTERN(__imp__sub_8244D158);
 REX_HOOK_RAW(sub_8244D158) {
   using namespace svr2011;
   OwnerScope scope(g_enabled ? SlotPort(0) : -1);
+  t_in_bar = g_enabled;
+  t_bar_draws.clear();
   __imp__sub_8244D158(ctx, base);
+  t_in_bar = false;
 }
 
 // D3DDevice_SetTexture(device, sampler, texture object), on the render
@@ -1081,7 +1159,7 @@ REX_HOOK_RAW(sub_8244D158) {
 REX_EXTERN(__imp__sub_82917EC8);
 REX_HOOK_RAW(sub_82917EC8) {
   using namespace svr2011;
-  if (g_enabled && ctx.r5.u32) {
+  if (g_enabled && ctx.r5.u32 && !t_keep_own) {  // (a player's own Xbox picture: as it is)
     const Kind kind = CurrentKind(false);
     if (kind == kPlayStation || kind == kKeyboard)
       if (const uint32_t version = VersionOf(ctx.r5.u32, kind)) ctx.r5.u64 = version;
