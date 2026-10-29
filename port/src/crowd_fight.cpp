@@ -368,7 +368,9 @@ REX_HOOK_RAW(sub_8281B118) {
   if (g && g_crowd.load() && CrowdAreaRect(r)) {
     const int32_t w = int32_t(Rd32(base + g + 36)), h = int32_t(Rd32(base + g + 40));
     const float ox = RdF(base + g + 64), oz = RdF(base + g + 68), cx = RdF(base + g + 44), cz = RdF(base + g + 48);
-    if (w > 0 && h > 0 && cx > 0 && cz > 0 && (r[0] < ox || r[1] < oz || r[2] > ox + w * cx || r[3] > oz + h * cz)) {
+    // (the ringside's grid only - around (0, 0); not the aisle's)
+    if (w > 0 && h > 0 && cx > 0 && cz > 0 && ox < 0 && oz < 0 && ox + w * cx > 0 && oz + h * cz > 0 &&
+        (r[0] < ox || r[1] < oz || r[2] > ox + w * cx || r[3] > oz + h * cz)) {
       const float x0 = std::min(ox, r[0]), z0 = std::min(oz, r[1]);
       const float x1 = std::max(ox + w * cx, r[2]), z1 = std::max(oz + h * cz, r[3]);
       WrF(base + g + 64, x0), WrF(base + g + 68, z0);
