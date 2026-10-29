@@ -131,6 +131,78 @@ def cut_wall(r, box):
     return pieces
 
 
+FENCE_HIGH = 60.0  # (the fence walls' height - y is down in the stage: 0 to -FENCE_HIGH)
+ARENA_BOX = 65.0   # (the game's box around the ring, +-: no fence inside it - people come back in there)
+
+
+def wall_record(P, n, like):
+    """a wall triangle through corners P (3 x 3, winding as given) in a vertical plane with normal n (x, z), in the
+    stock walls' frame layout - plane axis = local y, along the wall = local x, down = local z - from wall record
+    `like` (its material words kept)"""
+    n = np.array([n[0], 0.0, n[1]]) / np.hypot(n[0], n[1])
+    d = np.array([-n[2], 0.0, n[0]])
+    R = np.column_stack([d, n, [0.0, -1.0, 0.0]])
+    if np.linalg.det(R) < 0:
+        d = -d
+        R = np.column_stack([d, n, [0.0, -1.0, 0.0]])
+    t = -(P[0] @ R)
+    L = P @ R + t
+    t[0] -= (L[:, 0].min() + L[:, 0].max()) / 2
+    t[2] -= (L[:, 2].min() + L[:, 2].max()) / 2
+    L = P @ R + t
+    M = np.eye(4)
+    M[:3, :3] = R
+    M[3, :3] = t
+    out = like.copy()
+    out[:16] = M.flatten()
+    out[16:22] = L[:, [0, 2]].ravel()
+    out[3], out[7] = P[:, 0].min(), P[:, 0].max()
+    out[11], out[15] = 0.0, 1.0
+    extra = np.frombuffer(np.array(like[22:24], dtype='<f4').tobytes(), dtype='<u4').copy()
+    extra[0] = np.frombuffer(np.array([float(np.abs(L[:, [0, 2]]).max())], dtype='<f4').tobytes(), dtype='<u4')[0]
+    out[22:24] = np.frombuffer(extra.tobytes(), dtype='<f4')
+    assert np.allclose(corners(out), P, atol=1e-3), 'fence wall'
+    return out
+
+
+def fence(rects, like):
+    """two-sided walls along the outline of the union of axis-aligned rects (x0, x1, z0, z1), except where the
+    outline runs inside the arena's box (+-ARENA_BOX) -> [records]"""
+    segs = []  # (axis 0: x = c, z from a to b; axis 1: z = c, x from a to b)
+    for x0, x1, z0, z1 in rects:
+        segs += [(0, x0, z0, z1), (0, x1, z0, z1), (1, z0, x0, x1), (1, z1, x0, x1)]
+
+    def minus(a, b, cuts):
+        parts = [(a, b)]
+        for c0, c1 in cuts:
+            parts = [q for p in parts for q in ((p[0], min(p[1], c0)), (max(p[0], c1), p[1])) if q[1] - q[0] > 0.5]
+        return parts
+    out = []
+    for axis, c, a, b in segs:
+        cuts = []
+        for x0, x1, z0, z1 in rects:  # (inside another rect: not an outline)
+            lo, hi, s0, s1 = (x0, x1, z0, z1) if axis == 0 else (z0, z1, x0, x1)
+            if lo < c < hi:
+                cuts.append((s0, s1))
+        if abs(c) < ARENA_BOX:
+            cuts.append((-ARENA_BOX, ARENA_BOX))
+        for s0, s1 in minus(a, b, cuts):
+            if axis == 0:
+                p = [(c, s0), (c, s1)]
+                n = (1.0, 0.0)
+            else:
+                p = [(s0, c), (s1, c)]
+                n = (0.0, 1.0)
+            Q = np.array([[p[0][0], 0.0, p[0][1]], [p[1][0], 0.0, p[1][1]], [p[1][0], -FENCE_HIGH, p[1][1]],
+                          [p[0][0], -FENCE_HIGH, p[0][1]]])
+            for sign in (1.0, -1.0):  # (both faces: one-sided walls stop people from one side only)
+                nn = (n[0] * sign, n[1] * sign)
+                for tri in ((0, 1, 2), (2, 3, 0)):
+                    T = Q[list(tri)] if sign > 0 else Q[list(tri)][::-1]
+                    out.append(wall_record(T, nn, like))
+    return out
+
+
 def reversed_wall(r):
     """The wall triangle facing the other way (normal and winding flipped, the same corners): the pocket's walls
     only stop someone coming in - a fighter inside walked out through them."""
@@ -229,9 +301,13 @@ def open_walkway(match, crowd):
         kept += pieces
         if k in pocket_set:
             back += [reversed_wall(q) for q in pieces]
-    new = kept + floors + back
-    rep = ('walkway: %d wall triangles out, %d floor triangles and %d walls facing in added, %d in all (pocket x %.0f..%.0f z %.0f..%.0f, game x %.0f..%.0f '
-           'z %.0f..%.0f)' % (len(drop), len(floors), len(back), len(new), px0, px1, pz0, pz1, pz0, pz1, px0, px1))
+    # (a fence round the pocket and the opening - both faces, also in the AI's grid: the pocket's own walls have gaps
+    # at its corners and the space behind the arena's barricade runs on into the void)
+    wall_like = crowd[min(pocket_set)]
+    fences = fence([(px0 - 1, px1 + 1, pz0 - 1, pz1 + 1), cut], wall_like)
+    new = kept + floors + back + fences
+    rep = ('walkway: %d wall triangles out, %d floor triangles, %d walls facing in and %d fence triangles added, %d in all (pocket x %.0f..%.0f z %.0f..%.0f, game x %.0f..%.0f '
+           'z %.0f..%.0f)' % (len(drop), len(floors), len(back), len(fences), len(new), px0, px1, pz0, pz1, pz0, pz1, px0, px1))
     return new, rep
 
 

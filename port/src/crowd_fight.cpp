@@ -522,6 +522,20 @@ struct Vault {
 };
 Vault g_vault[8];
 
+// Kept in: the game's own box holds people at the ring (inside it, one way), but outside it nothing holds them -
+// a stage's walls don't stop a walk in these matches (a fence round the crowd area was walked through), so they
+// walked off along the back of the arena into the void. Outside the box people are kept on the crowd area
+// (crowd_area=) and the strip between it and the box: put back on its nearest point when a step leaves it.
+constexpr float kArenaBox = 64.5f;
+
+bool InRect(float x, float z, const float r[4]) { return x >= r[0] && x <= r[1] && z >= r[2] && z <= r[3]; }
+
+void Nearest(float x, float z, const float r[4], float& bx, float& bz, float& best) {
+  const float nx = std::clamp(x, r[0], r[1]), nz = std::clamp(z, r[2], r[3]);
+  const float d = (nx - x) * (nx - x) + (nz - z) * (nz - z);
+  if (d < best) best = d, bx = nx, bz = nz;
+}
+
 std::mutex g_vault_prompt_mutex;
 uint32_t g_vault_prompt_port = 0;
 std::chrono::steady_clock::time_point g_vault_prompt_at;
@@ -619,6 +633,17 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
       continue;
     }
     const float x = RdF(base + f + 288), z = RdF(base + f + 296);
+    {  // (kept in: the box, the crowd area and the strip between them)
+      const float box[4] = {-kArenaBox, kArenaBox, -kArenaBox, kArenaBox};
+      float bridge[4] = {std::max(a[0], box[0]), std::min(a[1], box[1]), std::max(a[2], box[2]), std::min(a[3], box[3])};
+      if (bridge[0] > bridge[1]) bridge[0] = std::min(a[1], box[1]), bridge[1] = std::max(a[0], box[0]);
+      if (bridge[2] > bridge[3]) bridge[2] = std::min(a[3], box[3]), bridge[3] = std::max(a[2], box[2]);
+      if (!InRect(x, z, box) && !InRect(x, z, a) && !InRect(x, z, bridge)) {
+        float bx = x, bz = z, best = 1e30f;
+        Nearest(x, z, a, bx, bz, best), Nearest(x, z, bridge, bx, bz, best), Nearest(x, z, box, bx, bz, best);
+        PutBody(base, f, bx, RdF(base + f + 292), bz, RdF(base + f + 276));
+      }
+    }
     // (Y's hold: kept only while it stays held in the spot, on his feet)
     const uint32_t held = v.held;
     v.held = 0;
