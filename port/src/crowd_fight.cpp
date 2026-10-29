@@ -563,11 +563,13 @@ uint32_t VaultMotion() {
   return m;
 }
 
-// The crowd area in game coordinates (x0, x1, z0, z1: crowd_area= is the stage's x / z - the game's z / x).
+// The crowd area (x0, x1, z0, z1): crowd_area= is the stage's x / z, which are the game's (the aisle - the wall grids'
+// second axis, 80..300 - is where people stand at the match's start, z +300; read as z / x it put the climb in the
+// mirrored corner, not SvR 2008's own).
 bool VaultArea(float a[4]) {
   float r[4];
   if (!CrowdAreaRect(r)) return false;
-  a[0] = r[1], a[1] = r[3], a[2] = r[0], a[3] = r[2];
+  a[0] = r[0], a[1] = r[2], a[2] = r[1], a[3] = r[3];
   return true;
 }
 

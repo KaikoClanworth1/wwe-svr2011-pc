@@ -8,7 +8,7 @@ no floor a fighter put there is moved back to the nearest floor). This opens it 
 - the pocket and a margin around that opening get a ground floor (y 0, CELL x CELL cells, two triangles each);
 - the pocket's walls get a copy facing in (the shipped ones only stop someone coming in);
 - the z-band index (997) is rebuilt for the new list.
-Coordinates here are the HMD's (its x is the game's z, its z the game's x).
+Coordinates here are the HMD's, which are the game's (x, z alike - an earlier note had them swapped).
 
     py crowd_walkway.py <arena.pac> [<out.pac>]     (in place without <out>)
 
@@ -306,8 +306,8 @@ def open_walkway(match, crowd):
     wall_like = crowd[min(pocket_set)]
     fences = fence([(px0 - 1, px1 + 1, pz0 - 1, pz1 + 1), cut], wall_like)
     new = kept + floors + back + fences
-    rep = ('walkway: %d wall triangles out, %d floor triangles, %d walls facing in and %d fence triangles added, %d in all (pocket x %.0f..%.0f z %.0f..%.0f, game x %.0f..%.0f '
-           'z %.0f..%.0f)' % (len(drop), len(floors), len(back), len(fences), len(new), px0, px1, pz0, pz1, pz0, pz1, px0, px1))
+    rep = ('walkway: %d wall triangles out, %d floor triangles, %d walls facing in and %d fence triangles added, %d in all (pocket x %.0f..%.0f z %.0f..%.0f)' % (
+               len(drop), len(floors), len(back), len(fences), len(new), px0, px1, pz0, pz1))
     return new, rep
 
 
