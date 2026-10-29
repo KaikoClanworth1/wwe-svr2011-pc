@@ -303,18 +303,23 @@ std::vector<uint32_t> g_plan;
 int g_mapped = 0, g_skipped = 0;
 // The chosen weapons made for this match (for the stock under the ring); empty: the game's.
 std::vector<uint32_t> g_made;
-// The stock under the ring: *0x82E3C06C -> {s32 count, ?, entries -> s32 model ids (-1: taken)}, a heap object the
-// game frees with its entries at the match's end (sub_82B8E9B8). More chosen weapons than its places: a longer
-// entries array of ours meanwhile, the game's own put back before that free.
+// The stock under the ring: *0x82E3C06C -> {s32 count, +4 models -> s32 model ids (what each place holds), +8
+// entries -> s32 model ids (-1: taken)}, both filled alike (sub_822DF8D0), a heap object the game frees with its
+// arrays at the match's end (sub_82B8E9B8). A search under the ring (sub_822E0170) takes a place still in +8 and
+// pulls out the hidden weapon of ITS +4 model (sub_821D16B0) - so both arrays change together: with only +8 changed
+// the search asked for the game's weapon that was never made (ours in its place) and came out empty-handed
+// (2.1.6 report: chosen mod weapons never taken from under the ring). More chosen weapons than its places: longer
+// arrays of ours meanwhile, the game's own put back before that free.
 constexpr uint32_t kUnderRing = 0x82E3C06C;
 constexpr uint32_t kOurPlaces = 64;
-uint32_t g_our_entries = 0;  // (guest: ours, allocated once)
-uint32_t g_lent_stock = 0, g_lent_entries = 0, g_lent_count = 0;  // the game's, while ours are in
+uint32_t g_our_entries = 0, g_our_models = 0;  // (guest: ours, allocated once)
+uint32_t g_lent_stock = 0, g_lent_entries = 0, g_lent_models = 0, g_lent_count = 0;  // the game's, while ours are in
 
 void GiveBackStock(uint8_t* base, uint32_t stock = 0) {
   if (!g_lent_stock) return;
   if ((stock ? stock : Rd32(base + kUnderRing)) == g_lent_stock && Rd32(base + g_lent_stock + 8) == g_our_entries) {
     Wr32(base + g_lent_stock, g_lent_count);
+    Wr32(base + g_lent_stock + 4, g_lent_models);
     Wr32(base + g_lent_stock + 8, g_lent_entries);
   }
   g_lent_stock = 0;
@@ -416,8 +421,8 @@ void ExtremeWeaponsPlaced(uint8_t* base, rex::memory::Memory* memory) {
   const uint32_t stock = Rd32(base + kUnderRing);
   if (!stock) return;
   const int32_t n = int32_t(Rd32(base + stock));
-  const uint32_t entries = Rd32(base + stock + 8);
-  if (n <= 0 || n > 64 || !entries) return;
+  const uint32_t models = Rd32(base + stock + 4), entries = Rd32(base + stock + 8);
+  if (n <= 0 || n > 64 || !entries || !models) return;
   // The game's nine in it (by model id) become the chosen ones made, in turn; the chosen ones left over take the
   // places of the game's beyond them (none: -1, as a weapon already taken).
   size_t next = 0;
@@ -429,6 +434,7 @@ void ExtremeWeaponsPlaced(uint8_t* base, rex::memory::Memory* memory) {
     was += fmt::format(" {}", int32_t(model));
     if (std::find(std::begin(kGameNine), std::end(kGameNine), model) != std::end(kGameNine)) {
       Wr32(e, next < g_made.size() ? g_made[next++] : 0xFFFFFFFFu);
+      Wr32(base + models + uint32_t(i) * 4, Rd32(e));  // (what the place holds: the search pulls this one out)
       ++changed;
     }
     now += fmt::format(" {}", int32_t(Rd32(e)));
@@ -437,14 +443,20 @@ void ExtremeWeaponsPlaced(uint8_t* base, rex::memory::Memory* memory) {
   int added = 0;
   if (next < g_made.size() && memory && !g_lent_stock) {
     if (!g_our_entries) g_our_entries = memory->SystemHeapAlloc(kOurPlaces * 4);
-    if (g_our_entries) {
+    if (!g_our_models) g_our_models = memory->SystemHeapAlloc(kOurPlaces * 4);
+    if (g_our_entries && g_our_models) {
       uint32_t m = 0;
-      for (int32_t i = 0; i < n && m < kOurPlaces; ++i) Wr32(base + g_our_entries + 4 * m++, Rd32(base + entries + uint32_t(i) * 4));
-      for (; next < g_made.size() && m < kOurPlaces; ++next, ++added) {
-        Wr32(base + g_our_entries + 4 * m++, g_made[next]);
+      for (int32_t i = 0; i < n && m < kOurPlaces; ++i, ++m) {
+        Wr32(base + g_our_entries + 4 * m, Rd32(base + entries + uint32_t(i) * 4));
+        Wr32(base + g_our_models + 4 * m, Rd32(base + models + uint32_t(i) * 4));
+      }
+      for (; next < g_made.size() && m < kOurPlaces; ++next, ++added, ++m) {
+        Wr32(base + g_our_entries + 4 * m, g_made[next]);
+        Wr32(base + g_our_models + 4 * m, g_made[next]);
         now += fmt::format(" {}", g_made[next]);
       }
-      g_lent_stock = stock, g_lent_entries = entries, g_lent_count = uint32_t(n);
+      g_lent_stock = stock, g_lent_entries = entries, g_lent_models = models, g_lent_count = uint32_t(n);
+      Wr32(base + stock + 4, g_our_models);
       Wr32(base + stock + 8, g_our_entries);
       Wr32(base + stock, m);
     }
