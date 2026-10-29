@@ -176,7 +176,13 @@ void CrowdTestAids(uint8_t* base, uint32_t frames, bool new_match) {
   static const bool log = std::getenv("SVR2011_TEST_CROWD_LOG") != nullptr;
   static bool placed = false;
   if (new_match) placed = false;
-  if (!place.empty() && !placed && frames >= place_at && g_crowd.load()) {  // (crowd matches only: not the demo)
+  // (and only once people 0 and 1 are on their feet - the match's intro over: placed during it they were put back)
+  auto ready = [&](uint32_t i) {
+    const uint32_t c = Rd32(base + kChars + i * 4);
+    const uint32_t m = c ? Rd32(base + c + 212) : 0;
+    return !c || m == 0 || m == 20 || m == 20400 || m == 20500;
+  };
+  if (!place.empty() && !placed && frames >= place_at && g_crowd.load() && ready(0) && ready(1)) {  // (crowd matches only)
     placed = true;
     for (size_t at = 0; at < place.size();) {
       size_t semi = place.find(';', at);
