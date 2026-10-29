@@ -28,8 +28,12 @@ int CaeMissingRow(PPCContext& ctx, uint8_t* base, uint32_t list, uint32_t value)
 // A select screen's pick (sub_82732938's hook, rtwm_streak.cpp): the superstar whose entrance is edited next.
 void CaeNotePick(uint32_t id);
 // After a lookup found `value`: when the superstar being edited is a mod with that entrance number, its own
-// "MOD: <name>" row (the number is also a game entrance's or another mod's). -> the row, or -1.
-int CaePreferredRow(uint8_t* base, uint32_t list, uint32_t value);
+// "MOD: <name>" row (the number is also a game entrance's or another mod's). While the full editor loads his
+// entrance (CaeLoadingEntrance), a scene part still his own - or his base's - and that scene's lighting get one
+// too (added if missing). -> the row, or -1.
+int CaePreferredRow(PPCContext& ctx, uint8_t* base, uint32_t list, uint32_t value);
+// Around the full editor's load of a stored entrance (sub_8287E960's hook, user_movies.cpp).
+void CaeLoadingEntrance(bool on);
 
 // An entrance number the match is about to play (sub_82756538 / 718 / 768 for match slot `idx`):
 // a number without a script (its mod removed) -> the superstar's own entrance or part, else the

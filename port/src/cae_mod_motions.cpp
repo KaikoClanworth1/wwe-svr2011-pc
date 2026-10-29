@@ -20,6 +20,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <rex/hook.h>
@@ -41,7 +42,10 @@ rex::memory::Memory* g_memory = nullptr;
 std::mutex g_mutex;
 std::map<std::string, uint32_t> g_text;  // label -> guest string (lives for the whole run)
 std::set<uint32_t> g_motion_lists;       // menu lists filled with a motion category
+std::set<uint32_t> g_light_lists;        // menu lists filled with the lighting category (14)
 uint32_t g_picked = 0;                   // the superstar last picked in a select screen (CaeNotePick)
+thread_local bool t_loading = false;     // the full editor loading a stored entrance (CaeLoadingEntrance)
+thread_local bool t_scene_default = false;  // (its last scene motion was the mod's own default: its lighting is too)
 
 uint32_t Rd32(uint8_t* base, uint32_t a) {
   uint32_t v;
@@ -118,6 +122,8 @@ void CaeModRows(PPCContext& ctx, uint8_t* base, uint32_t list, uint32_t category
     std::lock_guard lock(g_mutex);  // (list objects are reused: a list filled with another category isn't one)
     if (kind == -1) g_motion_lists.erase(list);
     else g_motion_lists.insert(list);
+    if (scene < 0 && category == 14) g_light_lists.insert(list);
+    else g_light_lists.erase(list);
   }
   if (kind == -1) return;
   std::vector<std::pair<uint32_t, std::string>> rows;
@@ -167,14 +173,52 @@ void CaeModRows(PPCContext& ctx, uint8_t* base, uint32_t list, uint32_t category
 
 void CaeNotePick(uint32_t id) { g_picked = id; }
 
-int CaePreferredRow(uint8_t* base, uint32_t list, uint32_t value) {
+void CaeLoadingEntrance(bool on) { t_loading = on, t_scene_default = false; }
+
+int CaePreferredRow(PPCContext& ctx, uint8_t* base, uint32_t list, uint32_t value) {
   // (a number several rows have - a game entrance and the mods using it: the superstar being edited keeps his own row,
   // Jeff Hardy "MOD: Jeff Hardy", not the first row with 535, Matt Hardy's)
+  static const bool look_log = std::getenv("SVR2011_TEST_CAE_LOOKUP") != nullptr;  // (test aid: each lookup)
+  if (look_log && value >= 100 && value < 0xFFFF) {
+    bool listed;
+    {
+      std::lock_guard lock(g_mutex);
+      listed = g_motion_lists.count(list) != 0;
+    }
+    REXLOG_INFO("[svr2011] cae lookup: list {:08X} ({} rows, motion list {}) value {} picked {:X}", list, Rd32(base, list),
+                listed, value, g_picked);
+  }
   if (!g_memory || !list || !g_picked) return -1;
+  bool motion, light;
   {
     std::lock_guard lock(g_mutex);
-    if (!g_motion_lists.count(list)) return -1;
+    motion = g_motion_lists.count(list) != 0, light = g_light_lists.count(list) != 0;
   }
+  // The full editor loading the edited mod's entrance (ADVANCED's scenes): a scene still on the mod's own parts - his
+  // entrance numbers, or his base's parts that a mod on a game entrance keeps (Jeff Hardy: Matt Hardy's 10112...) -
+  // and that scene's lighting read the game rows' names (MATT HARDY) until a template was picked: they get a
+  // "MOD: <name>" row of that value (added when the list has none). Parts the player saved differently keep theirs.
+  if (t_loading && (light || (motion && value >= 10000 && value < 15000))) {
+    for (const auto& m : SuperstarModEntrances()) {
+      if (m.id != g_picked) continue;
+      const int n = int(value % 1000);
+      if (motion) t_scene_default = n == int(m.base) || std::find(m.numbers.begin(), m.numbers.end(), n) != m.numbers.end();
+      else if (!std::exchange(t_scene_default, false)) return -1;
+      if (motion && !t_scene_default) return -1;
+      uint32_t text;
+      {
+        std::lock_guard lock(g_mutex);
+        text = Text("MOD: " + m.name);
+      }
+      if (!text) return -1;
+      const uint32_t count = Rd32(base, list), items = Rd32(base, list + 8);
+      for (uint32_t i = 0; i < count && items; ++i)
+        if (Rd32(base, items + i * kItemSize) == value && Rd32(base, items + i * kItemSize + 12) == text) return int(i);
+      return AddRow(ctx, base, list, value, text, false);
+    }
+    return -1;
+  }
+  if (!motion) return -1;
   const uint32_t n = value >= 10000 ? value % 1000 : value;
   for (const auto& m : SuperstarModEntrances()) {
     if (m.id != g_picked || std::find(m.numbers.begin(), m.numbers.end(), int(n)) == m.numbers.end()) continue;

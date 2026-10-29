@@ -39,11 +39,13 @@ void SetSuperstarModsSaves(const std::filesystem::path& saves);
 void OnlineTempForSave(uint8_t* base, bool saving);
 bool IsSuperstarMod(uint32_t id);
 // The installed mods' entrance numbers (manifest entrance= and attire<N>_entrance=, without the fetched ones): the
-// CREATE AN ENTRANCE rows "MOD: <name>" (cae_mod_motions.cpp).
+// CREATE AN ENTRANCE rows "MOD: <name>" (cae_mod_motions.cpp). base: the manifest's base superstar - a mod on a game
+// entrance keeps its base's scene parts (10000 + 1000k + base: Jeff Hardy's are Matt Hardy's 10112...).
 struct SuperstarModEntrance {
   uint32_t id;
   std::string name;
   std::vector<int> numbers;
+  uint32_t base = 0;
 };
 std::vector<SuperstarModEntrance> SuperstarModEntrances();
 // A mod's folder in Mods/Superstars ("" for no mod).
