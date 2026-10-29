@@ -12,11 +12,12 @@ Coordinates here are the HMD's (its x is the game's z, its z the game's x).
 
     py crowd_walkway.py <arena.pac> [<out.pac>]     (in place without <out>)
 
-State (SvR 2008 RAW port, hidden tests): with the floors (25-unit cells, 278 triangles in all) people put in the
-pocket stay there and the arena floor still works; but a CPU there walks out through the pocket's walls (with or
-without the copies facing in), and with 400 triangles (those copies) a place in the pocket no longer holds - 2011's
-stage collision has rules here not understood yet (a size limit? walls for the CPU's walk?). Needs the collision
-code's RE before it is used.
+State (SvR 2008 RAW port, hidden tests, 29 Oct 2026): the walls facing in are fixed (their origin was at a corner, past
+the +88 reach, so the game skipped them); with them a player put in the pocket stays in it and walks out through the
+opening. People's walls are one-sided: the shipped pocket walls only stop someone coming in. The AI's wall grid covers
+the pocket through the manifest's crowd_area= (crowd_area() - the game stretches its ringside grid). Still open: a
+player walking IN through the opening is stopped at it (not by this collision), and the space behind the barricade
+has no end walls (a CPU walked off along it).
 """
 import math
 import os
@@ -73,7 +74,10 @@ def reversed_wall(r):
     R[:, 1] *= -1
     t = -C[0] @ R
     L = C @ R + t
-    t[0] -= (L[:, 0].min() + L[:, 0].max()) / 2  # (the origin mid-way along, like the shipped data)
+    # (the origin in the middle of both plane axes, like the shipped data: +88 is the corners' reach from it - a
+    # copy with its origin at a corner reached past +88 and the game skipped it)
+    t[0] -= (L[:, 0].min() + L[:, 0].max()) / 2
+    t[2] -= (L[:, 2].min() + L[:, 2].max()) / 2
     L = C @ R + t
     M = np.eye(4)
     M[:3, :3] = R
@@ -82,6 +86,9 @@ def reversed_wall(r):
     out[:16] = M.flatten()
     out[16:22] = L[[0, 2, 1]][:, [0, 2]].ravel()  # (the other winding)
     out[3], out[7] = C[:, 0].min(), C[:, 0].max()
+    extra = np.frombuffer(np.array(r[22:24], dtype='<f4').tobytes(), dtype='<u4').copy()
+    extra[0] = np.frombuffer(np.array([float(np.abs(L[:, [0, 2]]).max())], dtype='<f4').tobytes(), dtype='<u4')[0]
+    out[22:24] = np.frombuffer(extra.tobytes(), dtype='<f4')
     assert np.allclose(np.sort(corners(out), 0), np.sort(C, 0), atol=1e-3), 'reversed wall'
     return out
 
@@ -150,6 +157,34 @@ def open_walkway(match, crowd):
     rep = ('walkway: %d wall triangles out, %d floor triangles and %d walls facing in added, %d in all (pocket x %.0f..%.0f z %.0f..%.0f, game x %.0f..%.0f '
            'z %.0f..%.0f)' % (len(drop), len(floors), len(back), len(new), px0, px1, pz0, pz1, pz0, pz1, px0, px1))
     return new, rep
+
+
+CROWD_AREAS = 50003  # (SvR 2008's stage text: "Fighting in the Crowd" rectangles, start x z / end x z per line)
+
+
+def crowd_area(epac):
+    """an arena pac's (bytes) crowd area for the manifest's crowd_area= (the game's ringside wall grid is stretched
+    over it in crowd matches - crowd_fight.cpp): the union of its stage's 50003 rectangles, 'x0,z0,x1,z1' in stage
+    x / z, or None"""
+    h, g, t = f.epac_read(epac)
+    for typ, ents in g:
+        for name, blob in ents:
+            if typ != b'STG ' or name[:1] != b'0' or s.unpack(blob)[:4] != b'PACH':
+                continue
+            text = dict(f.pach_read(s.unpack(blob))).get(CROWD_AREAS)
+            if text is None:
+                return None
+            xs, zs = [], []
+            for line in s.unpack(text).decode('latin-1').splitlines():
+                v = line.split(';')[0].split()
+                try:
+                    x0, z0, x1, z1 = (float(a) for a in v[:4])
+                except ValueError:
+                    continue
+                xs += [x0, x1]
+                zs += [z0, z1]
+            return '%g,%g,%g,%g' % (min(xs), min(zs), max(xs), max(zs)) if xs else None
+    return None
 
 
 def patch_pac(path, out=None):
