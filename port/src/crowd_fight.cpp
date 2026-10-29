@@ -505,8 +505,9 @@ SVR_BOX_HUNT(sub_82BB83A0)
 // kVaultReach of the arena mod's crowd_area=) sees "Y: HOLD - CLIMB INTO THE CROWD"; Y held kVaultPress frames plays a climb (kVaultMotion, the
 // stock climb up from the floor) and then puts him on the crowd area's floor - its nearest point kVaultInset inside
 // crowd_area= - with the body's three place copies, held kVaultHold frames, outside the ring (area +441 / +444 1),
-// standing (motion 0). Players only (port < 4, or every wrestler online - each game reads the same synced pad,
-// FighterInput: the climb is an input like any move); CPUs walk in through the walls the AI grid now has.
+// standing (motion 0). Players (port < 4, or every wrestler online - each game reads the same synced pad,
+// FighterInput: the climb is an input like any move) hold Y; a CPU climbs after kVaultCpu frames walking into the
+// spot (after his opponent - the AI grid has the crowd area's walls for his way about in it).
 // Test aid: SVR2011_TEST_VAULT_MOTION=<motion> - another climb motion; SVR2011_TEST_VAULT=<person> - that person
 // climbs once at match frame SVR2011_TEST_PLACE_AT + 120 if he is in the spot (as if Y).
 namespace {
@@ -518,6 +519,7 @@ constexpr uint32_t kVaultMotionDefault = 15180, kVaultFrames = 50, kVaultHold = 
 // (Y held this long: a press is 2011's own action button - picking up the weapon a fan handed over at the barricade
 // - and its move breaks the hold, so the climb never takes a press from it)
 constexpr uint32_t kVaultPress = 20;
+constexpr uint32_t kVaultCpu = 30;  // (a CPU walking into the spot this long climbs too - as at HCTP's doors)
 constexpr uint32_t kButtonY = 0x10;  // (the pad word at FighterInput + 52)
 
 struct Vault {
@@ -673,14 +675,19 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
     const float nx = std::clamp(x, a[0], a[1]), nz = std::clamp(z, a[2], a[3]);
     if ((nx - x) * (nx - x) + (nz - z) * (nz - z) > kVaultReach * kVaultReach) continue;
     const uint32_t port = Rd32(base + f + 1152);
-    if (!(port < 4 || P2POnlineMode())) continue;  // (CPUs: the AI grid)
+    const bool player = port < 4 || P2POnlineMode();  // (online every wrestler is a player - his synced pad)
     const uint32_t m = Rd32(base + f + 212);
-    if (!(m == 0 || m == 20 || m == 20400 || m == 20500 || base[f + 1286])) continue;  // (on his feet, not in a move)
-    if (!prompt && port < 4) prompt = true, prompt_port = port;  // (this PC's own players see it)
-    const uint32_t input = FighterInput(f);
-    if (input && (Rd32(base + input + 52) & kButtonY)) v.held = held + 1;
+    const bool walking = m == 20400 || m == 20500 || base[f + 1286];
+    if (!(m == 0 || m == 20 || walking)) continue;  // (on his feet, not in a move)
+    if (player) {
+      if (!prompt && port < 4) prompt = true, prompt_port = port;  // (this PC's own players see it)
+      const uint32_t input = FighterInput(f);
+      if (input && (Rd32(base + input + 52) & kButtonY)) v.held = held + 1;
+    } else if (walking) {  // (a CPU: walking into the barricade there, after his opponent)
+      v.held = held + 1;
+    }
     const bool test = test_person == int(i) && frames == test_at;
-    if (v.held < kVaultPress && !test) continue;
+    if (v.held < (player ? kVaultPress : kVaultCpu) && !test) continue;
     // (the landing: the crowd area's nearest point, kVaultInset inside it; facing away from the ring)
     const float lx = std::clamp(x, std::min(a[0] + kVaultInset, a[1]), std::max(a[1] - kVaultInset, a[0]));
     const float lz = std::clamp(z, std::min(a[2] + kVaultInset, a[3]), std::max(a[3] - kVaultInset, a[2]));
