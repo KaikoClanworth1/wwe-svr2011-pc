@@ -251,3 +251,56 @@ uint32_t CrowdCollisionId(uint8_t* base, uint32_t lr, uint32_t id) {
 }
 
 }  // namespace svr2011
+
+// Test aid (walk-in research): SVR2011_TEST_COLL_LOG=1 - in crowd matches, the stage collision's walk test
+// (sub_826AB2E8: hmd, mover, the band's record list, its count) for movers with +16 or +24 < SVR2011_TEST_COLL_X
+// (-55, toward the crowd pocket): the mover's place before / after, and each record that answered (sub_826AAFE0 != 0):
+// its number, type byte (+93), +88, the answer. At most one line per mover every 20 calls, 600 lines a run.
+namespace {
+thread_local std::string* t_hits = nullptr;
+thread_local uint32_t t_hmd = 0;
+}  // namespace
+
+REX_EXTERN(__imp__sub_826AAFE0);
+REX_HOOK_RAW(sub_826AAFE0) {
+  const uint32_t rec = ctx.r3.u32;
+  __imp__sub_826AAFE0(ctx, base);
+  if (!t_hits || !ctx.r3.u32 || t_hits->size() > 900) return;
+  int k = -1;
+  const uint32_t n = Rd32(base + t_hmd + 176), arr = Rd32(base + t_hmd + 180);
+  for (uint32_t i = 0; i < n && i < 4096; ++i)
+    if (Rd32(base + arr + i * 4) == rec) { k = int(i); break; }
+  *t_hits += fmt::format(" #{} t{} s{:.1f} ={:08X}", k, base[rec + 93], RdF(base + rec + 88), ctx.r3.u32);
+}
+
+REX_EXTERN(__imp__sub_826AB2E8);
+REX_HOOK_RAW(sub_826AB2E8) {
+  static const bool log = std::getenv("SVR2011_TEST_COLL_LOG") != nullptr;
+  static const float edge = [] { const char* v = std::getenv("SVR2011_TEST_COLL_X"); return v ? float(std::atof(v)) : -55.f; }();
+  const uint32_t hmd = ctx.r3.u32, mover = ctx.r4.u32, list = ctx.r5.u32;
+  const int32_t count = ctx.r6.s32;
+  if (!log || !svr2011::CrowdMatch() || !mover ||
+      (RdF(base + mover + 16) >= edge && RdF(base + mover + 24) >= edge)) {
+    __imp__sub_826AB2E8(ctx, base);
+    return;
+  }
+  static std::atomic<uint32_t> lines{0};
+  static std::atomic<uint32_t> calls[8]{};
+  static std::atomic<uint32_t> movers[8]{};
+  int m = 0;
+  for (; m < 8; ++m) {
+    uint32_t was = 0;
+    if (movers[m].compare_exchange_strong(was, mover) || was == mover) break;
+  }
+  const bool tell = m < 8 && calls[m]++ % 20 == 0 && lines.load() < 600;
+  const float x0 = RdF(base + mover + 16), y0 = RdF(base + mover + 20), z0 = RdF(base + mover + 24);
+  std::string hits;
+  if (tell) t_hits = &hits, t_hmd = hmd;
+  __imp__sub_826AB2E8(ctx, base);
+  t_hits = nullptr;
+  if (!tell) return;
+  ++lines;
+  REXLOG_INFO("crowd: walk test mover {:08X} ({:.1f}, {:.1f}, {:.1f}) -> ({:.1f}, {:.1f}, {:.1f}) list {} of {} flags {:08X} = {:08X}{}",
+              mover, x0, y0, z0, RdF(base + mover + 16), RdF(base + mover + 20), RdF(base + mover + 24),
+              list ? count : -1, Rd32(base + hmd + 176), Rd32(base + mover + 36), ctx.r3.u32, hits);
+}
