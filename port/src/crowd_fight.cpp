@@ -411,3 +411,54 @@ REX_HOOK_RAW(sub_821E5408) {
     REXLOG_INFO("crowd: clamp body {:08X} at ({:.1f}, {:.1f}): ({:.1f}, {:.1f}) -> ({:.1f}, {:.1f})", body, bx, bz, x0, z0, x1,
                 z1);
 }
+
+// Test aid (walk-in research): SVR2011_TEST_BOX_HUNT=1 - in crowd matches, while person 0 is near the edge of the box
+// that keeps people at the ring (|x| or |z| 52..70), each watched function that moves them (their place: the vector
+// *(+304)) is logged with before / after and the area bytes (+441, +444), at most 400 lines.
+namespace {
+
+void BoxHunt(const char* name, void (*imp)(PPCContext&, uint8_t*), PPCContext& ctx, uint8_t* base) {
+  static const bool on = std::getenv("SVR2011_TEST_BOX_HUNT") != nullptr;
+  const uint32_t c = on && g_crowd.load() ? Rd32(base + kChars) : 0;
+  const uint32_t v = c ? Rd32(base + c + 304) : 0;
+  if (!v) {
+    imp(ctx, base);
+    return;
+  }
+  const uint32_t lr = uint32_t(ctx.lr);
+  const float x0 = RdF(base + v), z0 = RdF(base + v + 8);
+  const uint8_t a0 = base[c + 441], b0 = base[c + 444];
+  imp(ctx, base);
+  const float x1 = RdF(base + v), z1 = RdF(base + v + 8);
+  auto edge = [](float x, float z) {
+    const float m = std::max(std::fabs(x), std::fabs(z));
+    return m > 52.f && m < 70.f;
+  };
+  static std::atomic<uint32_t> lines{0};
+  if ((x1 != x0 || z1 != z0) && (edge(x0, z0) || edge(x1, z1)) && lines++ < 400)
+    REXLOG_INFO("crowd: box hunt {} moved person 0 ({:.2f}, {:.2f}) -> ({:.2f}, {:.2f}), area {} {} -> {} {} (lr {:08X})", name,
+                x0, z0, x1, z1, a0, b0, base[c + 441], base[c + 444], lr);
+}
+
+}  // namespace
+
+#define SVR_BOX_HUNT(fn)                                     \
+  REX_EXTERN(__imp__##fn);                                   \
+  REX_HOOK_RAW(fn) { BoxHunt(#fn, __imp__##fn, ctx, base); }
+SVR_BOX_HUNT(sub_822CBD00)
+SVR_BOX_HUNT(sub_822C9F48)
+SVR_BOX_HUNT(sub_82249588)
+SVR_BOX_HUNT(sub_822E35E8)
+SVR_BOX_HUNT(sub_822AABC8)
+SVR_BOX_HUNT(sub_826FA880)
+SVR_BOX_HUNT(sub_826F75C8)
+SVR_BOX_HUNT(sub_8231FCB8)
+SVR_BOX_HUNT(sub_8224F1A8)
+SVR_BOX_HUNT(sub_8224F338)
+SVR_BOX_HUNT(sub_8224F4C8)
+SVR_BOX_HUNT(sub_8224F678)
+SVR_BOX_HUNT(sub_8281FA58)
+SVR_BOX_HUNT(sub_8281FAE0)
+SVR_BOX_HUNT(sub_82BB8348)
+SVR_BOX_HUNT(sub_82BB83A0)
+#undef SVR_BOX_HUNT
