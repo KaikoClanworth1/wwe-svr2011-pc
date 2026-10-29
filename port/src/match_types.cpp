@@ -2022,12 +2022,22 @@ REX_HOOK_RAW(sub_82216C58) {
   // floor by the apron: the victim's base at (13.4, 8.4), the attacker's slid to 15 from it), and when the move ended
   // the game played the ring entry from there - the victim floated at ring height and climbed in (item 10, 29 Oct).
   // Such a base goes back to the fighter's last one on the floor outside: the move plays where it started.
-  if (fighter && fighter < 0xF0000000u) {
+  // (not backstage - arena 78, the HCTP rooms too: no ring there, the floor round the middle is the room's)
+  if (fighter && fighter < 0xF0000000u && Rd32(base + kLiveSettings + 64) != 78) {
     struct Floor {
       uint32_t fighter;
       float x, z;
     };
     static Floor floor_at[16] = {};
+    // (empty again each match - the match frame going back: fighters' addresses are reused, and online every peer
+    // must start the same whatever it played before; the rest is the synced match state alone)
+    static uint32_t last_frame = 0;
+    if (const uint32_t frame = Rd32(base + 0x82E3CD0C); frame < last_frame) {
+      for (Floor& s : floor_at) s = {};
+      last_frame = frame;
+    } else {
+      last_frame = frame;
+    }
     constexpr float kRopes = 28.8f;  // (the ring's footprint: inside the ropes)
     const float x = RdF(base + fighter + 288), y = RdF(base + fighter + 292), z = RdF(base + fighter + 296);
     Floor* f = nullptr;

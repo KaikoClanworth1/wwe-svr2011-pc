@@ -823,3 +823,20 @@ void OpenWeaponsPage() { g_open_requested = true; }
 bool WeaponsPageHoldsInput() { return g_open.load() || g_wait_release.load(); }
 
 }  // namespace svr2011
+
+// Test aid: SVR2011_TEST_UNDER_RING_LOG=1 - each search under the ring (sub_822E0170: a wrestler at the apron
+// pulls out a hidden weapon), with its first argument - to see the searches happen in a test match (the item 10
+// guard check, match_types.cpp)
+REX_EXTERN(__imp__sub_822E0170);
+REX_HOOK_RAW(sub_822E0170) {
+  static const bool log = std::getenv("SVR2011_TEST_UNDER_RING_LOG") != nullptr;
+  static int logged = 0;
+  static uint32_t last = ~0u;  // (called each frame of a search: logged on its first)
+  const uint32_t frame = Rd32(base + 0x82E3CD0C);
+  if (log && logged < 40 && frame != last && frame != last + 1) {
+    ++logged;
+    REXLOG_INFO("[svr2011] weapons: test - under-ring search ({:08X}), match frame {}", ctx.r3.u32, frame);
+  }
+  last = frame;
+  __imp__sub_822E0170(ctx, base);
+}
