@@ -1,4 +1,4 @@
-// WWE SmackDown vs. Raw 2011 - Road to WrestleMania's Streak story ("vs Undertaker") played as a superstar mod.
+﻿// WWE SmackDown vs. Raw 2011 - Road to WrestleMania's Streak story ("vs Undertaker") played as a superstar mod.
 //
 // The story is for Created Superstars only: its select is a list menu of Create-a-Superstar slots (sort_filters.cpp
 // keeps the game's lists there), and the story keeps the player as that CAW slot throughout - its saves, events and
@@ -54,7 +54,14 @@ void WrF(uint8_t* p, float f) {
 uint32_t g_solo_frames = 0;
 // The swap in force: the story's player is the CAW (its person id, the save slot) but his character carries the
 // mod's id - sub_825344E0 below finds him by either (0 / 0: none)
-uint32_t g_swap_caw = 0, g_swap_id = 0, g_swap_person = 0;  // (world frames since the last scene with the player alone was set up; 0: none)
+uint32_t g_swap_caw = 0, g_swap_id = 0, g_swap_person = 0;
+// The loader's entry that built the mod's character (its first word the person's pick), and whether the scene set up
+// last has the player alone (the walks): sub_82195BA0's hook below
+uint32_t g_player_entry = 0;
+// The story's own id for its player in the walk (its pick's: 104, Jericho's suit, for a mod - sub_82556000's hook):
+// the walk finds its player by it too - the character, now the mod's, answers to it as well (sub_825344E0's hook)
+uint32_t g_story_id = 0;
+bool g_solo_scene = false;  // (world frames since the last scene with the player alone was set up; 0: none)
 
 std::filesystem::path StateFile() {
   std::filesystem::path dir = rex::filesystem::GetExecutableFolder() / "UserData";
@@ -142,6 +149,7 @@ void RtwmStreakPeople(uint8_t* base, uint32_t match) {
   constexpr uint32_t kSlots = 432, kSlotSize = 2116, kNoPick = 51200;
   uint32_t people = 0;
   for (uint32_t i = 0; i < 6; ++i) people += Rd32(base + match + kSlots + i * kSlotSize + 8) != kNoPick;
+  g_solo_scene = people < 2;
   if (people < 2) {  // (the player alone: a backstage walk - the mod plays it too)
     g_solo_frames = 1;  // (SVR2011_TEST_RTWM_WARP counts from here)
     static uint32_t said = 0;
@@ -285,7 +293,8 @@ REX_HOOK_RAW(sub_825344E0) {
   sub_828B7028(ctx, base);
   const uint32_t is = ctx.r3.u32;
   ctx = saved;
-  if (want != g_swap_caw) {  // (another person's id finds nobody: the game's own answer stands - logged)
+  if (want != g_swap_caw && !(g_solo_scene && g_story_id && want == g_story_id)) {
+    // (another person's id finds nobody: the game's own answer stands - logged)
     static uint32_t said = 0;
     if (said++ < 5)
       REXLOG_INFO("[svr2011] rtwm streak: no character for person id {} (the player's {} reads {})", int32_t(want),
@@ -301,4 +310,76 @@ REX_HOOK_RAW(sub_825344E0) {
     ++said;
     REXLOG_INFO("[svr2011] rtwm streak: the story's player (CAW {}) is the mod's character (his id reads {})", want, is);
   }
+}
+
+// The loader builds each character from an entry whose first word is the person's pick (sub_82195BA0(character,
+// entry, ...): it writes the character's +80). In a walk the player's entry is built twice: first with the pick as the
+// swap left it (the mod's), then again with 10412 - Chris Jericho's attire 2, his suit - written there in between:
+// the walk's backstage clothes for the player, which the game has for its own superstars and CAWs only; the mod's id
+// got Jericho's (29 Oct: JBL and Festus walked as Jericho). In a scene with the player alone, the entry that built
+// the mod is given his pick again before it is built (attire 1, model kind 2: what every mod's pac has).
+// That 10412 comes from the story's own person table: sub_82556000 copies a person's pick (sub_82573EC8(index) +16)
+// into the loader's entry, before the loader thread reads the model it names (Jericho's /EMD/00010412 was read, then
+// built). So the entry is put right as soon as it is filled; the build below checks again.
+static void PlayerEntryAsMod(uint8_t* base, const char* where) {
+  if (!g_player_entry || !g_swap_id || !g_solo_scene || !svr2011::InRoadToWrestleMania()) return;
+  const uint32_t pick = Rd32(base + g_player_entry);
+  if (pick / 100 == g_swap_id) return;
+  Wr32(base + g_player_entry, g_swap_id * 100 + 2);
+  static uint32_t said = 0;
+  if (said++ < 4)
+    REXLOG_INFO("[svr2011] rtwm streak: the walk's player loads as the mod (id {}), not as pick {} ({})", g_swap_id, pick,
+                where);
+}
+
+// (sub_82556000(r3): person index *(r3 + 16); the record sub_82573EC8(index), its pick at +16, is copied to the loader's
+// entry and to a second copy the model load reads. For the call the record holds the mod's pick - both copies the
+// mod's - and gets its own back after: the story's data, and its saves, stay the CAW story's)
+REX_EXTERN(__imp__sub_82556000);
+REX_HOOK_RAW(sub_82556000) {
+  uint32_t rec = 0, was = 0;
+  if (g_swap_id && g_solo_scene && svr2011::InRoadToWrestleMania() && ctx.r3.u32) {
+    const uint32_t index = Rd32(base + ctx.r3.u32 + 16);
+    if (index == g_swap_person) {
+      const auto saved = ctx;
+      ctx.r3.u64 = index;
+      sub_82573EC8(ctx, base);
+      rec = ctx.r3.u32;
+      ctx = saved;
+      if (rec) {
+        was = Rd32(base + rec + 16);
+        if (was == 51200 || was / 100 == g_swap_id) rec = 0;  // (no pick, or the mod already)
+        else Wr32(base + rec + 16, g_swap_id * 100 + 2);
+      }
+    }
+  }
+  __imp__sub_82556000(ctx, base);
+  if (rec) {
+    Wr32(base + rec + 16, was);
+    g_story_id = was / 100;
+    static uint32_t said = 0;
+    if (said++ < 4)
+      REXLOG_INFO("[svr2011] rtwm streak: the walk's player loads as the mod (id {}), not as the story's pick {}", g_swap_id,
+                  was);
+  }
+  PlayerEntryAsMod(base, "copied from the story");
+}
+
+// (research, SVR2011_TEST_RTWM_BUILD_LOG=1: each build's entry and the characters' +80 after)
+REX_EXTERN(__imp__sub_82195BA0);
+REX_HOOK_RAW(sub_82195BA0) {
+  static const bool log = std::getenv("SVR2011_TEST_RTWM_BUILD_LOG") != nullptr;
+  const uint32_t r3 = ctx.r3.u32, entry = ctx.r4.u32;
+  if (entry && g_swap_id && svr2011::InRoadToWrestleMania()) {
+    const uint32_t pick = Rd32(base + entry);
+    if (pick / 100 == g_swap_id) g_player_entry = entry;
+    else if (entry == g_player_entry) PlayerEntryAsMod(base, "at the build");
+  }
+  __imp__sub_82195BA0(ctx, base);
+  if (!log) return;
+  std::string chars;
+  for (uint32_t i = 0; i < 3; ++i)
+    if (const uint32_t c = Rd32(base + 0x82E3CC50 + i * 4)) chars += fmt::format(" {}:{:08X}+80={}", i, c, Rd32(base + c + 80));
+  REXLOG_INFO("[svr2011] rtwm build: sub_82195BA0({:08X}, entry {:08X} pick {}) ->{}", r3, entry,
+              entry ? Rd32(base + entry) : 0, chars);
 }
