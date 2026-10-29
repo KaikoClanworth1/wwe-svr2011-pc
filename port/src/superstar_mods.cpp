@@ -170,6 +170,9 @@ struct Mod {
   // CREATION makes them); its parts' hash (.applied cae=) so a player's own later edit stays
   std::vector<uint8_t> cae;
   uint32_t cae_hash = 0;
+  // what it puts into a profile (base, own moves, entrance numbers, created entrance, theme, movie, victory):
+  // a save's profile for the slot made for another mod - or this one before an update - isn't kept (CheckSavedProfiles)
+  uint32_t fingerprint = 0;
   std::vector<uint32_t> caes_set;
   std::vector<uint8_t> abilities;  // (manifest abilities=a,b,...; record +230.., up to 8)
   // its height: a factor of the base's (manifest height=1.05; 0 = the base's)
@@ -525,6 +528,25 @@ void SetOwnMoves(uint8_t* profile, const Mod& m) {
   if (m.entrance >= 0)
     for (uint32_t k : {0x14u, 0x16u, 0x18u})
       profile[kEntrance + k] = uint8_t(m.entrance >> 8), profile[kEntrance + k + 1] = uint8_t(m.entrance);
+}
+
+// The mod's fingerprint (Mod::fingerprint): FNV-1a over what SetOwnMoves / SetEntranceMedia / SetCaeParts put in.
+uint32_t Fingerprint(const Mod& m) {
+  uint32_t h = 2166136261u;
+  const auto add = [&](const void* p, size_t n) {
+    for (size_t i = 0; i < n; ++i) h = (h ^ static_cast<const uint8_t*>(p)[i]) * 16777619u;
+  };
+  const auto add_int = [&](int64_t v) { add(&v, sizeof v); };
+  add_int(m.base);
+  for (const auto& [off, id] : m.moves) add_int(int64_t(off) << 16 | id);
+  add_int(m.entrance);
+  for (int e : m.attire_entrance) add_int(e);
+  add(m.cae.data(), m.cae.size());
+  add(m.song.data(), m.song.size());
+  add_int(m.movie);
+  add_int(m.music);
+  add_int(m.victory);
+  return h;
 }
 
 // A created entrance's part of the entrance block (docs/ENTRANCE_ATTIRES.md 1): the five scene parts (34 bytes each
@@ -1010,6 +1032,7 @@ void LoadMods() {
     if (m.signs) svr2011::AddCharacterSigns(m.slot, m.sign_files);
     REXLOG_INFO("[svr2011] superstar mods: {} as id {} (from {}){}", m.name, m.slot, m.base,
                 temp ? " - fetched from the session's host, this run only" : "");
+    m.fingerprint = Fingerprint(m);
     g_mods.push_back(std::move(m));
   }
   {  // the mods left out at this start, one folder a line (none: no file)
@@ -1434,6 +1457,114 @@ void TempFromSave(uint8_t* base) {
   }
 }
 
+// Which mod each slot's profile in the save was made for (13, 2.1.6 hold): <saves>/.universe/mod_profiles.txt,
+// "<id><TAB><folder><TAB><fingerprint>" a line, written when the game writes its save. A slot whose mod is another
+// one now (its id given to a new mod - slots.txt) or the same one changed (an update: other moves, entrance, movie)
+// has a stale profile in the save - kept, it played the old moves and entrance under the new mod (a same name kept
+// it as "the player's edits"). At a save load such a slot is handed over (ApplyRecords: the mod's own profile;
+// RedoHandovers: again after the save's late write). A save from before the file: a slot whose saved profile has
+// fewer than half of the mod's own moves (or, with none, not its entrance) is taken as another mod's.
+std::set<uint32_t> g_stale;  // slots to hand over at this load's ApplyRecords
+fs::file_time_type g_marks_seen;
+fs::path MarksFile() { return g_save_file.empty() ? fs::path() : g_save_file.parent_path() / ".universe" / "mod_profiles.txt"; }
+fs::file_time_type SaveWriteTime() {
+  std::error_code ec;
+  const auto t = fs::last_write_time(g_save_file, ec);
+  return ec ? fs::file_time_type{} : t;
+}
+
+void WriteMarks() {
+  const fs::path f = MarksFile();
+  if (f.empty()) return;
+  std::error_code ec;
+  fs::create_directories(f.parent_path(), ec);
+  if (FILE* t = std::fopen(f.string().c_str(), "wb")) {
+    for (const auto& m : g_mods)
+      if (!m.temp) std::fprintf(t, "%u\t%s\t%08X\n", m.slot, m.folder.c_str(), m.fingerprint);
+    std::fclose(t);
+  }
+  REXLOG_INFO("[svr2011] superstar mods: the save written - which mod each slot's profile is: {}", f.string());
+}
+
+void CheckSavedProfiles(uint8_t* base) {
+  constexpr size_t kHeader = 0x18, kSaveProfiles = 0x3C160;
+  g_stale.clear();
+  g_marks_seen = SaveWriteTime();  // (the save just loaded: not a write)
+  svrfmt::Bytes file;
+  if (g_save_file.empty() || !svrfmt::ReadFile(g_save_file.string(), file) ||
+      file.size() < kHeader + kSaveProfiles + 512 * kProfileSize)
+    return;
+  struct Mark {
+    std::string folder;
+    uint32_t fp = 0;
+  };
+  std::map<uint32_t, Mark> marks;
+  if (FILE* t = std::fopen(MarksFile().string().c_str(), "rb")) {
+    char line[600];
+    while (std::fgets(line, sizeof line, t)) {
+      char folder[512] = {};
+      unsigned id = 0, fp = 0;
+      if (std::sscanf(line, "%u\t%511[^\t]\t%x", &id, folder, &fp) == 3) marks[id] = {folder, fp};
+    }
+    std::fclose(t);
+  }
+  for (const auto& m : g_mods) {
+    if (m.temp) continue;
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+    if (si >= 512) continue;
+    const uint8_t* p = file.data() + kHeader + kSaveProfiles + si * kProfileSize;
+    if (std::getenv("SVR2011_TEST_SLOT_LOG"))
+      REXLOG_INFO("[svr2011] superstar mods: test - id {} is save index {} (id 100's: {}), fingerprint {:08X}", m.slot,
+                  si, Rd16(base + kIdToIndex + 100 * 2), m.fingerprint);
+    if (IsBlank(m.slot, p)) continue;  // (the placeholder saved: the mod's own profile goes in anyway)
+    std::string why;
+    if (const auto k = marks.find(m.slot); k != marks.end()) {
+      if (k->second.folder != m.folder) why = "made for " + k->second.folder;
+      else if (k->second.fp != m.fingerprint) why = "made for an older " + m.folder;
+    } else {
+      // (a save from before the file, or a slot new to it: does the profile look like this mod's?)
+      size_t own = 0, same = 0;
+      for (const auto& [off, id] : m.moves)
+        if (off + 1u < kEntrance && svr2011::MoveUsable(id)) ++own, same += (p[off] << 8 | p[off + 1]) == id;
+      const int ent = p[kEntrance + 0x14] << 8 | p[kEntrance + 0x15];
+      if (own ? same * 2 < own : m.entrance >= 0 && ent != m.entrance)
+        why = own ? fmt::format("{} of its {} own moves", same, own) : fmt::format("entrance {} not {}", ent, m.entrance);
+    }
+    if (why.empty()) continue;
+    g_stale.insert(m.slot);
+    REXLOG_INFO("[svr2011] superstar mods: id {} ({}) - the save's profile isn't this mod's ({}): its own moves and "
+                "entrance instead", m.slot, m.folder, why);
+  }
+}
+
+// Once a frame: the game wrote its save - the marks follow (the slots hold these mods' profiles now).
+void MarksTick(uint8_t* base) {
+  static uint32_t frames = 0;
+  if (g_save_file.empty() || ++frames % 60) return;
+  // Test aid: SVR2011_TEST_SLOT_LOG=1 - each mod slot's entrance number and first own move, when they change
+  // (the profile a slot ends up with after a load and the save's late write)
+  if (static const bool on = std::getenv("SVR2011_TEST_SLOT_LOG") != nullptr; on) {
+    static std::map<uint32_t, uint32_t> last;
+    for (const auto& m : g_mods) {
+      const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+      if (si >= 512) continue;
+      const uint8_t* sp = base + kProfiles + si * kProfileSize;
+      const uint32_t ent = sp[kEntrance + 0x14] << 8 | sp[kEntrance + 0x15];
+      const uint32_t mv = m.moves.empty() ? 0 : uint32_t(sp[m.moves[0].first] << 8 | sp[m.moves[0].first + 1]);
+      if (last.count(m.slot) && last[m.slot] == (ent << 16 | mv)) continue;
+      last[m.slot] = ent << 16 | mv;
+      REXLOG_INFO("[svr2011] superstar mods: test - id {} ({}) entrance {} first own move {} (the mod's: {} / {})",
+                  m.slot, m.folder, ent, mv, m.entrance, m.moves.empty() ? 0 : m.moves[0].second);
+    }
+  }
+  const auto t = SaveWriteTime();
+  if (t == fs::file_time_type{} || t == g_marks_seen) return;
+  const bool first = g_marks_seen == fs::file_time_type{};
+  g_marks_seen = t;
+  if (first) return;  // (the save there at the start: not one written now)
+  WriteMarks();
+}
+
 // A mod's record selectable: a fetched one (temp) only while the game is online (its lobby and matches) - the
 // offline game (WWE Universe's own generation at a save load, the other modes) never sees it in the roster, so
 // nothing it makes for the save differs from a start without it.
@@ -1493,6 +1624,16 @@ void ApplyRecords(uint8_t* base) {
     }
     if (have_blank) SetEntranceMedia(sp, m, bp);
     SetSigns(sr, br, m);
+    // (the save's profile for the slot made for another mod or an older version of this one: CheckSavedProfiles)
+    const bool stale = g_stale.erase(m.slot) > 0;
+    if (stale) {
+      std::memcpy(sp, bp, kProfileSize);
+      svr2011::ThreadsSlots(sp, m.folder);
+      SetOwnMoves(sp, m);
+      SetEntranceMedia(sp, m, bp);
+      g_handed[m.slot] = {svrfmt::Bytes(sp, sp + kProfileSize), kHandoverFrames};  // (RedoHandovers)
+      REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {} (its saved profile was another mod's)", m.base, m.slot);
+    }
     if (!std::strncmp(reinterpret_cast<char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) {
       sr[kSelectable] = Selectable(m), sr[kDlc] = 1;
       OwnSelectTile(sr, br);  // (a save from before 2.0.5 has the base's)
@@ -1514,7 +1655,7 @@ void ApplyRecords(uint8_t* base) {
     // one, slots.txt) - its profile, the moves and entrance a save kept for
     // the old mod, goes too: this mod's, as for a new slot. (A placeholder's
     // record, "0", comes with its blank profile: nothing to take back.)
-    if (!was.empty() && was != "0" && !IsBlank(m.slot, sp)) {
+    if (!stale && !was.empty() && was != "0" && !IsBlank(m.slot, sp)) {
       std::memcpy(sp, bp, kProfileSize);
       svr2011::ThreadsSlots(sp, m.folder);
       SetOwnMoves(sp, m);
@@ -2745,6 +2886,7 @@ REX_HOOK_RAW(sub_8257A218) {
   __imp__sub_8257A218(ctx, base);
   const auto r3 = ctx.r3.u64;
   TempFromSave(base);  // (the fetched mods' ids as this save has them: from its image, before they're written)
+  CheckSavedProfiles(base);  // (slots whose saved profile is another mod's: handed over by ApplyRecords)
   ApplyRecords(base);
   g_moves_checked = false;  // (the save's profiles - its kept edits - get CheckModProfiles' move check too)
   svr2011::UniverseModsLoaded(base);  // (the mods' Universe side table for this save)
@@ -2881,6 +3023,7 @@ void CheckModProfiles(uint8_t* base) {
     RedoHandovers(base, true);  // (a slot handed over at a save load: the save's own write after it)
   }
   UniverseModsTick(base);  // (the game wrote its save: the mods' Universe side table beside it)
+  MarksTick(base);  // (and which mod each slot's saved profile is: mod_profiles.txt)
   UniverseTeamsTick(base);  // (Universe's teams and stables made / changed / dissolved: logged)
   UniverseWelcomeTick(base);  // (the Universe welcome accepted: kept as seen in the save file at once)
   std::lock_guard lock(g_slots_mutex);
