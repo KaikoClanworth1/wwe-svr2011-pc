@@ -12,7 +12,10 @@
 - **Match recordings**: each match is recorded (who, where, which mods, the inputs) so a report can show exactly what happened.
 - **CPU difficulty** (OPTIONS > CPU): reversal chance, damage, pin and momentum levels, and a LEGEND+ preset.
 - **Resolutions up to 8K** from your screen's own modes, and AA that really smooths the picture now.
-- **Road to WrestleMania - VS. Undertaker** 🧪: Sort > MODS lists your superstar mods (it showed only your CAW when the CAW wasn't in the first slot), and the info box shows the mod. The mod plays the story's matches; the backstage walks keep your CAW.
+- **Road to WrestleMania - VS. Undertaker** 🧪: play the Streak as a superstar mod. Sort > MODS lists your mods (it showed only your CAW when the CAW wasn't in the first slot), the info box shows the mod, and the mod is you in the matches AND the backstage walks (in its first ring attire).
+- **SvR 2008 crowd fighting** 🧪 in the new bundled **SvR 2008 One Night Stand** arena (its own arena tile): in Extreme Rules, **hold Y** (TRIANGLE / your key) at the barricade by the top-right ring post to climb into the crowd. CPUs follow you in. Mod Maker: a new Crowd area field for arena mods.
+- **Arena title cards**: arena mods can set their own city and logo (Mod Maker: City and Card logo picture). The bundled WWE '13 arenas show King of the Ring / RAW IS WAR / SmackDown 1999 logos and the right cities.
+- **Discovery on Android**: browse, search, download (with resume) and install community mods in the app, plus the owner's Edit / New version / Delete.
 - **Installing a mod with custom moves** now warns you first: ported moves are experimental and often land wrong or look odd.
 - **Community Creations name filter**: uploads with slurs or hate names are refused, with a clear message.
 - **The SvR 2008 / 2009 / 2010 VS screens**, for the whole game or per arena mod (Mod Maker > Arena > VS screen).
@@ -28,9 +31,20 @@
   - Add / remove / export objects in YOBJ models; multi-select in the Materials tab; ring announcer volume.
   - PS2 SvR 2011 superstars; WWE 2K17 SummerSlam and more 2K arenas with their names and pictures.
 - **Discovery**: download progress with Cancel and resume; owners can edit, upload a new version or remove their own mods.
+- **Every modded move is named "MOD: <name>"** (e.g. MOD: Mandible Claw), and CREATE AN ENTRANCE has a "MOD: <name>" row for every superstar mod (Advanced too).
+- **Keyboard players get the keyboard icon** at character select instead of a second Xbox pad.
+- **Free-roaming backstage is switched off for now**: the FREE-ROAMING BACKSTAGE row and modded backstage areas are off; Backstage Brawl plays the game's own rooms.
 - Android: custom touch-control icons (thanks **Gabpogi2125**), smoother performance on phones that support Game Mode.
 
 ## 🛠️ Fixes
+- **Custom .mp4 movies were black** in Create an Entrance and the Advanced preview on the first start after adding them - fixed, and mp4 colours line up with the picture now.
+- **Leaving Road to WrestleMania** gave an endless loading screen - it goes back to the main menu now.
+- **Weapons you choose for under the ring** could never be pulled out - fixed (mod weapons too).
+- **A wrestler floated above the ring** and climbed in after a grapple outside at the apron - fixed.
+- **Replacing or uninstalling a mod** could give the next superstar in its slot the old moveset and entrance - fixed.
+- **Mankind 2.0.3**: his name is called right, no Mr. Socko all match, his 2nd finisher and signatures are back, and the Mandible Claw and Two Hand Bulldog play properly. Moves ported from WWE '13+ that start behind or beside the opponent line up properly now (port the move again).
+- **Black announce tables** in the bundled WWE '13 arenas - fixed.
+- **Android**: match recordings are saved now.
 - **"Can't start match due to move pack"** online, even with Start Without Mods and every mod off - fixed (the lobby waited for a list that never came after the first online match).
 - **Inviting a friend after an online match** didn't work - fixed.
 - **A cut-off settings file reset every setting** - now only the broken line is set aside.
