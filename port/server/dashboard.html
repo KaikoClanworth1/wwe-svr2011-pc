@@ -334,6 +334,13 @@ td.acts { text-align: right; white-space: nowrap; }
       <tbody id="live"><tr><td colspan="7" class="empty">Loading&hellip;</td></tr></tbody>
     </table></div>
 
+    <h2>Relay now <span class="spacer"></span><span class="note" id="relay-note"></span></h2>
+    <p class="intro">Every game on the relay at this moment, busiest first. Every online game keeps the relay open to find sessions; packets a second counts what it tries to send one other game through it (a match: 60 and more). With the match network on p2p the relay passes a game only a few of those a second, whatever version it is: a busy one there is marked held back. Ban signs the account out and takes its games off the relay and the edge at once.</p>
+    <div class="scroll"><table>
+      <thead><tr><th>Player</th><th>Address</th><th>Link</th><th class="num">Packets/s</th><th>Version</th><th>For</th><th>Relay id</th><th></th></tr></thead>
+      <tbody id="relay-rows"><tr><td colspan="8" class="empty">Loading&hellip;</td></tr></tbody>
+    </table></div>
+
     <h2>Leaderboards <span class="spacer"></span><select class="filter" id="lb-view" aria-label="Leaderboard"></select></h2>
     <div class="scroll"><table>
       <thead><tr><th class="num">Rank</th><th>Player</th><th class="num">Points</th><th class="num">Rating</th>
@@ -873,8 +880,28 @@ td.acts { text-align: right; white-space: nowrap; }
         ' relay stream' + (d.relay.length === 1 ? '' : 's');
       el('live-note').textContent = n + ' session' + (n === 1 ? '' : 's') + ' reported · ' + d.relay.length + ' relay stream' +
         (d.relay.length === 1 ? '' : 's') + ' · ' + d.udp_games + ' UDP relay games · match network: ' + (d.match_network || 'auto');
-      liveData = d; renderLive();
+      liveData = d; renderLive(); renderRelay();
     }).catch(function () {});
+  }
+  function renderRelay() {
+    var d = liveData, rows = (d && d.relay_games) || [];
+    el('relay-note').textContent = rows.length + ' game' + (rows.length === 1 ? '' : 's') + ' · match network: ' +
+      (d.match_network || 'auto') + (d.match_network === 'p2p' ? ' (no match data through the relay)' : '');
+    el('relay-rows').innerHTML = rows.length ? rows.map(function (r) {
+      // (whose: an account name; a game whose ticket says no account - from before the server started, or an
+      // older edge - says so instead of "?")
+      var who = r.known ? '<button class="linkish" data-player="' + esc(r.name) + '">' + esc(r.name) + '</button>' +
+                (r.banned ? ' <span class="tag">banned</span>' : '') : '<span class="note">' + esc(r.name) + '</span>';
+      // (what it tries to send: on p2p, more than hellos and search answers = match data, held back by the relay)
+      var busy = d.match_network === 'p2p' && r.rate >= 5;
+      return '<tr><td>' + who + '</td><td>' + esc(r.ip || '') + (r.port ? ':' + r.port : '') + '</td><td><span class="tag">' +
+        esc(r.link) + '</span></td><td class="num">' + (busy ? '<b title="match data on p2p: the relay holds it back">' + r.rate +
+        ' held back</b>' : r.rate) +
+        '</td><td>' + (r.version ? esc(r.version) : '<span class="note">not known</span>') + '</td><td class="note">' +
+        dur(d.now - r.since) + '</td><td class="note">' + esc(r.id) + '</td><td>' + (r.account ?
+          '<button class="btn" data-user="' + r.account + '" data-a="' + (r.banned ? 'unban' : 'ban') + '">' +
+          (r.banned ? 'Unban' : 'Ban') + '</button>' : '') + '</td></tr>';
+    }).join('') : '<tr><td colspan="8" class="empty">Nobody on the relay right now.</td></tr>';
   }
   var liveData = null;
   function renderLive() {
@@ -884,8 +911,13 @@ td.acts { text-align: right; white-space: nowrap; }
     var shown = d.sessions.filter(function (v) { return !want || (v.match_kind || '?') === want; });
     el('live').innerHTML = shown.length ? shown.map(function (v) {
       var players = v.players.map(function (p) {
-        return '<button class="linkish" data-player="' + esc(p.name) + '">' + esc(p.name) + '</button>' +
-          (p.path ? ' <span class="tag' + (p.path === 'relay' ? '' : ' on') + '">' + esc(p.path) + '</span>' : '');
+        // ("?": the host has no name for it - an older game, or one whose first ping hasn't come; named from the
+        // relay's account for its id when the host sends it, 2.1.6 on - see Relay now)
+        var who = p.name === '?' ? '<span class="note" title="the host has no name for this player: a game before 2.1.0, or one ' +
+          'just joining">? (no name)</span>' : '<button class="linkish" data-player="' + esc(p.name) + '"' +
+          (p.named_by ? ' title="named from its relay account (the host had no name for it)"' : '') + '>' + esc(p.name) +
+          (p.named_by ? '*' : '') + '</button>';
+        return who + (p.path ? ' <span class="tag' + (p.path === 'relay' ? '' : ' on') + '">' + esc(p.path) + '</span>' : '');
       }).join(', ');
       return '<tr><td>' + esc(v.host) + (v.version ? ' <span class="tag">' + esc(v.version) + '</span>' : '') +
         (v.network ? ' <span class="tag">' + esc(v.network) + '</span>' : '') +
@@ -1321,6 +1353,7 @@ td.acts { text-align: right; white-space: nowrap; }
                                               'account only):', r.code);
       (what === 'user' ? loadUsers : what === 'mod' ? loadMods : loadUploads)();
       if (current === 'names') loadFlagged();
+      if (current === 'matches') live();
     }).catch(function (err) { alert(err.message); b.disabled = false; });
   });
   el('f-up').addEventListener('input', renderUploads);

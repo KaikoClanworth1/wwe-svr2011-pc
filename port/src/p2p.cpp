@@ -1499,8 +1499,11 @@ void ReportLive(bool signed_in) {
       for (const auto& [mac, p] : g_peers) {
         if (now - p.game_traffic > std::chrono::seconds(15)) continue;  // (this session's players)
         const auto n = names.find(p.fake);
+        // (its relay id too: a peer with no name here yet - an older game's, or one whose first ping hasn't
+        // come - is named on the dashboard from the relay's account for it)
         players += ", {\"name\": " + JsonQuote(n != names.end() && !n->second.empty() ? n->second : "?") +
-                   ", \"path\": \"" + (p.relayed ? "relay" : p.tunnel ? "direct" : "lan") + "\"}";
+                   ", \"path\": \"" + (p.relayed ? "relay" : p.tunnel ? "direct" : "lan") + "\", \"id\": \"" +
+                   fmt::format("{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]) + "\"}";
       }
       uint32_t rule = OnlineCreateSessionRule(), arena = ~0u, played = ~0u;
       LastMatch(&played, &arena);
