@@ -23,6 +23,7 @@ struct Project {
   char name[96] = "";
   char author[64] = "";
   char version[16] = "1.0";
+  char city[64] = "";             // city=: the entrance title card's city (empty: the base arena's)
   std::map<std::string, Image> vs;  // the VS screen: replaced textures of the slot's theme (or of its own theme)
   // its own VS screen theme (vs/theme.pac, tools/vs_port.py theme: VSTL / VSTI / VSTF), any disc's or 2011's;
   // empty: the slot's. The replaced textures are baked into it when the mod is made.

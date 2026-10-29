@@ -1301,6 +1301,32 @@ REX_HOOK_RAW(sub_826AEF10) {
   }
 }
 
+// The entrance's title card (show logo + city): sub_8277E928 (card state +196 == 4) picks the city's string by the
+// arena's number - the base arena's for a custom one (King of the Ring '98 on Hell in a Cell said "NEWARK, NJ") -
+// and copies it to card +2248 (97 bytes). The chosen arena's manifest city= is written there instead.
+REX_EXTERN(__imp__sub_8277E928);
+REX_HOOK_RAW(sub_8277E928) {
+  const uint32_t card = ctx.r3.u32;
+  const uint8_t* s = base + card + 196;
+  const bool city_card = (uint32_t(s[0]) << 24 | uint32_t(s[1]) << 16 | uint32_t(s[2]) << 8 | s[3]) == 4;
+  __imp__sub_8277E928(ctx, base);
+  const auto* c = static_cast<const CustomArena*>(g_redirected_custom);
+  if (!city_card || !c) return;
+  std::string city;
+  for (size_t at = 0; at < c->manifest.size();) {
+    size_t end = c->manifest.find('\n', at);
+    if (end == std::string::npos) end = c->manifest.size();
+    if (c->manifest.compare(at, 5, "city=") == 0) city = c->manifest.substr(at + 5, end - at - 5);
+    at = end + 1;
+  }
+  while (!city.empty() && (city.back() == '\r' || city.back() == ' ' || city.back() == '\t')) city.pop_back();
+  if (city.empty()) return;
+  city.resize(std::min<size_t>(city.size(), 96));
+  std::memcpy(base + card + 2248, city.c_str(), city.size() + 1);
+  static int logged = 0;
+  if (logged++ < 4) REXLOG_INFO("[svr2011] arena mods: title card city '{}' ({})", city, c->id);
+}
+
 // Does a file exist (r3 path): a custom arena's VS theme instead of the one
 // the game would pick (see SetDecodeSwaps).
 REX_EXTERN(__imp__sub_826A17D0);

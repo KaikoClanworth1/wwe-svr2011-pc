@@ -258,7 +258,8 @@ bool PrepareBuild(BuildJob& job) {
                  (g_proj.source.empty() ? std::string() : "source=" + g_proj.source + "\n") +
                  (g_proj.theme_pac.empty() ? std::string() : "vs_theme=" + g_proj.theme_label + "\n") +
                  (g_proj.theme_pac.empty() || g_proj.theme_font.empty() ? std::string() : "vs_font=" + g_proj.theme_font + "\n") +
-                 editor::ManifestLines();
+                 (g_proj.city[0] ? std::string("city=") + g_proj.city + "
+" : std::string()) + editor::ManifestLines();
   return true;
 }
 
@@ -452,6 +453,8 @@ void DetailsFields() {
   TextField("Name", g_proj.name, sizeof g_proj.name, g_proj.backstage >= 0 || g_page == PageId::kBackstage ? "the mod's name" : "the arena's name on the select page");
   TextField("Author (optional)", g_proj.author, sizeof g_proj.author);
   TextField("Version (optional)", g_proj.version, sizeof g_proj.version, "1.0");
+  if (g_proj.backstage < 0 && g_page != PageId::kBackstage)
+    TextField("City (optional)", g_proj.city, sizeof g_proj.city, "the entrance title card's city, e.g. PITTSBURGH, PA");
 }
 
 struct VsTexture {
@@ -607,7 +610,7 @@ void PickTheme(const std::string& game, const std::wstring& src, const std::stri
 
 // Test aid (--vs-test "<step>;<step>..."): the VS screen tab's steps on the opened mod, as its buttons do -
 // theme=<game>,<src>,<n>[,<label>] (Pick a theme), font=<game>,<src>,<n>[,<label>] (Font from another theme), replace=<picture>,<png>
-// (Replace...), version=<v>, save=<file.svrmod> (the mod made, then the Mod Maker closes; the log beside it).
+// (Replace...), version=<v>, city=<text>, save=<file.svrmod> (the mod made, then the Mod Maker closes; the log beside it).
 std::vector<std::string> g_vs_test;
 size_t g_vs_test_at = 0;
 int g_vs_test_wait = 0;  // frames (an opened mod settles first)
@@ -635,6 +638,9 @@ void VsTestStep() {
     for (const auto& t : g_vs)
       if (t.name == p[0] && LoadPicture(Wide(p[1]), img)) g_proj.vs[t.name] = Resize(img, t.w, t.h), Touch();
     if (!g_proj.vs.count(p[0])) Log("vs test: no picture " + p[0]);
+  } else if (what == "city") {
+    std::snprintf(g_proj.city, sizeof g_proj.city, "%s", arg.c_str());
+    Touch();
   } else if (what == "version") {
     std::snprintf(g_proj.version, sizeof g_proj.version, "%s", arg.c_str());
     Touch();
@@ -1149,6 +1155,7 @@ bool ReadModOrProject(const ProjectIn& in, bool mod) {
   g_proj.id = mod ? in.Get("id") : in.Get("mod_id");  // (a mod's own id; a project: the mod it came from)
   std::snprintf(g_proj.author, sizeof g_proj.author, "%s", in.Get("author").c_str());
   std::snprintf(g_proj.version, sizeof g_proj.version, "%s", in.Get("version").c_str());
+  std::snprintf(g_proj.city, sizeof g_proj.city, "%s", in.Get("city").c_str());
   if (!g_proj.version[0]) std::snprintf(g_proj.version, sizeof g_proj.version, "1.0");
   g_proj.vs.clear();
   for (const auto& e : in.files)
@@ -1212,6 +1219,7 @@ void WriteProject(ProjectOut& out) {
   out.Key("name", g_proj.name);
   out.Key("author", g_proj.author);
   out.Key("version", g_proj.version);
+  out.Key("city", g_proj.city);
   if (g_proj.backstage >= 0) out.Key("area", g_proj.backstage);
   else if (g_proj.arena >= 0) out.Key("base", g_arenas[g_proj.arena].banner), out.Key("tile", g_proj.arena);
   out.Key("fbx", g_proj.fbx);
