@@ -96,6 +96,10 @@ FACING_GAP = {'wwe2k15': 1500, 'wwe13': 1500, 'wwe12': 1500,   # (WWE '13: the s
               'wwe2k14': 1500, 'wwe2k16': 1500, 'wwe2k17': 1500}  # 2011's 5010 only turned; '12, 2K14, 2K16 and 2K17
 # alike: their AA 50285 starts 142-160 units apart turned (2011's own: 229), 1641 as stored - a 2K17 Blue Thunder
 # Bomb ported before this started its pair metres apart, "the animation skipped and Edge froze")
+# 2011's own pair layout (SVR2011_TEST_POS_LOG, 29 Oct): each person's body = his base + his root turned by his facing,
+# nothing subtracted; the victim always faces the attacker (facings 180 degrees apart - Texas Piledriver, Powerslam 6,
+# Flip Bottom, Tiger Bomb 2) and a standing grapple's bases end up this many root units apart, straight ahead
+PAIR_GAP = 1500
 
 
 class BadInput(Exception):
@@ -869,6 +873,22 @@ def template_travel(g11, tid):
     return None
 
 
+def template_start(g11, tid):
+    """a 2011 move's attacker (x 0 y 0) root at its first key, None if unread - the anchor the ported attacker starts on"""
+    import ymks
+    for path, kind, ks in g11.banks_of(tid):
+        if kind != 'YMKs' or (0, 0) not in ks:
+            continue
+        pac, bank = g11.bank(path)
+        e = bank.find(tid, 0, 0)
+        if e is None:
+            continue
+        r = next((k['root'] for k in ymks.body_keys(e['data'], bank.T, path.startswith('MOTP')) if k.get('root')), None)
+        if r:
+            return r
+    return None
+
+
 def scale_travel(keys, k):
     """[(root, ang)] with the root's horizontal travel from the first key scaled by k (the height kept)"""
     if not keys or k == 1.0:
@@ -1344,6 +1364,25 @@ def convert(a, rep):
             face, vface = (turn if face is None else turn @ face), turn
             rep['notes'].append("both people turned %.0f degrees to the template's heading" % math.degrees(ang))
     keys_of = {0: [R.keys(att, nf, face), R.keys(vic, nf, vface) if vic is not None else None]}
+    # The victim in 2011's pair layout (PAIR_GAP): the game turns his root by his own facing - the attacker's turned 180
+    # degrees - from a base PAIR_GAP ahead, so his track is the source's victim seen from there: the attacker's frame
+    # (face) moved by the attacker's start anchor (offset) and the gap, turned 180. Before, he took the attacker's frame
+    # and anchor as they were: an attacker kept as stored (Mankind '13's Two Hand Bulldog: both facing one way in the
+    # source) had his victim's travel mirrored, and a turned one (the Mandible Claw) his victim 2 x the anchor off
+    offset = None
+    victim_placed = False
+    r0 = template_start(g11, tid) if vic is not None and vface is None else None
+    if r0:
+        import numpy as np
+        a0 = keys_of[0][0][0][0]
+        offset = (r0[0] - a0[0], 0.0, r0[2] - a0[2])
+        k = ymks.ROOT_UNIT / 0.1   # (root units -> the source pose's, as facing_frame)
+        Sh = np.eye(4)
+        Sh[0, 3], Sh[2, 3] = offset[0] * k, (offset[2] + PAIR_GAP) * k
+        vface = np.diag([-1.0, 1.0, -1.0, 1.0]) @ Sh @ (face if face is not None else np.eye(4))
+        keys_of[0][1] = R.keys(vic, nf, vface)
+        victim_placed = True
+        rep['notes'].append("victim placed in 2011's pair layout (facing the attacker, %d root units ahead)" % PAIR_GAP)
     # (a one-person dive's travel is the game's: in a stock dive the attacker's own root moves a few units and the game
     # carries his base to the target during the dive - Diving Double Axe Handle 3538: 52 root units. A ported flight
     # kept WWE '13's own 1600 on top of the game's and landed metres past or beside the target. Its horizontal travel
@@ -1400,7 +1439,6 @@ def convert(a, rep):
         return keys_of.get(x, keys_of[0])
     lines = ['wazecopy %d %d' % (new_id, tid), 'wazename %d %s' % (new_id, name)]
     progress(60, 'tracks')
-    offset = None
     nmot = 0
     ymb_ns, ymb_solved, ymb_built = None, {}, {}
     ymb_shift = None   # (YMBs: the source moved so its attacker starts where the template's does - as the YMKs path)
@@ -1483,7 +1521,8 @@ def convert(a, rep):
                     r0 = next((k['root'] for k in tk if k.get('root')), None)
                     if r0:
                         offset = (r0[0] - src_keys[0][0][0], 0.0, r0[2] - src_keys[0][0][2])
-                off = offset or (0.0, 0.0, 0.0)
+                # (a placed victim has the anchor in his frame already)
+                off = (0.0, 0.0, 0.0) if (y == 1 and victim_placed) else (offset or (0.0, 0.0, 0.0))
                 tev = [(k['frame'], k['events']) for k in tk if k.get('events')]
                 lim = 0x20 if packed else 0x7f
                 drop, tail = fall_tail(tk) if (x, y) == (0, 0) and not packed else (None, [])
