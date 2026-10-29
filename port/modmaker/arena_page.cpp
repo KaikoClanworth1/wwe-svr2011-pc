@@ -258,8 +258,7 @@ bool PrepareBuild(BuildJob& job) {
                  (g_proj.source.empty() ? std::string() : "source=" + g_proj.source + "\n") +
                  (g_proj.theme_pac.empty() ? std::string() : "vs_theme=" + g_proj.theme_label + "\n") +
                  (g_proj.theme_pac.empty() || g_proj.theme_font.empty() ? std::string() : "vs_font=" + g_proj.theme_font + "\n") +
-                 (g_proj.city[0] ? std::string("city=") + g_proj.city + "
-" : std::string()) + editor::ManifestLines();
+                 (g_proj.city[0] ? std::string("city=") + g_proj.city + "\n" : std::string()) + editor::ManifestLines();
   return true;
 }
 
