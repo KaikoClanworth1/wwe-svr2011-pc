@@ -157,7 +157,7 @@ def port_moveset(c):
     if to_port:
         # (never a stock one's, nor one another mod's pack already defines: packs are merged by move id - Mankind's
         # signature 2437 was Maria's and Bob Orton's 2437 too, whose waze line took its signature bits, 29 Oct)
-        taken = other_pack_ids(c.pac11)
+        taken = other_pack_ids(c.pac11, '%s %d' % (c.gid, c.cid))
         free = [i for i in sorted(w11) if i not in g11m.moved and i > 1000 and i not in in_slot and i not in taken]
         used = set(taken)   # (moves_port's own re-pick under a bank's id limit avoids them too: _avoid)
         pdir = os.path.join(c.work, 'moveset_port')
@@ -256,24 +256,34 @@ def port_moveset(c):
 SPECIAL_SLOTS = (0x1E, 0x20, 0x22, 0x24)   # (2011's signature 1/2 and finisher 1/2 - pro_slots.json)
 
 
-def other_pack_ids(pac11):
+def other_pack_ids(pac11, source=None):
     """the move ids the move packs beside the game define (waze / wazecopy / wazename lines): the Bundled Mods'
-    .svrmod files and the installed Mods' folders of the game folder that holds pac11"""
+    .svrmod files and the installed Mods' folders of the game folder that holds pac11. A pack whose manifest has
+    source=<source> is the superstar being ported again and is left out (a re-port keeps its ids: Mankind 2.0.3,
+    ported beside an installed 2.0.2, got four new signature / finisher ids - move-sets made on 2.0.2 lost them)"""
     import re
     import zipfile
     game = os.path.dirname(os.path.abspath(pac11))
     pat = re.compile(r'^(?:waze|wazecopy|wazename)\s+(\d+)\s', re.M)
+    mine = re.compile(r'^source\s*=\s*%s\s*$' % re.escape(source), re.M) if source else None
     ids = set()
     for f in glob.glob(os.path.join(game, 'Bundled Mods', '*.svrmod')):
         try:
             with zipfile.ZipFile(f) as z:
-                for n in z.namelist():
+                names = z.namelist()
+                if mine and any(n.endswith('manifest.txt') and mine.search(z.read(n).decode('utf-8', 'replace'))
+                                for n in names):
+                    continue
+                for n in names:
                     if n.endswith('pack.txt'):
                         ids.update(int(x) for x in pat.findall(z.read(n).decode('utf-8', 'replace')))
         except (OSError, zipfile.BadZipFile):
             continue
     for f in glob.glob(os.path.join(game, 'Mods', '**', 'pack.txt'), recursive=True):
         try:
+            man = os.path.join(os.path.dirname(os.path.dirname(f)), 'manifest.txt')   # (<mod>/moves/pack.txt)
+            if mine and os.path.exists(man) and mine.search(open(man, encoding='utf-8', errors='replace').read()):
+                continue
             ids.update(int(x) for x in pat.findall(open(f, encoding='utf-8', errors='replace').read()))
         except OSError:
             continue
