@@ -643,9 +643,11 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
         Nearest(x, z, a, bx, bz, best), Nearest(x, z, bridge, bx, bz, best), Nearest(x, z, box, bx, bz, best);
         PutBody(base, f, bx, RdF(base + f + 292), bz, RdF(base + f + 276));
         static uint32_t told = 0;
-        if (told < 40 && frames % 30 == 0)
-          ++told, REXLOG_INFO("crowd fight: person {} kept in: ({:.1f}, {:.1f}) -> ({:.1f}, {:.1f}), motion {}", i, x, z, bx, bz,
-                              Rd32(base + f + 212));
+        if (told < 40 && frames % 30 == 0) {
+          ++told;
+          REXLOG_INFO("crowd fight: person {} kept in: ({:.1f}, {:.1f}) -> ({:.1f}, {:.1f}), motion {}", i, x, z, bx, bz,
+                      Rd32(base + f + 212));
+        }
       }
     }
     // (Y's hold: kept only while it stays held in the spot, on his feet)
@@ -671,6 +673,12 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
     StartMotion(ctx, base, f, VaultMotion());
     REXLOG_INFO("crowd fight: person {} climbs into the crowd from ({:.0f}, {:.0f}) (motion {} -> {}{})", i, x, z,
                 VaultMotion(), Rd32(base + f + 212), test ? ", test" : "");
+  }
+  static bool shown = false;  // (the prompt coming on screen, logged)
+  if (prompt != shown) {
+    shown = prompt;
+    if (prompt) REXLOG_INFO("crowd fight: prompt on screen - player {} at the barricade: HOLD {} - CLIMB INTO THE CROWD", prompt_port + 1,
+                            VaultButton(prompt_port));
   }
   std::lock_guard<std::mutex> lock(g_vault_prompt_mutex);
   if (prompt) g_vault_prompt_port = prompt_port, g_vault_prompt_at = std::chrono::steady_clock::now();
