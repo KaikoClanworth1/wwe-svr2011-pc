@@ -719,7 +719,8 @@ class Service:
         self.netreport_last = {}  # account id -> its last match report (memory only)
         self.relay = relay.Relay(self, gs.log, getattr(args, "relay_udp_port", 0),
                                  edge=(edge.rsplit(":", 1)[0], int(edge.rsplit(":", 1)[1])) if edge else None,
-                                 secret=relay.rl.read_secret(args.relay_secret) if edge else None)
+                                 secret=relay.rl.read_secret(args.relay_secret) if edge else None,
+                                 network=lambda: SETTINGS["match_network"])
         self.leaderboards = leaderboards.Leaderboards(self.store)
         # the ONLINE menu's NEWS: how many play now, first; then the dashboard's
         # text (online_news) when it has one, else the stored record's
@@ -1054,7 +1055,10 @@ class Service:
             return web.json_response({"ok": True})
         if len(self.live) >= 2000 and sid not in self.live:
             return web.json_response({"ok": False}, status=503)
-        players = [{"name": str(p.get("name") or "")[:32], "path": str(p.get("path") or "")[:8]}
+        # (2.1.6 on: each peer's relay id too - a peer the host has no name for, "?" - an older game's, or one whose
+        # first ping hasn't come - is named from the relay's account for it on the dashboard)
+        players = [{"name": str(p.get("name") or "")[:32], "path": str(p.get("path") or "")[:8],
+                    "id": str(p.get("id") or "")[:12].lower() if re.fullmatch(r"[0-9A-Fa-f]{12}", str(p.get("id") or "")) else ""}
                    for p in (body.get("players") or [])[:16] if isinstance(p, dict)]
         old = self.live.get(sid, {})
         state = str(body.get("state") or "lobby")[:12]
@@ -1146,7 +1150,8 @@ class Service:
             return web.json_response({"ok": False}, status=400)
         step = step if abs(step) <= 16 else 99  # (a small steady step: port prediction can follow it)
         gs.log("netreport: %s played a match, path %s, match network %s (server %s)" % (
-            account["name"], path, network if network in ("auto", "relay", "p2p") else "?", SETTINGS["match_network"]))
+            account["name"], path, network if network in ("auto", "relay", "p2p") else "not sent (a game before 2.1.4)",
+            SETTINGS["match_network"]))
         raw_rtt = min(rtt, 100000)
         rtt = next(b for b in self.NET_RTT if rtt <= b)
         with self.store.lock:
@@ -2516,10 +2521,9 @@ class Service:
             out[g.account["name"]] = "https"
         for g in list(getattr(r, "udp_games", {}).values()):
             out[g.account["name"]] = "UDP"
-        for gid in list(getattr(r, "edge_games", set())):
-            name = getattr(r, "ticket_names", {}).get(gid)
-            if name:
-                out[name] = "UDP (edge)"
+        for row in r.rows():
+            if row["link"] == "UDP (edge)" and row["known"]:
+                out[row["name"]] = "UDP (edge)"
         return out
 
     @admin_only
@@ -2621,7 +2625,39 @@ class Service:
             del self.live[k]
         sessions = sorted(self.live.values(), key=lambda v: -v["since"])
         relay = [{"name": g.account["name"], "since": getattr(g, "since", 0)} for g in self.relay.games.values()]
-        return web.json_response({"now": t, "sessions": sessions, "relay": relay,
+        games = self.relay.rows()
+        # (a host's peer without a name - "?" - named from the relay's account for its id, 2.1.6 hosts on)
+        named = []
+        for v in sessions:
+            players = []
+            for p in v["players"]:
+                p = dict(p)
+                aid = self.relay.account_of(p["id"]) if p.get("id") else 0
+                if aid:
+                    p["account"] = aid
+                    if not p["name"] or p["name"] == "?":
+                        p["name"], p["named_by"] = self.relay.name_of(aid) or "?", "relay"
+                players.append(p)
+            named.append(dict(v, players=players))
+        hosts = {v["host"].lower(): v.get("version", "") for v in sessions}
+
+        def versions():
+            # (a game's version: its last match report's, else the session it hosts now; banned: the Ban button's state)
+            out = {}
+            with self.store.lock:
+                for r in games:
+                    if not r["account"] or r["account"] in out:
+                        continue
+                    e = self.store.db.execute("SELECT version FROM net_events WHERE account = ? AND version != '' "
+                                              "ORDER BY at DESC LIMIT 1", (r["account"],)).fetchone()
+                    b = self.store.db.execute("SELECT banned FROM accounts WHERE id = ?", (r["account"],)).fetchone()
+                    out[r["account"]] = (e[0] if e else "", bool(b and b[0]))
+            return out
+        known = await asyncio.get_running_loop().run_in_executor(None, versions)
+        for r in games:
+            r["version"], r["banned"] = known.get(r["account"], ("", False))
+            r["version"] = r["version"] or hosts.get(r["name"].lower(), "")
+        return web.json_response({"now": t, "sessions": named, "relay": relay, "relay_games": games,
                                   "udp_games": len(getattr(self.relay, "udp_games", {})),
                                   "match_network": SETTINGS["match_network"]})
 
@@ -2721,12 +2757,15 @@ class Service:
         result = {"ok": True}
         if action == "ban":
             self.accounts.set_banned(aid, True)
+            self.relay.ban(aid)  # (its relay streams, UDP and the edge's: not only its sign-ins)
         elif action == "unban":
             self.accounts.set_banned(aid, False)
+            self.relay.unban(aid)
         elif action == "reset":
             result["password"] = self.accounts.reset_password(aid)
         elif action == "delete":
             result["removed"] = self.accounts.delete(aid)
+            self.relay.ban(aid, "deleted")
         elif action == "reactivation-code":  # (shown once: only its hash is kept)
             result["id"], result["code"] = self.signup.make_code("reactivate", "", aid)
         elif action == "activate":  # (no code: the server owner's own say)
