@@ -33,6 +33,7 @@ MATCH_HMD, CROWD_HMD, CROWD_INDEX = 996, 999, 997
 GAP = 15.0     # (walls this close to the other side's: the opening)
 CELL = 25.0   # (floor cells: few triangles - the collision list stays near its own size)
 MARGIN = 15.0  # (floor this far around the walls taken out: the gap between the arena floor and the pocket)
+CLEAR = 10.0   # (walls cut back this far around the opening: a wall's test reaches past its ends by a fighter's width)
 
 
 def corners(r):
@@ -63,6 +64,71 @@ def floor_record(pts, like):
     # (the frame must give the corners back)
     assert np.allclose(corners(r), P, atol=1e-3), 'floor frame'
     return r
+
+
+def wall_piece(r, C):
+    """a wall triangle through corners C (in wall record r's winding), in r's plane and frame - its origin in the middle,
+    its +88 reach from the corners"""
+    M = r[:16].reshape(4, 4).copy()
+    R = M[:3, :3]
+    t = M[3, :3].copy()
+    L = C @ R + t
+    t[0] -= (L[:, 0].min() + L[:, 0].max()) / 2
+    t[2] -= (L[:, 2].min() + L[:, 2].max()) / 2
+    L = C @ R + t
+    M[3, :3] = t
+    out = r.copy()
+    out[:16] = M.flatten()
+    out[16:22] = L[:, [0, 2]].ravel()
+    out[3], out[7] = C[:, 0].min(), C[:, 0].max()
+    extra = np.frombuffer(np.array(r[22:24], dtype='<f4').tobytes(), dtype='<u4').copy()
+    extra[0] = np.frombuffer(np.array([float(np.abs(L[:, [0, 2]]).max())], dtype='<f4').tobytes(), dtype='<u4')[0]
+    out[22:24] = np.frombuffer(extra.tobytes(), dtype='<f4')
+    assert np.allclose(corners(out), C, atol=1e-3), 'wall piece'
+    return out
+
+
+def cut_wall(r, box):
+    """wall record r without its stretch inside box (x0, x1, z0, z1, on the floor) -> [records] (r itself when it
+    misses the box)"""
+    C = corners(r)
+    q = C[:, [0, 2]]
+    i, j = max(((i, j) for i in range(3) for j in range(3)), key=lambda ij: np.sum((q[ij[0]] - q[ij[1]]) ** 2))
+    a, d = q[i], q[j] - q[i]
+    n = float(np.linalg.norm(d))
+    if n < 1e-6:
+        return [r]
+    d = d / n
+    lo, hi = 0.0, n  # (the wall's stretch inside the box, along it: slab clipping)
+    for k, (b0, b1) in enumerate(((box[0], box[1]), (box[2], box[3]))):
+        if abs(d[k]) < 1e-9:
+            if not b0 <= a[k] <= b1:
+                return [r]
+            continue
+        s0, s1 = sorted(((b0 - a[k]) / d[k], (b1 - a[k]) / d[k]))
+        lo, hi = max(lo, s0), min(hi, s1)
+    if hi - lo < 1e-3:
+        return [r]
+    sv = lambda P: float(np.dot(P[[0, 2]] - a, d))
+
+    def clip(poly, keep):  # (Sutherland-Hodgman on one side of s = cut)
+        out = []
+        for k in range(len(poly)):
+            P, Q = poly[k], poly[(k + 1) % len(poly)]
+            fp, fq = keep(sv(P)), keep(sv(Q))
+            if fp[0]:
+                out.append(P)
+            if fp[0] != fq[0]:
+                u = (fp[1] - sv(P)) / (sv(Q) - sv(P))
+                out.append(P + u * (Q - P))
+        return out
+    pieces = []
+    for poly in (clip(list(C), lambda v: (v <= lo, lo)), clip(list(C), lambda v: (v >= hi, hi))):
+        for k in range(1, len(poly) - 1):
+            T = np.array([poly[0], poly[k], poly[k + 1]])
+            if np.linalg.norm(np.cross(T[1] - T[0], T[2] - T[0])) > 1e-3:
+                pieces.append(wall_piece(r, T))
+    return pieces
 
 
 def reversed_wall(r):
@@ -152,8 +218,18 @@ def open_walkway(match, crowd):
         a, b = i * CELL, j * CELL
         floors.append(floor_record([(a, b), (a + CELL, b), (a + CELL, b + CELL)], like))
         floors.append(floor_record([(a + CELL, b + CELL), (a, b + CELL), (a, b)], like))
-    back = [reversed_wall(crowd[k]) for k in sorted(pocket_set) if k not in drop]
-    new = [r for k, r in enumerate(crowd) if k not in drop] + floors + back
+    # (around the opening the kept walls are cut back by CLEAR: the game's wall test reaches past a wall's end by the
+    # fighter's width, so the opening between the arena's wall ends and the pocket's must be wider than the gap)
+    cut = (D[:, 0].min() - CLEAR, D[:, 0].max() + CLEAR, D[:, 2].min() - CLEAR, D[:, 2].max() + CLEAR)
+    kept, back = [], []
+    for k, r in enumerate(crowd):
+        if k in drop:
+            continue
+        pieces = [r] if is_floor(corners(r)) else cut_wall(r, cut)
+        kept += pieces
+        if k in pocket_set:
+            back += [reversed_wall(q) for q in pieces]
+    new = kept + floors + back
     rep = ('walkway: %d wall triangles out, %d floor triangles and %d walls facing in added, %d in all (pocket x %.0f..%.0f z %.0f..%.0f, game x %.0f..%.0f '
            'z %.0f..%.0f)' % (len(drop), len(floors), len(back), len(new), px0, px1, pz0, pz1, pz0, pz1, px0, px1))
     return new, rep
