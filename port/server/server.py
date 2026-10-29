@@ -1685,6 +1685,7 @@ class Service:
             if why:
                 gs.log("discovery: update of mod %d from %s refused: %s" % (mid, account["name"], why))
                 return web.json_response({"ok": False, "error": why}, status=400)
+            fields["needs"] = manifest.get("needs", "")[:20]  # (the new file's own)
             was = await loop.run_in_executor(None, discovery.replace_file, self.store, mid, data, file_name, fields)
             if was is None:
                 return web.json_response({"ok": False, "error": "No such mod."}, status=404)
@@ -1812,6 +1813,7 @@ class Service:
             fields["types"] = types
             fields["tags"] = discovery.clean_tags(fields.get("tags", ""))
             fields.setdefault("description", "")
+            fields["needs"] = manifest.get("needs", "")[:20]
             mid = await loop.run_in_executor(None, discovery.add, self.store, account["id"], account["name"], fields,
                                              data, file_name, [images[n] for n in range(discovery.IMAGES)])
             gs.log("discovery: mod %d \"%s\" %s (%d bytes, %s) from %s" % (
