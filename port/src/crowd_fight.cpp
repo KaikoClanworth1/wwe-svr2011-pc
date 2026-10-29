@@ -524,9 +524,11 @@ Vault g_vault[8];
 
 // Kept in: the game's own box holds people at the ring (inside it, one way), but outside it nothing holds them -
 // a stage's walls don't stop a walk in these matches (a fence round the crowd area was walked through), so they
-// walked off along the back of the arena into the void. Outside the box people are kept on the crowd area
-// (crowd_area=) and the strip between it and the box: put back on its nearest point when a step leaves it.
+// walked off along the back of the arena into the void. Whoever has stood in the crowd area (crowd_area=, outside
+// the box) is kept on it and the strip between it and the box until he is back in the box: put back on their
+// nearest point when a step leaves them. Others outside the box (the aisle, the referee, the announcers) are left be.
 constexpr float kArenaBox = 64.5f;
+bool g_in_crowd[8];
 
 bool InRect(float x, float z, const float r[4]) { return x >= r[0] && x <= r[1] && z >= r[2] && z <= r[3]; }
 
@@ -599,8 +601,10 @@ namespace svr2011 {
 void InstallCrowdOverlay(rex::ui::ImGuiDrawer* drawer) { new CrowdPromptOverlay(drawer); }
 
 void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_match) {
-  if (new_match)
+  if (new_match) {
     for (Vault& v : g_vault) v = {};
+    std::fill(std::begin(g_in_crowd), std::end(g_in_crowd), false);
+  }
   float a[4];
   if (!g_crowd.load() || !VaultArea(a)) return;
   static const int test_person = [] {
@@ -618,6 +622,7 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
     Vault& v = g_vault[i];
     if (!f) {
       v = {};
+      g_in_crowd[i] = false;
       continue;
     }
     if (v.frames) {  // (climbing: then the landing, held)
@@ -638,12 +643,17 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
       float bridge[4] = {std::max(a[0], box[0]), std::min(a[1], box[1]), std::max(a[2], box[2]), std::min(a[3], box[3])};
       if (bridge[0] > bridge[1]) bridge[0] = std::min(a[1], box[1]), bridge[1] = std::max(a[0], box[0]);
       if (bridge[2] > bridge[3]) bridge[2] = std::min(a[3], box[3]), bridge[3] = std::max(a[2], box[2]);
-      if (!InRect(x, z, box) && !InRect(x, z, a) && !InRect(x, z, bridge)) {
+      if (InRect(x, z, box))
+        g_in_crowd[i] = false;
+      else if (InRect(x, z, a))
+        g_in_crowd[i] = true;
+      else if (g_in_crowd[i] && !InRect(x, z, bridge)) {
         float bx = x, bz = z, best = 1e30f;
         Nearest(x, z, a, bx, bz, best), Nearest(x, z, bridge, bx, bz, best), Nearest(x, z, box, bx, bz, best);
         PutBody(base, f, bx, RdF(base + f + 292), bz, RdF(base + f + 276));
-        static uint32_t told = 0;
-        if (told < 40 && frames % 30 == 0) {
+        static uint32_t told = 0, told_at = ~0u;
+        if (told < 40 && frames != told_at && frames % 30 == 0) {
+          told_at = frames;
           ++told;
           REXLOG_INFO("crowd fight: person {} kept in: ({:.1f}, {:.1f}) -> ({:.1f}, {:.1f}), motion {}", i, x, z, bx, bz,
                       Rd32(base + f + 212));
