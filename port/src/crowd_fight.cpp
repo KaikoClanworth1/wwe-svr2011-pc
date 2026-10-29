@@ -506,8 +506,8 @@ SVR_BOX_HUNT(sub_82BB83A0)
 // stock climb up from the floor) and then puts him on the crowd area's floor - its nearest point kVaultInset inside
 // crowd_area= - with the body's three place copies, held kVaultHold frames, outside the ring (area +441 / +444 1),
 // standing (motion 0). Players (port < 4, or every wrestler online - each game reads the same synced pad,
-// FighterInput: the climb is an input like any move) hold Y; a CPU climbs after kVaultCpu frames walking into the
-// spot (after his opponent - the AI grid has the crowd area's walls for his way about in it).
+// FighterInput: the climb is an input like any move) hold Y; a CPU climbs only while someone else is in the crowd,
+// after kVaultCpu frames walking at the box's edge (after him - the AI grid has the crowd area's walls).
 // Test aid: SVR2011_TEST_VAULT_MOTION=<motion> - another climb motion; SVR2011_TEST_VAULT=<person> - that person
 // climbs once at match frame SVR2011_TEST_PLACE_AT + 120 if he is in the spot (as if Y).
 namespace {
@@ -563,11 +563,13 @@ uint32_t VaultMotion() {
   return m;
 }
 
-// The crowd area in game coordinates (x0, x1, z0, z1: crowd_area= is the stage's x / z - the game's z / x).
+// The crowd area (x0, x1, z0, z1): crowd_area= is the stage's x / z, which are the game's (the aisle - the wall grids'
+// second axis, 80..300 - is where people stand at the match's start, z +300; read as z / x it put the climb in the
+// mirrored corner, not SvR 2008's own).
 bool VaultArea(float a[4]) {
   float r[4];
   if (!CrowdAreaRect(r)) return false;
-  a[0] = r[1], a[1] = r[3], a[2] = r[0], a[3] = r[2];
+  a[0] = r[0], a[1] = r[2], a[2] = r[1], a[3] = r[3];
   return true;
 }
 
@@ -689,8 +691,12 @@ void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_
     const bool player = port < 4 || P2POnlineMode();  // (online every wrestler is a player - his synced pad)
     const float nx = std::clamp(x, a[0], a[1]), nz = std::clamp(z, a[2], a[3]);
     // (a CPU anywhere at the box's edge while someone is in the crowd: his way after them ends there)
-    const bool someone_in = std::any_of(std::begin(g_in_crowd), std::end(g_in_crowd), [](bool b) { return b; });
-    if ((nx - x) * (nx - x) + (nz - z) * (nz - z) > kVaultReach * kVaultReach && (player || !someone_in)) continue;
+    // (a CPU climbs only after someone else in the crowd - his opponent went in; walking along the barricade after
+    // one at the ringside he climbed in again and again, 29 Oct H11)
+    bool someone_in = false;
+    for (uint32_t k = 0; k < 8; ++k) someone_in |= k != i && g_in_crowd[k];
+    if (!player && !someone_in) continue;
+    if ((nx - x) * (nx - x) + (nz - z) * (nz - z) > kVaultReach * kVaultReach && player) continue;
     const uint32_t m = Rd32(base + f + 212);
     const bool walking = m == 20400 || m == 20500 || base[f + 1286];
     if (!(m == 0 || m == 20 || walking)) continue;  // (on his feet, not in a move)
