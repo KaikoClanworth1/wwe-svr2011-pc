@@ -109,6 +109,11 @@ Where a pack goes:
 A `disabled` file in the mod or pack folder turns it off. Keys the game
 already has are left alone.
 
+Every move a pack defines (a `waze`, `wazename` or `wazecopy` line) is named
+`MOD: <name>` in its record, so the game lists it so everywhere (CREATE A
+MOVE-SET, the moves lists): `MOD: Mandible Claw`. The game's own moves keep
+their names.
+
 Installing a mod with custom moves (a pack, or a superstar mod's `moves/pack.txt`)
 asks first - "experimental and most likely broken", Yes / No, No the default,
 "Don't warn me again": the launcher (+ and Discovery) and the Mod Maker

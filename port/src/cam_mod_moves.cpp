@@ -76,7 +76,8 @@ void InstallCamModMoves(rex::memory::Memory* memory) { g_memory = memory; }
 
 // CREATE A MOVE-SET's list rows (sub_82BA1AC8(page, tab, first row)): each of the 13 rows' text element
 // (*(*(page + 620) + 8) + ((row + *(page + 1112)) << 8)) keeps a pointer to its record's name at +216. A pack
-// move's row points to "MOD: <name>" instead (the record's own name - the match HUD's - stays as it is).
+// move's row points to "MOD: <name>" - unless the record's own name has it (move_packs.cpp names pack moves so
+// everywhere since 29 Oct, the match HUD too).
 REX_EXTERN(__imp__sub_82BA1AC8);
 REX_HOOK_RAW(sub_82BA1AC8) {
   const uint32_t page = ctx.r3.u32;
@@ -93,6 +94,8 @@ REX_HOOK_RAW(sub_82BA1AC8) {
     const uint32_t rec = name - 16;
     const uint16_t id = Rd16(base, rec + 0x90);
     if (!svr2011::PackMove(id)) continue;
+    // (the record's own name says it already - PatchWaze names pack moves "MOD: <name>": no "MOD: MOD: ")
+    if (!std::strncmp(reinterpret_cast<const char*>(base + name), "MOD: ", 5)) continue;
     uint32_t label = 0;
     {
       std::lock_guard lock(g_mutex);
