@@ -414,7 +414,7 @@ REX_HOOK_RAW(sub_821E5408) {
 
 // Test aid (walk-in research): SVR2011_TEST_BOX_HUNT=1 - in crowd matches, while person 0 is near the edge of the box
 // that keeps people at the ring (|x| or |z| 52..70), each watched function that moves them (their place: the vector
-// *(+304)) is logged with before / after and the area bytes (+441, +444), at most 400 lines.
+// *(+304) or its copy +288 / +296) is logged with before / after and the area bytes (+441, +444), at most 400 lines.
 namespace {
 
 void BoxHunt(const char* name, void (*imp)(PPCContext&, uint8_t*), PPCContext& ctx, uint8_t* base) {
@@ -426,18 +426,20 @@ void BoxHunt(const char* name, void (*imp)(PPCContext&, uint8_t*), PPCContext& c
     return;
   }
   const uint32_t lr = uint32_t(ctx.lr);
-  const float x0 = RdF(base + v), z0 = RdF(base + v + 8);
+  const float x0 = RdF(base + v), z0 = RdF(base + v + 8), cx0 = RdF(base + c + 288), cz0 = RdF(base + c + 296);
   const uint8_t a0 = base[c + 441], b0 = base[c + 444];
   imp(ctx, base);
-  const float x1 = RdF(base + v), z1 = RdF(base + v + 8);
+  const float x1 = RdF(base + v), z1 = RdF(base + v + 8), cx1 = RdF(base + c + 288), cz1 = RdF(base + c + 296);
   auto edge = [](float x, float z) {
     const float m = std::max(std::fabs(x), std::fabs(z));
     return m > 52.f && m < 70.f;
   };
   static std::atomic<uint32_t> lines{0};
-  if ((x1 != x0 || z1 != z0) && (edge(x0, z0) || edge(x1, z1)) && lines++ < 400)
-    REXLOG_INFO("crowd: box hunt {} moved person 0 ({:.2f}, {:.2f}) -> ({:.2f}, {:.2f}), area {} {} -> {} {} (lr {:08X})", name,
-                x0, z0, x1, z1, a0, b0, base[c + 441], base[c + 444], lr);
+  if ((x1 != x0 || z1 != z0 || cx1 != cx0 || cz1 != cz0) && (edge(x0, z0) || edge(x1, z1) || edge(cx0, cz0)) &&
+      lines++ < 400)
+    REXLOG_INFO("crowd: box hunt {} moved person 0 *304 ({:.2f}, {:.2f}) -> ({:.2f}, {:.2f}), +288 ({:.2f}, {:.2f}) -> ({:.2f}, "
+                "{:.2f}), area {} {} -> {} {} (lr {:08X})", name, x0, z0, x1, z1, cx0, cz0, cx1, cz1, a0, b0, base[c + 441],
+                base[c + 444], lr);
 }
 
 }  // namespace
