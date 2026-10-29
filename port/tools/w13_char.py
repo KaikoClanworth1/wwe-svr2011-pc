@@ -553,12 +553,15 @@ class Conv:
         # opaque ones first; one that doesn't fit is left out: Hogan's feather boa, 21 pages, after the T-shirt)
         import model_budget
         extra = sorted(extra_models(kids13), key=lambda i: any(is_trans(s) for s in read13(kids13[i])['meshes']))
-        self.extra, self.extra_left = [], []
+        self.extra, self.extra_left, self.props_left = [], [], []
         if extra:
             merged = jboy.read(out[0])
             others = sum(model_budget.attire_pages({k: out[k]})[0] for k in (0x2710, 0x4e20) if k in out)
             for i in extra:
                 m13 = read13(kids13[i])
+                if any(p in m13['name'].lower() for p in MOVE_PROPS):
+                    self.props_left.append((i, m13['name']))
+                    continue
                 sub = _sub_map(m13, body13, nodes, nmap)
                 pm = self.model(m13, self.body, nodes, sub, origin, tex_body,
                                 lambda s: (self.p_hair, SKIN) if is_trans(s) else kind(s))
@@ -735,6 +738,9 @@ def is_trans(s13):
 
 
 EXTRA_MODELS = range(0x10, 0x100)   # (JBOY children past the textures: 2K14 Hogan's 04 T_shirt = 0x1d)
+# (extra models the source shows only in its own moves - Mankind '13's Mr. Socko, "sockko", child 0x1c, his Mandible
+# Claw's: in the body 2011 draws it all match, so it is left out)
+MOVE_PROPS = ('sock',)
 
 
 def extra_models(kids13):
@@ -816,6 +822,10 @@ def convert(src, out, tmpl, portrait=None):
                 print('  extra model %#x %s: in the body' % (i, nm))
             for i, nm in conv.extra_left:
                 print('  extra model %#x %s: LEFT OUT (over the 192-page vertex memory)' % (i, nm))
+            for i, nm in conv.props_left:
+                print('  extra model %#x %s: LEFT OUT (a prop of its moves: 2011 would show it all match)' % (i, nm))
+            convert.extras.extend('%s: %s left out (a prop its moves show - 2011 would draw it all match)' %
+                                  (name.decode('latin1').strip('\x00 '), nm) for i, nm in conv.props_left)
             convert.extras.extend('%s: %s left out (vertex memory)' % (name.decode('latin1').strip('\x00 '), nm)
                                   for i, nm in conv.extra_left)
             if name.rstrip(b'\0 ').endswith(b'4'):
