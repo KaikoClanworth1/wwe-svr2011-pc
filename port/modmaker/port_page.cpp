@@ -42,7 +42,9 @@ const Kind kKinds[] = {
     {"Belts", L"belt_port.py", "Title belts' looks, as a texture pack."},
     {"Weapons", L"weapon_port.py", "Weapons' looks, as a texture pack."},
     {"Backstage", L"backstage_port.py", "A backstage room from another game, built into a copy of your own 2011 backstage files and "
-                                        "installed into the game's Mods\\Backstage (its own row in the BACKSTAGE list)."},
+                                        "installed into the game's Mods\\Backstage (its own row in the BACKSTAGE list). Backstage "
+                                        "mods are switched off in the game for now: Backstage Brawl plays the game's own backstage, "
+                                        "so a built room is kept but not loaded."},
     {"VS screens", L"vs_port.py", "An older game's VS screens (SvR 2008 - 2010: the match set-up page behind the two superstars) as a VS style, "
                                   "installed into the game's Mods\\VsStyles: pick it in GRAPHICS > VS SCREEN STYLE."},
 };

@@ -135,6 +135,7 @@ const Mine& MyMods() {
       m.pack_of["pack:" + key] = {kind, folder}, m.label["pack:" + key] = label;
     }
     for (const auto& e : fs::directory_iterator(rex::filesystem::GetExecutableFolder() / "Mods" / "Backstage", ec)) {
+      if (svr2011::BackstageModsOff()) break;  // (no_mods.h: none offered)
       const std::string folder = e.path().filename().string();
       std::string key, label;
       if (!e.is_directory() || hidden.count(folder) || !svr2011::ModKey("Backstage", folder, &key, &label)) continue;

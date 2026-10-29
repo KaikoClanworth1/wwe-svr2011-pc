@@ -296,6 +296,7 @@ std::string BuildModSet() {
   const fs::path mods = rex::filesystem::GetExecutableFolder() / "Mods";
   std::error_code ec;
   for (const char* kind : {"Superstars", "Moves", "Arenas", "Backstage"}) {
+    if (svr2011::BackstageModsOff() && std::string(kind) == "Backstage") continue;  // (no_mods.h: not loaded)
     // (a run that loads the host's fetched mods: those too - <folder>@<crc>, its key the host's; only the kinds
     // that load from there: superstar_mods.cpp)
     std::vector<std::pair<fs::directory_entry, bool>> entries;  // (fetched: its folder is <id>@<crc>)
@@ -472,10 +473,12 @@ const std::vector<std::string>& ActiveMatchMods() {
     if (NoMods()) return out;  // (Start Without Mods: none loaded - no_mods.h)
     std::error_code ec;
     const fs::path dir = rex::filesystem::GetExecutableFolder() / "Mods";
-    for (const char* kind : {"Superstars", "Moves", "Arenas", "Backstage", "Weapons", "Attires", "Media"})
+    for (const char* kind : {"Superstars", "Moves", "Arenas", "Backstage", "Weapons", "Attires", "Media"}) {
+      if (BackstageModsOff() && std::string(kind) == "Backstage") continue;  // (no_mods.h: not loaded)
       for (const auto& e : fs::directory_iterator(dir / kind, ec))
         if (e.is_directory() && !fs::exists(e.path() / "disabled", ec))
           out.push_back(std::string(kind) + "/" + e.path().filename().string());
+    }
     for (const auto& [id, on] : MatchTypeSwitches())  // (the restored match types: on unless "disabled")
       if (on) out.push_back("MatchTypes/" + id);
     // (the online mod tests' extra mod, SVR2011_TEST_MOD_SET_EXTRA "<kind>|<id>|...": BuildModSet)

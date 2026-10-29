@@ -207,7 +207,8 @@ static void scan(void)
             }
             if (!m->name[0]) wcsncpy_s(m->name, 128, m->id, _TRUNCATE);
             swprintf_s(off, MAX_PATH, L"%s\\disabled", m->folder);
-            m->enabled = !exists(off);
+            /* backstage mods are switched off in the game (src/no_mods.h BackstageModsOff): shown off */
+            m->enabled = !exists(off) && _wcsicmp(types[t], L"Backstage");
             m->bytes = folder_bytes(m->folder);
             s_nmods++;
         } while (FindNextFileW(h, &fd));
@@ -1994,7 +1995,7 @@ place:
     }
     scan();
     fill();
-    swprintf_s(t, 512, !wcscmp(kind, L"Backstage") ? L"Installed \"%s\". It is played in that room's backstage brawls."
+    swprintf_s(t, 512, !wcscmp(kind, L"Backstage") ? L"Installed \"%s\". Backstage mods are switched off for now: Backstage Brawl plays the game's own backstage, so it isn't loaded."
                        : !wcscmp(kind, L"Media") ? L"Installed \"%s\". It takes effect the next time the game starts."
                        : !wcscmp(kind, L"Moves") ? L"Installed \"%s\". The game merges its moves into its files when it next starts (a few seconds)."
                        : !wcscmp(kind, L"MatchTypes") ? L"Installed \"%s\". The match type is in the game's menus the "
@@ -2111,6 +2112,10 @@ static void set_enabled(int i, int on)
 {
     WCHAR off[MAX_PATH];
     if (i < 0 || i >= s_nmods || s_mods[i].enabled == on) return;
+    if (on && !_wcsicmp(s_mods[i].type, L"backstage")) {  /* (switched off in the game: src/no_mods.h) */
+        status(L"Backstage mods are switched off for now: Backstage Brawl plays the game's own backstage.");
+        return;
+    }
     swprintf_s(off, MAX_PATH, L"%s\\disabled", s_mods[i].folder);
     if (on) DeleteFileW(off);
     else {
@@ -2314,6 +2319,8 @@ int mods_notify(const NMHDR *nm)
         {
             const int i = (int)lv->lParam, was = s_mods[i].enabled;
             set_enabled(i, ListView_GetCheckState(s_list, lv->iItem));
+            if (ListView_GetCheckState(s_list, lv->iItem) != s_mods[i].enabled)  /* (refused: a backstage mod) */
+                ListView_SetCheckState(s_list, lv->iItem, s_mods[i].enabled);
             if (was != s_mods[i].enabled && !_wcsicmp(s_mods[i].type, L"superstar")) {
                 const int out = s_stars_out;
                 superstar_limit();
