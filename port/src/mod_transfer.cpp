@@ -52,7 +52,7 @@ REXCVAR_DEFINE_INT32(online_mod_upload_kbs, 4096, "Online",
 REXCVAR_DEFINE_INT32(online_mod_upload_peers, 2, "Online",
                      "Hosting: how many joiners may fetch this game's mods at once (the others wait)");
 REXCVAR_DEFINE_INT32(online_mod_max_mb, 300, "Online", "Joining: the largest mod (MB) fetched from a host");
-REXCVAR_DEFINE_INT32(online_mods_max_mb, 1024, "Online",
+REXCVAR_DEFINE_INT32(online_mods_max_mb, 4096, "Online",
                      "Joining: the most MB of mods fetched from one host for a session");
 
 namespace fs = std::filesystem;
@@ -694,7 +694,9 @@ void Run(std::vector<ModOffer> wanted) {
   std::vector<std::pair<uint16_t, ModOffer>> plan;
   uint64_t total = 0;
   const uint64_t max_mod = uint64_t(std::max(1, REXCVAR_GET(online_mod_max_mb))) << 20;
-  const uint64_t max_all = uint64_t(std::max(1, REXCVAR_GET(online_mods_max_mb))) << 20;
+  // (1024 was 2.1.6's default, which every launcher wrote into the settings: read as the new default)
+  const int mods_mb = REXCVAR_GET(online_mods_max_mb) == 1024 ? 4096 : REXCVAR_GET(online_mods_max_mb);
+  const uint64_t max_all = uint64_t(std::max(1, mods_mb)) << 20;
   for (const ModOffer& w : wanted) {
     auto it = std::find_if(set.begin(), set.end(), [&](const ModOffer& s) {
       return s.kind == w.kind && s.id == w.id && s.crc == w.crc;

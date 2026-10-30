@@ -2405,7 +2405,7 @@ static void settings_load(void)
         swprintf_s(n, 16, L"%d", up_kbs > 0 ? up_kbs : 4096), set_text(ID_ON_UP_KBS, n);
         swprintf_s(n, 16, L"%d", up_peers > 0 ? up_peers : 2), set_text(ID_ON_UP_PEERS, n);
         swprintf_s(n, 16, L"%d", mod_mb > 0 ? mod_mb : 300), set_text(ID_ON_MOD_MB, n);
-        swprintf_s(n, 16, L"%d", mods_mb > 0 ? mods_mb : 1024), set_text(ID_ON_MODS_MB, n);
+        swprintf_s(n, 16, L"%d", mods_mb > 0 && mods_mb != 1024 ? mods_mb : 4096), set_text(ID_ON_MODS_MB, n);  /* (1024: the old default) */
     }
     {
         WCHAR w[256];
@@ -2540,7 +2540,7 @@ static int settings_save(void)
     {   /* (the game's online mod settings, kept in its ranges) */
         static const struct { int id, lo, hi, def; } k_mods[4] = {
             { ID_ON_UP_KBS, 64, 65536, 4096 }, { ID_ON_UP_PEERS, 1, 8, 2 },
-            { ID_ON_MOD_MB, 1, 4096, 300 }, { ID_ON_MODS_MB, 1, 16384, 1024 } };
+            { ID_ON_MOD_MB, 1, 4096, 300 }, { ID_ON_MODS_MB, 1, 16384, 4096 } };
         strcpy_s(vals[38], 64, IsDlgButtonChecked(s_wnd, ID_ON_SHARE) == BST_CHECKED ? "true" : "false");
         for (k = 0; k < 4; k++) {
             WCHAR n[16];
