@@ -847,6 +847,9 @@ class Service:
                                                                 "code the server owner gives you."}, status=403)
             # (account_checks off: as before 2.1.6 - an account without a code: it needs a re-activation code once on)
             account, error = await loop.run_in_executor(None, self.accounts.register, name, password, ip)
+        elif register and self.signup.relaxed() and not str(body.get("invite", "")).strip():
+            # (account_checks off and no code typed: an account as before 2.1.6 - it needs a re-activation code once on)
+            account, error = await loop.run_in_executor(None, self.accounts.register, name, password, ip)
         elif register:
             account, error = await loop.run_in_executor(None, self.signup.register, name, password,
                                                         str(body.get("invite", "")), ip)
@@ -1224,7 +1227,8 @@ class Service:
         return web.json_response({"ok": False}, status=404)
 
     async def api_status(self, request):
-        return web.json_response({"ok": True, "server": "svr2011-community", "version": 1})
+        return web.json_response({"ok": True, "server": "svr2011-community", "version": 1,
+                                  "invite_needed": not self.signup.relaxed()})  # (sign-up asks for a code)
 
     # the port's logo store
 

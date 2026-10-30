@@ -106,8 +106,11 @@ def main():
         check(st == 200 and r.get("config", {}).get("netcode") == "lockstep", "checks off: presence; config netcode lockstep")
         st, r = call(server, "POST", "/api/register", {"name": "oldstyle", "password": "pw1234"})
         check(st == 200 and r.get("token"), "checks off: a 2.1.5 launcher's sign-up as before")
-        st, r = call(server, "POST", "/api/register", {"name": "newstyle", "password": "longpass1", "client": 2})
-        check(st == 403 and "invite" in r.get("error", ""), "checks off: a 2.1.6 sign-up still needs its invite code")
+        st, r = call(server, "POST", "/api/register", {"name": "newstyle", "password": "longpass1", "client": 2,
+                                                        "invite": "WRONG-CODE"})
+        check(st == 403 and "invite" in r.get("error", ""), "checks off: a wrong invite code typed is still refused")
+        st, r = call(server, "GET", "/api/status")
+        check(st == 200 and r.get("invite_needed") is False, "checks off: status says no invite code needed")
         st, m = call(server, "GET", "/api/admin/checks")
         check(st == 200 and m["checks"] == "off" and m["would_block"] == 2 and m["accounts"] == 3,
               "the ON switch's numbers: 2 of 3 accounts would be blocked (Old_Two: --admin-account)")
@@ -239,6 +242,8 @@ def main():
         st, r = call(server, "POST", "/api/admin/settings", {"account_checks": "off"})
         st, r = call(server, "POST", "/api/login", {"name": "oldstyle", "password": "pw1234"})
         check(st == 200, "account_checks off again: the blocked account plays as before (live)")
+        st, r = call(server, "POST", "/api/register", {"name": "nocode216", "password": "longpass1", "client": 2})
+        check(st == 200 and r.get("token"), "checks off: a 2.1.6 sign-up with no invite code is made")
     finally:
         proc.terminate()
         proc.wait(10)
