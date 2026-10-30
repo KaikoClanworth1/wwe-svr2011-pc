@@ -46,6 +46,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -73,6 +74,7 @@
 #include "music.h"
 #include "hd_movies.h"
 #include "user_movies.h"
+#include "ascii_fold.h"  // (launcher/)
 
 namespace fs = std::filesystem;
 
@@ -390,6 +392,23 @@ std::string FileName(std::string s) {
   return s;
 }
 
+// The movie's file name: plain letters ("Demon Finn Bálor" -> "Demon Finn Balor") - the game's paths are 8-bit and
+// USER MOVIES skips a name with accents, so such a mod's entrance played titantron 999 (2.1.7 report, Discovery 36 /
+// 103). The folder's, or "mod <hash of the folder>", where the name has no plain letters at all.
+std::string MovieName(const std::string& name, const std::string& folder) {
+  const auto plain = [](const std::string& utf8) {
+    std::string s;
+    for (wchar_t c : fs::u8path(utf8).wstring()) {
+      const wchar_t f = ascii_fold_char(c);
+      if (f >= 32 && f < 127) s += char(f);
+    }
+    return s.find_first_not_of(" ._-") == std::string::npos ? std::string() : FileName(s);
+  };
+  std::string n = plain(name);
+  if (n.empty()) n = plain(folder);
+  return n.empty() ? fmt::format("mod {:08X}", uint32_t(std::hash<std::string>{}(folder))) : n;
+}
+
 bool CopyIfChanged(const fs::path& from, const fs::path& to) {
   std::error_code ec, e1, e2;
   // (same size and not older: kept - a re-encoded theme can keep its size)
@@ -465,7 +484,6 @@ std::string ThemeName(const Mod& m, const fs::path& music, const fs::path& theme
 
 void InstallMedia(Mod& m, const fs::path& folder, const std::string& song, const std::string& movie, float song_gain) {
   std::error_code ec;
-  const std::string name = FileName(m.name);
   if (!song.empty() && fs::exists(folder / song, ec)) {
     const fs::path music = svr2011::UserMusicFolder();
     const std::string theme = music.empty() ? std::string() : ThemeName(m, music, folder / song);
@@ -481,7 +499,7 @@ void InstallMedia(Mod& m, const fs::path& folder, const std::string& song, const
   const std::string bik = mp4 ? fs::path(movie).replace_extension(".bik").string() : movie;
   if (!movie.empty() && fs::path(bik).extension() == ".bik") {
     const fs::path movies = svr2011::UserMoviesFolder();
-    const std::string file = name + ".bik";
+    const std::string file = MovieName(m.name, m.folder) + ".bik";
     bool ok = !movies.empty() && fs::exists(folder / bik, ec) && CopyIfChanged(folder / bik, movies / file);
     if (mp4 && !movies.empty() && fs::exists(folder / movie, ec) && svr2011::RegisterHdMovie(file, folder / movie)) ok = true;
     if (ok) {
@@ -3281,7 +3299,8 @@ void CopySuperstarMovies(const std::filesystem::path& movies) {
   const fs::path dir = rex::filesystem::GetExecutableFolder() / "Mods" / "Superstars";
   for (const auto& e : fs::directory_iterator(dir, ec)) {
     if (!e.is_directory() || fs::exists(e.path() / "disabled", ec)) continue;
-    std::string name = e.path().filename().string(), movie;
+    const std::string folder = e.path().filename().string();
+    std::string name = folder, movie;
     if (FILE* t = std::fopen((e.path() / "manifest.txt").string().c_str(), "rb")) {
       char line[512];
       while (std::fgets(line, sizeof line, t)) {
@@ -3295,10 +3314,10 @@ void CopySuperstarMovies(const std::filesystem::path& movies) {
     const std::string mp4 = !movie.empty() && fs::path(movie).extension() == ".mp4" ? movie : std::string();
     if (!mp4.empty()) movie = fs::path(movie).replace_extension(".bik").string();
     if (!movie.empty() && fs::path(movie).extension() == ".bik" && fs::exists(e.path() / movie, ec))
-      CopyIfChanged(e.path() / movie, movies / (FileName(name) + ".bik"));  // (an .mp4's: its .bik fallback)
+      CopyIfChanged(e.path() / movie, movies / (MovieName(name, folder) + ".bik"));  // (an .mp4's: its .bik fallback)
     // (an .mp4: its stub and probe now, before the mount - hd_movies.h)
     if (!mp4.empty() && fs::exists(e.path() / mp4, ec))
-      svr2011::PrepareHdMovie(movies, FileName(name) + ".bik", e.path() / mp4);
+      svr2011::PrepareHdMovie(movies, MovieName(name, folder) + ".bik", e.path() / mp4);
   }
 }
 

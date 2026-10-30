@@ -71,6 +71,19 @@ bool Ascii(const std::wstring& s) {
   return std::all_of(s.begin(), s.end(), [](wchar_t c) { return c >= 32 && c < 127; });
 }
 
+// The same bytes (a copy).
+bool SameFile(const std::filesystem::path& a, const std::filesystem::path& b) {
+  std::error_code ec;
+  if (std::filesystem::file_size(a, ec) != std::filesystem::file_size(b, ec) || ec) return false;
+  std::ifstream fa(a, std::ios::binary), fb(b, std::ios::binary);
+  std::vector<char> x(65536), y(65536);
+  while (fa && fb) {
+    fa.read(x.data(), x.size()), fb.read(y.data(), y.size());
+    if (fa.gcount() != fb.gcount() || std::memcmp(x.data(), y.data(), size_t(fa.gcount()))) return false;
+  }
+  return true;
+}
+
 // Rescans the folder: ids for new .bik files, drops files that are gone.
 void Refresh() {
   std::map<int, std::string> ids;
@@ -116,6 +129,12 @@ void Refresh() {
       const bool usable = stem.find_first_not_of(L" ._-") != std::wstring::npos;
       const std::wstring plain = stem + L".bik";
       const auto to = g_folder / plain;
+      // (an older copy of a superstar mod's movie under its accented name, the plain-letters one there now: dropped)
+      if (usable && std::filesystem::exists(to, ec) && SameFile(to, p) && std::filesystem::remove(p, ec)) {
+        REXLOG_INFO("user movies: removed {} (the same as {})", Utf8(p.filename()), to.filename().string());
+        continue;
+      }
+      ec.clear();
       if (!usable || std::filesystem::exists(to, ec) || (std::filesystem::rename(p, to, ec), ec)) {
         REXLOG_WARN("user movies: skipping {} (use plain letters in the name)", Utf8(p.filename()));
         ec.clear();
