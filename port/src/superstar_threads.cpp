@@ -7,7 +7,9 @@
 // profile (+0x2DC, +0x348, +0x3B4: 108 bytes each, +0 = -1 when empty), saved with it in SaveData.dat.
 //
 // threads.pac in Mods\SuperstarOverlay holds the game's SSTL plus a record for each listed mod as
-// EDIT/SSTM, and the game's lookup of /EDIT/SSTL is pointed at it. A mod gets
+// EDIT/SSTM, and the game's lookup of /EDIT/SSTL is pointed at it. The game's SSTL is the installed DLCs' where
+// there are any (a DLC's pac\edit\edit_dlcNN.pac has the whole list plus its superstars - Vol. 3: 50-58): built
+// from the disc's alone, the DLC superstars were gone from Threads once a mod was listed (2.1.6 report). A mod gets
 // - the base's record under its own id when its model is its base's (the attire-1 models, byte for byte:
 //   an attire swap, a renamed copy);
 // - else one from its threads.txt (tools/threads_parts.py names its masks' channels with stock part
@@ -26,6 +28,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -50,6 +53,7 @@ constexpr size_t kRecord = 484, kParts = 48, kAreaAt = 196, kViewAt = 244, kKind
 
 uint32_t g_alias_slash = 0, g_alias_bare = 0;  // guest "/EDIT/SSTM", "EDIT/SSTM"
 fs::path g_dir;                                // Saves\.threads
+fs::path g_dlc_root;                           // the installed DLC packages
 std::mutex g_mutex;
 std::vector<svr2011::ThreadsMod> g_mods;              // the listed mods
 std::map<std::string, std::vector<uint8_t>> g_saved;  // folder -> its 324 bytes as last saved / loaded
@@ -130,6 +134,57 @@ bool PartsRecord(const fs::path& file, const std::map<uint32_t, uint32_t>& codes
   return true;
 }
 
+uint32_t RecordId(const svrfmt::Bytes& list, size_t o) {
+  return uint32_t(list[o] | list[o + 1] << 8 | list[o + 2] << 16 | uint32_t(list[o + 3]) << 24);
+}
+
+// A DLC edit pac's EDIT/SSTL list (u16 count, records); false: none.
+bool ReadSstl(const fs::path& pac, svrfmt::Bytes& list) {
+  svrfmt::Bytes raw;
+  svrfmt::Epac edit;
+  if (!svrfmt::ReadFile(pac.string(), raw) || !svrfmt::EpacRead(raw, edit)) return false;
+  for (const auto& g : edit.groups)
+    for (const auto& x : g.entries) {
+      std::vector<svrfmt::PachEntry> kids;
+      if (g.type != "EDIT" || x.name != "SSTL" || !svrfmt::PachRead(svrfmt::Unpack(x.data), kids) || kids.empty())
+        continue;
+      list = svrfmt::Unpack(kids[0].data);
+      const uint32_t count = list.size() >= 2 ? uint32_t(list[0] | list[1] << 8) : 0;
+      return count && list.size() == 2 + count * kRecord;
+    }
+  return false;
+}
+
+// The installed DLCs' lists over the disc's (`list`): each package's pac\edit\*.pac SSTL, fewest records first -
+// its records in its order, then the ones before it that it lacks. Their files, for the log.
+std::string MergeDlcLists(svrfmt::Bytes& list) {
+  std::vector<std::pair<fs::path, svrfmt::Bytes>> lists;
+  std::error_code ec;
+  if (!g_dlc_root.empty() && fs::is_directory(g_dlc_root, ec))
+    for (const auto& pkg : fs::directory_iterator(g_dlc_root, ec)) {
+      std::error_code e2;
+      for (const auto& f : fs::directory_iterator(pkg.path() / "pac" / "edit", e2)) {
+        svrfmt::Bytes l;
+        if (f.is_regular_file(e2) && f.path().extension() == ".pac" && ReadSstl(f.path(), l))
+          lists.emplace_back(f.path(), std::move(l));
+      }
+    }
+  std::stable_sort(lists.begin(), lists.end(), [](const auto& a, const auto& b) { return a.second.size() < b.second.size(); });
+  std::string names;
+  for (const auto& [file, l] : lists) {
+    std::set<uint32_t> has;
+    for (size_t o = 2; o < l.size(); o += kRecord) has.insert(RecordId(l, o));
+    svrfmt::Bytes merged = l;
+    for (size_t o = 2; o < list.size(); o += kRecord)
+      if (!has.count(RecordId(list, o))) merged.insert(merged.end(), list.begin() + long(o), list.begin() + long(o + kRecord));
+    const uint32_t n = uint32_t((merged.size() - 2) / kRecord);
+    merged[0] = uint8_t(n), merged[1] = uint8_t(n >> 8);
+    list = std::move(merged);
+    names += (names.empty() ? "" : ", ") + file.filename().string() + " (" + std::to_string((l.size() - 2) / kRecord) + ")";
+  }
+  return names;
+}
+
 std::string Dec(uint32_t v) {
   char b[16];
   std::snprintf(b, sizeof b, "%u", v);
@@ -141,6 +196,7 @@ std::string Dec(uint32_t v) {
 namespace svr2011 {
 
 void SetThreadsSaves(const fs::path& saves) { g_dir = saves / ".threads"; }
+void SetThreadsDlc(const fs::path& dlc_root) { g_dlc_root = dlc_root; }
 
 bool BuildThreadsOverlay(rex::memory::Memory* memory, const fs::path& game, const fs::path& overlay,
                          const std::vector<ThreadsMod>& mods) {
@@ -166,16 +222,20 @@ bool BuildThreadsOverlay(rex::memory::Memory* memory, const fs::path& game, cons
     return false;
   }
   svrfmt::Bytes list = svrfmt::Unpack(kids[0].data);
-  const uint32_t count = list.size() >= 2 ? uint32_t(list[0] | list[1] << 8) : 0;
+  uint32_t count = list.size() >= 2 ? uint32_t(list[0] | list[1] << 8) : 0;
   if (!count || list.size() != 2 + count * kRecord) {
     REXLOG_WARN("[svr2011] superstar threads: SSTL is {} bytes for {} records - mods not listed", list.size(), count);
     return false;
+  }
+  if (const std::string dlc = MergeDlcLists(list); !dlc.empty()) {
+    count = uint32_t(list[0] | list[1] << 8);
+    REXLOG_INFO("[svr2011] superstar threads: the DLCs' lists ({}) - {} superstars before the mods", dlc, count);
   }
   std::map<uint32_t, size_t> at;  // id -> record offset
   std::map<uint32_t, std::map<uint32_t, int>> uses;  // part name -> {its area/view/kind bytes -> how many parts}
   for (uint32_t i = 0; i < count; ++i) {
     const size_t o = 2 + i * kRecord;
-    at[uint32_t(list[o] | list[o + 1] << 8 | list[o + 2] << 16 | uint32_t(list[o + 3]) << 24)] = o;
+    at[RecordId(list, o)] = o;
     for (uint32_t k = 0; k < kParts; ++k) {
       const size_t n = o + 4 + k * 4;
       const uint32_t name = uint32_t(list[n] | list[n + 1] << 8 | list[n + 2] << 16 | uint32_t(list[n + 3]) << 24);
