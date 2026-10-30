@@ -141,11 +141,63 @@ def _stale(stamp, newest):
     return b - a > datetime.timedelta(days=1) or datetime.datetime.now() - a > datetime.timedelta(days=2)
 
 
+# Lines every session logs and that say nothing about a problem: the emulator's start-up heap probing, the
+# game's own look-ups of optional files (DLC, SeasonVO voice banks), the XMA / kernel stubs (30 Oct: five live
+# reports were all signed by an old "BaseHeap::Alloc failed" line).
+_HARMLESS = re.compile(
+    r"BaseHeap::Alloc|PhysicalHeap::Alloc|ResolvePath\(|NtCreateFile\]? FAILED|XMA: Write to unknown register|"
+    r"VFS: '|IoDismountVolume|\bStub\b|\bSTUB\b|SeasonVO|\bdlc\d:\\|catalog_hd\.arc|gamecontrollerdb|"
+    r"Failed to find vkGetDeviceProcAddr", re.I)
+_LEVEL = re.compile(r"\[(critical|error)\]", re.I)
+_LOG_TIME = re.compile(r"^\[(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)")
+_GAME_LOG = re.compile(r"(?:^|/)svr2011_(\d+)(?:\.(\d+))?\.log$", re.I)
+
+
+def _useful(line):
+    """A line that can sign a report: not one of the harmless ones, not a converter's JSON output."""
+    t = line.strip()
+    return bool(t) and not _HARMLESS.search(t) and not t.startswith(("[{", "{", "\"", "[\""))
+
+
+def _first_time(text):
+    """A log's first line's time as YYYYMMDDhhmmss (int), 0 if none."""
+    for line in text.splitlines()[:5]:
+        m = _LOG_TIME.match(line)
+        if m:
+            return int("".join(m.groups()))
+    return 0
+
+
+def _session(z, names, app):
+    """The reported session's logs, oldest part first, as [(name, text)]: the game's newest log (its highest
+    number, all its parts - report.c puts the newest game's parts and the last part of two older ones in), or
+    for the Mod Maker its newest modmaker_<time>.log."""
+    def text(i):
+        try:
+            return z.read(i).decode("utf-8", "replace")
+        except Exception:
+            return ""
+    if app == "modmaker":
+        own = sorted((i for i in names if re.search(r"(^|/)modmaker_[^/]*\.log$", i.filename, re.I)),
+                     key=lambda i: (_stamp(i.filename), i.filename))
+        if own:
+            return [(own[-1].filename, text(own[-1]))]
+    games = {}
+    for i in names:
+        m = _GAME_LOG.search(i.filename.replace("\\", "/"))
+        if m:
+            games.setdefault(int(m.group(1)), []).append((int(m.group(2) or 0), i))
+    if not games:
+        return []
+    parts = sorted(games[max(games)], key=lambda kp: -kp[0])  # (the highest part number is the oldest)
+    return [(i.filename, text(i)) for _, i in parts]
+
+
 def first_error_line(zip_bytes, app=""):
-    """The crash / error line a report is about, '' when there's none (or no zip). Report zips carry old crash
-    files too (the crashes folder as it is), so the newest come first (by the time in their names), a crash file
-    a day older than the newest file in the zip (or two days older than now) doesn't count, and the Mod Maker's own logs come before the
-    game's crashes. Crash files: their first error line (else their first line); logs: their first error line."""
+    """The line a report is about, '' when there's none (or no zip). Only the reported session counts - its
+    logs (_session) and the crash reports written while it ran - and the harmless lines never do. In order:
+    a crash report's first error line (else its first line), the session's first [critical] line, its LAST
+    [error] line (the one nearest the problem), then for the Mod Maker its log's last failed / error line."""
     if not zip_bytes:
         return ""
     try:
@@ -153,34 +205,40 @@ def first_error_line(zip_bytes, app=""):
     except (zipfile.BadZipFile, ValueError):
         return ""
     names = [i for i in z.infolist() if not i.is_dir() and i.file_size <= (64 << 20)]
-    newest = max([_stamp(i.filename) for i in names] or [0])
-    by_time = lambda i: (-_stamp(i.filename), i.filename)
-    crash = sorted((i for i in names if re.search(r"(^|/)crash", i.filename, re.I)
-                    and not (_stamp(i.filename) and _stale(_stamp(i.filename), newest))),
-                   key=by_time)
-    logs = sorted((i for i in names if i not in crash and not re.search(r"(^|/)crash", i.filename, re.I)
-                   and re.search(r"\.log$", i.filename, re.I)), key=by_time)  # (not report.txt: the client's summary)
-    groups = [(crash, True), (logs, False)]
-    if app == "modmaker":
-        own = [i for i in logs if "modmaker" in i.filename.lower()]
-        groups = [(own, False), (crash, True), ([i for i in logs if i not in own], False)]
-    for group, crash_file in groups:
-        for info in group:
-            try:
-                lines = [l.strip() for l in z.read(info).decode("utf-8", "replace").splitlines() if l.strip()]
-            except Exception:
-                continue
-            hit = next((l for l in lines if _ERR.search(l)), None)
-            if hit is None and crash_file and lines:
-                hit = lines[0]  # (a crash file without the words: its first line is the crash)
-            if hit:
-                return hit[:500]
-    return ""
+    session = _session(z, names, app)
+    start = min([t for t in (_first_time(txt) for _, txt in session) if t] or [0])
+    # crash reports written during the session (empty ones - the game closed while writing - say nothing)
+    crashes = sorted((i for i in names if re.search(r"(^|/)crash[^/]*\.txt$", i.filename, re.I) and i.file_size
+                      and _stamp(i.filename) and (not start or _stamp(i.filename) >= start - 60)),
+                     key=lambda i: -_stamp(i.filename))
+    for info in crashes:
+        try:
+            lines = [l.strip() for l in z.read(info).decode("utf-8", "replace").splitlines() if l.strip()]
+        except Exception:
+            continue
+        hit = next((l for l in lines if _ERR.search(l) and _useful(l)), None) or (lines[0] if lines else None)
+        if hit:
+            return hit[:500]
+    lines = [l for _, txt in session for l in txt.splitlines()]
+    hit = next((l for l in lines if "[critical]" in l.lower() and _useful(l)), None)
+    if hit is None:
+        hit = next((l for l in reversed(lines) if _LEVEL.search(l) and _useful(l)), None)
+    if hit is None and app == "modmaker":
+        hit = next((l for l in reversed(lines) if re.search(r"\b(failed|error|traceback)\b", l, re.I) and _useful(l)),
+                   None)
+    return (hit or "")[:500]
 
 
-def signature(meta, zip_bytes):
-    """(signature, the line it was made from)"""
-    line = first_error_line(zip_bytes, meta["app"]) or meta.get("client_signature", "")
+def signature(meta, zip_bytes, match_bytes=b""):
+    """(signature, the line it was made from). No line from the session: the client's hint (when it's a useful
+    one), else the problem with the match's rule and arena mod (the match folder), else the problem alone."""
+    line = first_error_line(zip_bytes, meta["app"])
+    if not line and _useful(meta.get("client_signature", "")):
+        line = meta.get("client_signature", "")
+    if not line:
+        m = match_summary(match_bytes) if match_bytes else None
+        line = "no error line - match rule %s, arena %s" % ((m or {}).get("rule") or "-",
+                                                             (m or {}).get("arena_mod") or (m or {}).get("arena") or "-")
     key = "|".join((meta["app"], meta["version"].lower(), meta["problem"].lower(), normalise(line)))
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16], line
 
@@ -330,7 +388,7 @@ class LocalReports:
     def add(self, meta, zip_bytes, images, match_bytes=b""):
         """meta: clean_meta's (its "mods": clean_mods', each marked stored here or not); images: [bytes] (checked);
         match_bytes: the match folder's zip -> {id, signature, seen_before}"""
-        sig, line = signature(meta, zip_bytes)
+        sig, line = signature(meta, zip_bytes, match_bytes)
         received = time.time()
         with self.lock:
             rid = time.strftime("%Y%m%d-%H%M%S", time.localtime(received)) + "-" + secrets.token_hex(3)
@@ -515,6 +573,43 @@ class LocalReports:
                     marks.pop(rid, None)
             self._write_status(marks)
         return ids
+
+    def resign(self, write=False):
+        """Every report signed again with the current rule -> [(id, old signature, new, old line, new line)]. write:
+        report.json and index.jsonl get the new signature / line, seen_before counted again in received order."""
+        out, counts = [], {}
+        rows = sorted(self._rows(), key=lambda r: r.get("id", ""))
+        for row in rows:
+            rid = row.get("id", "")
+            folder = os.path.join(self.dir, _day(rid), rid)
+            try:
+                with open(os.path.join(folder, "report.json"), encoding="utf-8") as f:
+                    rec = json.load(f)
+            except (OSError, ValueError):
+                continue
+            read = lambda n: open(os.path.join(folder, n), "rb").read() if os.path.exists(os.path.join(folder, n)) else b""
+            meta = {"app": rec.get("app", ""), "version": rec.get("version", ""), "problem": rec.get("problem", ""),
+                    "client_signature": rec.get("client_signature", "")}
+            sig, line = signature(meta, read("report.zip"), read("match.zip"))
+            out.append((rid, rec.get("signature", ""), sig, rec.get("signature_line", ""), line))
+            if write:
+                seen = counts.get(sig, 0)
+                counts[sig] = seen + 1
+                rec.update(signature=sig, signature_line=line, seen_before=seen)
+                with open(os.path.join(folder, "report.json"), "w", encoding="utf-8") as f:
+                    json.dump(rec, f, indent=2, ensure_ascii=False)
+                row.update(signature=sig, signature_line=line, seen_before=seen)
+        if write:
+            with self.lock:
+                tmp = self.index_path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    for row in rows:
+                        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                os.replace(tmp, self.index_path)
+                self.counts = {}
+                for row in rows:
+                    self.counts[row.get("signature", "")] = self.counts.get(row.get("signature", ""), 0) + 1
+        return out
 
     def delete(self, rid):
         """A report gone for good: its folder, its index line and its mark."""
@@ -810,6 +905,7 @@ def main():
         python reports.py --data <data folder> mark <id | signature> --done | --duplicate | --reopen
         python reports.py --data <data folder> delete <report id>
         python reports.py --data <data folder> list [--fixed]
+        python reports.py --data <data folder> resign [--write]   (every report signed again: before / after)
     A signature marks every report with it (the dashboard's groups). The dashboard shows the fixed ones under
     "Fixed while you were away"."""
     import argparse
@@ -830,6 +926,8 @@ def main():
     d.add_argument("id")
     ls = sub.add_parser("list")
     ls.add_argument("--fixed", action="store_true", help="only the fixed ones")
+    rs = sub.add_parser("resign")
+    rs.add_argument("--write", action="store_true", help="keep the new signatures (else only shown)")
     a = ap.parse_args()
     if not os.path.isdir(os.path.join(a.data, "reports")):
         raise SystemExit("No reports folder in %s" % a.data)
@@ -841,6 +939,11 @@ def main():
         if not ids:
             raise SystemExit("No report with that id or signature.")
         print("%s: %d report(s): %s" % (status or "reopened", len(ids), ", ".join(ids)))
+    elif a.cmd == "resign":
+        for rid, old, new, old_line, new_line in store.resign(a.write):
+            print("%s  %s -> %s%s\n    was: %s\n    now: %s" % (rid, old, new, "" if old != new else " (same)",
+                                                              old_line[:150], new_line[:150]))
+        print("written" if a.write else "(shown only: --write keeps them)")
     elif a.cmd == "delete":
         if not store.delete(a.id):
             raise SystemExit("No report %s." % a.id)
