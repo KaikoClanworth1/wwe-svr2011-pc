@@ -3225,6 +3225,10 @@ def main():
                          "code for online play (the accounts' old rules)")
     ap.add_argument("--activate", default=None, metavar="NAME",
                     help="let this account play online without a re-activation code, then exit")
+    ap.add_argument("--prune-accounts", type=float, default=None, metavar="DAYS",
+                    help="list the accounts made more than DAYS ago and not seen for DAYS (with --yes: delete them, "
+                         "as the dashboard's Delete does), then exit - with the server stopped")
+    ap.add_argument("--yes", action="store_true", help="(--prune-accounts) really delete")
     args = ap.parse_args()
     if args.set_admin_password:
         return aa.set_password_cli(args.admin_password_file or os.path.join(args.data, "admin_password"))
@@ -3241,6 +3245,27 @@ def main():
             store.db.commit()
         print("%s: %s" % (args.activate, "active" if n else "no such account"))
         sys.exit(0 if n else 1)
+    if args.prune_accounts is not None:
+        if args.role == "storage":
+            ap.error("--prune-accounts: a storage node has no accounts (run it where the core's data is)")
+        store = gs.Store(args.data)
+        accounts = Accounts(store)
+        leaderboards.Leaderboards(store)  # (its tables: a delete clears the account's rows)
+        cut = now() - args.prune_accounts * 86400
+        with store.lock:
+            rows = store.db.execute("SELECT id, name, created, last_seen, banned FROM accounts WHERE created < ? AND "
+                                    "COALESCE(last_seen, 0) < ? ORDER BY last_seen", (cut, cut)).fetchall()
+        day = lambda t: time.strftime("%Y-%m-%d", time.localtime(t)) if t else "never"
+        for aid, name, created, seen, banned in rows:
+            print("%6d  %-16s made %s  last seen %s%s" % (aid, name, day(created), day(seen),
+                                                          "  (banned)" if banned else ""))
+        print("%d account(s) made more than %g days ago and not seen since" % (len(rows), args.prune_accounts))
+        if not args.yes:
+            print("(nothing deleted: add --yes to delete them)")
+            sys.exit(0)
+        records = sum(accounts.delete(aid) for aid, *_ in rows)
+        print("deleted %d account(s) and %d Community Creations record(s)" % (len(rows), records))
+        sys.exit(0)
     if args.relay_edge and (not args.relay_secret or not args.relay_udp_port):
         ap.error("--relay-edge needs --relay-secret and --relay-udp-port")
     # (a storage node never relays: linked to the edge too, it took half the
