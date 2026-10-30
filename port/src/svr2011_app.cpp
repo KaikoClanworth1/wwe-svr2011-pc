@@ -821,6 +821,11 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::InstallModelMem(runtime()->memory());  // (model_mem.cpp)
 #endif
   svr2011::SetThreadsSaves(g_saves);  // (the mods' Superstar Threads slots, kept by folder)
+  {
+    char title[16];
+    std::snprintf(title, sizeof(title), "%08X", runtime()->kernel_state()->title_id());
+    svr2011::SetThreadsDlc(g_user_data / "0000000000000000" / title / "00000002");  // (the DLCs' own Threads lists)
+  }
   svr2011::SetSuperstarModsSaves(g_saves);  // (a fetched mod's id as the save file has it)
   svr2011::InstallSuperstarMods(runtime()->memory(), runtime()->file_system());
   svr2011::InstallUniverseWelcome(g_saves, g_user_data);  // (the Universe welcome kept as seen once accepted)
