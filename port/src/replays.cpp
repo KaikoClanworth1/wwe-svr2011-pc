@@ -198,3 +198,30 @@ REX_HOOK_RAW(sub_82167768) {
   __imp__sub_82167768(ctx, base);
   if (stall) ctx.r3.u64 = 0;
 }
+
+// A replayed object's history (vtable 0x82006090: two block-heap arrays by handle at +132 / +140, made by
+// sub_8225DA88 / filled while the match records): sub_8225DC88 looks a time up in it with no check. A handle whose
+// block is gone (+0 null) was a crash in the match-end highlights - "the game closed after I win", every time (2.1.6
+// report, Triple Threat, guest read 0x162 in clip 4 of 5). Now that object isn't stepped (-1: not found, as its
+// caller sub_8225DD58 expects) and it's logged with its handles, for the reports.
+// Test aid: SVR2011_TEST_REPLAY_GONE=<n> - the n-th look-up of the run is treated as gone (the guard's path).
+REX_EXTERN(__imp__sub_8225DC88);
+REX_HOOK_RAW(sub_8225DC88) {
+  const uint32_t obj = ctx.r3.u32;
+  // (guest 0xE0000000 and up - the block heap's physical pages - sit 4 KB further on the host)
+  auto at = [&](uint32_t a) { return Rd32(base + a + (a >= 0xE0000000u ? 0x1000u : 0u)); };
+  const uint32_t h1 = obj ? at(obj + 132) : 0, h2 = obj ? at(obj + 140) : 0;
+  static const int test_gone = [] { const char* v = std::getenv("SVR2011_TEST_REPLAY_GONE"); return v ? std::atoi(v) : 0; }();
+  static int lookups = 0;
+  const bool test = test_gone > 0 && ++lookups == test_gone;
+  if (test || !h1 || !h2 || !at(h1) || !at(h2)) {
+    static int skipped = 0;
+    if (++skipped <= 5 || skipped % 500 == 0)
+      REXLOG_WARN("[svr2011] replay: an object's history is gone (object {:08X}, handles {:08X} {:08X} -> {:08X} {:08X}) - "
+                  "not stepped ({} times){}", obj, h1, h2, h1 ? at(h1) : 0, h2 ? at(h2) : 0, skipped,
+                  test ? " - test (SVR2011_TEST_REPLAY_GONE)" : "");
+    ctx.r3.u64 = 0xFFFFFFFFFFFFFFFFull;
+    return;
+  }
+  __imp__sub_8225DC88(ctx, base);
+}
