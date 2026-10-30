@@ -271,7 +271,20 @@ size_t g_real = 0;
 // The chosen weapons as nine models (empty: the game's set).
 std::vector<uint32_t> NineOf(const Counts& want, std::string& names, std::string& dropped, size_t* real_n = nullptr) {
   std::vector<uint32_t> real;
-  for (int i = 0; i < RowCount() && i < int(want.size()); ++i)
+  // (the game's weapons in their table's order, then the weapon mods by their online key - "<folder>\t<pack hash>\t
+  // <like>", the same on every game - not by this install's row order: online every peer builds the same nine, the
+  // same places under the ring and the same floor items from the host's picks, whatever order its Mods\Weapons is in)
+  std::vector<std::pair<std::string, int>> mods;
+  for (int i = 0; i < RowCount() && i < int(want.size()); ++i) {
+    const Row& r = Rows()[size_t(i)];
+    if (r.mod) {
+      if (want[size_t(i)] > 0) mods.emplace_back(r.mod->key, i);
+      continue;
+    }
+    for (int k = 0; k < want[size_t(i)]; ++k) real.push_back(uint32_t(r.id));
+  }
+  std::sort(mods.begin(), mods.end());
+  for (const auto& [key, i] : mods)
     for (int k = 0; k < want[size_t(i)]; ++k) real.push_back(uint32_t(Rows()[size_t(i)].id));
   int room = 0;
   for (uint32_t id : kGameNine) room += KbOf(id);
