@@ -1641,12 +1641,36 @@ class Service:
         info, _ = discovery.get(self.store, mid, True)
         return web.json_response({"ok": True, "mod": info})
 
+    def mod_admin_key(self, request):
+        """The storage node's key (X-Storage-Key) on a core that has a node: an admin's update of any mod from the
+        PC (the bulk movie shrink) - through /svr/api/mods/{id}/file, whose nginx location takes big bodies."""
+        key = request.headers.get("X-Storage-Key", "")
+        return bool(self.node_key and key and hmac.compare_digest(key, self.node_key))
+
     async def api_mod_update_file(self, request):
-        """PUT multipart: svrmod (the new file) + version (a new one); maybe name / tags / description / types."""
+        """PUT multipart: svrmod (the new file) + version (a new one); maybe name / tags / description / types.
+        Its owner's (Bearer), or an admin's with the storage node's key (mod_admin_key)."""
         mid = self._mod_id(request)
+        if self.mod_admin_key(request):
+            if mid is None or discovery.owner_of(self.store, mid) is None:
+                return web.json_response({"ok": False, "error": "No such mod."}, status=404)
+            return await self.mod_update_file(request, mid, None)
         account, err = self.mod_owner_check(request, mid)
         if err:
             return err
+        return await self.mod_update_file(request, mid, account)
+
+    @admin_only
+    async def admin_mod_update_file(self, request):
+        """The dashboard's PUT of a mod's new version (as api_mod_update_file; the owner stays)."""
+        mid = self._mod_id(request)
+        if mid is None or discovery.owner_of(self.store, mid) is None:
+            return web.json_response({"ok": False, "error": "No such mod."}, status=404)
+        return await self.mod_update_file(request, mid, None)
+
+    async def mod_update_file(self, request, mid, account):
+        """A new version of mod mid from its owner (account), or from an admin (None): then no quota, and the
+        owner, author, id and downloads stay all the same; the form's "why" goes in the log."""
         length = request.content_length
         if not length:
             return web.json_response({"ok": False, "error": "no length"}, status=411)
@@ -1657,7 +1681,7 @@ class Service:
             return web.json_response({"ok": False, "error": "Another mod is being stored - try again in a minute."},
                                      status=503)
         async with self.mod_upload:
-            raw, data, file_name = {}, None, ""
+            raw, data, file_name, admin_why = {}, None, "", "admin"
             reader = await request.multipart()
             while True:
                 part = await reader.next()
@@ -1669,6 +1693,8 @@ class Service:
                     data = await part.read()
                 elif name in discovery.MAX_TEXT or name == "types":
                     raw[name] = (await part.text()).strip()[:discovery.MAX_TEXT.get(name, 100)]
+                elif name == "why" and account is None:
+                    admin_why = (await part.text()).strip()[:60] or admin_why
                 else:
                     await part.release()
             fields, why = self.mod_fields(raw)
@@ -1685,17 +1711,19 @@ class Service:
                 why = self.names_why(account, *fields.values())
             if not why:
                 manifest, why = await loop.run_in_executor(None, discovery.check_svrmod, data)
-            if not why:
+            if not why and account:
                 why = self.mod_quota_why(account, len(data), but=mid)
+            by = "its owner" if account else "admin (%s)" % admin_why
             if why:
-                gs.log("discovery: update of mod %d from %s refused: %s" % (mid, account["name"], why))
+                gs.log("discovery: update of mod %d from %s refused: %s" % (
+                    mid, account["name"] if account else by, why))
                 return web.json_response({"ok": False, "error": why}, status=400)
             fields["needs"] = manifest.get("needs", "")[:20]  # (the new file's own)
             was = await loop.run_in_executor(None, discovery.replace_file, self.store, mid, data, file_name, fields)
             if was is None:
                 return web.json_response({"ok": False, "error": "No such mod."}, status=404)
-            gs.log("discovery: mod %d updated by its owner (file) %s -> %s (%d bytes, %s)" % (
-                mid, was, fields["version"], len(data), manifest.get("type", "?")))
+            gs.log("discovery: mod %d updated by %s (file) %s -> %s (%d -> %d bytes, %s)" % (
+                mid, by, was, fields["version"], (old or {}).get("size", 0), len(data), manifest.get("type", "?")))
             info, _ = discovery.get(self.store, mid, True)
             return web.json_response(dict({"ok": True, "mod": info}, **self.mod_size_warning(len(data))))
 
@@ -2942,7 +2970,7 @@ class Service:
         app.router.add_post(b + "/api/mods", self.api_mod_upload)
         app.router.add_route("*", b + "/api/mods/{id}", self.api_mod)  # (GET; PATCH / DELETE: its owner)
         app.router.add_get(b + "/api/mods/{id}/file", self.api_mod_file)
-        app.router.add_put(b + "/api/mods/{id}/file", self.api_mod_update_file)  # (its owner: an update)
+        app.router.add_put(b + "/api/mods/{id}/file", self.api_mod_update_file)  # (an update: its owner, or the node's key)
         app.router.add_put(b + "/api/mods/{id}/pictures/{n}", self.api_mod_update_picture)  # (its owner)
         app.router.add_get(b + "/api/mods/{id}/img/{n}", self.api_mod_image)
         app.router.add_post(b + "/api/reports", self.api_report)
@@ -2969,6 +2997,7 @@ class Service:
             app.router.add_post(p + "/api/admin/blobs/{sha}/delete", self.admin_blob_delete)
             app.router.add_get(p + "/api/admin/mod/{id}/image.jpg", self.admin_mod_image)
             app.router.add_post(p + "/api/admin/mod/{id}/{action}", self.admin_mod_action)
+            app.router.add_put(p + "/api/admin/mods/{id}/file", self.admin_mod_update_file)  # (a new version, owner kept)
             app.router.add_get(p + "/api/admin/users", self.admin_users)
             app.router.add_get(p + "/api/admin/reports", self.admin_reports)
             app.router.add_get(p + "/api/admin/report/{id}/replay.zip", self.admin_report_replay)
