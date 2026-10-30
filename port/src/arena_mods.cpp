@@ -85,8 +85,9 @@ fs::path g_game, g_overlay;
 bool g_overlay_ready = false;
 std::string g_redirect[100];  // arena number -> relative file ("" = original)
 int g_number_for[100];        // arena number -> the number a match there plays as (0: its own), see RedirectArena
-// arena number -> the arena a match picked there plays as (0: its own): a custom arena on another arena's tile plays
-// as its base arena (FollowCursor), whose file is the custom one
+// arena number -> the arena a match picked there plays as, + 1 (0: its own - stored + 1 so that a base of arena 0,
+// SmackDown, isn't taken for none: a mod built on SmackDown played its tile's stock arena, 30 Oct report): a custom
+// arena on another arena's tile plays as its base arena (FollowCursor), whose file is the custom one
 int g_plays_as[100];
 std::string g_default[100];   // arena number -> its file when no custom arena is on its tile (media mods: screens)
 // The served file's STG entries whose size differs from the shipped file's (RedirectArena): the game reads an entry
@@ -1287,7 +1288,7 @@ void PointAt(const CustomArena* c, int tile) {
   if (!c || tile < 0) return;
   svr2011::RedirectArena(as, TitantronFile(*c));
   g_redirected_host = tile, g_redirected_file = as;
-  if (as != tile) g_plays_as[tile] = as;
+  if (as != tile) g_plays_as[tile] = as + 1;  // (+1: 0 is none - a base of 0, SmackDown, is 1)
 }
 
 // The custom arena on the tile under the cursor is the one played.
@@ -1353,7 +1354,7 @@ void LiveArenaPlaysAs(uint8_t* base) {
   uint8_t* q = base + 0x82E3DE40;
   const uint32_t arena = uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
   if (arena >= 100 || !g_plays_as[arena]) return;
-  const uint32_t as = uint32_t(g_plays_as[arena]);
+  const uint32_t as = uint32_t(g_plays_as[arena] - 1);
   q[0] = uint8_t(as >> 24), q[1] = uint8_t(as >> 16), q[2] = uint8_t(as >> 8), q[3] = uint8_t(as);
   REXLOG_INFO("[svr2011] arena mods: the live settings' arena {} plays as arena {}", arena, as);
 }
@@ -1848,7 +1849,7 @@ bool UseArenaMod(const std::string& folder, int tile) {
 }
 
 int ArenaNumberFor(int arena) {
-  if (arena >= 0 && arena < 100 && g_plays_as[arena]) arena = g_plays_as[arena];
+  if (arena >= 0 && arena < 100 && g_plays_as[arena]) arena = g_plays_as[arena] - 1;
   return arena >= 0 && arena < 100 && g_number_for[arena] ? g_number_for[arena] : arena;
 }
 
@@ -1862,7 +1863,7 @@ void ScreenArenaRead(uint8_t* base, uint32_t screen) {
   uint8_t* q = base + screen + kScreenArena;
   const uint32_t arena = uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
   if (arena >= 100 || !g_plays_as[arena]) return;
-  const uint32_t as = uint32_t(g_plays_as[arena]);
+  const uint32_t as = uint32_t(g_plays_as[arena] - 1);
   q[0] = uint8_t(as >> 24), q[1] = uint8_t(as >> 16), q[2] = uint8_t(as >> 8), q[3] = uint8_t(as);
   REXLOG_INFO("[svr2011] arena mods: the match screen's arena {} plays as arena {}", arena, as);
 }
@@ -2081,12 +2082,15 @@ void InstallArenaMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileS
   }
   LoadCustomArenas();
   // Test aid: SVR2011_TEST_ARENA_MOD=<custom arena folder> - it is picked from the start, on its base arena's tile
-  // (SVR2011_TEST_MATCH arena=<that base> plays it).
+  // (SVR2011_TEST_MATCH arena=<that base> plays it); SVR2011_TEST_ARENA_TILE=<n> - on arena n's tile instead (as on
+  // a page where it sits on another arena's tile: SVR2011_TEST_MATCH arena=<n>).
   if (const char* v = std::getenv("SVR2011_TEST_ARENA_MOD"); v && *v) {
+    const char* t = std::getenv("SVR2011_TEST_ARENA_TILE");
     for (const auto& c : g_customs)
       if (c.id == v) {
-        PointAt(&c, c.base_arena >= 0 ? c.base_arena : 1);
-        REXLOG_INFO("[svr2011] arena mods: test - {} picked (plays as arena {})", c.name, g_redirected_file);
+        PointAt(&c, t && *t ? std::atoi(t) : c.base_arena >= 0 ? c.base_arena : 1);
+        REXLOG_INFO("[svr2011] arena mods: test - {} picked on arena {}'s tile (plays as arena {})", c.name,
+                    g_redirected_host, g_redirected_file);
       }
   }
   LoadBackstage();
