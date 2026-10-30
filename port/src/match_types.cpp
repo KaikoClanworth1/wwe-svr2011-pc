@@ -180,6 +180,17 @@ bool g_pending_roof = false;
 // aids: SVR2011_TEST_ROOF_DOWN=0 off; SVR2011_TEST_ROOF_DOWN_SECS=<s>.
 constexpr uint32_t kRoofArea = 10, kClimbDown = 1672;
 uint32_t g_roof_alone_since[6] = {};  // match frame + 1 since that person is alone on the roof (0: not)
+// The CPU stall (PiPPiN's report, 30 Oct: a CPU Jeff Hardy rolled out and stood 50 s on the floor until counted out;
+// memory svr2011-ring-stall): now and then a CPU's AI goes silent - the other one carries on - and stays so. A CPU
+// wrestler (slot controller 1, port +1152 4+) on the floor outside (+444 area 1) left in one motion for
+// 8 s while the referee counts (his motion 191 seen lately - only rules with a count-out play it) climbs back in:
+// the game's own climb from the apron (kClimbIn). Only match state decides (motions, places, frames, slots): the same
+// on every machine online. Humans are never touched. (Two CPUs left in a lock-up 21100 aren't covered: from outside
+// its state neither both back to standing - a crash - nor a pair grapple - frozen - nor 10005 - a 10 s loop - work.)
+// Test aid: SVR2011_TEST_STALL_SECS=<s> - after <s> s, and without waiting for a count.
+constexpr uint32_t kRefCounting = 191, kClimbIn = 7014;
+uint32_t g_count_seen = 0;               // match frame + 1 the referee last counted (motion 191)
+uint32_t g_still_motion[6] = {}, g_still_since[6] = {};  // per person: the motion and match frame + 1 it began
 bool g_roof = false;  // the match set up starts on the cell's roof
 bool g_pending_weapons = false;
 bool g_weapons = false;  // the match set up is a WEAPONS EVERYWHERE one
@@ -968,6 +979,54 @@ void InstallMatchTypes(rex::memory::Memory* memory) {
 
 }  // namespace svr2011
 
+namespace {
+// The CPU stall net (g_count_seen above): from the free state of character c.
+void CpuStallNet(const PPCContext& saved, uint8_t* base, uint32_t c) {
+  static const int test_secs = [] { const char* v = std::getenv("SVR2011_TEST_STALL_SECS"); return v ? std::atoi(v) : 0; }();
+  const uint32_t stall_frames = uint32_t((test_secs > 0 ? test_secs : 8) * 60);
+  const uint32_t person = Rd32(base + c + 1156), frames = Rd32(base + 0x82E3CD0C), motion = Rd32(base + c + 212);
+  if (person >= 6) return;
+  // (a new motion, a new match, or frames when he wasn't free - knocked down, in a move: the free state comes back
+  // in the same standing motion, and a stand from before the knock-down counted - Cena climbed in 2 s after getting up)
+  static uint32_t seen[6] = {};
+  const bool gap = !seen[person] || frames > seen[person] + 2 || frames < seen[person];
+  seen[person] = frames;  // (every frame while he stands: measured, 30 Oct)
+  if (gap || g_still_motion[person] != motion || !g_still_since[person] || frames + 1 < g_still_since[person]) {
+    g_still_motion[person] = motion, g_still_since[person] = frames + 1;
+    return;
+  }
+  if (frames + 1 - g_still_since[person] < stall_frames) return;
+  const uint32_t match = Rd32(base + 0x82EDEB48);
+  if (!match || base[match + 432 + person * 2116 - 8] != 1 || Rd32(base + c + 1152) < 4) return;  // (a CPU only)
+  const auto rd_f = [&](uint32_t at) { const uint32_t u = Rd32(base + at); float f; std::memcpy(&f, &u, 4); return f; };
+  const float x = rd_f(c + 288), y = rd_f(c + 292), z = rd_f(c + 296);
+  if (base[c + 444] != 1 || y < -4.f) return;  // (on the floor outside)
+  const bool counting = g_count_seen && frames + 1 - g_count_seen < 120;
+  if (!counting && test_secs <= 0) return;
+  if (Rd32(base + c + 1828) != ~0u) return;  // (holding something)
+  // The game's own way back in (7014 -> 7010 -> 7015/7016: it takes him to the apron and over it - from z 45.7 he
+  // was on the mat at 22.8), facing the ring from the side he is on. (The action-button handler sub_8230A760 with
+  // the stick held that way started nothing.) Not from far off - the ramp, the crowd.
+  constexpr float kFar = 50.f;
+  const bool along_x = std::fabs(x) > std::fabs(z);  // (he is off the ring's +-x side)
+  if (std::max(std::fabs(x), std::fabs(z)) > kFar) return;
+  constexpr float kHalfPi = 1.5707963f;
+  const float yaw = along_x ? (x < 0 ? -kHalfPi : kHalfPi) : (z < 0 ? 2.f * kHalfPi : 0.f);
+  uint32_t yaw_bits;
+  std::memcpy(&yaw_bits, &yaw, 4);
+  Wr32(base + c + 276, yaw_bits);
+  PPCContext k = saved;
+  k.r3.u64 = c, k.r4.u64 = kClimbIn;
+  sub_82397228(k, base);
+  const uint32_t after = Rd32(base + c + 212);
+  static int logged = 0;
+  if (logged++ < 40)
+    REXLOG_INFO("cpu stall: person {} idle {} s outside (motion {}, x {:.0f} z {:.0f}, count {}) -> back in: motion {}",
+                person, (frames + 1 - g_still_since[person]) / 60, motion, x, z, counting ? "on" : "off (test)", after);
+  g_still_since[person] = frames + 1;  // (again after another stall_frames if it didn't take)
+}
+}  // namespace
+
 // A wrestler's free state (standing, nothing on): sub_82292D50(state), the
 // character *(state +280). After it: a CPU alone on the roof long enough
 // climbs down (above, g_roof_alone_since) - as if it pressed the action button
@@ -994,6 +1053,7 @@ REX_HOOK_RAW(sub_82292D50) {
                                                : std::string("the CPU"));
     }
   }
+  if (c) CpuStallNet(saved, base, c);
   static const bool off = [] { const char* v = std::getenv("SVR2011_TEST_ROOF_DOWN"); return v && *v == '0'; }();
   static const uint32_t alone_frames = [] {
     const char* v = std::getenv("SVR2011_TEST_ROOF_DOWN_SECS");
@@ -2017,6 +2077,22 @@ REX_HOOK_RAW(sub_82216C58) {
       break;
     }
   __imp__sub_82216C58(ctx, base);
+  // Research aid: SVR2011_TEST_AI_INPUT=1 - once a second, people 0 and 1: the control, its input object (+36) and the
+  // input's first 64 bytes, and the motion (the CPU stall: does a standing CPU's input still change?)
+  if (static const bool ai_input = std::getenv("SVR2011_TEST_AI_INPUT") != nullptr; ai_input && fighter && input) {
+    const uint32_t who = Rd32(base + fighter + 1156), frames = Rd32(base + 0x82E3CD0C);
+    if (who < 2 && frames % 60 == 0) {
+      std::string hex;
+      for (uint32_t i = 0; i < 64; ++i) hex += fmt::format("{:02X}", base[input + i]);
+      for (uint32_t k : {16u, 20u})  // (the gPAD's buffers: the pressed state)
+        if (const uint32_t b = Rd32(base + input + k); b && b < 0xF0000000u) {
+          hex += k == 16u ? " | " : " / ";
+          for (uint32_t i = 0; i < 48; ++i) hex += fmt::format("{:02X}", base[b + i]);
+        }
+      REXLOG_INFO("ai input: person {} frame {} control {:08X} input {:08X} motion {} {}", who, frames, control, input,
+                  Rd32(base + fighter + 212), hex);
+    }
+  }
   // A fighter on the floor outside (+444 area 1, base y near 0) never stands under the ring, yet a paired move started
   // by the apron could have its pair's places redone into the ring's footprint (a ported Double Arm DDT 2 from the
   // floor by the apron: the victim's base at (13.4, 8.4), the attacker's slid to 15 from it), and when the move ended
@@ -2435,6 +2511,9 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
   svr2011::CrowdHandoffUpdate(ctx, base);  // (a fan hands a weapon over the barricade: crowd_fight.h)
   svr2011::MatchBoxUpdate(ctx, base);      // (the match's black box: match_box.h)
   svr2011::MatchRecordUpdate(ctx, base);   // (match recordings: match_record.h)
+  // (the CPU stall net: the referee - person 6 - counting someone out, motion 191)
+  if (const uint32_t ref = Rd32(base + kChars + 6 * 4); ref && Rd32(base + ref + 212) == kRefCounting)
+    g_count_seen = Rd32(base + 0x82E3CD0C) + 1;
   // Research aid (stuck wrestlers, B11/B12): SVR2011_TEST_STUCK_CHARS=1 - each
   // second, people 0-5 whose place and motion (+212) haven't changed for 10 s
   // while the match clock runs are logged (once each time), with the motion.
@@ -3097,9 +3176,15 @@ namespace {
 void AiActionLog(uint8_t* base, uint32_t ai, uint32_t id, int factory) {
   static const bool on = std::getenv("SVR2011_TEST_AI_LOG") != nullptr;
   if (!on || !ai) return;
-  const uint32_t person = Rd32(base + ai), who = person ? Rd32(base + person + 1156) : 99;
-  if (who >= 8) return;
+  const uint32_t person = Rd32(base + ai), who = person && person < 0xF0000000u ? Rd32(base + person + 1156) : 99;
   static std::mutex mu;
+  if (who >= 8) {  // (an AI whose +0 is no person 0-7: once each - the second CPU's actions went missing here)
+    static std::set<uint32_t> seen;
+    std::lock_guard lock(mu);
+    if (seen.insert(ai).second)
+      REXLOG_INFO("ai: AI {:08X} with +0 {:08X} (person {}) makes action {} (factory {})", ai, person, who, id, factory);
+    return;
+  }
   static uint32_t last_id[8] = {}, repeats[8] = {}, since[8] = {};
   std::lock_guard lock(mu);
   const uint32_t frames = Rd32(base + 0x82E3CD0C);
@@ -3111,6 +3196,40 @@ void AiActionLog(uint8_t* base, uint32_t ai, uint32_t id, int factory) {
     REXLOG_INFO("ai: person {} action {} x{} more (frames {}-{})", who, last_id[who], repeats[who], since[who], frames);
   last_id[who] = id, repeats[who] = 0, since[who] = frames;
   REXLOG_INFO("ai: person {} action {} (factory {}) frame {}", who, id, factory, frames);
+}
+
+// Research aid: SVR2011_TEST_AI_PROBE=1 - where an AI keeps the action a factory made (the CPU stall: its "current
+// action" field). Each made action (AI, object, id) is looked for on the next calls: the
+// offsets it turns up at in the AI (0x2000 bytes) or the person its +0 points to (0x1000) are logged, a few each.
+void AiProbe(uint8_t* base, uint32_t ai, uint32_t obj, uint32_t id) {
+  static const bool on = std::getenv("SVR2011_TEST_AI_PROBE") != nullptr;
+  if (!on) return;
+  struct Made {
+    uint32_t ai, obj, id, tries;
+  };
+  static std::mutex mu;
+  static Made pend[16] = {};
+  static std::map<uint32_t, int> told;  // offset -> lines logged
+  std::lock_guard lock(mu);
+  for (Made& m : pend) {
+    if (!m.ai) continue;
+    const uint32_t p = Rd32(base + m.ai), who = p && p < 0xF0000000u ? Rd32(base + p + 1156) : 99;
+    for (int in_person = 0; in_person < 2; ++in_person) {
+      const uint32_t at = in_person ? p : m.ai, size = in_person ? 0x1000 : 0x2000;
+      if (!at || at >= 0xF0000000u) continue;
+      for (uint32_t off = 0; off < size; off += 4)
+        if (Rd32(base + at + off) == m.obj && told[off + (in_person ? 0x100000u : 0u)]++ < 6)
+          REXLOG_INFO("ai probe: AI {:08X} (+0 {:08X}, person {}) - action {:08X} (id {}) at {} +{:X}, frame {}", m.ai,
+                      p, who, m.obj, m.id, in_person ? "the person" : "the AI", off, Rd32(base + 0x82E3CD0C));
+    }
+    if (++m.tries > 4) m = {};
+  }
+  if (ai && obj)
+    for (Made& m : pend)
+      if (!m.ai) {
+        m = {ai, obj, id, 0};
+        break;
+      }
 }
 }  // namespace
 
@@ -3129,7 +3248,9 @@ REX_HOOK_RAW(sub_82812838) {
     REXLOG_INFO("item: person {} action {} -> {} frame {}", person ? Rd32(base + person + 1156) : 99, id, ctx.r4.u32,
                 Rd32(base + 0x82E3CD0C));
   }
+  const uint32_t ai_in = ctx.r3.u32, id_in = ctx.r4.u32;
   __imp__sub_82812838(ctx, base);
+  AiProbe(base, ai_in, ctx.r3.u32, id_in);
 }
 
 // ... and its sibling for actions 146-346: 260, the search itself (sub_82828968).
@@ -3146,7 +3267,9 @@ REX_HOOK_RAW(sub_828136D0) {
     sub_82812838(ctx, base);  // (300: the first factory's)
     return;
   }
+  const uint32_t ai_in = ctx.r3.u32, id_in = ctx.r4.u32;
   __imp__sub_828136D0(ctx, base);
+  AiProbe(base, ai_in, ctx.r3.u32, id_in);
 }
 
 // Research aid (with SVR2011_TEST_ITEM_LOG): the CPU's "go get a weapon"
