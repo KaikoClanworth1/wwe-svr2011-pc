@@ -25,7 +25,10 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -205,6 +208,51 @@ REX_HOOK_RAW(sub_82167768) {
 // report, Triple Threat, guest read 0x162 in clip 4 of 5). Now that object isn't stepped (-1: not found, as its
 // caller sub_8225DD58 expects) and it's logged with its handles, for the reports.
 // Test aid: SVR2011_TEST_REPLAY_GONE=<n> - the n-th look-up of the run is treated as gone (the guard's path).
+// For that log line: the last give-backs of replayed objects' histories (sub_82261D28: both handles freed at a clip
+// change) and the last block-heap compactions (sub_821DC110), with the caller, the thread and the match clock - kept
+// in a small ring (no log of their own) and printed when the guard above finds a history gone, so a report shows what
+// emptied it.
+namespace {
+struct HistoryEvent {
+  const char* what = nullptr;  // "given back" / "compaction"
+  uint32_t obj = 0, h1 = 0, h2 = 0, caller = 0, thread = 0, clock = 0;
+};
+constexpr int kHistoryEvents = 16;
+std::mutex g_history_mutex;
+HistoryEvent g_history[kHistoryEvents];
+int g_history_next = 0;
+void NoteHistoryEvent(uint8_t* base, const char* what, uint32_t obj, uint32_t h1, uint32_t h2, uint32_t caller) {
+  const uint32_t thread = uint32_t(std::hash<std::thread::id>{}(std::this_thread::get_id()) & 0xFFFF);
+  std::lock_guard lock(g_history_mutex);
+  g_history[g_history_next] = {what, obj, h1, h2, caller, thread, Rd32(base + 0x82E3CD0C)};
+  g_history_next = (g_history_next + 1) % kHistoryEvents;
+}
+std::string HistoryEvents() {
+  std::lock_guard lock(g_history_mutex);
+  std::string s;
+  for (int k = 0; k < kHistoryEvents; ++k) {
+    const HistoryEvent& e = g_history[(g_history_next + k) % kHistoryEvents];
+    if (!e.what) continue;
+    s += fmt::format(" | {} obj {:08X} handles {:08X} {:08X} by {:08X} thread {:04X} clock {}", e.what, e.obj, e.h1, e.h2,
+                     e.caller, e.thread, e.clock);
+  }
+  return s.empty() ? std::string(" (none)") : s;
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_82261D28);
+REX_HOOK_RAW(sub_82261D28) {
+  const uint32_t obj = ctx.r3.u32;
+  if (obj) NoteHistoryEvent(base, "given back", obj, Rd32(base + obj + 132), Rd32(base + obj + 140), uint32_t(ctx.lr));
+  __imp__sub_82261D28(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_821DC110);
+REX_HOOK_RAW(sub_821DC110) {
+  NoteHistoryEvent(base, "compaction", 0, 0, 0, uint32_t(ctx.lr));
+  __imp__sub_821DC110(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_8225DC88);
 REX_HOOK_RAW(sub_8225DC88) {
   const uint32_t obj = ctx.r3.u32;
@@ -216,10 +264,12 @@ REX_HOOK_RAW(sub_8225DC88) {
   const bool test = test_gone > 0 && ++lookups == test_gone;
   if (test || !h1 || !h2 || !at(h1) || !at(h2)) {
     static int skipped = 0;
-    if (++skipped <= 5 || skipped % 500 == 0)
+    if (++skipped <= 5 || skipped % 500 == 0) {
       REXLOG_WARN("[svr2011] replay: an object's history is gone (object {:08X}, handles {:08X} {:08X} -> {:08X} {:08X}) - "
                   "not stepped ({} times){}", obj, h1, h2, h1 ? at(h1) : 0, h2 ? at(h2) : 0, skipped,
                   test ? " - test (SVR2011_TEST_REPLAY_GONE)" : "");
+      if (skipped <= 2) REXLOG_WARN("[svr2011] replay: the last histories given back / compactions, oldest first:{}", HistoryEvents());
+    }
     ctx.r3.u64 = 0xFFFFFFFFFFFFFFFFull;
     return;
   }
