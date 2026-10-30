@@ -139,23 +139,50 @@ static void copy_line(const char *from, const char *end, char *out, int n)
     out[k] = 0;
 }
 
+/* Lines every session logs that say nothing about a problem (the server's _HARMLESS, reports.py): the emulator's
+   start-up heap probing, the game's look-ups of optional files (DLC, SeasonVO), the XMA / kernel stubs. */
+static int harmless(const char *line, const char *end)
+{
+    static const char *const k[] = { "BaseHeap::Alloc", "PhysicalHeap::Alloc", "ResolvePath(", "NtCreateFile",
+                                     "XMA: Write to unknown register", "VFS: '", "IoDismountVolume", "Stub", "STUB",
+                                     "SeasonVO", "catalog_hd.arc", "gamecontrollerdb" };
+    size_t len = (size_t)(end - line), i, j;
+    for (i = 0; i < sizeof k / sizeof *k; i++) {
+        size_t kl = strlen(k[i]);
+        for (j = 0; j + kl <= len; j++)
+            if (line[j] == k[i][0] && !memcmp(line + j, k[i], kl)) return 1;
+    }
+    return 0;
+}
+
 void report_signature(const WCHAR *game_dir, char *out, int n)
 {
-    WCHAR dir[MAX_PATH], file[MAX_PATH];
+    WCHAR dir[MAX_PATH], log[MAX_PATH], file[MAX_PATH];
+    WIN32_FILE_ATTRIBUTE_DATA la, ca;
     uint8_t *d;
     size_t len;
+    int have_log;
     out[0] = 0;
+    swprintf_s(dir, MAX_PATH, L"%s\\logs", game_dir);
+    have_log = newest(dir, L"svr2011_*.log", log, MAX_PATH) && GetFileAttributesExW(log, GetFileExInfoStandard, &la);
+    /* a crash report of this session (written after its log began; an empty one - the game closed while writing -
+       says nothing) */
     swprintf_s(dir, MAX_PATH, L"%s\\crashes", game_dir);
-    if (newest(dir, L"crash_*.txt", file, MAX_PATH) && (d = read_all(file, &len, 1u << 20)) != NULL) {
+    if (newest(dir, L"crash_*.txt", file, MAX_PATH) && GetFileAttributesExW(file, GetFileExInfoStandard, &ca) &&
+        (!have_log || CompareFileTime(&ca.ftLastWriteTime, &la.ftCreationTime) >= 0) &&
+        (d = read_all(file, &len, 1u << 20)) != NULL) {
         copy_line((const char *)d, (const char *)d + len, out, n);  /* ("SvR 2011 crash: <reason> (thread ...)") */
         free(d);
         if (out[0]) return;
     }
-    swprintf_s(dir, MAX_PATH, L"%s\\logs", game_dir);
-    if (newest(dir, L"svr2011_*.log", file, MAX_PATH) && (d = read_all(file, &len, 64u << 20)) != NULL) {
+    if (have_log && (d = read_all(log, &len, 64u << 20)) != NULL) {
         const char *p = (const char *)d, *end = p + len, *hit = NULL;
-        for (; p < end; p++)  /* (the last "[error]" line) */
-            if (*p == '[' && end - p > 7 && !memcmp(p, "[error]", 7)) hit = p;
+        for (; p < end; p++)  /* (the last "[error]" line that isn't a harmless one) */
+            if (*p == '[' && end - p > 7 && !memcmp(p, "[error]", 7)) {
+                const char *eol = p;
+                while (eol < end && *eol != '\n') eol++;
+                if (!harmless(p, eol)) hit = p;
+            }
         if (hit) {
             while (hit < end && *hit != ']') hit++;      /* (after the level: "[core] [tNNN] text") */
             copy_line(hit + 1, end, out, n);
