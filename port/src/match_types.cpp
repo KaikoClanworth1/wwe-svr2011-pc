@@ -185,10 +185,10 @@ uint32_t g_roof_alone_since[6] = {};  // match frame + 1 since that person is al
 // wrestler (slot controller 1, port +1152 4+) on the floor outside (+444 area 1) left in one motion for
 // 8 s while the referee counts (his motion 191 seen lately - only rules with a count-out play it) climbs back in:
 // the game's own climb from the apron (kClimbIn). Only match state decides (motions, places, frames, slots): the same
-// on every machine online. Humans are never touched. (Two CPUs left in a lock-up 21100 aren't covered: from outside
-// its state neither both back to standing - a crash - nor a pair grapple - frozen - nor 10005 - a 10 s loop - work.)
-// Test aid: SVR2011_TEST_STALL_SECS=<s> - after <s> s, and without waiting for a count.
-constexpr uint32_t kRefCounting = 191, kClimbIn = 7014;
+// on every machine online. Humans are never touched. Two CPUs left in a lock-up for 10 s go on with it (kLockUpOn,
+// MatchTypesUpdate).
+// Test aid: SVR2011_TEST_STALL_SECS=<s> - after <s> s (both nets), and without waiting for a count.
+constexpr uint32_t kRefCounting = 191, kClimbIn = 7014, kLockUp = 21100, kLockUpOn = 21201;
 uint32_t g_count_seen = 0;               // match frame + 1 the referee last counted (motion 191)
 uint32_t g_still_motion[6] = {}, g_still_since[6] = {};  // per person: the motion and match frame + 1 it began
 bool g_roof = false;  // the match set up starts on the cell's roof
@@ -2514,6 +2514,37 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
   // (the CPU stall net: the referee - person 6 - counting someone out, motion 191)
   if (const uint32_t ref = Rd32(base + kChars + 6 * 4); ref && Rd32(base + ref + 212) == kRefCounting)
     g_count_seen = Rd32(base + 0x82E3CD0C) + 1;
+  // ... and two CPUs left in a lock-up (21100) for 10 s - Cena / Orton on arena 17 stayed in one 4 min: the game's
+  // own way on from it, the lock-up's next part 21201 (sub_82173280 sets up 21100 with 21201 / 21202), started as a
+  // pair by the paired start sub_82191AA8(a, b, 21201): 1050, then 21201 together, then both free and fighting.
+  // (Tried: both back to standing one by one - a crash, the pair link half made; 21201 / 21202 one on each - a crash;
+  // a pair grapple 5000 - frozen; 10005 - a 10 s loop.) Match state only: alike on every machine.
+  {
+    static uint32_t motion_of[6] = {}, since[6] = {};
+    const uint32_t frames = Rd32(base + 0x82E3CD0C), match = Rd32(base + 0x82EDEB48);
+    static const int test_secs = [] { const char* v = std::getenv("SVR2011_TEST_STALL_SECS"); return v ? std::atoi(v) : 0; }();
+    const uint32_t hold_frames = uint32_t((test_secs > 0 ? test_secs : 10) * 60);
+    uint32_t ch[6] = {};
+    for (uint32_t i = 0; i < 6; ++i) {
+      ch[i] = Rd32(base + kChars + i * 4);
+      const uint32_t m = ch[i] ? Rd32(base + ch[i] + 212) : 0;
+      if (m != motion_of[i] || !since[i] || frames + 1 < since[i]) motion_of[i] = m, since[i] = frames + 1;
+    }
+    const auto cpu = [&](uint32_t i) { return match && base[match + 432 + i * 2116 - 8] == 1 && Rd32(base + ch[i] + 1152) >= 4; };
+    for (uint32_t i = 0; i < 6; ++i)
+      for (uint32_t j = i + 1; j < 6; ++j)
+        if (ch[i] && ch[j] && motion_of[i] == kLockUp && motion_of[j] == kLockUp && frames + 1 - since[i] >= hold_frames &&
+            frames + 1 - since[j] >= hold_frames && cpu(i) && cpu(j)) {
+          PPCContext k = ctx;
+          k.r3.u64 = ch[i], k.r4.u64 = ch[j], k.r5.u64 = kLockUpOn;
+          sub_82191AA8(k, base);
+          static int logged = 0;
+          if (logged++ < 40)
+            REXLOG_INFO("cpu stall: persons {} and {} in a lock-up {} s -> on with it: {} {} / {} {}", i, j,
+                        (frames + 1 - since[i]) / 60, i, Rd32(base + ch[i] + 212), j, Rd32(base + ch[j] + 212));
+          since[i] = since[j] = frames + 1;
+        }
+  }
   // Research aid (stuck wrestlers, B11/B12): SVR2011_TEST_STUCK_CHARS=1 - each
   // second, people 0-5 whose place and motion (+212) haven't changed for 10 s
   // while the match clock runs are logged (once each time), with the motion.
