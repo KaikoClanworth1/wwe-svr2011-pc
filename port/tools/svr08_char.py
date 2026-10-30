@@ -142,17 +142,58 @@ class Template:
         self.p_lash = self.lash.meshes[0]
         self.ttex = dict(tex_read(self.t[0xa]))
 
-    def nodes_at(self, body_jboy):
+    def leg_fit(self, body_jboy):
+        """{source node name: 4 x 4} that bends the source body's legs onto the template's, or {} when they already
+        match. 2007-2009 divas stand on 2011's diva skeleton (ch143) but with straight legs, ch143's 15 degrees
+        apart: with each node only moved onto the source joint (nodes_at), every leg bone's offset pointed 15
+        degrees (the foot 56) off its frame's +X - the game's IK turns the template's frames, so the knees and
+        ankles came out bent and twisted (report 30 Oct, Lita 2007). Each leg bone gets the turn that lays its
+        source segment on the template's, about the template's joint; nodes under a leg bone follow it."""
+        from w13_char import read13_nodes, world
+        src, tf = read13_nodes(body_jboy), read13_nodes(self.t[0])
+        Ws, Wt = world(src), world(tf)
+        S = {nd['name']: Ws[i][:3, 3] for i, nd in enumerate(src)}
+        T = {nd['name']: Wt[i][:3, 3] for i, nd in enumerate(tf)}
+        fit, worst = {}, 0.0
+        for side in ('l_', 'r_'):
+            chain = [side + n for n in ('momo', 'sune', 'ashi', 'tsumasaki')]
+            if any(n not in S or n not in T for n in chain):
+                continue
+            rot = None
+            for a, b in zip(chain, chain[1:] + [None]):
+                if b is not None:
+                    vs, vt = S[b] - S[a], T[b] - T[a]
+                    if np.linalg.norm(vs) < 1e-6 or np.linalg.norm(vt) < 1e-6:
+                        return {}
+                    rot = _turn(vs, vt)
+                    worst = max(worst, float(np.degrees(np.arccos(np.clip(np.dot(vs, vt) / np.linalg.norm(vs) / np.linalg.norm(vt), -1, 1)))))
+                M = np.eye(4)
+                M[:3, :3] = rot   # (the toe keeps the foot's turn)
+                M[:3, 3] = T[a] - rot @ S[a]
+                fit[a] = M
+        if worst < 3.0:   # (a body already on its template's legs: left as it is)
+            return {}
+        for i, nd in enumerate(src):   # (twist helpers, toes: their nearest leg bone's)
+            k = i
+            while k >= 0 and src[k]['name'] not in fit:
+                k = src[k]['parent']
+            if k >= 0 and nd['name'] not in fit:
+                fit[nd['name']] = fit[src[k]['name']]
+        return fit
+
+    def nodes_at(self, body_jboy, fit=None):
         """the template's node table with each node on the source body's joint of the same name (the template's
-        frames; a node the source lacks keeps its offset from its parent) - as w13_char.nodes_for. 2007-2009 divas
-        stand on 2011's diva skeleton but with straight legs (ch143's are 15 degrees apart): the knees and feet
-        would sit 1-2 units off the mesh."""
+        frames; a node the source lacks keeps its offset from its parent) - as w13_char.nodes_for. fit (leg_fit):
+        those joints moved by it first (the legs then sit on the template's own)."""
         from w13_char import read13_nodes, world
         src = read13_nodes(body_jboy)
         Ws = world(src)
         want = {}
         for i, nd in enumerate(src):
-            want.setdefault(nd['name'], Ws[i][:3, 3])
+            p = Ws[i][:3, 3]
+            if fit and nd['name'] in fit:
+                p = fit[nd['name']][:3, :3] @ p + fit[nd['name']][:3, 3]
+            want.setdefault(nd['name'], p)
         tf = read13_nodes(self.t[0])
         Wt = world(tf)
         nodes = [dict(nd) for nd in self.body.nodes]
@@ -167,6 +208,46 @@ class Template:
             else:
                 pos.append(Wt[j][:3, 3].copy())
         return nodes
+
+
+def _turn(a, b):
+    """the rotation taking direction a onto direction b (the shortest)"""
+    a, b = a / np.linalg.norm(a), b / np.linalg.norm(b)
+    v, c = np.cross(a, b), float(np.dot(a, b))
+    if np.linalg.norm(v) < 1e-9:
+        return np.eye(3) if c > 0 else -np.eye(3)
+    K = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + K + K @ K * (1.0 / (1.0 + c))
+
+
+def repose(m8, fit):
+    """m8's vertices and normals moved by leg_fit's turns, each vertex by its weights' blend -> m8"""
+    if not fit:
+        return m8
+    names = [n['name'] for n in m8['nodes']]
+    for s8 in m8['meshes']:
+        vc, nw, w, pal = len(s8['verts']), s8['nw'], s8['wraw'], s8['palette']
+        out = []
+        for k, v in enumerate(s8['verts']):
+            P, N, tot = np.zeros(3), np.zeros(3), 0.0
+            p, n = np.array(v[:3]), np.array(v[3:6])
+            for j in range(nw):   # (vertex-major: a palette index byte, then the weight)
+                o = 8 * (nw * k + j)
+                pi, wt = w[o], struct.unpack_from('>f', w, o + 4)[0]
+                if pi == 255 or wt <= 0 or pi >= len(pal) or pal[pi] <= 0:
+                    continue
+                M = fit.get(names[pal[pi] - 1])
+                P += wt * (p if M is None else M[:3, :3] @ p + M[:3, 3])
+                N += wt * (n if M is None else M[:3, :3] @ n)
+                tot += wt
+            if tot <= 0:
+                out.append(v)
+                continue
+            P /= tot
+            N = N / (np.linalg.norm(N) or 1.0)
+            out.append((float(P[0]), float(P[1]), float(P[2]), float(N[0]), float(N[1]), float(N[2])) + tuple(v[6:]))
+        s8['verts'] = out
+    return m8
 
 
 # 2011's own skeletons a 2007-2010 body can be bound to: the men's (ch104, the converters' template) and the divas'
@@ -323,11 +404,12 @@ def attire(kids, tp, portrait, costume_ids, first_kids):
     EYE = {'texDiffuse': 'color', 'texCubeRefction': 'cubemap', 'texRefctionReg': 'color', 'texOcclusion': 'mk'}
     atlas = bool(pieces)
     BOX = (0.8175, 0.0, 0.995, 0.62)   # (u0, v0, u1, v1) inside the free strip, small margins
-    parts = [(read08(kids[0]), lambda s: (tp.p_eye, EYE) if 'Reflect' in s['shader'] else (tp.p_skin, SKIN))]
+    legs = tp.leg_fit(kids[0])   # (a diva's straight legs onto the diva skeleton's: Template.leg_fit)
+    parts = [(repose(read08(kids[0]), legs), lambda s: (tp.p_eye, EYE) if 'Reflect' in s['shader'] else (tp.p_skin, SKIN))]
     for cid in pieces:
-        parts.append((remap_uvs(read08(kids[cid]), BOX[2] - BOX[0], BOX[3] - BOX[1], BOX[0], BOX[1]), lambda s: (tp.p_skin, SKIN)))
+        parts.append((remap_uvs(repose(read08(kids[cid]), legs), BOX[2] - BOX[0], BOX[3] - BOX[1], BOX[0], BOX[1]), lambda s: (tp.p_skin, SKIN)))
     fit = lambda m8: m8
-    nodes = tp.nodes_at(kids[0])
+    nodes = tp.nodes_at(kids[0], legs)
     out = {0: jboy.write(model(tp, tp.body, parts, textures, nodes))}
     if 0x2710 in kids:
         out[0x2710] = jboy.write(model(tp, tp.hair, [(fit(read08(kids[0x2710])), lambda s: (tp.p_hair, SKIN))], textures[:5], nodes))
