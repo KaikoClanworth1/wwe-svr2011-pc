@@ -1587,6 +1587,7 @@ static int s_tab_visible_online;  /* (the Online tab is showing) */
 enum { ON_SIGNIN, ON_SIGNUP, ON_FORGOT };
 static int s_on_mode;
 static int s_on_needs_code;   /* (signed in: the server's answer) */
+static int s_on_invite = -1;  /* (sign-up: the server needs an invite code 1, doesn't 0, didn't say -1) */
 static WCHAR s_on_note[300];  /* (the status line, kept across a re-layout) */
 
 static void on_place(int id, int x, int y, int w, int h);  /* (below: the layout's X0, as add()) */
@@ -1622,16 +1623,20 @@ static void online_account_show(void)
     } else if (s_on_mode == ON_SIGNUP || s_on_mode == ON_FORGOT) {
         const int signup = s_on_mode == ON_SIGNUP;
         set_text(ID_ON_L_NAME, L"Name"), set_text(ID_ON_L_PASS, signup ? L"Password" : L"New password");
-        set_text(ID_ON_L_CODE, signup ? L"Invite code*" : L"Reset code");
+        set_text(ID_ON_L_CODE, !signup ? L"Reset code" : s_on_invite < 0 ? L"Invite code*" : L"Invite code");
         on_place(ID_ON_L_NAME, 16, 144, 60, 20), on_place(ID_ON_NAME, 80, 140, 160, 24);
-        on_place(ID_ON_L_CODE, 252, 144, 76, 20), on_place(ID_ON_CODE, 330, 140, 216, 24);
+        if (!signup || s_on_invite != 0)  /* (no code box when the server says it needs none) */
+            on_place(ID_ON_L_CODE, 252, 144, 76, 20), on_place(ID_ON_CODE, 330, 140, 216, 24);
         on_place(ID_ON_L_PASS, 16, 174, 90, 20), on_place(ID_ON_PASSWORD, 110, 170, 130, 24);
         set_text(ID_ON_STEP, signup ? L"Create" : L"Set password");
         on_place(ID_ON_STEP, 346, 199, 108, 24), on_place(ID_ON_BACK, 460, 199, 86, 24), bx = 346;
-        wcscpy_s(text, 300, signup ? L"*Only if the server asks for one: an invite code from the server owner. Name: "
-                                     L"3-15 characters (what players see); password: 8 or more."
-                                   : L"Ask the server owner for a reset code for your account (it works once, for 24 "
-                                     L"hours), then choose a new password.");
+        wcscpy_s(text, 300, !signup ? L"Ask the server owner for a reset code for your account (it works once, for 24 "
+                                      L"hours), then choose a new password."
+                            : s_on_invite == 0 ? L"Name: 3-15 characters (what players see); password: 8 or more."
+                            : s_on_invite == 1 ? L"An invite code from the server owner. Name: 3-15 characters (what "
+                                                 L"players see); password: 8 or more."
+                                               : L"*Only if the server asks for one: an invite code from the server "
+                                                 L"owner. Name: 3-15 characters (what players see); password: 8 or more.");
     } else {
         set_text(ID_ON_L_NAME, L"Name"), set_text(ID_ON_L_PASS, L"Password");
         on_place(ID_ON_L_NAME, 16, 144, 130, 20), on_place(ID_ON_NAME, 150, 140, 220, 24);
@@ -1885,7 +1890,7 @@ static void online_sign_in(int register_account)
     GetWindowTextW(ctl(ID_ON_NAME), name, 64);
     GetWindowTextW(ctl(ID_ON_PASSWORD), password, 128);
     GetWindowTextW(ctl(ID_ON_CODE), code, 32);
-    if (!name[0] || !password[0]) {  /* (the invite code: the server says when it needs one) */
+    if (!name[0] || !password[0] || (register_account && s_on_invite == 1 && !code[0])) {
         online_note(register_account ? L"Type a name and a password (and the invite code, if the server owner gave you one)."
                                      : L"Type your account's name and password.");
         return;
@@ -8952,7 +8957,22 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_ON_SIGNIN:
             online_sign_in(0);
             break;
-        case ID_ON_REGISTER:  /* (the sign-up form) */
+        case ID_ON_REGISTER:  /* (the sign-up form: first the server's word on invite codes) */
+            {
+                char st[512];
+                const char *k;
+                HCURSOR old = SetCursor(LoadCursor(NULL, IDC_WAIT));
+                s_on_invite = -1;  /* (an older server, or no answer: the box shown, sent as typed) */
+                if (online_request("/api/status", NULL, NULL, st, sizeof st) == 200 &&
+                        (k = strstr(st, "\"invite_needed\"")) != NULL) {
+                    k += strlen("\"invite_needed\"");
+                    while (*k == ' ' || *k == ':') k++;
+                    s_on_invite = !strncmp(k, "true", 4) ? 1 : !strncmp(k, "false", 5) ? 0 : -1;
+                }
+                SetCursor(old);
+                if (s_on_invite == 0)
+                    set_text(ID_ON_CODE, L"");  /* (hidden: nothing typed earlier goes with the sign-up) */
+            }
             s_on_mode = ON_SIGNUP;
             online_note(L"");
             online_account_show();
