@@ -1589,6 +1589,11 @@ static int s_on_mode;
 static int s_on_needs_code;   /* (signed in: the server's answer) */
 static int s_on_invite = -1;  /* (sign-up: the server needs an invite code 1, doesn't 0, didn't say -1) */
 static WCHAR s_on_note[300];  /* (the status line, kept across a re-layout) */
+/* A test run (--capture, SVR2011_CAPTURE_ONLINE, --sign-in / --register): no account request (sign-up, sign-in,
+   reset, re-activation, sign-out, the account's own GETs) goes to a server that isn't on this PC unless
+   SVR2011_ALLOW_LIVE=1. A test folder's svr2011.toml with its server under an [Online] header (the launcher reads
+   top-level keys only) fell back to the live server, and a scripted sign-up made a real account there (30 Oct). */
+static int s_test_run;
 
 static void on_place(int id, int x, int y, int w, int h);  /* (below: the layout's X0, as add()) */
 
@@ -1729,6 +1734,36 @@ static void json_copy(const char *text, const char *key, char *out, size_t n)
     out[k] = 0;
 }
 
+/* The test-run guard (s_test_run): a request that writes (a body) or carries the account's token, to a host that
+   isn't this PC, is refused - logged (launcher_test_guard.log beside the launcher) and answered as the server's
+   error, so the Online tab's status line shows it. Plain GETs (api/status) still go. */
+static int online_test_refused(const WCHAR *host, const char *path, int writes, char *out, size_t outn)
+{
+    static const WCHAR *const local[] = { L"127.0.0.1", L"localhost", L"::1", L"[::1]" };
+    const char *allow = getenv("SVR2011_ALLOW_LIVE");
+    WCHAR log[MAX_PATH], *slash;
+    FILE *f = NULL;
+    size_t i;
+    if (!s_test_run || !writes || (allow && !strcmp(allow, "1")))
+        return 0;
+    for (i = 0; i < sizeof local / sizeof local[0]; i++)
+        if (!_wcsicmp(host, local[i]))
+            return 0;
+    if (GetModuleFileNameW(NULL, log, MAX_PATH) && (slash = wcsrchr(log, L'\\')) != NULL) {
+        wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - log), L"launcher_test_guard.log");
+        if (!_wfopen_s(&f, log, L"a") && f) {
+            SYSTEMTIME t;
+            GetLocalTime(&t);
+            fwprintf(f, L"%04d-%02d-%02d %02d:%02d:%02d test run: %S to %s refused (not this PC; SVR2011_ALLOW_LIVE=1 "
+                        L"lets it through)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, path, host);
+            fclose(f);
+        }
+    }
+    sprintf_s(out, outn, "{\"error\": \"Test run: an account request to %S was refused - not a server on this PC "
+              "(SVR2011_ALLOW_LIVE=1 lets it through).\"}", host);
+    return 403;
+}
+
 /* Sends a JSON body (POST; body NULL: a GET) to <server><path>; the
  * answer's body (UTF-8) in out. Returns the HTTP status, 0 if the server
  * didn't answer. */
@@ -1757,6 +1792,8 @@ static int online_request(const char *path, const char *body, const char *token,
     uc.dwUrlPathLength = 400;
     if (!WinHttpCrackUrl(url, 0, 0, &uc))
         return 0;
+    if ((status = online_test_refused(host, path, body || (token && token[0]), out, outn)) != 0)
+        return (int)status;
     session = WinHttpOpen(L"SvR2011 Launcher", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
                           WINHTTP_NO_PROXY_BYPASS, 0);
     if (session) {
@@ -9870,6 +9907,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         if (capture_seq_n)
             capture_tab = capture_seq[0];
         capture_file = argv[3];
+        s_test_run = 1;  /* (no account request to a server off this PC: online_test_refused) */
         /* ... --verify: Verify game files first (the Install tab's mark). */
         if (argc >= 5 && !wcscmp(argv[4], L"--verify"))
             capture_verify = 1;
