@@ -326,7 +326,7 @@ final class OnlinePage {
         show(codeRow_, (!in && mode_ != kSignIn) || steps);
         name_.setHint(mode_ == kSignUp ? "3-15 characters" : "Name");
         password_.setHint(mode_ == kSignIn ? "Password" : "8 or more characters");
-        code_.setHint(steps ? "Re-activation code" : mode_ == kSignUp ? "Invite code" : "Reset code");
+        code_.setHint(steps ? "Re-activation code" : mode_ == kSignUp ? "Invite code (if the server asks)" : "Reset code");
         String primary = "Sign in", secondary = "Create account";
         if (steps) {
             primary = "Re-activate";
@@ -345,8 +345,8 @@ final class OnlinePage {
         show(forgot_, !in && mode_ == kSignIn);
         show(signOut_, in);
         String fallback = "";
-        if (!in && mode_ == kSignIn) fallback = "Sign in, or create an account (it needs an invite code).";
-        else if (!in && mode_ == kSignUp) fallback = "A new account needs an invite code from the server owner.";
+        if (!in && mode_ == kSignIn) fallback = "Sign in, or create an account (some servers ask for an invite code).";
+        else if (!in && mode_ == kSignUp) fallback = "The invite code: only if the server owner gave you one.";
         else if (!in) fallback = "Ask the server owner for a reset code for your account (it works once, for 24 "
             + "hours), then choose a new password.";
         accountStatus_.setText(note_.isEmpty() ? fallback : note_);
@@ -428,8 +428,8 @@ final class OnlinePage {
             refreshAccount();
             return;
         }
-        if (create && (password.length() < 8 || invite.isEmpty())) {
-            note_ = "Type a password (8 or more characters) and your invite code.";
+        if (create && password.length() < 8) {  // (the invite code: the server says when it needs one)
+            note_ = "Type a password (8 or more characters).";
             refreshAccount();
             return;
         }

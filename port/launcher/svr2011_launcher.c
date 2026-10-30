@@ -1622,14 +1622,14 @@ static void online_account_show(void)
     } else if (s_on_mode == ON_SIGNUP || s_on_mode == ON_FORGOT) {
         const int signup = s_on_mode == ON_SIGNUP;
         set_text(ID_ON_L_NAME, L"Name"), set_text(ID_ON_L_PASS, signup ? L"Password" : L"New password");
-        set_text(ID_ON_L_CODE, signup ? L"Invite code" : L"Reset code");
+        set_text(ID_ON_L_CODE, signup ? L"Invite code*" : L"Reset code");
         on_place(ID_ON_L_NAME, 16, 144, 60, 20), on_place(ID_ON_NAME, 80, 140, 160, 24);
         on_place(ID_ON_L_CODE, 252, 144, 76, 20), on_place(ID_ON_CODE, 330, 140, 216, 24);
         on_place(ID_ON_L_PASS, 16, 174, 90, 20), on_place(ID_ON_PASSWORD, 110, 170, 130, 24);
         set_text(ID_ON_STEP, signup ? L"Create" : L"Set password");
         on_place(ID_ON_STEP, 346, 199, 108, 24), on_place(ID_ON_BACK, 460, 199, 86, 24), bx = 346;
-        wcscpy_s(text, 300, signup ? L"An invite code from the server owner. Name: 3-15 characters (what players "
-                                     L"see); password: 8 or more."
+        wcscpy_s(text, 300, signup ? L"*Only if the server asks for one: an invite code from the server owner. Name: "
+                                     L"3-15 characters (what players see); password: 8 or more."
                                    : L"Ask the server owner for a reset code for your account (it works once, for 24 "
                                      L"hours), then choose a new password.");
     } else {
@@ -1638,7 +1638,7 @@ static void online_account_show(void)
         on_place(ID_ON_L_PASS, 16, 174, 130, 20), on_place(ID_ON_PASSWORD, 150, 170, 220, 24);
         on_place(ID_ON_SIGNIN, 384, 139, 162, 26), on_place(ID_ON_REGISTER, 384, 169, 162, 26);
         on_place(ID_ON_FORGOT, 384, 199, 162, 24), bx = 384;
-        wcscpy_s(text, 300, L"Not signed in. Sign in, or create an account (it needs an invite code). The same "
+        wcscpy_s(text, 300, L"Not signed in. Sign in, or create an account (some servers ask for an invite code). The same "
                             L"account works on any PC or phone.");
     }
     if (bx) {
@@ -1885,8 +1885,8 @@ static void online_sign_in(int register_account)
     GetWindowTextW(ctl(ID_ON_NAME), name, 64);
     GetWindowTextW(ctl(ID_ON_PASSWORD), password, 128);
     GetWindowTextW(ctl(ID_ON_CODE), code, 32);
-    if (!name[0] || !password[0] || (register_account && !code[0])) {
-        online_note(register_account ? L"Type a name, a password and your invite code."
+    if (!name[0] || !password[0]) {  /* (the invite code: the server says when it needs one) */
+        online_note(register_account ? L"Type a name and a password (and the invite code, if the server owner gave you one)."
                                      : L"Type your account's name and password.");
         return;
     }
