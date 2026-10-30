@@ -3,6 +3,7 @@
 #include "weapons_page.h"
 
 #include <algorithm>
+#include <deque>
 #include <array>
 #include <cctype>
 #include <atomic>
@@ -308,12 +309,18 @@ std::vector<uint32_t> g_made;
 // arrays at the match's end (sub_82B8E9B8). A search under the ring (sub_822E0170) takes a place still in +8 and
 // pulls out the hidden weapon of ITS +4 model (sub_821D16B0) - so both arrays change together: with only +8 changed
 // the search asked for the game's weapon that was never made (ours in its place) and came out empty-handed
-// (2.1.6 report: chosen mod weapons never taken from under the ring). More chosen weapons than its places: longer
-// arrays of ours meanwhile, the game's own put back before that free.
+// (2.1.6 report: chosen mod weapons never taken from under the ring). More chosen weapons than its places: they
+// wait in a queue and take turns in the places (below) - the stock keeps its own size: a search's screen lists 8
+// places, and a longer stock (2.1.6 before 30 Oct) let a CPU go searching with only the places past those left: it
+// could pick none and searched for ever (a player's report: "locked up when the cpu was going to get a weapon").
 constexpr uint32_t kUnderRing = 0x82E3C06C;
 constexpr uint32_t kOurPlaces = 64;
 uint32_t g_our_entries = 0, g_our_models = 0;  // (guest: ours, allocated once)
 uint32_t g_lent_stock = 0, g_lent_entries = 0, g_lent_models = 0, g_lent_count = 0;  // the game's, while ours are in
+// The chosen weapons waiting for a place, and per place the weapons taken out of it that may come back to it.
+uint32_t g_turn_stock = 0;
+std::deque<uint32_t> g_waiting;
+std::vector<std::deque<uint32_t>> g_out_of;
 
 void GiveBackStock(uint8_t* base, uint32_t stock = 0) {
   if (!g_lent_stock) return;
@@ -343,6 +350,45 @@ REX_HOOK_RAW(sub_822DFCE0) {
   __imp__sub_822DFCE0(ctx, base);
 }
 
+// The chosen weapons beyond the stock's places take turns in them. A weapon taken from place i (sub_822DF890(stock,
+// i): its entry -1, its model returned) leaves the place to the next one waiting (both arrays); a weapon coming back
+// to place i (sub_822DF8A8(stock, i): the entry back to the place's model when it is -1) finds it filled by then
+// and waits in turn instead - its hidden object is pulled out when its turn comes.
+REX_EXTERN(__imp__sub_822DF890);
+REX_HOOK_RAW(sub_822DF890) {
+  const uint32_t stock = ctx.r3.u32, i = ctx.r4.u32;
+  const uint32_t models = stock ? Rd32(base + stock + 4) : 0;
+  const uint32_t taken = models && i < 64 ? Rd32(base + models + i * 4) : 0;
+  __imp__sub_822DF890(ctx, base);
+  if (stock != g_turn_stock || !stock || i >= g_out_of.size()) return;
+  g_out_of[i].push_back(taken);
+  if (g_waiting.empty()) return;
+  const uint32_t next = g_waiting.front();
+  g_waiting.pop_front();
+  Wr32(base + models + i * 4, next);
+  Wr32(base + Rd32(base + stock + 8) + i * 4, next);
+  REXLOG_INFO("[svr2011] weapons: under the ring - place {}: {} taken, {} in its place", i, int32_t(taken), next);
+}
+REX_EXTERN(__imp__sub_822DF8A8);
+REX_HOOK_RAW(sub_822DF8A8) {
+  const uint32_t stock = ctx.r3.u32, i = ctx.r4.u32;
+  if (stock == g_turn_stock && stock && i < g_out_of.size() && !g_out_of[i].empty()) {
+    const uint32_t entries = Rd32(base + stock + 8);
+    if (entries && Rd32(base + entries + i * 4) != 0xFFFFFFFFu) {  // (the place is filled: back in the queue)
+      const uint32_t back = g_out_of[i].front();
+      g_out_of[i].pop_front();
+      g_waiting.push_back(back);
+      REXLOG_INFO("[svr2011] weapons: under the ring - {} back, waiting (place {} has {})", int32_t(back), i,
+                  int32_t(Rd32(base + entries + i * 4)));
+      return;
+    }
+    // (the place is empty: the weapon back is its own again - the game puts the place's model in the entry)
+    Wr32(base + Rd32(base + stock + 4) + i * 4, g_out_of[i].front());
+    g_out_of[i].pop_front();
+  }
+  __imp__sub_822DF8A8(ctx, base);
+}
+
 // The weapon maker (sub_821CF178(-1, model, 0, 0) -> the object): while the
 // match's weapons are made, each of the game's Extreme Rules nine becomes the
 // next chosen weapon (none left: not made).
@@ -369,6 +415,7 @@ namespace svr2011 {
 void ExtremeWeaponsMaking(uint8_t* base, bool begin, PPCContext& ctx) {
   if (begin) {
     GiveBackStock(base);  // (a new match: none of ours left in the game's stock)
+    g_turn_stock = 0, g_waiting.clear(), g_out_of.clear();
     g_making = false;
     g_made.clear();
     Counts want;
@@ -439,30 +486,15 @@ void ExtremeWeaponsPlaced(uint8_t* base, rex::memory::Memory* memory) {
     }
     now += fmt::format(" {}", int32_t(Rd32(e)));
   }
-  // (the chosen ones left over: our longer array, the game's places first)
-  int added = 0;
-  if (next < g_made.size() && memory && !g_lent_stock) {
-    if (!g_our_entries) g_our_entries = memory->SystemHeapAlloc(kOurPlaces * 4);
-    if (!g_our_models) g_our_models = memory->SystemHeapAlloc(kOurPlaces * 4);
-    if (g_our_entries && g_our_models) {
-      uint32_t m = 0;
-      for (int32_t i = 0; i < n && m < kOurPlaces; ++i, ++m) {
-        Wr32(base + g_our_entries + 4 * m, Rd32(base + entries + uint32_t(i) * 4));
-        Wr32(base + g_our_models + 4 * m, Rd32(base + models + uint32_t(i) * 4));
-      }
-      for (; next < g_made.size() && m < kOurPlaces; ++next, ++added, ++m) {
-        Wr32(base + g_our_entries + 4 * m, g_made[next]);
-        Wr32(base + g_our_models + 4 * m, g_made[next]);
-        now += fmt::format(" {}", g_made[next]);
-      }
-      g_lent_stock = stock, g_lent_entries = entries, g_lent_models = models, g_lent_count = uint32_t(n);
-      Wr32(base + stock + 4, g_our_models);
-      Wr32(base + stock + 8, g_our_entries);
-      Wr32(base + stock, m);
-    }
-  }
-  REXLOG_INFO("[svr2011] weapons: under the ring ({} places{}):{} ->{}{}", n, added ? fmt::format(" + {}", added) : "", was,
-              now, next < g_made.size() ? fmt::format(" ({} chosen ones not in it)", g_made.size() - next) : "");
+  // (the chosen ones left over wait their turn: a place whose weapon is taken gets the next one - TakeTurns below)
+  (void)memory;
+  g_turn_stock = stock;
+  g_waiting.assign(g_made.begin() + std::ptrdiff_t(std::min(next, g_made.size())), g_made.end());
+  g_out_of.assign(size_t(n), {});
+  std::string waiting;
+  for (const uint32_t m : g_waiting) waiting += fmt::format(" {}", m);
+  REXLOG_INFO("[svr2011] weapons: under the ring ({} places):{} ->{}{}", n, was, now,
+              g_waiting.empty() ? std::string() : fmt::format(" (waiting for a place:{})", waiting));
 }
 
 void ChooseExtremeWeapons(uint8_t* base, uint32_t list) {
