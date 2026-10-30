@@ -40,6 +40,7 @@ final class OnlinePage {
     static final String kCustomServer = "127.0.0.1:8411";
     // The account card's modes, signed out.
     static final int kSignIn = 0, kSignUp = 1, kForgot = 2;
+    int invite_ = -1;  // (sign-up: the server needs an invite code 1, doesn't 0, didn't say -1)
 
     private final LauncherActivity a_;
     private Spinner kind_;
@@ -323,10 +324,10 @@ final class OnlinePage {
         if (!in && name_.getText().length() == 0 && mode_ == kSignIn) name_.setText(name);
         show(nameRow_, !in);
         show(passwordRow_, !in);
-        show(codeRow_, (!in && mode_ != kSignIn) || steps);
+        show(codeRow_, (!in && mode_ != kSignIn && !(mode_ == kSignUp && invite_ == 0)) || steps);
         name_.setHint(mode_ == kSignUp ? "3-15 characters" : "Name");
         password_.setHint(mode_ == kSignIn ? "Password" : "8 or more characters");
-        code_.setHint(steps ? "Re-activation code" : mode_ == kSignUp ? "Invite code (if the server asks)" : "Reset code");
+        code_.setHint(steps ? "Re-activation code" : mode_ == kSignUp ? (invite_ == 1 ? "Invite code" : "Invite code (if the server asks)") : "Reset code");
         String primary = "Sign in", secondary = "Create account";
         if (steps) {
             primary = "Re-activate";
@@ -346,7 +347,9 @@ final class OnlinePage {
         show(signOut_, in);
         String fallback = "";
         if (!in && mode_ == kSignIn) fallback = "Sign in, or create an account (some servers ask for an invite code).";
-        else if (!in && mode_ == kSignUp) fallback = "The invite code: only if the server owner gave you one.";
+        else if (!in && mode_ == kSignUp) fallback = invite_ == 0 ? "Choose a name and a password."
+            : invite_ == 1 ? "A new account needs an invite code from the server owner."
+            : "The invite code: only if the server owner gave you one.";
         else if (!in) fallback = "Ask the server owner for a reset code for your account (it works once, for 24 "
             + "hours), then choose a new password.";
         accountStatus_.setText(note_.isEmpty() ? fallback : note_);
@@ -415,8 +418,28 @@ final class OnlinePage {
     void secondary() {
         mode_ = mode_ == kSignIn ? kSignUp : kSignIn;
         note_ = "";
+        if (mode_ == kSignUp) askInvite();
         a_.status("");
         refreshAccount();
+    }
+
+    // The server's word on invite codes (its status's invite_needed; an older server: -1, the box shown).
+    void askInvite() {
+        invite_ = -1;
+        final String url = base(server()) + "/api/status";
+        final Object[] result = new Object[1];
+        a_.background(() -> {
+            try {
+                result[0] = post(url, null, null);
+            } catch (Exception e) {
+                result[0] = e;
+            }
+        }, () -> {
+            JSONObject r = result[0] instanceof JSONObject ? (JSONObject) result[0] : null;
+            if (r != null && r.has("invite_needed")) invite_ = r.optBoolean("invite_needed") ? 1 : 0;
+            if (invite_ == 0) code_.setText("");  // (hidden: nothing typed earlier goes with the sign-up)
+            refreshAccount();
+        });
     }
 
     void signIn(boolean create) {
@@ -428,8 +451,9 @@ final class OnlinePage {
             refreshAccount();
             return;
         }
-        if (create && password.length() < 8) {  // (the invite code: the server says when it needs one)
-            note_ = "Type a password (8 or more characters).";
+        if (create && (password.length() < 8 || (invite_ == 1 && invite.isEmpty()))) {
+            note_ = invite_ == 1 ? "Type a password (8 or more characters) and your invite code."
+                                 : "Type a password (8 or more characters).";
             refreshAccount();
             return;
         }
