@@ -478,6 +478,17 @@ std::string Describe() {
          "\n\nWhat happened:\n" + g_what + "\n\nJust before:\n" + (g_before[0] ? g_before : "(not said)") + "\n";
 }
 
+// A server address on this PC (127.0.0.1 / localhost / [::1], any port): the only kind a test may send to.
+bool LocalServer(const char* url) {
+  if (!url) return false;
+  std::string s = url;
+  if (const size_t k = s.find("://"); k != std::string::npos) s = s.substr(k + 3);
+  for (const char* h : {"127.0.0.1", "localhost", "[::1]"})
+    if (!s.compare(0, std::strlen(h), h) && (s.size() == std::strlen(h) || s[std::strlen(h)] == ':' || s[std::strlen(h)] == '/'))
+      return true;
+  return false;
+}
+
 // The online server the game uses (<game>\svr2011.toml online_server), else the default one.
 std::wstring ReportServer() {
   if (const char* e = std::getenv("SVR2011_REPORT_SERVER")) return Wide(e);  // (tests: a private server)
@@ -758,6 +769,12 @@ void Tick() {
       // (a test never goes to the live server by default: SVR2011_REPORT_SERVER names the test server - 26 Oct a
       // launcher test report reached the live one)
       Log("report test: not sent - SVR2011_REPORT_SERVER isn't set (give the test server)");
+      PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    } else if (g_send_test && !LocalServer(std::getenv("SVR2011_REPORT_SERVER")) &&
+               !(std::getenv("SVR2011_ALLOW_LIVE") && !std::strcmp(std::getenv("SVR2011_ALLOW_LIVE"), "1"))) {
+      // (and only a server on this PC: a test never writes to the live one - SVR2011_ALLOW_LIVE=1 lets it through)
+      Log(std::string("report test: not sent - SVR2011_REPORT_SERVER ") + std::getenv("SVR2011_REPORT_SERVER") +
+          " is not a server on this PC (SVR2011_ALLOW_LIVE=1 lets it through)");
       PostMessageW(g_wnd, WM_CLOSE, 0, 0);
     } else if (g_send_test) {  // (--test-report-send: the answers file - what= before= contact= problem=<n> image=<path>)
       if (FILE* f = _wfsopen(Wide(g_send_file).c_str(), L"rb", _SH_DENYNO)) {

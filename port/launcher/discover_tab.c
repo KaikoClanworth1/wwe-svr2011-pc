@@ -10,6 +10,7 @@
 #endif
 #define COBJMACROS
 #include "discover_tab.h"
+#include "test_run.h"
 
 #include <commctrl.h>
 #include <shobjidl.h>
@@ -403,6 +404,8 @@ static int http(const Job *j, const WCHAR *method, const WCHAR *path, const char
     uc.lpszHostName = host; uc.dwHostNameLength = 256;
     uc.lpszUrlPath = upath; uc.dwUrlPathLength = 900;
     if (!WinHttpCrackUrl(url, 0, 0, &uc)) return 0;
+    /* (a test run's upload / edit / new version / delete: never a server off this PC - test_run.h) */
+    if (wcscmp(method, L"GET") && test_run_refuses(host, "discovery write")) return 403;
     ses = WinHttpOpen(L"SvR2011 Launcher", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
                       WINHTTP_NO_PROXY_BYPASS, 0);
     if (ses) {
