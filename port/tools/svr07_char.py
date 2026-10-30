@@ -77,10 +77,12 @@ def pack(sizes, W, H):
     raise RuntimeError('textures do not fit')
 
 
-def bake(kids):
+def bake(kids, legs=None):
     """-> ({child: m8 with sheet UVs}, color DDS, normal DDS, Mk DDS, notes)"""
     tex = {n.lower(): d for n, d in S8.tex_read(kids[0xa])}
     m8s = {k: S8.read08(kids[k]) for k in (0, 0x2710, 0x4e20) if k in kids and kids[k][:4] == b'JBOY'}
+    for m8 in m8s.values():   # (a diva's straight legs onto the diva skeleton's: svr08_char.Template.leg_fit)
+        S8.repose(m8, legs)
     diffuse_of, normal_of, missing = {}, {}, []
     for k, m8 in m8s.items():
         for i, s8 in enumerate(m8['meshes']):
@@ -126,11 +128,14 @@ def bake(kids):
 
 def attire(kids, tp, portrait):
     """one 2011 attire (PACH children) from a 2007 EMD entry's children"""
-    m8s, color_d, normal_d, mk_d, notes = bake(kids)
+    legs = tp.leg_fit(kids[0])
+    m8s, color_d, normal_d, mk_d, notes = bake(kids, legs)
+    if legs:
+        notes += "; legs bent onto the template skeleton's"
     textures = ['color', 'normal', 'mk', 'noise', 'cubemap']
     SKIN = {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}
     EYE = {'texDiffuse': 'color', 'texCubeRefction': 'cubemap', 'texRefctionReg': 'color', 'texOcclusion': 'mk'}
-    nodes = tp.nodes_at(kids[0])   # (the template's nodes on the source's joints: svr08_char.Template.nodes_at)
+    nodes = tp.nodes_at(kids[0], legs)   # (the template's nodes on the source's joints: svr08_char.Template.nodes_at)
     out = {0: jboy.write(S8.model(tp, tp.body, [(m8s[0], lambda s: (tp.p_eye, EYE) if 'Reflect' in s['shader'] else (tp.p_skin, SKIN))],
                                   textures, nodes))}
     if 0x2710 in m8s:
