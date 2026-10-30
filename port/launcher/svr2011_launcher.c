@@ -64,6 +64,7 @@
 #include "texpacks_tab.h"
 #include "setup_tab.h"
 #include "discover_tab.h"
+#include "test_run.h"
 static void setup_go_install(void);
 static void setup_console_progress(int permille, const WCHAR *text);
 #include "roster_tab.h"
@@ -1734,17 +1735,16 @@ static void json_copy(const char *text, const char *key, char *out, size_t n)
     out[k] = 0;
 }
 
-/* The test-run guard (s_test_run): a request that writes (a body) or carries the account's token, to a host that
-   isn't this PC, is refused - logged (launcher_test_guard.log beside the launcher) and answered as the server's
-   error, so the Online tab's status line shows it. Plain GETs (api/status) still go. */
-static int online_test_refused(const WCHAR *host, const char *path, int writes, char *out, size_t outn)
+/* The test-run guard (s_test_run; test_run.h): a test run's write to a host that isn't this PC - logged
+   (launcher_test_guard.log beside the launcher); 1: refuse it. SVR2011_ALLOW_LIVE=1 lets it through. */
+int test_run_refuses(const WCHAR *host, const char *what)
 {
     static const WCHAR *const local[] = { L"127.0.0.1", L"localhost", L"::1", L"[::1]" };
     const char *allow = getenv("SVR2011_ALLOW_LIVE");
     WCHAR log[MAX_PATH], *slash;
     FILE *f = NULL;
     size_t i;
-    if (!s_test_run || !writes || (allow && !strcmp(allow, "1")))
+    if (!s_test_run || (allow && !strcmp(allow, "1")))
         return 0;
     for (i = 0; i < sizeof local / sizeof local[0]; i++)
         if (!_wcsicmp(host, local[i]))
@@ -1755,10 +1755,34 @@ static int online_test_refused(const WCHAR *host, const char *path, int writes, 
             SYSTEMTIME t;
             GetLocalTime(&t);
             fwprintf(f, L"%04d-%02d-%02d %02d:%02d:%02d test run: %S to %s refused (not this PC; SVR2011_ALLOW_LIVE=1 "
-                        L"lets it through)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, path, host);
+                        L"lets it through)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, host);
             fclose(f);
         }
     }
+    return 1;
+}
+
+/* The same for a server address (a URL, or host[:port]). */
+int test_run_refuses_url(const WCHAR *server, const char *what)
+{
+    WCHAR url[300], host[200];
+    URL_COMPONENTS uc;
+    swprintf_s(url, 300, wcsstr(server, L"://") ? L"%s" : L"http://%s", server);
+    memset(&uc, 0, sizeof uc);
+    uc.dwStructSize = sizeof uc;
+    uc.lpszHostName = host;
+    uc.dwHostNameLength = 200;
+    if (!WinHttpCrackUrl(url, 0, 0, &uc))
+        return s_test_run != 0;  /* (an address that can't be read: not this PC either) */
+    return test_run_refuses(host, what);
+}
+
+/* An account request (a body, or the account's token) in a test run, to a host off this PC: refused and answered
+   as the server's error, so the Online tab's status line shows it. Plain GETs (api/status) still go. */
+static int online_test_refused(const WCHAR *host, const char *path, int writes, char *out, size_t outn)
+{
+    if (!writes || !test_run_refuses(host, path))
+        return 0;
     sprintf_s(out, outn, "{\"error\": \"Test run: an account request to %S was refused - not a server on this PC "
               "(SVR2011_ALLOW_LIVE=1 lets it through).\"}", host);
     return 403;
@@ -3892,7 +3916,11 @@ static DWORD WINAPI rep_send_thread(LPVOID p)
     rep_match_parts(&s_rep_rm, s_rep_with_mods, &u, match_name, sizeof match_name);
     u.progress = rep_win_progress;
     u.ctx = w;
-    report_send(s_rep_server, &u, &s_rep_result);
+    if (test_run_refuses_url(s_rep_server, "/api/reports")) {  /* (a test run: never a server off this PC) */
+        ZeroMemory(&s_rep_result, sizeof s_rep_result);
+        wcscpy_s(s_rep_result.why, 300, L"Test run: a report to a server not on this PC was refused (SVR2011_ALLOW_LIVE=1 lets it through).");
+    } else
+        report_send(s_rep_server, &u, &s_rep_result);
     rep_match_done(&s_rep_rm);
     free(json);
     PostMessageW(w, WM_APP_REP_SENT, 0, 0);
@@ -9689,6 +9717,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         /* (a test aid: never the live server by default - server= must be given; 26 Oct a BOM hid it and a test
            report went live) */
         if (!server[0]) { wprintf(L"not sent: no server= line in %s (give the test server)\n", argv[3]); return 1; }
+        s_test_run = 1;
+        {
+            WCHAR ws[300];
+            MultiByteToWideChar(CP_UTF8, 0, server, -1, ws, 300);
+            if (test_run_refuses_url(ws, "/api/reports")) {
+                wprintf(L"not sent: %s is not a server on this PC (SVR2011_ALLOW_LIVE=1 lets it through)\n", ws);
+                return 1;
+            }
+        }
         wcscpy_s(s_game_dir, MAX_PATH, argv[2]);
         MultiByteToWideChar(CP_UTF8, 0, server, -1, wserver, 300);
         ZeroMemory(&rm, sizeof rm);
