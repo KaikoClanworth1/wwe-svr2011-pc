@@ -65,7 +65,7 @@ def fit(g, g11, trans, greedy=False, nt=N11):
     S = SP.svr10()
     pro = profiles(g)
     # (real superstars only: the Create-a-Superstar placeholders - "Edit 01".. below id 100 - match by name too)
-    shared = [c for c in pro if 100 <= g.id11(c) < 400 and g.id11(c) in g11.pro and c in g.dat and g.named(c)
+    shared = [c for c in pro if 100 <= (g.id11(c) or 0) < 400 and g.id11(c) in g11.pro and c in g.dat and g.named(c)
               and not g.name(c).upper().startswith('EDIT') and S.norm(g.name(c)) == S.norm(g11.name(g.id11(c)))]
     ns = min(len(pro[c]) for c in shared) // 2
     nt = min(nt, min(len(g11.pro[g.id11(c)]) for c in shared) // 2)

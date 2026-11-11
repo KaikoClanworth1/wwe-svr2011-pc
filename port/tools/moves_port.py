@@ -409,6 +409,28 @@ class Game13(Game12):
     def motion_pacs(self):
         return ['pac/' + n for n in sorted(self.src.d.listdir('pac')) if re.match(r'(dlc_)?mot\d+\.pac$', n.lower())]
 
+    def dlc_groups(self):
+        """the packages' motion groups, and the disc's own dlc_mot<nn>.pac ZMOT ones: WWE '13's pac/dlc_mot01.pac ZMOT/DLC0
+        holds the moves of its Attitude Era superstars (ids 50-57, unlocked by a package of one catalog - suggestion
+        6135d5) in the packages' tree (superstar id -> x -> move id -> a motion record); the disc's ZMVM groups are
+        already in the index"""
+        if not hasattr(self, '_dlc_groups'):
+            groups = Game12.dlc_groups(self)
+            for rel in self.motion_pacs():
+                if not re.match(r'pac/dlc_mot\d+\.pac$', rel.lower()):
+                    continue
+                try:
+                    raw = self.pac_bytes(rel)
+                    if placeholder(raw):
+                        continue
+                    for t, es in self._read(raw):
+                        if t == b'ZMOT':
+                            groups += [(t, n.strip(b'\0 '), b) for n, b in es]
+                except (ValueError, IndexError, KeyError, OSError, struct.error) as e:
+                    self.skipped.append('%s (%s)' % (rel, str(e)[:120]))
+                    log('moves_port: %s skipped: %s' % (rel, e))
+        return self._dlc_groups
+
 
 class Game14(Game13):
     """WWE 2K14: as WWE '13, its move records in createmode.pac MOVS/WAZE (the name 8 bytes earlier
