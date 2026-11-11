@@ -750,8 +750,13 @@ REX_HOOK_RAW(sub_826A2D78) {
 // too: the game's walk then compares it with that heap's list as if it were inside - past the list's end it never
 // stops (report fc182b, 2.2.1: heap 1, a block freed by sub_826E5328 from its +188 - the net let it through, as it
 // passed any block it couldn't place to the game).
-// Test aids: SVR2011_TEST_FREE_LIST=<heap>,<n>[,loop|double|junk|byte] - the <n>th free on that heap (99: on any) meets that
-// damage (byte: its heap byte names another heap);
+// The free also joins the block to a free neighbour by address, reading that block's header: when something has run
+// over it (reports 8cf6e9: leaving CREATE A MOVE-SET, heap 42, the freed block's next one; 73f97e: after a match in an
+// arena mod on Android, sub_826E5328's free), the game's join wrote through the bad link and crashed. Such a neighbour
+// is taken off the free list and left as used (its room is lost, nothing else is), the free then goes on, and the log
+// shows the damaged header with the words before it - the end of whatever overran it.
+// Test aids: SVR2011_TEST_FREE_LIST=<heap>,<n>[,loop|double|junk|byte|next] - the <n>th free on that heap (99: on any) meets
+// that damage (byte: its heap byte names another heap; next: the free block after it gets a junk link);
 // SVR2011_TEST_FREE_GUARD_OFF=1 - the game's walk alone.
 namespace {
 constexpr uint32_t kHeapLocks = 0x82EC55B0, kHeapTable = 0x82EC5F48, kHeapEntrySize = 36, kHeapLockSize = 28;
@@ -767,13 +772,15 @@ std::string HeapWords(const uint8_t* base, uint32_t at, uint32_t count, uint32_t
   return s.empty() ? " (outside the heap)" : s;
 }
 
+// (the back chain from r1; each word read only from a readable page - a stack's top can be the end of its mapping:
+// the walk read past it, and the log line of a damaged heap crashed the game - 2.2.3 Android 73f97e, PC test)
 std::string HeapCallers(const uint8_t* base, const PPCContext& ctx) {
   std::string s = fmt::format("{:08X}", uint32_t(ctx.lr));
   uint32_t sp = ctx.r1.u32;
   const uint32_t top = sp + 0x40000;
-  for (int i = 0; i < 12 && sp >= 0x70000000 && sp < 0x80000000; ++i) {
+  for (int i = 0; i < 12 && sp >= 0x70000000 && sp < 0x80000000 && svr2011::GuestReadable(sp); ++i) {
     const uint32_t prev = Rd32(base, sp);
-    if (prev <= sp || prev >= top) break;
+    if (prev <= sp || prev >= top || !svr2011::GuestReadable(prev - 8)) break;
     s += fmt::format(" {:08X}", Rd32(base, prev - 8));
     sp = prev;
   }
@@ -905,13 +912,14 @@ REX_HOOK_RAW(sub_8269AAD8) {
     }
     return t;
   }();
-  bool test_double = false;
+  bool test_double = false, test_next = false;
   if ((test.heap == int(heap) || test.heap == 99) && test.kind != "byte") {  // (99: any heap)
     static int count = 0;
     if (++count == test.at) {
       const uint32_t first = Rd32(base, start + 8);
       REXLOG_WARN("[svr2011] heap free list: test - {} at free {} of heap {}", test.kind, count, heap);
       if (test.kind == "double") test_double = true;
+      else if (test.kind == "next") test_next = true;
       else if (test.kind == "junk") Wr32(base, block + 4, 0x03220B94);
       else if (first < size) Wr32(base, start + (first << 4) + 8, first);
     }
@@ -935,6 +943,83 @@ REX_HOOK_RAW(sub_8269AAD8) {
       if (to > cur && to <= size) d.free_units += to - cur;
       ++d.steps;
       cur = next;
+    }
+  }
+  {
+    static bool next_pending = false;  // (test: the first free after the count with a free block after it)
+    next_pending = next_pending || test_next;
+    const uint32_t next_at = start + (to_next << 4);
+    if (next_pending && !d.what && to_next < size && Rd32(base, next_at + 8) != 0) {
+      next_pending = false;
+      Wr32(base, next_at, 0x07FE5A04);
+      REXLOG_WARN("[svr2011] heap free list: test - a junk link in the free block after {:08X}", p);
+    }
+  }
+  if (!d.what && !off) {
+    // (the neighbours the game would join: a free one's header must link back to this block)
+    const uint32_t next_at = start + (to_next << 4);
+    const bool next_free = to_next < size && Rd32(base, next_at + 8) != 0;
+    uint32_t bad = 0;
+    if (next_free) {
+      const uint32_t nn = Rd32(base, next_at) & 0x0FFFFFFF;
+      if (nn <= to_next || nn > size || Rd32(base, next_at + 4) != self) bad = to_next;
+    }
+    if (!bad && self && Rd32(base, start + (to_before << 4) + 8) != 0 &&
+        (Rd32(base, start + (to_before << 4)) & 0x0FFFFFFF) != self)
+      bad = to_before;
+    if (bad) {
+      const uint32_t at = start + (bad << 4);
+      const std::string header = HeapWords(base, at, 4, start, end), before = HeapWords(base, at - 64, 16, start, end);
+      // Mended where the address links say how: a block before it gets this block as its next; a block after it gets
+      // this block as its before, and as its next the first block on whose own before link names it (none: the heap's
+      // end). Else it is taken off the free list (the link that leads to it takes its own, or ends the list) and left
+      // as used: the game's join and walk pass it by - its room is lost, and a heap left with too little fails later.
+      const char* done = nullptr;
+      const uint32_t link = Rd32(base, at + 8);
+      if (bad == to_before) {
+        Wr32(base, at, (Rd32(base, at) & 0xF0000000u) | self);
+        done = "mended (its next is this block again)";
+      } else if (link > bad && link <= size) {
+        uint32_t found = size;
+        for (uint32_t u = bad + 1; u < size; ++u) {
+          const uint32_t h = start + (u << 4), hn = Rd32(base, h) & 0x0FFFFFFF;
+          if (Rd32(base, h + 4) == bad && base[h + 15] == heap && hn > u && hn <= size) {
+            found = u;
+            break;
+          }
+        }
+        if (found <= link) {  // (a free block's next free one is past its end)
+          Wr32(base, at, (Rd32(base, at) & 0xF0000000u) | found);
+          Wr32(base, at + 4, self);
+          done = "mended from the block after it";
+        }
+      }
+      if (!done) {
+        uint32_t from = start + 8, steps = 0;
+        while (steps++ < 0x100000) {
+          const uint32_t cur = Rd32(base, from);
+          if (cur == bad) {
+            Wr32(base, from, link > bad && link <= size ? link : size);
+            break;
+          }
+          if (cur >= size || cur > bad) break;
+          from = start + (cur << 4) + 8;
+        }
+        Wr32(base, at + 8, 0);
+        done = "taken off the free list and left unused";
+      }
+      static std::atomic<int> told{0};
+      if (const int n = ++told; n <= 8) {
+        ctx = saved;
+        REXLOG_ERROR("[svr2011] heap free list: heap {}, freeing {:08X}: the free block {} it by address ({:08X}) had a "
+                     "damaged header - {}, the free goes on (callers {})", heap, p,
+                     bad == to_next ? "after" : "before", at, done, HeapCallers(base, ctx));
+        REXLOG_ERROR("[svr2011] heap free list:   its header was:{} - now:{}", header, HeapWords(base, at, 4, start, end));
+        REXLOG_ERROR("[svr2011] heap free list:   the 16 words before it (what ran over it):{}", before);
+        REXLOG_ERROR("[svr2011] heap free list:   the block being freed (its owner ran on?): {} bytes, starts:{}",
+                     (to_next - self - 1) * 16, HeapWords(base, p, 8, start, end));
+        if (n == 1) svr2011::MatchBoxLog("a heap block's neighbour was damaged");
+      }
     }
   }
   if (d.what) {
