@@ -77,7 +77,8 @@ Mirror (Join-Path $src "ent_srv\data") (Join-Path $root "lan_srv\data")
 Mirror (Join-Path $src "test_userdata_ent_down") (Join-Path $root "lan_ud_host")
 Mirror (Join-Path $src "test_userdata_ent_up") (Join-Path $root "lan_ud_join")
 $listen = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $_.LocalPort })
-$sp = 8460..8499 | Where-Object { $_ -notin $listen } | Select-Object -Last 1
+$spFrom = if ($env:SVRTEST_SERVER_PORT_FROM) { [int]$env:SVRTEST_SERVER_PORT_FROM } else { 8460 }  # (a chat's own range: its first port, 40 ports from it)
+$sp = $spFrom..($spFrom + 39) | Where-Object { $_ -notin $listen } | Select-Object -Last 1
 $udp = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | ForEach-Object { $_.LocalPort })
 $hp = 36540, 36560, 36580 | Where-Object { $_ -notin $udp } | Select-Object -Last 1
 $jp = 36640, 36660, 36680 | Where-Object { $_ -notin $udp } | Select-Object -Last 1
