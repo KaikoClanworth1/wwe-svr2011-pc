@@ -223,7 +223,7 @@ EVT ids are 25000 + object index (2011's convention), segment slots 0/5/10/15/20
 ## 9. What a 2011 entrance has that the conversion lacks
 
 - Face and hand tracks (2011 y1..3 under the character): HCTP has none (its face events are
-  op 192 on y0). Without them the face keeps its default and the hands their default pose.
+  op 192 on y0). Without them the face keeps whatever played before (report a1b6b1) and the hands their default pose; the converter now writes y2/y3 from the hand events and y1 from 2011's General Entrance (OTHER_GAMES_ENTRANCES.md, Faces).
 - 2011 pyro is its own system (the global effect object, docs/SVR08_ENTRANCES.md); HCTP has none (section 7).
 - Sounds (op 192) and face/hand animations (op 16) use HCTP ids; both are dropped.
 

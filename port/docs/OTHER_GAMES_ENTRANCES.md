@@ -169,7 +169,7 @@ PS2 textures (not portable). The 360 discs are the better source.
   lists (up to 32 keys, 2011 holds 8: resample 26 / 124 / 199 slots).
 - **Motion:** same records at 60 Hz, same Biped skeleton; 2K15 YANM v4, 2K16/2K17 v5 (`yanm_decode`
   reads it: same pose within 0-1.7 cm); mode-4 YANM blocks (boned props only) must be skipped; y1 is a
-  32-track face rig (dropped). Checked: 2K15 Austin vs 2011's own 0-2 cm on segments not re-cut.
+  32-track face rig (dropped; 2011's own face stands in: Faces). Checked: 2K15 Austin vs 2011's own 0-2 cm on segments not re-cut.
 - **One-take entrances (2K15):** ~61 put the whole entrance in segment 0 (2011 hides segment 0): use
   2K16's re-cut of the same take (37 of 61) or an HCTP-style split.
 - **Other:** lights object moved to `pac/evt/light/elNNNNN.pac` (2011 donor used anyway); the event
@@ -496,6 +496,31 @@ left / 15-29 right; docs/HAND_POSES.md), the first with the event block `40 05 0
 | WWE '12 - 2K17 | the Biped finger bones retargeted onto 2011's 30 finger joints: `tools/finger_retarget.py` (hand-frame chain, fixed ch246 -> ch104 hand alignment, `bind * Rz Ry Rx` as the library, solved parent first on the quantised chain); vs 2011's own 107 Kane / 101 Austin: fist / open agree 97-99% of frames, median 1 degree. Bind tables are WWE '13's (assumed for '12 / 2K14-2K17) |
 
 The Mod Maker's future entrance preview reads y2/y3 the same way (ModMakerUIRework).
+
+## Faces
+
+2011 animates the entrant's face with its own track, y1 (beside the body y0 and the fingers y2 / y3), in every
+segment of every stock entrance (1196 tracks): one face-rig pose a record, 288 bytes one a frame (the older
+entrances) or 393 bytes key-reduced (the newer ones), not decoded. Its events are copies of the body's cues
+(op 193 `c1 3x 23` voice / sound cues, 100-103, 162, 171 ...). 2011's face motions for moves (ids 1000-1099,
+1500) are in the hand-pose library (m.pac MVMT/STAT/99); no stock entrance face starts from one of them.
+
+**An entrance without y1 leaves the face as the last motion set it** - in Create An Entrance, a Diva's smile
+stays on through a converted entrance played after hers (report a1b6b1).
+
+| converter | face |
+|---|---|
+| SvR 2007-2010, LoW (and their PS2 discs) | the source's y1 is kept (2011's format) |
+| WWE '12 - 2K17 | the source's face is hashed bones inside the body record ('12: ~38 between `Bip Head` and the clavicles; 2K15+: a 32-track y1 rig), no map to 2011's rig: **2011's own face stands in** (`tools/face_tracks.py`) |
+| HCTP, SvR 2004, Shut Your Mouth, Just Bring It | none in the source (face cues by op 16 only): 2011's face stands in |
+| SvR 2006 | its y1 (`0x77` face joint-mask groups) is not 2011's face rig: dropped, 2011's face stands in |
+
+The stand-in (`face_tracks.py`, every character object with body tracks, `--game-pac` needed): the face of the
+same superstar's 2011 entrance when 2011 has the entrance under the same number and name (WWE '12 - 2K17
+only), else 522 "General Entrance" (2011's default for created superstars); per segment the stock face of the
+same slot, else the one closest in length, its poses only (its cues dropped), cut or looped to the segment's
+length, the first record with the standard event block. A team member takes the donor's same object's face,
+else its entrant's. The report's `face` note names the donor.
 
 ## The global object (lights and effects)
 

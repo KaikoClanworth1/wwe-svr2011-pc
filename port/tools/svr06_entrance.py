@@ -339,9 +339,10 @@ def _intro_from_stage(bank, kinds):
                 Y.insert_motion(bank, S.ID_SHIFT + i, 0, y, Y.build_stream(Y.make_stream([(0, p)], 1)), 1, S.RT_2011)
 
 
-def convert_bank(raw, kinds, entrant_on, rep, fill0=False):
+def convert_bank(raw, kinds, entrant_on, rep, fill0=False, game_pac=None):
     """2006 EVNT bank -> 2011 YMKs bytes. entrant_on: segment slots (x) where object 0 is on;
-    fill0: write a 1-frame intro (segment 0) from segment 1's first state."""
+    fill0: write a 1-frame intro (segment 0) from segment 1's first state; game_pac: the 2011 pac folder
+    (the entrant's face tracks come from its General Entrance)."""
     T6, ents = H.read_bank(raw)
     bad = bad_ops(T6)
     cnt = collections.Counter()
@@ -393,6 +394,12 @@ def convert_bank(raw, kinds, entrant_on, rep, fill0=False):
         for y, data in hd.items():
             Y.insert_motion(bank, S.ID_SHIFT, x, y, data, Y.parse_stream(data).nframes(), S.RT_2011)
             cnt['hand tracks (y2/y3, from 2006 0x78/0x79 keys)'] += 1
+    # the entrant's face (y1): 2006's 0x77 face keys are not 2011's face rig (dropped above); without a y1 track the
+    # face keeps what played before (report a1b6b1): 2011's General Entrance's face per segment (face_tracks.py)
+    if kinds and kinds[0] == 'char':
+        import face_tracks
+        face_tracks.add_to_bank(bank, 0, {x: seg_len[x] for x in entrant_on if seg_len.get(x) and x < NSLOTS},
+                                game_pac, rep, S.RT_2011)
     for k, v in sorted(cnt.items()):
         (rep['dropped'] if 'dropped' in k else rep['notes']).append('%s: %d' % (k, v))
     used = sorted(op for op in bad if any(('op %d dropped' % op) in k for k in cnt))
@@ -439,7 +446,7 @@ def list_entrances(src, game_pac=None):
 def convert(src, entrance, number, name, rep, *more, game_pac=None):
     """-> (2011 EVP bytes, 2011 EVT bytes); rep: dict with lists notes / warnings / dropped.
     Also takes entrance_port's CONVERTERS call (src, entrance, number, name, parts, rep, game_pac=);
-    game_pac is unused. ValueError = no such entrance / not a 2006 disc."""
+    game_pac: the 2011 pac folder (the face tracks' donor). ValueError = no such entrance / not a 2006 disc."""
     if not isinstance(rep, dict) and more and isinstance(more[0], dict):
         rep = more[0]
     for k in ('notes', 'warnings', 'dropped'):
@@ -450,13 +457,14 @@ def convert(src, entrance, number, name, rep, *more, game_pac=None):
     e6 = parse_script(scripts[entrance])
     e11, kinds, fill0 = convert_script(e6, number, name, rep)
     on = [x for x in SEGS if e11['objs'][0]['slots'][x][2]] if kinds and kinds[0] == 'char' else []
-    evt = convert_bank(banks[entrance], kinds, on, rep, fill0)
+    evt = convert_bank(banks[entrance], kinds, on, rep, fill0, game_pac=game_pac)
     s7 = IN_SVR07.get(entrance)
     if s7:
         rep['notes'].append('SvR 2007 (X360) has this entrance as %d%s: entrance_port.py --game svr07 keeps its '
                             'full key set and face / hand tracks' % (s7[0], ' (same frame counts)' if s7[1] else
                                                                        ' (re-cut: other frame counts)'))
-    rep['notes'].append('not converted: pyro (2006 PS2 particles), face animation, titantron, theme')
+    rep['notes'].append('not converted: pyro (2006 PS2 particles), the 2006 face (a 2011 face stands in: the face '
+                        'note), titantron, theme')
     return S.build_evp(e11), evt
 
 

@@ -665,6 +665,7 @@ def hand_library(game_pac):
     """the 2011 hand-pose library for the HCTP-path converters' finger tracks (hand_tracks.py)"""
     import hand_tracks
     EH.DEFAULT_HAND_LIB = hand_tracks.library(game_pac) if game_pac else {}
+    EH.DEFAULT_GAME_PAC = game_pac   # (and their face tracks: face_tracks.py, report a1b6b1)
     return EH.DEFAULT_HAND_LIB
 
 
@@ -979,7 +980,7 @@ def wwe13_convert(src, entrance, number, name, parts, rep, game_pac=None, game='
         rep[k] += r[k]
     evp11 = own_vehicles(src, game, evp11, game_pac, rep)
     dlc_props(src, game, evp11, rep)
-    rep['notes'].append('not converted: theme, face / finger tracks; titantron only with --titantron (Bink 2: a decoder the player installs)')
+    rep['notes'].append('not converted: theme, the source face (a 2011 face stands in: the face note); titantron only with --titantron (Bink 2: a decoder the player installs)')
     return evp11, evt11
 
 
