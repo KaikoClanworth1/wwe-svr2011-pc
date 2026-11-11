@@ -43,7 +43,7 @@ namespace {
 
 constexpr uint32_t kChars = 0x82E3CC50, kMatchFrames = 0x82E3CD0C, kLive = 0x82E3DE00;
 constexpr uint32_t kObjects = 0x82DE0220, kObjectSlots = 72;
-constexpr uint32_t kMotion = 212, kMotionFrame = 24, kPerson = 1156;
+constexpr uint32_t kMotion = 212, kMotionFrame = 24, kPerson = 1156, kRole = 2624;
 constexpr int kPeople = 10, kMotions = 32, kEvents = 64;
 constexpr uint32_t kStanding = 20500;
 bool Lying(uint32_t m) { return m >= 430 && m <= 448; }  // (match_diag.cpp: 473-478, selling, stand up straight in stock too)
@@ -217,7 +217,10 @@ void MatchBoxUpdate(PPCContext& ctx, uint8_t* base) {
       }
       if (p.ch != ch) p = {}, p.ch = ch;
       p.person = Rd32(base + ch + kPerson);
-      if (p.person == 6) g_referee = referee = true;
+      // (the referee: person 6 - or, in a Special Guest Referee match (rule 0x53), the one with the referee's role
+      // (+2624 = 1) wherever he stands: that match has no person 6, and its box was "no referee: not written")
+      const bool is_ref = p.person == 6 || (base[kLive] == 0x53 && Rd32(base + ch + kRole) == 1);
+      if (is_ref) g_referee = referee = true;
       if (p.person == 0) p0 = &p;
       p.x = RdF(base + ch + 288), p.y = RdF(base + ch + 292), p.z = RdF(base + ch + 296);
       const uint32_t motion = Rd32(base + ch + kMotion);
@@ -228,7 +231,7 @@ void MatchBoxUpdate(PPCContext& ctx, uint8_t* base) {
       LastMoveOf(ch, slot, move);
       p.ring[p.n % kMotions] = {clock, motion, slot, move, RdF(base + ch + kMotionFrame)};
       ++p.n;
-      if (p.person == 6) AddEvent(clock, fmt::format("referee motion {}", motion));
+      if (is_ref) AddEvent(clock, fmt::format("referee motion {}", motion));
       // lying -> standing with no get-up between (the "falls, then pops up standing" reports)
       if (p.person < 6 && motion == kStanding && prev != ~0u && Lying(prev) && g_told_teleport[size_t(i)] < 2) {
         ++g_told_teleport[size_t(i)];
