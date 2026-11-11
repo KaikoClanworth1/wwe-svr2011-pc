@@ -2342,6 +2342,23 @@ void CaeMenuLoads() {
 // the cursor).
 REX_EXTERN(__imp__sub_828B6CD0);
 REX_HOOK_RAW(sub_828B6CD0) {
+  // A move-set applied to a superstar - Community Creations' download (sub_82519C60 -> sub_82B94DF0(move-set, id,
+  // flag)) - goes into his profile only if he is "downloaded" (this check, at 0x82B94E5C) or created. Its bound stops
+  // at 321 before reading the record, so for big roster's mods on ids 322-511 the apply returned at once: the
+  // move-set never reached them (report d0b746: "can't add movesets from community creations to them"). Below 322
+  // every mod's record is flagged downloaded; a big-roster mod is answered the same here. The profile and record
+  // the apply then uses (sub_828B6938, sub_8257AF18) are big roster's for those ids. Test aid
+  // SVR2011_TEST_CC_APPLY_STOCK=1: the game's own answer (a before / after comparison).
+  constexpr uint32_t kCcApplyCaller = 0x82B94E60;
+  if (uint32_t(ctx.lr) == kCcApplyCaller && ctx.r3.u32 >= 322 && ctx.r3.u32 < svr2011::kMaxIds &&
+      svr2011::BigRosterOn() && ModOf(ctx.r3.u32) && !std::getenv("SVR2011_TEST_CC_APPLY_STOCK")) {
+    static std::atomic<int> told{0};
+    if (told.fetch_add(1) < 8)
+      REXLOG_INFO("[svr2011] superstar mods: a move-set applied to {} (id {}, past 321): a downloaded superstar",
+                  ModOf(ctx.r3.u32)->name, ctx.r3.u32);
+    ctx.r3.u64 = 1;
+    return;
+  }
   // CREATE AN ENTRANCE: the superstar picked (select screen state 14, sub_82463090) goes to the EASY / ADVANCED
   // popup unless he is "downloaded" - then straight to the easy editor (state 23). Mods sit on downloaded slots,
   // and the user asked for ADVANCED on the real DLC superstars too: none counts as downloaded here.
@@ -4342,6 +4359,41 @@ REX_HOOK_RAW(sub_82B972C8) {
   if (kind != 1) return;
   PPCContext c = entry;
   AddHighModsCc(c, base, screen, 1108, 2076, 3044, 4012, 242);
+  // Test aid SVR2011_TEST_CC_APPLY=<from id>,<to id>: once, at this list (CREATE A MOVE-SET -> DOWNLOADED SUPERSTAR),
+  // the game's own move-set apply - sub_82B94DF0, what Community Creations' download calls (sub_82519C60) - with a
+  // move-set made of <from>'s moves (his profile's 224 slots; no created finishers) onto <to>. The target's
+  // finisher / signature slots are logged before and after, and each later time this list is built (a restart:
+  // what was saved).
+  static const std::pair<int, int> apply = [] {
+    int a = -1, b = -1;
+    if (const char* e = std::getenv("SVR2011_TEST_CC_APPLY")) std::sscanf(e, "%d,%d", &a, &b);
+    return std::make_pair(a, b);
+  }();
+  if (apply.first < 0 || apply.second < 0 || !g_memory) return;
+  const auto moves = [&](uint32_t id) {
+    PPCContext p = entry;
+    p.r3.u64 = id;
+    sub_828B6938(p, base);
+    std::string s;
+    for (uint32_t k = 0; k < 8 && p.r3.u32; ++k) s += (k ? " " : "") + std::to_string(Rd16(base + p.r3.u32 + 0x1E + k * 2));
+    return std::make_pair(p.r3.u32, s);
+  };
+  const auto before = moves(uint32_t(apply.second));
+  REXLOG_INFO("[svr2011] test: CC apply - id {} profile {:08X}, slots 0x01E-0x02C now {}", apply.second, before.first,
+              before.second);
+  static bool applied = false;
+  if (applied || std::getenv("SVR2011_TEST_CC_APPLY_LOOK")) return;  // (_LOOK: the check after a restart only)
+  applied = true;
+  const uint32_t buf = g_memory->SystemHeapAlloc(1024, 0x10);
+  const auto from = moves(uint32_t(apply.first));
+  if (!buf || !from.first) return;
+  std::memset(base + buf, 0, 1024);
+  std::memcpy(base + buf, base + from.first, 448);  // (the 224 move slots; +520 / +736: no created finishers)
+  PPCContext a = entry;
+  a.r3.u64 = buf, a.r4.u64 = uint32_t(apply.second), a.r5.u64 = 0;
+  sub_82B94DF0(a, base);
+  REXLOG_INFO("[svr2011] test: CC apply - {}'s moves ({}) applied to id {}: now {}", apply.first, from.second,
+              apply.second, moves(uint32_t(apply.second)).second);
 }
 
 REX_EXTERN(__imp__sub_82BA38B8);

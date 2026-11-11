@@ -180,3 +180,24 @@ an extension buffer per table (found by the table's start, so every site of one 
 site: an address (after base + i x size: i >= 242 -> the extension), a walk (a pointer stepping through the table:
 at 242 it jumps to the extension) and a bound (a compare with 242 -> the live index count). Behind the cvar
 big_roster (off: every hook returns at once); each site logs once when it first sends an index to an extension.
+
+## Lists and checks that stop at id 321 (reports d742a8, d0b746)
+
+- **Downloaded superstar lists** (d742a8, fe1a339c): CREATE A MOVE-SET's (sub_82B972C8) and Community Creations'
+  "which superstar gets this move-set" list (sub_82518F38; and the twin sub_82BA38B8) walk ids 50-321. Hooks add big
+  roster's mods on ids 323+ after the game's build. The 36-byte roster entries (sub_8257B240, 322 of them) get a
+  zeroed extension for ids 322-511 (this run only, not saved).
+- **A downloaded move-set applied to a superstar** (d0b746): Community Creations' apply (sub_82519C60 ->
+  sub_82B94DF0(move-set, id, flag)) copies the moves into the profile only for a created or "downloaded" superstar,
+  and "downloaded" (sub_828B6CD0) answers 0 for every id from 322 before it reads the record. So for a big-roster mod
+  the apply returned at once and nothing changed. That check is answered "downloaded" for big-roster mods at the
+  apply's call (0x82B94E5C), as for every mod below 322. The profile and record the apply then uses (sub_828B6938,
+  sub_8257AF18) are big roster's.
+- Test aid `SVR2011_TEST_CC_APPLY=<from>,<to>`: at CREATE A MOVE-SET -> DOWNLOADED SUPERSTAR, the game's own apply
+  with <from>'s 224 moves onto <to>, the target's slots 0x01E-0x02C logged before and after (and at each later visit).
+  `SVR2011_TEST_CC_APPLY_STOCK=1`: the game's own check (the control); `SVR2011_TEST_CC_APPLY_LOOK=1`: log only.
+- Checked (11 Nov, big roster on, Clone 145 on id 330, John Cena's moves): stock check - unchanged (5734 3594 5372
+  ...); fixed - 6689 6689 5010 21350 ...; ACCEPT CHANGES in the editor -> "Save Successful", per-mod save
+  `.mods\clone_145.dat`; after a restart id 330 still has them; a match's move getter returned them for slots 15-18
+  (Clone 145 didn't reach a signature or finisher in the CPU matches). Not run: Community Creations itself (no
+  move-set on the test server).
