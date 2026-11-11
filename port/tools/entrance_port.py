@@ -908,8 +908,14 @@ DLC_PROP_FALLBACK = 2006   # (a prop every 2011 install has: only if the pack ca
 def dlc_props(src, game, evp11, rep):
     """the props of a DLC entrance that 2011's evtobj lacks, from the game's packages (evtobj_dlc<nn>.pac, 2K16's pac/prop/<id>_dlc<nn>.pac):
     the model converted (svrmod wwe13prop), added by the pack under its own id"""
-    packages = getattr(getattr(src, 'dlc', None), 'packages', None)
-    if not packages:
+    packages = getattr(getattr(src, 'dlc', None), 'packages', None) or []
+    # (and the disc's own evtobj_dlc<nn>.pac: WWE '13's Attitude Era superstars are on the disc, unlocked by a package
+    # of one catalog - suggestion 6135d5)
+    try:
+        disc = ['pac/evt/' + f for f in src.listdir('pac/evt') if re.match(r'(?i)evtobj_dlc\d+\.pac$', f)]
+    except Exception:   # noqa: BLE001
+        disc = []
+    if not packages and not disc:
         return
     missing = collections.defaultdict(list)
     for w in rep['warnings']:
@@ -919,12 +925,14 @@ def dlc_props(src, game, evp11, rep):
     if not missing:
         return
     found = {}
-    for pk in packages:
-        for low in pk.matching(r'^pac/(evt/evtobj_dlc\d+|prop/\d+_dlc\d+)\.pac$'):
+    sources = [('DLC package ' + pk.display, pk.read, pk.matching(r'^pac/(evt/evtobj_dlc\d+|prop/\d+_dlc\d+)\.pac$'))
+               for pk in packages] + ([('the disc', src.read, disc)] if disc else [])
+    for where, read, lows in sources:
+        for low in lows:
             # (a package pac this reader can't read leaves its props out, not the whole entrance: WWE 2K17's Goldberg
             # with its packages failed on a table running past the file's end, report 20261108 09187a)
             try:
-                raw = pk.read(low)
+                raw = read(low)
                 if raw[:4] == b'\x0f\xf5\x12\xed':
                     raw = E13.xdec(raw, E13.find_svrmod(SVRMOD))
                 try:
@@ -934,7 +942,7 @@ def dlc_props(src, game, evp11, rep):
                         raise
                     ents = E13.epac16_entries(raw)   # (2K16 / 2K17's per-entry EPAC layout)
             except Exception as x:
-                rep['notes'].append('%s in DLC package %s: not read (%s) - its props are left out' % (low, pk.display, x))
+                rep['notes'].append('%s in %s: not read (%s) - its props are left out' % (low, where, x))
                 continue
             for (g, n), b in ents.items():
                 if g == 'SOBJ' and n.isdigit():

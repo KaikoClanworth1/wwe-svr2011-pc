@@ -1308,7 +1308,9 @@ class GameW:
         return self.name(i) not in ('', '0')
 
     def id11(self, i):
-        return i
+        # (below 100 - the disc's DLC superstars, disc_dlc_ids - is 2011's Created Superstars and unused records:
+        # never a 2011 superstar)
+        return i if i >= 100 else None
 
     def chpac_rel(self, i):
         return 'pac/ch/ch%d.pac' % i
@@ -1318,12 +1320,15 @@ class GameW:
 
     def ssf(self):
         if self._ssf is None:
-            self._ssf = {}
-            for t, es in self.MP.read_pac(self.pac_bytes('pac/menu/menuHD.pac')):
-                if t in (b'SSFA', b'SSFB', b'SSFC'):
-                    for n, b in es:
-                        if n.isdigit():
-                            self._ssf[(t.decode(), int(n))] = b
+            self._ssf, self.ssf_from = {}, {}
+            # (pac/DLC_HD.pac: the renders of the disc's DLC superstars - disc_dlc_ids - keyed "0050" ...)
+            for rel in ('pac/menu/menuHD.pac',) + (('pac/DLC_HD.pac',) if self.src.has('pac/DLC_HD.pac') else ()):
+                for t, es in self.MP.read_pac(self.pac_bytes(rel)):
+                    if t in (b'SSFA', b'SSFB', b'SSFC'):
+                        for n, b in es:
+                            if n.isdigit():
+                                if self._ssf.setdefault((t.decode(), int(n)), b) is b:
+                                    self.ssf_from[int(n)] = rel.split('/')[-1][:-4]   # (the render note names it)
         return self._ssf
 
     def entrance_block(self, i):
@@ -1336,9 +1341,19 @@ class GameW:
     def theme_events(self, music, cid):
         return ['Play_MUS_%04d_0_0' % m for m in (music, cid) if m]
 
+    @property
+    def disc_dlc_ids(self):
+        """the disc's own DLC superstars: ids 50-99 with a model pac and a real name - WWE '13's Attitude Era pack
+        (Diamond Dallas Page 50 ... Grand Master Sexay 57) is a package of one catalog that only unlocks them
+        (suggestion 6135d5); "Edit NN" / "DLC N" rows are empty slots"""
+        if not hasattr(self, '_disc_dlc'):
+            self._disc_dlc = {c for c in self.dat if 50 <= c < 100 and self.named(c) and self.has_chpac(c)
+                              and not re.match(r'(?i)(edit|dlc|dummy|motion|test)\b', self.name(c))}
+        return self._disc_dlc
+
     def roster(self):
-        return [c for c in sorted(self.dat) if (100 <= c < 400 or c in self.dlc_ids) and self.named(c)
-                and (self.has_chpac(c) or self.src.no_models())
+        return [c for c in sorted(self.dat) if (100 <= c < 400 or c in self.dlc_ids or c in self.disc_dlc_ids)
+                and self.named(c) and (self.has_chpac(c) or self.src.no_models())
                 and not self.name(c).upper().startswith(('MOTION', 'TEST', 'DUMMY'))]
 
 
@@ -1925,7 +1940,7 @@ def buildW(cid, outdir, o, rep):
     for grp, fn in (('SSFA', 'render.dds'), ('SSFB', 'render_full.dds')):
         if (grp, cid) in ssf:
             open(os.path.join(mod, fn), 'wb').write(pad_render(ch_tool.unpack(ssf[(grp, cid)])))
-    note('renders: %s menuHD SSFA / SSFB / SSFC %d' % (gw.label, cid) if ('SSFA', cid) in ssf else
+    note('renders: %s %s SSFA / SSFB / SSFC %d' % (gw.label, getattr(gw, 'ssf_from', {}).get(cid, 'menuHD'), cid) if ('SSFA', cid) in ssf else
          'no %s render: the base\'s%s' % (gw.label, ' (its renders are unnamed: pick one with pictures + --picture)'
                                           if hasattr(gw, 'pictures') else ''))
     progress(20, 'model')
@@ -2333,7 +2348,7 @@ def cmd_list(a):
         woman = g.gender(c, g11) if hasattr(g, 'gender') else r[208]   # (PS2: also finds the 2011 namesake)
         i11 = g.id11(c) if hasattr(g, 'id11') else c
         same = i11 in play and S.norm(g11.name(i11)) == S.norm(g.name(c))
-        from_dlc = c in getattr(g, 'dlc_ids', ())
+        from_dlc = c in getattr(g, 'dlc_ids', ()) or c in getattr(g, 'disc_dlc_ids', ())   # (the disc's DLC: '13 50-57)
         out.append(dict(key=str(c), name=g.name(c) + (' (DLC)' if from_dlc else ''), short=g.short(c), dlc=from_dlc,
                         gender='female' if woman else 'male',
                         model=bool(g.has_chpac(c)), render=c in g.render_ids,
@@ -2504,8 +2519,8 @@ def moveset_ctx(a, g, src, cid, base, g11, work, rep, cache, **kw):
     if mg is not None:
         mgame = mg(src) if gid == 'wwe12' else mg(src, getattr(g, 'svrmod', None))
         waze = mgame.waze
-        # (with the DLC folder in the key: the packages add moves)
-        pk = os.path.join(cache, 'mindex_%s_%08x.pkl' % (gid, zlib.crc32((os.path.abspath(a['src']).lower() + '|' +
+        # (with the DLC folder in the key: the packages add moves; mindex2: '13's disc dlc_mot01 moves joined)
+        pk = os.path.join(cache, 'mindex2_%s_%08x.pkl' % (gid, zlib.crc32((os.path.abspath(a['src']).lower() + '|' +
                                                                           os.environ.get('SVR2011_PORT_DLC', '').lower()).encode())))
         try:
             mgame._index = pickle.load(open(pk, 'rb'))
