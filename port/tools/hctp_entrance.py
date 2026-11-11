@@ -37,6 +37,7 @@ sys.path.insert(0, HERE)
 import ymks as Y  # noqa: E402
 import hctp_motion as H  # noqa: E402
 import hand_tracks as HT  # noqa: E402
+import face_tracks as FACE  # noqa: E402
 import svr08_entrance as S  # noqa: E402
 
 CAM_FLAG = 0x4000               # HCTP camera tracks: track id | 0x4000 (3047: 9950 -> 26334)
@@ -747,6 +748,7 @@ def slot11(j, on, evt_id, params, parent):
 
 
 DEFAULT_HAND_LIB = {}             # (hand_tracks.library(game pac): set by entrance_port for every caller)
+DEFAULT_GAME_PAC = None           # (the 2011 pac folder, for the face tracks: set with DEFAULT_HAND_LIB)
 
 
 def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, game='hctp', hand_lib=None,
@@ -912,6 +914,11 @@ def build(hnum, number, src, name, fov=CAM_FOV, ground_fix=True, prop_map=None, 
         notes.append('hands: %d finger tracks from %d hand events' % (made, rep['hand events']))
     else:
         notes.append('hands: no finger tracks (the 2011 pac folder - m.pac pose library - not given)')
+    # ---- the face (y1): HCTP has no face tracks (only face cues by event); without one the face keeps what played
+    # before (report a1b6b1): 2011's General Entrance's face per segment (face_tracks.py)
+    if ent < len(script['objs']):
+        FACE.add_to_bank(bank, ent, {5 * j: seg_frames[j] for j in pl if seg_frames.get(j, 0) > 0}, DEFAULT_GAME_PAC,
+                         {'notes': notes, 'warnings': notes}, S.RT_2011)
     objs = []
     for i, o in enumerate(script['objs']):
         kind = kinds[i]

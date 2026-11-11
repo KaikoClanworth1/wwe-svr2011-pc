@@ -71,6 +71,7 @@ import svr08_entrance as S  # noqa: E402
 import yanm_decode as Y  # noqa: E402
 import w13_retarget as WR  # noqa: E402
 import finger_retarget as FR  # noqa: E402  (the entrant's y2 / y3 finger tracks)
+import face_tracks as FACE  # noqa: E402  (y1 face tracks from 2011's own entrances, report a1b6b1)
 
 TYPES = {S.TYPE_CHAR: 'char', S.TYPE_PROP: 'prop', (0x10000, 0): 'camera', (1, 0): 'rope',
          (0, 0x01000000): 'turnbuckle', S.TYPE_GLOBAL: 'global'}
@@ -986,6 +987,15 @@ def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None
                 rep['dropped'].append('object %d (%d,%d): %s track' % (i, x, y, k))
                 continue
             ents.append(dict(y=y, x=x, id=25000 + i, frames=nf, rt=S.RT_2011, data=data, share=False, tail_off=None))
+    # ---- faces (y1): the source's face rig is not converted; without a y1 track the face keeps what played
+    # before (report a1b6b1): 2011's own face for the same superstar, else its General Entrance's
+    same = src_num if src_num in stock and evp_name(stock[src_num][0]).lower().replace(' ', '') == \
+        (nm or '').lower().replace(' ', '') else None
+    banks = [(n, stock[n][1]) for n in (same, FACE.DEFAULT_DONOR) if n in stock]
+    for i, o in enumerate(e['objs']):
+        segs = {z['x']: z['frames'] for z in ents if z['id'] == 25000 + i and z['y'] == 0}
+        if kind(o) == 'char' and segs:
+            ents += FACE.face_entries(segs, i, banks, rep, label='object %d: ' % i)
     # ---- global objects: a stock donor's tracks
     for i, o in enumerate(e['objs']):
         if kind(o) != 'global':
