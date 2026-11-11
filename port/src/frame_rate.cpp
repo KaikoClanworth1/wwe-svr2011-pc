@@ -206,6 +206,12 @@ Clock::time_point g_world_last;
 double g_world_acc = 0;  // 60 Hz ticks of real time not yet run
 int g_world_ticks = 1;   // update passes this frame
 int g_world_passes = 1;  // (the passes run: 0 while the free camera holds the match)
+// The next frame's updates, decided a frame early (report d3e211): the frame draws the poses the characters' job
+// made in the frame before, so the job steps by the coming frame's updates - the poses then trail the world by one
+// update in every frame. (Stepping by this frame's own updates, the gap was the next frame's count: with frames of
+// 1 and 2 updates mixed - a phone at ~52 fps - bodies, faces, legs and the weapons in hand fell back on each
+// 2-update frame and jumped ahead on the next.) 0: not planned (the frame's own updates, the old way).
+int g_world_next = 0;
 
 constexpr int kMaxTicks = 2;  // (below 30 fps the game slows down rather than racing: 3-4 updates a frame - a
                                // window in the background, tabbing out - crashed a worker thread, sub_8281F5F0)
@@ -676,9 +682,32 @@ REX_HOOK_RAW(sub_8269D768) {
   if (g_world_last == Clock::time_point{}) g_world_last = now - std::chrono::microseconds(16667);
   g_world_acc += std::chrono::duration<double>(now - g_world_last).count() * 60.0;
   g_world_last = now;
-  g_world_ticks = std::clamp(int(g_world_acc), 1, kMaxTicks);
-  g_world_acc = std::clamp(g_world_acc - g_world_ticks, -0.5, 1.0);
-  if (g_lockstep || !REXCVAR_GET(full_speed)) g_world_ticks = 1, g_world_acc = 0;
+  int measured = std::clamp(int(g_world_acc), 1, kMaxTicks);
+  g_world_acc = std::clamp(g_world_acc - measured, -0.5, 1.0);
+  // Test aid: SVR2011_TEST_TICK_PATTERN=1,1,1,1,2 - in a match, the world updates per frame follow that pattern
+  // whatever the frame took (a phone's ~52 fps without its timing; frame shots don't change it). Report d3e211.
+  static const std::vector<int> tick_pattern = [] {
+    std::vector<int> v;
+    if (const char* p = std::getenv("SVR2011_TEST_TICK_PATTERN"))
+      for (const char* c = p; *c; ++c)
+        if (*c >= '1' && *c <= '9') v.push_back(std::min(*c - '0', kMaxTicks));
+    return v;
+  }();
+  if (!tick_pattern.empty() && g_in_match.load() && !g_lockstep) {
+    static size_t at = 0;
+    measured = tick_pattern[at++ % tick_pattern.size()], g_world_acc = 0;
+  }
+  // The updates measured now run in the next frame; this frame runs those measured in the last (g_world_next, see
+  // its note: the same updates in all, a frame later). Test aid SVR2011_TEST_JOB_TICKS_OLD=1: 2.2.3's way (this
+  // frame's own, the job by them).
+  static const bool ticks_old = std::getenv("SVR2011_TEST_JOB_TICKS_OLD") != nullptr;
+  if (ticks_old) {
+    g_world_ticks = measured, g_world_next = 0;
+  } else {
+    g_world_ticks = g_world_next > 0 ? g_world_next : 1;
+    g_world_next = measured;
+  }
+  if (g_lockstep || !REXCVAR_GET(full_speed)) g_world_ticks = 1, g_world_acc = 0, g_world_next = 0;
   // (Test aid SVR2011_TEST_PIN_ONE_UPDATE=1: a pin's count at one update a frame - 2.2.0's way, which slowed the
   // world down below 60 fps. The count's lost step is put right at its cause now: sub_822EB8D8, below.)
   if (static const bool one = std::getenv("SVR2011_TEST_PIN_ONE_UPDATE") != nullptr; one && g_pin_counting.load())
@@ -719,7 +748,8 @@ REX_HOOK_RAW(sub_8269D768) {
 #if SVR2011_DEBUG_SUITE
   if (const int n = svr2011::dbg::SpeedTicks(); n && !g_lockstep) g_world_ticks = n, g_world_acc = 0;  // (dbg_speed)
 #endif
-  if (const int n = svr2011::MatchReplayPasses(); n > 0) g_world_ticks = n, g_world_acc = 0;  // (a replay: as recorded)
+  if (const int n = svr2011::MatchReplayPasses(); n > 0)
+    g_world_ticks = n, g_world_acc = 0, g_world_next = 0;  // (a replay: as recorded - the job by the frame's own)
   // (a static loading / info screen: fast_loads.h)
   if (const int n = svr2011::FastLoadsTicks(base); n > 1 && !g_lockstep && !g_in_match.load())
     g_world_ticks = n, g_world_acc = 0;
@@ -959,7 +989,31 @@ REX_HOOK_RAW(sub_8216F4C8) {
     sub_8215A8C0(ctx, base);
   }
   ctx = saved;
-  g_job_ticks = std::clamp(g_job_pending, 1, kMaxTicks);
+  // The job steps by the next frame's updates (g_world_next): the poses it makes are drawn then. `lead` is the
+  // updates it has run ahead of the world's rounds (0 or 1) - kept so the poses trail the world by one update.
+  static int lead = 0;
+  int ticks = g_job_pending;
+  if (g_world_next > 0) {
+    ticks = std::clamp(g_job_pending + (g_world_next - 1) - lead, 1, kMaxTicks);
+    lead = std::clamp(lead + ticks - g_job_pending, 0, kMaxTicks - 1);
+  } else {
+    lead = 0;
+  }
+  // Test aid: SVR2011_TEST_POSE_LAG_LOG=1 - how many updates the poses drawn this frame (the job that just ended)
+  // trail the world's rounds, counted every 600 rounds (one value all along: smooth; 1 and 2 mixed: the shake).
+  if (static const bool lag_log = std::getenv("SVR2011_TEST_POSE_LAG_LOG") != nullptr; lag_log) {
+    static uint64_t rounds = 0, posed = 0, posed_next = 0, n = 0, count[4] = {};
+    rounds += g_job_pending;
+    posed = posed_next;  // (the job that just ended: its poses are this frame's)
+    ++count[std::min<uint64_t>(rounds - posed, 3)];
+    posed_next = posed + uint64_t(std::clamp(ticks, 1, kMaxTicks));
+    if (++n % 600 == 0) {
+      REXLOG_INFO("frame rate: test - poses drawn trail the world by 0/1/2/3+ updates: {}/{}/{}/{} rounds",
+                  count[0], count[1], count[2], count[3]);
+      count[0] = count[1] = count[2] = count[3] = 0;
+    }
+  }
+  g_job_ticks = std::clamp(ticks, 1, kMaxTicks);
   g_job_pending = 0;
   __imp__sub_8216F4C8(ctx, base);
 }
