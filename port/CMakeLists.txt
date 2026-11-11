@@ -58,6 +58,7 @@ set(SVR2011_SOURCES
     src/hd_movies.cpp
     src/p2p.cpp
     src/net_stats.cpp
+    src/lockstep_lag.cpp
     src/net_sim.cpp
     src/paint_pages.cpp
     src/match_types.cpp

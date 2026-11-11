@@ -359,8 +359,22 @@ REX_HOOK_RAW(sub_829CAD08) {  // (the send interval getter: +3208, low byte)
 
 namespace {
 
-// The lead for the worst peer measured: one way + jitter + 12 ms, in frames
-// (0: no measurement yet).
+}  // namespace
+
+// The lead's parts (the lag budget, 11 Nov 2026: on every link the lag is the lead, and the lead is the trip
+// plus this margin; the floor of 3 was 2 frames of a LAN match's 3). Until 2.2.2: floor 3, margin 12 ms, one
+// extra frame - the same build plays that way with --p2p_lead_floor=3 --p2p_lead_margin_ms=12
+// --p2p_lead_extra=1 --p2p_hold_poll_ms=0 (lockstep_lag.cpp: a late input no longer costs a whole frame, which
+// is what the margin was for).
+REXCVAR_DEFINE_UINT32(p2p_lead_floor, 2, "Online", "An online match's input lead at least this many frames (1-6)");
+REXCVAR_DEFINE_UINT32(p2p_lead_margin_ms, 0, "Online",
+                      "Milliseconds added to the worst peer's one-way time + jitter before it becomes the lead (0-50)");
+REXCVAR_DEFINE_UINT32(p2p_lead_extra, 0, "Online", "Frames added to the lead on top of the trip (0-3)");
+
+namespace {
+
+// The lead for the worst peer measured: one way + jitter + p2p_lead_margin_ms,
+// in frames, + p2p_lead_extra (0: no measurement yet).
 uint32_t PingLead() {
   float one_way = -1, jitter = 0;
   for (const auto& l : svr2011::NetLinks()) {
@@ -368,7 +382,8 @@ uint32_t PingLead() {
     jitter = std::max(jitter, (l.worst_ms - l.rtt_ms) / 2);
   }
   if (one_way < 0) return 0;
-  return uint32_t(std::ceil((one_way + jitter + 12.0f) / (1000.0f / 60.0f))) + 1;
+  const float ms = one_way + jitter + float(std::min<uint32_t>(REXCVAR_GET(p2p_lead_margin_ms), 50));
+  return uint32_t(std::ceil(ms / (1000.0f / 60.0f))) + std::min<uint32_t>(REXCVAR_GET(p2p_lead_extra), 3);
 }
 
 }  // namespace
@@ -384,7 +399,8 @@ REX_HOOK_RAW(sub_829CAD20) {
     if (test_lead > 0) {
       ctx.r4.u64 = uint32_t(test_lead);
     } else if (REXCVAR_GET(p2p_send_every_frame)) {
-      if (const uint32_t lead = PingLead()) ctx.r4.u64 = std::clamp<uint32_t>(lead, 3, std::max<uint32_t>(asked, 3));
+      const uint32_t floor = std::clamp<uint32_t>(REXCVAR_GET(p2p_lead_floor), 1, 6);
+      if (const uint32_t lead = PingLead()) ctx.r4.u64 = std::clamp<uint32_t>(lead, floor, std::max<uint32_t>(asked, floor));
     }
     REXLOG_INFO("net: input lead {} frames (the game's {}){}", ctx.r4.u32, asked,
                 REXCVAR_GET(p2p_send_every_frame) ? ", inputs sent every frame" : "");
