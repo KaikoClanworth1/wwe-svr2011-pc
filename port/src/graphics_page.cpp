@@ -145,7 +145,7 @@ struct Preset {
   const char* name;
   PresetDevice device;
   int crowd;           // (0 LOW, 1 MED, 2 HIGH)
-  bool shadows;
+  int shadows;        // (SHADOW QUALITY: 0 OFF, 1 LOW, 2 MED, 3 HIGH)
   bool effects;        // (EFFECT DETAIL HIGH)
   int textures;        // (kTextureQualities)
   int scale;           // (kScales)
@@ -154,13 +154,13 @@ struct Preset {
 };
 constexpr int kScale360 = 1, kScale720 = 3, kScale1080 = 5, kScale1440 = 6;
 constexpr Preset kPresets[] = {
-    {"MALI", kPresetAndroid, 0, false, false, 2, kScale360, 1, 0},
-    {"SNAPDRAGON", kPresetAndroid, 2, true, false, 0, kScale720, 1, 1},
-    {"SWITCH", kPresetSwitch, 2, true, false, 2, kScale720, 1, 0},
-    {"STEAM DECK", kPresetDeck, 2, true, false, 0, kScale720, 1, 1},
-    {"LOW END PC", kPresetPc, 1, true, false, 1, kScale720, 1, 1},
-    {"MEDIUM END PC", kPresetPc, 2, true, false, 0, kScale1080, 1, 1},
-    {"HIGH END PC", kPresetPc, 2, true, true, 0, kScale1440, 2, 1},
+    {"MALI", kPresetAndroid, 0, 0, false, 2, kScale360, 1, 0},
+    {"SNAPDRAGON", kPresetAndroid, 2, 3, false, 0, kScale720, 1, 1},
+    {"SWITCH", kPresetSwitch, 2, 3, false, 2, kScale720, 1, 0},
+    {"STEAM DECK", kPresetDeck, 2, 3, false, 0, kScale720, 1, 1},
+    {"LOW END PC", kPresetPc, 1, 3, false, 1, kScale720, 1, 1},
+    {"MEDIUM END PC", kPresetPc, 2, 3, false, 0, kScale1080, 1, 1},
+    {"HIGH END PC", kPresetPc, 2, 3, true, 0, kScale1440, 2, 1},
 };
 bool PresetFits(const Preset& p) {
 #if defined(__SWITCH__)
@@ -516,7 +516,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int fast_start_ = 0;  // FAST START (fast_start.h): bit 0 skip_intros, bit 1 skip_training
   bool prepare_ = true;  // the known pipelines built ahead in the menus
   int crowd_ = 2, crowd_at_start_ = 2;  // arena_crowd: 0 LOW, 1 MED, 2 HIGH (read when the game starts)
-  bool shadows_ = true;  // native_shadows
+  int shadows_ = 3;  // SHADOW QUALITY: 0 OFF (native_shadows false), 1-3 LOW / MED / HIGH (native_shadow_size)
   const Preset* CurrentPreset() const;
   void ApplyPreset(const Preset& p);
   bool mat_fix_ = true;  // native_mat_fix
@@ -660,7 +660,10 @@ void GraphicsPage::Load() {
     static const bool at_start = crowd_;
     crowd_at_start_ = at_start;
   }
-  shadows_ = !HasShadows() || rex::cvar::Query<bool>("native_shadows");
+  {
+    const double size = rex::cvar::Query<double>("native_shadow_size");
+    shadows_ = HasShadows() && !rex::cvar::Query<bool>("native_shadows") ? 0 : size < 0.375 ? 1 : size < 0.75 ? 2 : 3;
+  }
   mat_fix_ = rex::cvar::Query<bool>("native_mat_fix");
   {
     const std::string v = rex::cvar::Query<std::string>("vs_style");
@@ -743,9 +746,14 @@ void GraphicsPage::Change(int row, int dir) {
       break;
     }
     case kShadows:
-      shadows_ = !shadows_;
+      shadows_ = (shadows_ + dir + 4) % 4;
       rex::cvar::SetFlagByName("native_shadows", shadows_ ? "true" : "false");
       SaveSetting("native_shadows", shadows_ ? "true" : "false");
+      if (shadows_) {
+        const char* size = shadows_ == 1 ? "0.25" : shadows_ == 2 ? "0.5" : "1.0";
+        rex::cvar::SetFlagByName("native_shadow_size", size);
+        SaveSetting("native_shadow_size", size);
+      }
       break;
     case kMatFix:
       mat_fix_ = !mat_fix_;
@@ -1626,7 +1634,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         return p ? p->name : "CUSTOM";
       }
       case kCrowd: return kLevelNames[crowd_];
-      case kShadows: return shadows_ ? "ON" : "OFF";
+      case kShadows: return shadows_ == 0 ? "OFF" : shadows_ == 1 ? "LOW" : shadows_ == 2 ? "MED" : "HIGH";
       case kEffects: return effects_ ? "HIGH" : "NORMAL";
       case kCutsceneFps: return fps60_ ? "60 FPS" : "30 FPS (ORIGINAL)";
     }
@@ -1672,7 +1680,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kEffects: return "EFFECT DETAIL";
       case kPreset: return "PRESET";
       case kCrowd: return "CROWD DENSITY";
-      case kShadows: return "SHADOWS";
+      case kShadows: return "SHADOW QUALITY";
       case kCutsceneFps: return "ENTRANCE FRAME RATE";
     }
     return "";
@@ -1736,7 +1744,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kCrowd:
         return crowd_ == crowd_at_start_ ? "The people in the seats. LOW: empty seats. MED: about half. HIGH: everyone."
                                          : "Takes effect the next time the game starts.";
-      case kShadows: return "The wrestlers', ring's and arena's shadows. OFF: faster.";
+      case kShadows:
+        return "The real-time shadows, on the wrestlers and around them. LOW / MED: a smaller shadow map, softer and "
+               "faster than HIGH. OFF: none, fastest.";
       case kPreset:
         return "Sets resolution, upscaling, anti-aliasing, textures, effect detail, crowd, shadows and frame rate "
                "together. Changing one of them afterwards shows CUSTOM. A new crowd level applies at the next start.";

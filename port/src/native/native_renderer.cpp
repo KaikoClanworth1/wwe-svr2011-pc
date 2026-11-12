@@ -97,6 +97,9 @@ REXCVAR_DEFINE_BOOL(native_scale_effects, kScaleEffectsDefault, "GPU",
                     "Native renderer: render shadows, reflections and glow at the render scale too "
                     "(false: at the Xbox 360's size, faster on weak GPUs)");
 
+REXCVAR_DEFINE_DOUBLE(native_shadow_size, 1.0, "GPU",
+                      "Native renderer: the shadow map's size, a share of its full size (1, 0.5, 0.25: SHADOW QUALITY "
+                      "HIGH, MEDIUM, LOW) - smaller is cheaper and blurrier.");
 REXCVAR_DEFINE_BOOL(native_shadows, true, "GPU",
                     "Native renderer: the characters' and the arena's real-time shadows (false: nothing "
                     "is drawn into the shadow map - no shadows, fewer draws). Applies at once.");
@@ -847,6 +850,9 @@ bool g_scale_effects = true;
 // native_shadows off: draws into the shadow map (the 1120 x 1120 32-bit float
 // target) are skipped; its clear stays, so nothing reads as shadowed.
 bool g_shadows = true;
+// native_shadow_size: the shadow map's host size as a share of its scaled size (SHADOW QUALITY: 1, 0.5, 0.25).
+float g_shadow_size = 1.0f;
+bool ShadowMap(uint32_t width, uint32_t height) { return width == 1120 && height == 1120; }
 
 // native_render_scale: the main scene's targets (and their resolves and the
 // frame images) have this fraction of the scale's pixels per side - weak GPUs.
@@ -913,6 +919,7 @@ constexpr float kMaxWide = 2.0f;  // (32:9)
 // The host width of a target of this guest size.
 uint32_t HostWidth(uint32_t width, uint32_t height, uint32_t scale) {
   const uint32_t w = width * scale;
+  if (ShadowMap(width, height) && g_shadow_size < 1.0f) return std::max(64u, uint32_t(std::lround(float(w) * g_shadow_size)));
   const float f = SceneTarget(width, height) ? std::max(g_wide, 1.0f) * g_res : 1.0f;
   if (f == 1.0f) return w;
   return (uint32_t(std::lround(float(w) * f)) + 1) & ~1u;
@@ -921,6 +928,7 @@ uint32_t HostWidth(uint32_t width, uint32_t height, uint32_t scale) {
 // The host height of a target of this guest size.
 uint32_t HostHeight(uint32_t width, uint32_t height, uint32_t scale) {
   const uint32_t h = height * scale;
+  if (ShadowMap(width, height) && g_shadow_size < 1.0f) return std::max(64u, uint32_t(std::lround(float(h) * g_shadow_size)));
   const float f = SceneTarget(width, height) ? std::max(g_tall, 1.0f) * g_res : 1.0f;
   if (f == 1.0f) return h;
   return (uint32_t(std::lround(float(h) * f)) + 1) & ~1u;
@@ -1902,6 +1910,9 @@ void ApplyOutputSettings(Renderer* r) {
   static uint32_t aa = aa_level();
   static int32_t max_scale = REXCVAR_GET(native_max_scale);
   static bool effects = REXCVAR_GET(native_scale_effects);
+  // (SHADOWS off: nothing is drawn into the map, but it was still cleared and resolved at full size - most of its cost)
+  static float shadow_size =
+      REXCVAR_GET(native_shadows) ? float(std::clamp(REXCVAR_GET(native_shadow_size), 0.125, 1.0)) : 0.0625f;
   static const bool shadows_once = (g_shadows = REXCVAR_GET(native_shadows));
   (void)shadows_once;
   static float res = float(REXCVAR_GET(native_render_scale));
@@ -1920,6 +1931,7 @@ void ApplyOutputSettings(Renderer* r) {
     aa = aa_level();
     max_scale = REXCVAR_GET(native_max_scale);
     effects = REXCVAR_GET(native_scale_effects);
+    shadow_size = REXCVAR_GET(native_shadows) ? float(std::clamp(REXCVAR_GET(native_shadow_size), 0.125, 1.0)) : 0.0625f;
     g_shadows = REXCVAR_GET(native_shadows);
     res = float(REXCVAR_GET(native_render_scale));
     scene_height = REXCVAR_GET(native_scene_height);
@@ -1988,7 +2000,7 @@ void ApplyOutputSettings(Renderer* r) {
 #endif
 #endif
   const bool res_changed = std::fabs(res - g_res) > 0.001f;
-  if (scale == g_scale && effects == g_scale_effects && out_w == g_out_w && out_h == g_out_h &&
+  if (scale == g_scale && effects == g_scale_effects && shadow_size == g_shadow_size && out_w == g_out_w && out_h == g_out_h &&
       !wide_changed && !res_changed && r->outputs[0]) {
     return;
   }
@@ -1996,7 +2008,7 @@ void ApplyOutputSettings(Renderer* r) {
   // Idle: nothing in flight may still use what is replaced.
   if (!WaitIdle(r, "output change")) return;
   r->garbage.clear();
-  if (scale != g_scale || effects != g_scale_effects || wide_changed || res_changed) {
+  if (scale != g_scale || effects != g_scale_effects || shadow_size != g_shadow_size || wide_changed || res_changed) {
     g_res = res;
     textures::ForgetResolved();
     r->color_targets.clear();
@@ -2006,6 +2018,7 @@ void ApplyOutputSettings(Renderer* r) {
     r->present_source = 0;
     g_scale = scale;
     g_scale_effects = effects;
+    g_shadow_size = shadow_size;
     g_wide = wide;
     g_tall = tall;
     SetCameraAspect(kAspect16x9 * wide / tall);
