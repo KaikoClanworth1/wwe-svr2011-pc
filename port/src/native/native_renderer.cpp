@@ -82,6 +82,7 @@
 #include "free_cam.h"
 #include "gpu_probe.h"
 #include "../util.h"
+#include "../free_cam.h"
 #if SVR2011_DEBUG_SUITE
 #include "debug_suite/debug_suite.h"
 #endif
@@ -2060,6 +2061,7 @@ std::atomic<bool> g_last_hidden{false};  // (OnPresent's frame wasn't shown)
 //   gpu <frames> <label> the GPU's time for that many frames, logged as "scene gpu: <label> ..." - the whole frame
 //                        and the shadow map's draws (the 1120 x 1120 target), each frame waited for (no overlap)
 //   log <text>           a line in the log
+//   key <F5|F6|F7|F8>    a free camera key (F8 lets the match run again, F5 F6 F8 holds it at a new moment)
 // The GPU times need the commands recorded on the render thread (native_record_thread false).
 namespace {
 constexpr uint32_t kProbeQueries = 64;
@@ -2073,6 +2075,7 @@ struct SceneProbe {
   std::string label;
   std::vector<double> frame_ms, shadow_ms;
   uint64_t draws = 0;
+  uint64_t shadow_draws = 0;  // (draws meant for the shadow map: drawn, or skipped with SHADOWS off)
 } g_probe;
 
 void ProbeStamp(Renderer* r) {
@@ -2136,13 +2139,16 @@ void ProbeCollect(Renderer* r) {
   }
   if (--g_probe.frames_left > 0) return;
   const size_t count = g_probe.frame_ms.size();
-  REXLOG_INFO("scene gpu: {}: frame median {:.3f} ms (min {:.3f}), shadow map median {:.3f} ms, {} frames, draws {}",
+  REXLOG_INFO("scene gpu: {}: frame median {:.3f} ms (min {:.3f}), shadow map median {:.3f} ms, {} frames, draws {}, "
+              "shadow map draws {}",
               g_probe.label, Median(g_probe.frame_ms),
               count ? *std::min_element(g_probe.frame_ms.begin(), g_probe.frame_ms.end()) : 0.0,
-              Median(g_probe.shadow_ms), count, count ? g_probe.draws / count : 0);
+              Median(g_probe.shadow_ms), count, count ? g_probe.draws / count : 0,
+              count ? g_probe.shadow_draws / count : 0);
   g_probe.frame_ms.clear();
   g_probe.shadow_ms.clear();
   g_probe.draws = 0;
+  g_probe.shadow_draws = 0;
 }
 
 // One line of SVR2011_TEST_SCENE per frame (none while measuring or waiting); `shot` names the picture to take.
@@ -2179,6 +2185,10 @@ void SceneCommands(std::string& shot) {
   } else if (verb == "gpu") {
     words >> g_probe.frames_left;
     std::getline(words >> std::ws, g_probe.label);
+  } else if (verb == "key") {
+    std::string name;
+    words >> name;
+    if (!svr2011::FreeCamScriptKey(name.c_str(), 100)) REXLOG_WARN("scene: unknown key '{}'", name);
   } else if (verb == "log") {
     std::string text;
     std::getline(words >> std::ws, text);
@@ -4085,6 +4095,9 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     ++r->frame_stats.skipped_target;
     return;
   }
+  if (g_probe.active && targets.color->width == 1120 && targets.color->height == 1120 &&
+      targets.color->format == RenderFormat::R32_FLOAT)
+    ++g_probe.shadow_draws;  // (SVR2011_TEST_SCENE)
   if (!g_shadows && targets.color->width == 1120 && targets.color->height == 1120 &&
       targets.color->format == RenderFormat::R32_FLOAT) {
     ++r->frame_stats.skipped_target;  // (native_shadows off: the shadow map keeps its clear)
