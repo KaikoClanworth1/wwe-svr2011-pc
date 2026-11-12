@@ -127,6 +127,9 @@ REXCVAR_DEFINE_STRING(saves_folder, "", "Storage",
                       "Where the saves live: empty for the game folder's Saves, or a folder (absolute, or "
                       "relative to the game folder) - e.g. to keep two installs' saves apart or shared")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_STRING(process_affinity, "", "CPU",
+                      "Windows: the CPU cores the game may use, as a hex mask (FF00 = cores 8-15); empty = all")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_STRING(audio_backend, "xaudio2", "Audio",
                       "Audio output: xaudio2 (default) or sdl")
     .allowed({"xaudio2", "sdl"})
@@ -635,6 +638,23 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
 }
 
 void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
+#if defined(_WIN32)
+  // Which CPU cores the game may run on: SVR2011_AFFINITY (the test scripts set FF00 - cores 8-15, so a game the
+  // player runs on 0-7 keeps them), else the process_affinity setting; hex mask, empty = all.
+  {
+    std::string mask = Env("SVR2011_AFFINITY");
+    if (mask.empty()) mask = rex::cvar::Query<std::string>("process_affinity");
+    if (!mask.empty()) {
+      DWORD_PTR want = DWORD_PTR(std::strtoull(mask.c_str(), nullptr, 16)), proc = 0, sys = 0;
+      if (GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys)) want &= sys;
+      if (want && SetProcessAffinityMask(GetCurrentProcess(), want))
+        REXLOG_INFO("cpu: the game runs on cores mask {:X} ({})", uint64_t(want),
+                    Env("SVR2011_AFFINITY").empty() ? "process_affinity" : "SVR2011_AFFINITY");
+      else
+        REXLOG_WARN("cpu: affinity mask {} not used (cores mask {:X} on this PC)", mask, uint64_t(sys));
+    }
+  }
+#endif
   // Test games (tools/dev/svrtest.ps1 and the other test scripts): SVR2011_AUDIO_MUTE=1 mutes every sound path
   // (they all read audio_mute) even when the command line was dropped - a flag given twice is a parse error that
   // loses every --option, --audio_mute=true with them (27 Oct: a test game was heard).
