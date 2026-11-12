@@ -251,9 +251,13 @@ uint32_t MatchMove(uint8_t* base, uint32_t slot, uint32_t got) {
   // pick the same move. Asked last: it takes p2p's lock. Test aid SVR2011_TEST_ONLINE_MOVES=1: judged as networked)
   static const bool test_online = [] { const char* v = std::getenv("SVR2011_TEST_ONLINE_MOVES"); return v && *v == '1'; }();
   const auto networked = [] { return test_online || svr2011::P2PMatchLobby().in; };
-  if (cat >= 128 || !id || CreatedFinisher(id) ||
+  // (and a pack move the game can't play - a record from 16000 up that never starts, MoveUsable 0: a moveset saved
+  // with one before CREATE A MOVE-SET left them out of its lists (report 0d04a0) - judged from this player's packs,
+  // so not in a networked match)
+  if (cat >= 128 || !id || (CreatedFinisher(id) && !svr2011::PackMove(id)) ||
       !(planted || svr2011::MoveMissing(id, false) || (svr2011::MoveMissing(id, true) && !networked()) ||
-        !svr2011::OnlinePackMoveAllowed(id)))
+        !svr2011::OnlinePackMoveAllowed(id) ||
+        (svr2011::PackMove(id) && svr2011::MoveUsable(id) == 0 && !networked())))
     return got;
   const uint16_t def = svr2011::CategoryDefaultMove(int(cat));
   if (!def) {
@@ -267,7 +271,8 @@ uint32_t MatchMove(uint8_t* base, uint32_t slot, uint32_t got) {
     std::lock_guard lock(mu);
     if (logged.size() < 64 && !logged[slot << 16 | id]) {
       logged[slot << 16 | id] = true;
-      REXLOG_WARN("[svr2011] cam mods: slot {} move {} has no record (pack removed?) - {} in this match", slot, id, def);
+      REXLOG_WARN("[svr2011] cam mods: slot {} move {} has no record (pack removed?) or can't be played - {} in this match",
+                  slot, id, def);
     }
   }
   return (got & 0x8000) | def;
