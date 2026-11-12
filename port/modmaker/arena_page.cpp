@@ -289,6 +289,8 @@ bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
   }
   if (const int grown = GrowVisibility(*job.arena))  // (moved / turned objects: svrfmt/arena.h)
     Log("  " + std::to_string(grown) + " visibility boxes grown to hold moved objects.");
+  if (const int added = ListAllInVisibility(*job.arena))  // (models the game would cull: svrfmt/arena_vis.h)
+    Log("  " + std::to_string(added) + " models added to the visibility tree (the game hides models it leaves out).");
   Progress("Fitting the arena into the game's room ...");
   job.arena->file_max = kArenaFileMax;  // (bigger than shipped: needs= below - only when the stage is the pac's last entry)
   const auto halved = job.arena->FitFile(job.keep);
@@ -1315,6 +1317,7 @@ void WriteProject(ProjectOut& out) {
     // taken now, compressed in the background
     auto copy = std::make_shared<Arena>(*g_proj.edited);
     GrowVisibility(*copy);  // (as at build)
+    ListAllInVisibility(*copy);
     out.deferred.push_back([copy](std::vector<ZipEntry>& files) {
       Progress("Compressing the arena ...");
       std::string err;
