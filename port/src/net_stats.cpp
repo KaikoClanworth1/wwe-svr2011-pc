@@ -323,7 +323,12 @@ REXCVAR_DECLARE(bool, p2p_send_every_frame);  // (p2p.cpp)
 // sub_829B3A48 and sub_829B43C8; the lobby's +740 by sub_829B3918). The match
 // timeout is now p2p_drop_seconds: the same drop (the game's own "has left and
 // will be replaced by AI", or - the host - the session's end), sooner.
-REXCVAR_DEFINE_UINT32(p2p_drop_seconds, 5, "Online",
+// 8 s, not 5: a game that merely stalls (report cd089d, 12 Nov 2026: a friend's
+// game silent 5.1 s, its pings back right after) was dropped for good at 5 s,
+// while a quit only costs the others the wait - 8 s keeps a stall of up to
+// ~8 s in the match and still ends a quit in about half the game's 15 s. The
+// host-left notice (p2p.cpp) follows this timeout.
+REXCVAR_DEFINE_UINT32(p2p_drop_seconds, 8, "Online",
                       "Seconds a silent player freezes an online match before the game drops them (3-15)");
 REX_EXTERN(__imp__sub_829B60C8);
 REX_HOOK_RAW(sub_829B60C8) {

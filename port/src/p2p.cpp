@@ -61,6 +61,7 @@
 #include "match_types.h"
 #include "script_input.h"
 
+REXCVAR_DECLARE(uint32_t, p2p_drop_seconds);  // (net_stats.cpp: the match's silent-player timeout)
 REXCVAR_DEFINE_BOOL(p2p_enabled, true, "Online", "Peer-to-peer online matches (with online_enabled)");
 REXCVAR_DEFINE_UINT32(p2p_port, 36000, "Online",
                       "This game's port base for online matches (UDP; a second game on the same PC: 36100)");
@@ -1498,10 +1499,13 @@ void PingLoop() {
       NetSimSend([path, b = PingPacket()] { Send(path, b); });
     }
     // The session's host gone in a match (its game closed or cut off): the game
-    // ends the session for everyone after its drop timeout, saying only "a
-    // connection error" - this says why (a notice now; the game's "An error
-    // occurred during the match" reworded: online.cpp, P2PHostLeft).
+    // ends the session for everyone after its drop timeout (p2p_drop_seconds,
+    // net_stats.cpp), saying only "a connection error" - this says why (a
+    // notice now; the game's "An error occurred during the match" reworded:
+    // online.cpp, P2PHostLeft). Said a second before that drop: a host that
+    // merely stalls for less (report cd089d) is not announced as gone.
     if (in_match) {
+      const auto silent = std::chrono::seconds(std::clamp<uint32_t>(REXCVAR_GET(p2p_drop_seconds), 3, 15) - 1);
       std::lock_guard lock(g_mutex);
       const auto now = Clock::now();
       for (const auto& [object, local] : g_sessions) {
@@ -1510,8 +1514,7 @@ void PingLoop() {
         if (it == g_peers.end()) continue;
         const Peer& h = it->second;
         const auto heard = std::max(h.direct_ok, h.relay_ok);
-        if (heard == Clock::time_point{} || now - heard < std::chrono::seconds(4) ||
-            g_host_left_session == local.session.id)
+        if (heard == Clock::time_point{} || now - heard < silent || g_host_left_session == local.session.id)
           continue;
         g_host_left_session = local.session.id;
         g_host_left_ms = NowMs();
