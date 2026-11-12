@@ -15,6 +15,11 @@ $env:SVR2011_WINDOW_BEHIND = "1"
 # of a hidden window come out black: use frame shots.
 $env:SVR2011_WINDOW_HIDDEN = "1"
 
+# Test games run on CPU cores 8-15 only (user, 12 Nov 2026): the player's own games (Valorant...) keep 0-7. The game
+# reads SVR2011_AFFINITY at start (svr2011_app.cpp); every script that dot-sources this file passes it on. Builds use
+# 12-15 (start /low /affinity F000). Set SVR2011_AFFINITY yourself first to use another mask.
+if (-not $env:SVR2011_AFFINITY) { $env:SVR2011_AFFINITY = "FF00" }
+
 # Where a test window is parked: the second screen if there is one (x 1920 +),
 # else it stays where it opened on the only screen - behind every window
 # (HWND_BOTTOM), never activated. Off every screen, the game's own pages
@@ -182,6 +187,10 @@ function Get-SvrBusyReason {
 
 # Below-normal priority for a test game while the PC is busy (call right after Start-Process).
 function Set-SvrTestPriority($proc) {
+    # (and the test cores, also for a game built before it read SVR2011_AFFINITY itself)
+    if ($proc -and $env:SVR2011_AFFINITY) {
+        try { (Get-Process -Id $proc.Id -ErrorAction Stop).ProcessorAffinity = [IntPtr][Convert]::ToInt64($env:SVR2011_AFFINITY, 16) } catch { }
+    }
     if (-not $proc -or -not (Get-SvrBusyReason)) { return }
     try { (Get-Process -Id $proc.Id -ErrorAction Stop).PriorityClass = "BelowNormal" } catch { }
 }
@@ -197,6 +206,10 @@ function Wait-SvrTestSlot([int]$Games = 1) {
         $busy = Get-SvrBusyReason
         $limit = if ($busy) { $SvrTestLimitBusy } else { $SvrTestLimit }
         $tests = @(Get-SvrGames | Where-Object { Test-IsTestGame $_ })
+        # (test games started before the cores rule, or by an older game: moved to the test cores too)
+        foreach ($t in $tests) {
+            try { $g = Get-Process -Id $t.ProcessId -ErrorAction Stop; $m = [IntPtr][Convert]::ToInt64($env:SVR2011_AFFINITY, 16); if ($g.ProcessorAffinity -ne $m) { $g.ProcessorAffinity = $m } } catch { }
+        }
         if ($busy) {
             foreach ($t in $tests) {
                 try { $g = Get-Process -Id $t.ProcessId -ErrorAction Stop; if ($g.PriorityClass -ne "BelowNormal" -and $g.PriorityClass -ne "Idle") { $g.PriorityClass = "BelowNormal" } } catch { }
