@@ -30,6 +30,8 @@
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/filesystem/vfs.h>
 #include <rex/logging.h>
+#include <rex/runtime.h>
+#include <rex/system/kernel_state.h>
 
 #include <rex/input/device_assignment.h>
 #include <rex/input/input_system.h>
@@ -1104,4 +1106,20 @@ bool Svr2011App::OnWindowCloseRequested() {
   svr2011::StopPortMapping();
   svr2011::OnlineOverlaySayGoodbye();  // (shown offline at once)
   return true;
+}
+
+// The window closed: the SDK's way (ReXApp::OnClosing - the title stopped, the log flushed, std::_Exit), but on
+// Windows the process ends with TerminateProcess. std::_Exit there still unloads the DLLs: rexruntime's static
+// objects are destroyed under the threads still running, which ended every quit with an abort() and a crash report
+// (reports 20261111-220112-cd089d and others: "Title terminated; hard-exiting process." then "crash: abort()").
+void Svr2011App::OnClosing(rex::ui::UIEvent& e) {
+  (void)e;
+  REXLOG_INFO("Window closing, shutting down...");
+  if (runtime() && runtime()->kernel_state()) runtime()->kernel_state()->TerminateTitle();
+  REXLOG_INFO("Title terminated; ending the process.");
+  rex::FlushLogging();
+#if defined(_WIN32)
+  TerminateProcess(GetCurrentProcess(), 0);
+#endif
+  std::_Exit(0);
 }
