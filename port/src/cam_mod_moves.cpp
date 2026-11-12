@@ -16,6 +16,7 @@
 #include <utility>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -115,7 +116,10 @@ REX_HOOK_RAW(sub_82BA1AC8) {
 }
 
 // CREATE A MOVE-SET's tab lists filled (sub_82378A68): the packs' moves ("MOD: " names) go to the end of
-// each list, in their order - a MOD group under the game's moves (list 25's first row, NONE, stays).
+// each list, in their order - a MOD group under the game's moves (list 25's first row, NONE, stays). A pack move
+// the game can't play (move_packs.cpp MoveUsable 0: a record from 16000 up that never starts, or its motions missing
+// or left out of the banks) leaves the list: its preview froze the editor's wrestlers (report 0d04a0), and a
+// moveset given it keeps the base's move in a match anyway.
 REX_EXTERN(__imp__sub_82378A68);
 REX_HOOK_RAW(sub_82378A68) {
   __imp__sub_82378A68(ctx, base);
@@ -124,6 +128,7 @@ REX_HOOK_RAW(sub_82378A68) {
   const uint32_t records = Rd32(base, table + 60);
   if (!records) return;
   int moved = 0;
+  std::set<uint16_t> dropped;
   for (uint32_t l = 0; l < 26; ++l) {
     const uint32_t list = Rd32(base, table + 840 + l * 4);
     const uint16_t n = Rd16(base, table + 944 + l * 2);
@@ -131,16 +136,29 @@ REX_HOOK_RAW(sub_82378A68) {
     std::vector<uint16_t> keep, mods;
     for (uint16_t i = 0; i < n; ++i) {
       const uint16_t idx = Rd16(base, list + 2 * i);
-      (IsModRecord(base, records, idx) ? mods : keep).push_back(idx);
+      if (!IsModRecord(base, records, idx)) {
+        keep.push_back(idx);
+      } else if (svr2011::MoveUsable(Rd16(base, records + idx * kRecordSize + 0x90)) == 0) {
+        dropped.insert(Rd16(base, records + idx * kRecordSize + 0x90));
+      } else {
+        mods.push_back(idx);
+      }
     }
-    if (mods.empty()) continue;
+    if (mods.size() + keep.size() == n && mods.empty()) continue;
     uint16_t i = 0;
     for (const uint16_t v : keep) Wr16(base, list + 2 * i++, v);
     for (const uint16_t v : mods) Wr16(base, list + 2 * i++, v);
+    if (i != n) Wr16(base, table + 944 + l * 2, i);
     moved += int(mods.size());
   }
   static int logged = 0;
-  if (moved && logged++ < 4) REXLOG_INFO("[svr2011] cam mods: {} MOD rows grouped at the end of the move lists", moved);
+  if ((moved || !dropped.empty()) && logged++ < 4) {
+    std::string ids;
+    for (const uint16_t id : dropped) ids += " " + std::to_string(id);
+    REXLOG_INFO("[svr2011] cam mods: {} MOD rows grouped at the end of the move lists{}", moved,
+                dropped.empty() ? std::string()
+                                : fmt::format("; {} pack move(s) the game can't play left out:{}", dropped.size(), ids));
+  }
 }
 
 // A move by category and id (sub_8237D4C8(table, cat, id) -> its record, NULL when the category list
