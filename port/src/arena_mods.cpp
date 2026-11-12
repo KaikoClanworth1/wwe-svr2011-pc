@@ -69,6 +69,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "native/native_renderer.h"
+#include "../modmaker/svrfmt/arena_vis.h"
 #include "../modmaker/svrfmt/pac.h"
 #include "../modmaker/svrfmt/texture.h"
 #include "../modmaker/svrfmt/jboy.h"
@@ -1195,17 +1196,19 @@ void ForceTheme(char* path) {
 // camera over it (user report 20 Oct). Custom arenas therefore get their 800-899 models flagged e (0xC351: shown
 // during entrances only) - the entrance video stays, the match shows the arena's own screens; manifest
 // titantron=live keeps the camera. The flagged copy: Mods/ArenaOverlay/tron_<id>.pac, made once (again when the
-// arena's file changes: size and time in tron_<id>.pac.src).
+// arena's file changes: size and time in tron_<id>.pac.src). The copy also names every arena model in the visibility
+// tree (0xC364): a model it leaves out is culled in the match - a WWE 2K17 port's tree named 32 of its 150 models, its
+// mats, barricades and stands showed only for a moment at camera cuts (report 8e4b10; svrfmt/arena_vis.h).
 std::string TitantronFile(const CustomArena& c) {
-  if (c.tron_live) return c.file;
+  const bool screens = !c.tron_live;  // (titantron=live: its screens as they are - the copy only for the tree)
   std::error_code ec;
   const fs::path src = g_game / fs::u8path(c.file);
   const std::string rel = "Mods/ArenaOverlay/tron_" + c.id + ".pac";
   const fs::path dst = g_game / fs::u8path(rel), stamp_file = dst.string() + ".src";
-  // (" v2": announce table monitors kept - copies made by the first rule are made again)
+  // (" v2": announce table monitors kept - copies made by the first rule are made again; " v3": the visibility tree)
   const std::string stamp = std::to_string(fs::file_size(src, ec)) + " " +
                             std::to_string(static_cast<long long>(fs::last_write_time(src, ec).time_since_epoch().count())) +
-                            " v2";
+                            " v3";
   if (fs::exists(dst, ec)) {
     std::ifstream in(stamp_file);
     std::string had;
@@ -1219,7 +1222,7 @@ std::string TitantronFile(const CustomArena& c) {
     REXLOG_WARN("[svr2011] arena mods: {} - its file can't be read for the titantron (as it is)", c.id);
     return c.file;
   }
-  int flagged = 0, kept = 0;
+  int flagged = 0, kept = 0, listed = 0;
   for (auto& g : e.groups)
     for (auto& en : g.entries) {
       const svrfmt::Bytes raw = svrfmt::Unpack(en.data);
@@ -1229,7 +1232,7 @@ std::string TitantronFile(const CustomArena& c) {
       // a 2K17 port's 820) keeps the game's feed in the match - it showed nothing once flagged (21 Oct report).
       std::set<int> monitors;
       for (const auto& k : kids) {
-        if (k.id < 800 || k.id > 899) continue;
+        if (!screens || k.id < 800 || k.id > 899) continue;
         svrfmt::Bytes m = svrfmt::Unpack(k.data);
         if (svrfmt::IsPach(m)) {
           std::vector<svrfmt::PachEntry> parts;
@@ -1247,8 +1250,9 @@ std::string TitantronFile(const CustomArena& c) {
         if (small_at_ring) monitors.insert(int(k.id));
       }
       bool changed = false;
+      if (const int added = svrfmt::ListAllInVisibility(kids)) listed += added, changed = true;
       for (auto& k : kids) {
-        if (k.id != 0xC351) continue;
+        if (!screens || k.id != 0xC351) continue;
         const svrfmt::Bytes text = svrfmt::Unpack(k.data);
         std::string t(text.begin(), text.end()), out;
         size_t at = 0;
@@ -1282,7 +1286,7 @@ std::string TitantronFile(const CustomArena& c) {
       }
     }
   fs::create_directories(dst.parent_path(), ec);
-  if (!flagged) {  // (no video screens to change: its own file, remembered)
+  if (!flagged && !listed) {  // (no video screens to change, its tree whole: its own file, remembered)
     std::ofstream(dst, std::ios::binary | std::ios::trunc);
     std::ofstream(stamp_file, std::ios::trunc) << stamp << " unchanged\n";
     return c.file;
@@ -1301,9 +1305,13 @@ std::string TitantronFile(const CustomArena& c) {
   fs::rename(tmp, dst, ec);
   if (ec) return c.file;
   std::ofstream(stamp_file, std::ios::trunc) << stamp << "\n";
-  REXLOG_INFO("[svr2011] arena mods: {} - {} video screens shown during entrances only (its own screens in the "
-              "match; titantron=live keeps the camera){}",
-              c.id, flagged, kept ? fmt::format(", {} announce table monitor(s) as they were", kept) : std::string());
+  if (flagged)
+    REXLOG_INFO("[svr2011] arena mods: {} - {} video screens shown during entrances only (its own screens in the "
+                "match; titantron=live keeps the camera){}",
+                c.id, flagged, kept ? fmt::format(", {} announce table monitor(s) as they were", kept) : std::string());
+  if (listed)
+    REXLOG_INFO("[svr2011] arena mods: {} - {} models its visibility tree left out added to it (the match culled them)",
+                c.id, listed);
   return rel;
 }
 

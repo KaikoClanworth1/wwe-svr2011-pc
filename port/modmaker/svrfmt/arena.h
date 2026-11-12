@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "arena_vis.h"
 #include "jboy.h"
 #include "pac.h"
 #include "texture.h"
@@ -104,6 +105,10 @@ bool ArenaNeedsNew(const Arena& a, size_t saved_size);
 // outside its box: the game may leave it out of view). Boxes only grow: models that didn't move stay as they are.
 // -> the boxes grown.
 int GrowVisibility(Arena& a);
+
+// Every x-flagged arena model (ids below 0x190) its visibility tree doesn't name given a node (arena_vis.h: the game culls
+// unnamed models - report 8e4b10). -> the nodes added (0: none / no tree).
+int ListAllInVisibility(Arena& a);
 
 // A model's nodes' bounding spheres (the game culls a model whose node sphere is out of view - an object moved off
 // its shipped place vanished: bg01's arena_chair02 raised over the ring, 20 Oct): each node without its own

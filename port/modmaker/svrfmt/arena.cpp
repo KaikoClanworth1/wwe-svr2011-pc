@@ -5,8 +5,10 @@
 #include <sstream>
 #include <map>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <set>
 
@@ -319,6 +321,20 @@ int GrowVisibility(Arena& a) {
   }
   vis->data = BpeEncode(Bytes(t.begin(), t.end()));
   return int(grown.size());
+}
+
+int ListAllInVisibility(Arena& a) {
+  PachEntry* vis = nullptr;
+  for (auto& e : a.entries)
+    if (e.id == 0xC364) vis = &e;
+  if (!vis) return 0;
+  std::vector<VisModel> models;
+  const std::set<uint32_t> x = XFlagged(a.entries);
+  for (const auto& am : a.models) {
+    VisModel v;
+    if (am.id < 0x190 && x.count(am.id) && VisBounds(am.model, v)) models.push_back(v);
+  }
+  return AddVisNodes(*vis, models);
 }
 
 BundleTexture* Arena::FindTexture(const std::string& name) {
