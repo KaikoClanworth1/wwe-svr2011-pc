@@ -14,6 +14,7 @@ login ticket and XUIDs are not trusted.
 import base64
 import collections
 import datetime
+import errno
 import hashlib
 import json
 import lzma
@@ -193,9 +194,18 @@ class LocalBlobs:
         path = self.path(sha, packed)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".tmp"
-        with open(tmp, "wb") as f:
-            f.write(data)
-        os.replace(tmp, path)
+        try:
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)
+        except OSError as e:
+            try:
+                os.remove(tmp)  # (a half-written file only takes room)
+            except OSError:
+                pass
+            if disk_full(e):
+                raise StorageFull("the disk is full (%d bytes for %s)" % (len(data), sha[:12])) from e
+            raise
 
     def get(self, sha):
         """-> (bytes as stored, packed) or None."""
@@ -276,6 +286,26 @@ class StorageBusy(OSError):
     """The storage node is up but didn't hand a blob over in time (a busy disk): worth asking again soon."""
 
 
+class StorageFull(OSError):
+    """The disk the blobs (or reports) go on is full: nothing new is stored until room is made. The core
+    answers 507 with STORAGE_FULL_TEXT (the clients show a response's "error" as it is)."""
+
+
+STORAGE_FULL_TEXT = "The server's storage is full, so nothing new can be saved right now. Please try again later."
+STORAGE_RESERVE = 256 << 20  # (the node keeps this much free: its database and logs still need room)
+
+
+def disk_full(e):
+    """An OSError that means "no room on the disk" (ENOSPC; Windows ERROR_DISK_FULL 112 / HANDLE_DISK_FULL 39),
+    or the storage node's 507 answer (urllib's HTTPError is an OSError)."""
+    import urllib.error
+    if isinstance(e, StorageFull):
+        return True
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code == 507
+    return isinstance(e, OSError) and (e.errno == errno.ENOSPC or getattr(e, "winerror", None) in (39, 112))
+
+
 class RemoteBlobs:
     """Blob bytes on a storage node (server.py --role storage, the user's PC behind the VPS): GET / PUT /
     DELETE <url>/blob/<sha>?packed=0|1 with the shared key. Down: reads give None (a download fails, the
@@ -303,9 +333,15 @@ class RemoteBlobs:
             return False
 
     def put(self, sha, data, packed):
-        with self._req("PUT", sha, data, packed) as f:
-            if f.status != 200:
-                raise OSError("storage refused %s" % sha)
+        import urllib.error
+        try:
+            with self._req("PUT", sha, data, packed) as f:
+                if f.status != 200:
+                    raise OSError("storage refused %s" % sha)
+        except urllib.error.HTTPError as e:
+            if e.code == 507:  # (the node's disk is full)
+                raise StorageFull("the storage node is full (%d bytes for %s)" % (len(data), sha[:12])) from None
+            raise
 
     def get(self, sha):
         try:
@@ -594,7 +630,13 @@ class Store:
             self.db.execute("UPDATE blobs SET refs = refs + 1 WHERE sha = ?", (sha,))
             return sha
         packed = lzma.compress(data, preset=6) if compress else data
-        self.blobs.put(sha, packed, compress)
+        try:
+            self.blobs.put(sha, packed, compress)
+        except Exception:
+            # The whole store fails: what the caller wrote under its lock so far (a mod's zip counted, its
+            # pictures not stored) is undone, or the next commit would keep half of it.
+            self.db.rollback()
+            raise
         self.db.execute("INSERT OR REPLACE INTO blobs VALUES (?, ?, ?, ?)",
                         (sha, len(data), len(packed), (row[0] if row else 0) + 1))
         return sha
