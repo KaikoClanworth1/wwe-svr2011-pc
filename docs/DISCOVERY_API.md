@@ -73,6 +73,7 @@ Every list and detail answer uses this shape:
   - `img0` to `img3`: four 1024 x 768 JPEGs, ≤ 1 MB each.
 - All are needed except `tags` and `description`.
 - One upload is stored at a time server-wide: while another is stored you get a 503, so try again in a minute.
+- The server's storage disk is full: 507 with `code` "storage_full" and `error` "The server's storage is full, so nothing new can be saved right now. Please try again later." Nothing is kept. The same 507 answers every other write (CAWs, songs, movies, reports) while the disk is full.
 - Answer: `{"ok": true, "id", "size"}`, plus `"warning": "<text>"` when the mod is larger than the dashboard's
   `discovery_warn_mb` (default 50 MB). It is stored all the same; show the text to the uploader.
 - One account's mods may take `discovery_quota_mb` in all (default 1024 MB). An upload or a file update over it is

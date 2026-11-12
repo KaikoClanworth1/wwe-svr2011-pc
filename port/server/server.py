@@ -748,6 +748,7 @@ class Service:
         self.slots = asyncio.Semaphore(args.max_connections)
         self.max_connections = args.max_connections
         self.busy_said = 0.0
+        self.full_said = 0.0  # (full_guard: the log line once a minute)
         edge = getattr(args, "relay_edge", None)
         self.netreport_last = {}  # account id -> its last match report (memory only)
         self.relay = relay.Relay(self, gs.log, getattr(args, "relay_udp_port", 0),
@@ -852,6 +853,23 @@ class Service:
         finally:
             self.stats.end(bytes_in, bytes_out)
             self.slots.release()
+
+    @web.middleware
+    async def full_guard(self, request, handler):
+        """A full disk (this one, or the storage node's 507) on any write - a mod, a CAW, a song, a movie -
+        answers 507 with STORAGE_FULL_TEXT in "error" (which the launcher, the phone app and the Mod Maker
+        show as it is), not a bare 500. The log says so once a minute."""
+        try:
+            return await handler(request)
+        except OSError as e:
+            if not gs.disk_full(e):
+                raise
+            if now() - self.full_said > 60:
+                self.full_said = now()
+                gs.log("STORAGE FULL: %s %s refused - %s. Make room on the storage disk." % (
+                    request.method, request.path, e))
+            return web.json_response({"ok": False, "code": "storage_full", "error": gs.STORAGE_FULL_TEXT},
+                                     status=507)
 
     # accounts
 
@@ -2497,6 +2515,8 @@ class Service:
                                                  [images[n] for n in sorted(images)], match_bytes)
             except Exception as e:
                 gs.log("reports: storing one failed: %s" % e)
+                if gs.disk_full(e):
+                    return no(507, gs.STORAGE_FULL_TEXT)
                 return no(503, "The report couldn't be stored right now - try again later.")
             gs.log("reports: %s from %s %s (%s, %d KB zip, %d pictures, match %d KB, %d mods sent, %d stored): %s, "
                    "seen %d before" % (got["id"], meta["app"], meta["version"], meta["problem"], len(zip_bytes) >> 10,
@@ -3488,7 +3508,7 @@ class Service:
             t.cancel()
 
     def build(self):
-        app = web.Application(middlewares=[self.meter],
+        app = web.Application(middlewares=[self.meter, self.full_guard],
                               client_max_size=max([self.store.max_file] + list(self.max_media.values())) + (1 << 20))
         b = self.base
         app.router.add_post(b + "/api/register", self.api_register)
@@ -3596,6 +3616,24 @@ def storage_app(args):
     def ok(request):
         return hmac.compare_digest(request.headers.get("X-Storage-Key", ""), key)
 
+    full_said = {"at": 0.0}
+
+    def storage_full(why):
+        """507: the disk has no room (the core turns it into STORAGE_FULL_TEXT for the player)."""
+        if time.time() - full_said["at"] > 60:  # (once a minute: a full disk refuses every write)
+            full_said["at"] = time.time()
+            gs.log("STORAGE FULL: refused a write - %s. Make room on the disk of %s" % (why, args.data))
+        return web.json_response({"ok": False, "code": "storage_full", "error": gs.STORAGE_FULL_TEXT}, status=507)
+
+    @web.middleware
+    async def full_guard(request, handler):  # (the reports' routes write to the same disk)
+        try:
+            return await handler(request)
+        except OSError as e:
+            if not gs.disk_full(e):
+                raise
+            return storage_full("%s %s: %s" % (request.method, request.path, e))
+
     async def blob(request):
         if not ok(request):
             return web.Response(status=403)
@@ -3607,7 +3645,20 @@ def storage_app(args):
             data = await request.read()
             if not data:
                 return web.Response(status=400)
-            await loop.run_in_executor(None, blobs.put, sha, data, request.query.get("packed") != "0")
+            try:
+                free = shutil.disk_usage(blobs.folder if os.path.isdir(blobs.folder) else args.data).free
+            except OSError:
+                free = None
+            if os.environ.get("SVR2011_TEST_STORAGE_FREE", "").isdigit():  # (test_storage_full.py: a full disk)
+                free = int(os.environ["SVR2011_TEST_STORAGE_FREE"])
+            if free is not None and free < len(data) + gs.STORAGE_RESERVE:
+                return storage_full("a blob of %d bytes, %d free" % (len(data), free))
+            try:
+                await loop.run_in_executor(None, blobs.put, sha, data, request.query.get("packed") != "0")
+            except OSError as e:
+                if not gs.disk_full(e):
+                    raise
+                return storage_full(str(e))
             return web.Response(text="ok")
         if request.method == "DELETE":
             await loop.run_in_executor(None, blobs.delete, sha)
@@ -3665,7 +3716,7 @@ def storage_app(args):
             return web.Response(status=403)
         return web.json_response(await asyncio.get_running_loop().run_in_executor(None, blobs.list))
 
-    app = web.Application(client_max_size=1 << 31)  # (any blob: songs, movies, mods - only the key's holder puts)
+    app = web.Application(client_max_size=1 << 31, middlewares=[full_guard])  # (any blob: songs, movies, mods - only the key's holder puts)
     app.router.add_route("*", "/blob/{sha}", blob)
     app.router.add_get("/__health", health)
     app.router.add_post("/__stop", stop)
