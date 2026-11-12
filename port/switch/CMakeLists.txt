@@ -12,10 +12,23 @@ set(SVR_GENERATED "/work/nx/generated" CACHE PATH "generated recompiled code")
 set(NVK_SDK "/work/nvk-sdk" CACHE PATH "mesa-switch: libvulkan.a and its parts")
 option(SVR_SDK_ONLY "Only the SDK's libraries" OFF)
 option(SVR_NX_REPORTS_LIVE "Release builds: Report a problem may use the public server (test builds never do)" OFF)
+# Link-time and profile-guided optimisation (port/docs/SWITCH_BUILD.md, "LTO and PGO").
+option(SVR_NX_LTO "The game's code and the port's own code optimised as one program at the link" OFF)
+set(SVR_NX_LTO_JOBS "4" CACHE STRING "Parallel jobs of the LTO link")
+set(SVR_NX_PGO "" CACHE STRING "Profile-guided optimisation: empty, generate (a build that counts) or use")
+set(SVR_NX_PGO_DIR "/work/nx/pgo" CACHE PATH "Folder of the profile (.gcda files)")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
+
+# For everything compiled for the console, the SDK too:
+# -mearly-ra=none: GCC 16's AArch64 early register allocation (on at -O2) has miscompiled NEON table lookups that need
+#   two consecutive registers (the recompiled code's vector permutes) in other Switch ports of recompiled games.
+# -mno-outline-atomics: GCC's default calls a helper per atomic that tests for LSE at run time; the A57 has none, so
+#   the same load-exclusive / store-exclusive loop is written in place instead.
+add_compile_options(-mearly-ra=none -mno-outline-atomics)
+add_link_options(-mearly-ra=none)
 
 set(REXGLUE_ENABLE_TRACY OFF CACHE BOOL "" FORCE)
 set(REXGLUE_USE_VULKAN ON CACHE BOOL "" FORCE)
@@ -41,7 +54,7 @@ add_library(svr2011_recomp OBJECT ${SVR_RECOMP})
 target_include_directories(svr2011_recomp PRIVATE ${SVR_GENERATED} ${SVR_GENERATED}/default ${SVR_PORT}/src)
 target_link_libraries(svr2011_recomp PRIVATE rex::runtime)
 target_precompile_headers(svr2011_recomp PRIVATE "${SVR_GENERATED}/default/svr2011_pch.h")
-target_compile_options(svr2011_recomp PRIVATE -O2 -g0 -fno-math-errno -fno-trapping-math)
+target_compile_options(svr2011_recomp PRIVATE -O2 -g0 -fno-math-errno -fno-trapping-math -fomit-frame-pointer)
 
 # ---- the game's own code: the same list as port/CMakeLists.txt ----
 file(READ "${SVR_PORT}/CMakeLists.txt" SVR_TOP)
@@ -91,6 +104,53 @@ endif()
 find_path(NX_PORTLIBS_INCLUDE mbedtls/ssl.h REQUIRED)
 target_include_directories(svr2011 PRIVATE ${NX_PORTLIBS_INCLUDE})
 target_compile_options(svr2011 PRIVATE -O2)
+
+# ---- LTO and PGO ----
+# LTO: both targets are compiled to GCC's intermediate form only and optimised together at the link. The SDK's
+# libraries and the driver stay as they are.
+# PGO generate: every branch of both targets is counted; nx_pgo.cpp writes the counts on the console (libgcov's own
+# way, a file per object at exit at the build machine's paths, doesn't fit: the game is closed from HOME, and those
+# paths aren't there). The counts are registered in a section instead of by constructors.
+# PGO use: the counts, merged on the PC (tools/pgo_merge.sh), steer inlining, layout and branches. Objects are named
+# relative to the build folder, so the two builds may be in different folders. Code the sessions never ran is compiled
+# as without a profile.
+if(SVR_NX_LTO)
+  foreach(t svr2011_recomp svr2011)
+    target_compile_options(${t} PRIVATE -flto -fno-fat-lto-objects)
+  endforeach()
+  # (these three define the --wrap replacements, which the linker pairs up by name)
+  set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/nx_main.cpp ${CMAKE_CURRENT_SOURCE_DIR}/nx_stubs.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/nx_profile.cpp PROPERTIES COMPILE_OPTIONS -fno-lto)
+  target_link_options(svr2011 PRIVATE -flto=${SVR_NX_LTO_JOBS} -flto-partition=balanced -O2 -fno-strict-aliasing
+    -fno-math-errno -fno-trapping-math -fPIE -fno-semantic-interposition)
+  message(STATUS "svr2011: LTO (${SVR_NX_LTO_JOBS} jobs)")
+endif()
+if(SVR_NX_PGO STREQUAL "generate")
+  set(SVR_PGO_FLAGS "-fprofile-generate=${SVR_NX_PGO_DIR}" "-fprofile-prefix-path=${CMAKE_BINARY_DIR}"
+    -fno-profile-values -fprofile-update=single -fprofile-info-section=gcov_info)
+  target_sources(svr2011 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/nx_pgo.cpp)
+  # (its own counts aren't wanted, and it must not count while it reads the others)
+  set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/nx_pgo.cpp PROPERTIES COMPILE_OPTIONS
+    "-fno-profile-generate;-fno-lto")
+  target_compile_definitions(svr2011 PRIVATE SVR_NX_PGO_GENERATE=1)
+elseif(SVR_NX_PGO STREQUAL "use")
+  file(GLOB SVR_PGO_GCDA "${SVR_NX_PGO_DIR}/*.gcda")
+  if(NOT SVR_PGO_GCDA)
+    message(FATAL_ERROR "SVR_NX_PGO=use: no .gcda files in ${SVR_NX_PGO_DIR}")
+  endif()
+  # (-fprofile-correction: the counts were taken without atomic updates on several threads, so a few don't add up)
+  set(SVR_PGO_FLAGS "-fprofile-use=${SVR_NX_PGO_DIR}" "-fprofile-prefix-path=${CMAKE_BINARY_DIR}"
+    -fprofile-correction -fno-profile-values -fprofile-partial-training -Wno-missing-profile -Wno-coverage-mismatch)
+elseif(SVR_NX_PGO)
+  message(FATAL_ERROR "SVR_NX_PGO must be empty, generate or use (got ${SVR_NX_PGO})")
+endif()
+if(SVR_NX_PGO)
+  foreach(t svr2011_recomp svr2011)
+    target_compile_options(${t} PRIVATE ${SVR_PGO_FLAGS})
+  endforeach()
+  target_link_options(svr2011 PRIVATE ${SVR_PGO_FLAGS})
+  message(STATUS "svr2011: PGO ${SVR_NX_PGO} (${SVR_NX_PGO_DIR})")
+endif()
 
 target_link_directories(svr2011 PRIVATE ${NVK_SDK}/lib)
 target_link_libraries(svr2011 PRIVATE rex::runtime rexgpu-xenos
