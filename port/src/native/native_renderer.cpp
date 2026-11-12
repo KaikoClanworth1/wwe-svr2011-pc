@@ -2050,6 +2050,145 @@ std::atomic<bool> g_half_frames{false};
 std::atomic<bool> g_half_suspended{false};  // (the PC can't keep 60 Hz: every frame shown - SetHalfSuspended)
 std::atomic<bool> g_last_hidden{false};  // (OnPresent's frame wasn't shown)
 
+// ---------------------------------------------------------------------------
+// Test aid: SVR2011_TEST_SCENE=<file> - a repeatable scene for comparing settings. Hold a match first (the free
+// camera's scripted keys: hotkey F6, hotkey F6, hotkey F7, hotkey F8 - the world stops, the same frame is drawn
+// again and again), then write lines to <file>; the renderer takes one at a time and removes it:
+//   set <cvar> <value>   a setting, at once (the renderer reads most of them every 30 frames: wait 40 after)
+//   wait <frames>        nothing for that many frames
+//   shot <file.ppm>      the next frame to a picture
+//   gpu <frames> <label> the GPU's time for that many frames, logged as "scene gpu: <label> ..." - the whole frame
+//                        and the shadow map's draws (the 1120 x 1120 target), each frame waited for (no overlap)
+//   log <text>           a line in the log
+// The GPU times need the commands recorded on the render thread (native_record_thread false).
+namespace {
+constexpr uint32_t kProbeQueries = 64;
+struct SceneProbe {
+  std::unique_ptr<plume::RenderQueryPool> pool;
+  uint32_t next = 0;        // timestamps written this frame
+  bool active = false;      // this frame is measured
+  bool in_shadow = false;   // drawing into the shadow map
+  int frames_left = 0;      // frames still to measure
+  int wait = 0;             // frames to wait before the next line
+  std::string label;
+  std::vector<double> frame_ms, shadow_ms;
+  uint64_t draws = 0;
+} g_probe;
+
+void ProbeStamp(Renderer* r) {
+  if (g_probe.next < kProbeQueries) r->list->writeTimestamp(g_probe.pool.get(), g_probe.next++);
+}
+
+void ProbeFrameBegin(Renderer* r) {
+  if (g_probe.active || g_probe.frames_left <= 0) return;
+  if (r->recorder) {
+    REXLOG_WARN("scene gpu: {} not measured - set native_record_thread to false", g_probe.label);
+    g_probe.frames_left = 0;
+    return;
+  }
+  if (!g_probe.pool) g_probe.pool = r->device->createQueryPool(kProbeQueries);
+  if (!g_probe.pool) {
+    REXLOG_WARN("scene gpu: no timestamp queries on this GPU");
+    g_probe.frames_left = 0;
+    return;
+  }
+  r->list->resetQueryPool(g_probe.pool.get(), 0, kProbeQueries);
+  g_probe.next = 0;
+  g_probe.in_shadow = false;
+  g_probe.active = true;
+  ProbeStamp(r);
+}
+
+void ProbeTarget(Renderer* r, const ColorTarget* color) {
+  if (!g_probe.active) return;
+  const bool shadow = color->width == 1120 && color->height == 1120 && color->format == RenderFormat::R32_FLOAT;
+  if (shadow != g_probe.in_shadow && g_probe.next + 2 < kProbeQueries) {
+    ProbeStamp(r);
+    g_probe.in_shadow = shadow;
+  }
+}
+
+void ProbeFrameEnd(Renderer* r) {
+  if (!g_probe.active) return;
+  if (g_probe.in_shadow) ProbeStamp(r), g_probe.in_shadow = false;
+  ProbeStamp(r);
+  g_probe.draws += r->frame_stats.draws;
+}
+
+double Median(std::vector<double> v) {
+  if (v.empty()) return 0.0;
+  std::sort(v.begin(), v.end());
+  return v[v.size() / 2];
+}
+
+void ProbeCollect(Renderer* r) {
+  if (!g_probe.active) return;
+  g_probe.active = false;
+  if (!WaitForFrame(r, r->back_index, "scene gpu")) return;
+  g_probe.pool->queryResults();
+  const uint64_t* q = g_probe.pool->getResults();
+  const uint32_t n = g_probe.next;
+  if (n >= 2) {
+    double shadow = 0.0;
+    for (uint32_t i = 1; i + 2 < n; i += 2) shadow += double(q[i + 1] - q[i]) / 1e6;  // (pairs: in, out)
+    g_probe.frame_ms.push_back(double(q[n - 1] - q[0]) / 1e6);
+    g_probe.shadow_ms.push_back(shadow);
+  }
+  if (--g_probe.frames_left > 0) return;
+  const size_t count = g_probe.frame_ms.size();
+  REXLOG_INFO("scene gpu: {}: frame median {:.3f} ms (min {:.3f}), shadow map median {:.3f} ms, {} frames, draws {}",
+              g_probe.label, Median(g_probe.frame_ms),
+              count ? *std::min_element(g_probe.frame_ms.begin(), g_probe.frame_ms.end()) : 0.0,
+              Median(g_probe.shadow_ms), count, count ? g_probe.draws / count : 0);
+  g_probe.frame_ms.clear();
+  g_probe.shadow_ms.clear();
+  g_probe.draws = 0;
+}
+
+// One line of SVR2011_TEST_SCENE per frame (none while measuring or waiting); `shot` names the picture to take.
+void SceneCommands(std::string& shot) {
+  static const std::string file = [] {
+    const char* v = std::getenv("SVR2011_TEST_SCENE");
+    return std::string(v ? v : "");
+  }();
+  if (file.empty() || g_probe.frames_left > 0) return;
+  if (g_probe.wait > 0) {
+    --g_probe.wait;
+    return;
+  }
+  std::ifstream in(file);
+  std::string line;
+  if (!in || !std::getline(in, line)) return;
+  std::string rest((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  std::ofstream(file, std::ios::trunc) << rest;
+  while (!line.empty() && std::isspace(uint8_t(line.back()))) line.pop_back();
+  std::istringstream words(line);
+  std::string verb;
+  words >> verb;
+  if (verb == "set") {
+    std::string name, value;
+    words >> name >> value;
+    rex::cvar::SetFlagByName(name, value);
+    REXLOG_INFO("scene: {} = {}", name, value);
+  } else if (verb == "wait") {
+    words >> g_probe.wait;
+  } else if (verb == "shot") {
+    std::getline(words >> std::ws, shot);
+    REXLOG_INFO("scene: shot {}", shot);
+  } else if (verb == "gpu") {
+    words >> g_probe.frames_left;
+    std::getline(words >> std::ws, g_probe.label);
+  } else if (verb == "log") {
+    std::string text;
+    std::getline(words >> std::ws, text);
+    REXLOG_INFO("scene: {}", text);
+  } else if (!verb.empty()) {
+    REXLOG_WARN("scene: unknown line '{}'", line);
+  }
+}
+}  // namespace
+
 bool BeginFrame(Renderer* r) {
   if (r->frame_open) return true;
   if (g_main) ApplyTextureQuality(r);
@@ -2073,6 +2212,7 @@ bool BeginFrame(Renderer* r) {
     r->list = r->recorder.get();
   }
   r->list->begin();
+  ProbeFrameBegin(r);  // (SVR2011_TEST_SCENE)
   r->list_state = {};
   r->constant_uploads[0] = r->constant_uploads[1] = {};
   r->rings[r->back_index].offset = 0;
@@ -2400,6 +2540,7 @@ Targets CurrentTargets(Renderer* r) {
 // Binds the current targets for drawing / clearing.
 bool BindTargets(Renderer* r, const Targets& t) {
   if (!t.color) return false;
+  ProbeTarget(r, t.color);  // (SVR2011_TEST_SCENE)
   Transition(r, t.color->resource.get(), t.color->layout, RenderTextureLayout::COLOR_WRITE);
   if (t.depth) Transition(r, t.depth->resource.get(), t.depth->layout, RenderTextureLayout::DEPTH_WRITE);
   std::unique_ptr<plume::RenderFramebuffer>& fb = t.color->framebuffers[t.depth];
@@ -5200,6 +5341,7 @@ void OnPresent(uint32_t front_buffer) {
   }();
   static uint32_t shot_request_poll = 0;
   std::string requested_file;
+  SceneCommands(requested_file);  // (SVR2011_TEST_SCENE)
   const bool capture = !r->hidden_frame && g_capture_wanted.exchange(false);  // (RequestFrameCapture)
   if (capture) test_shot = true;
   // (the frame shown before this one: its image is still in the ring - kOutputs - for a few frames)
@@ -5249,6 +5391,7 @@ void OnPresent(uint32_t front_buffer) {
     }
   }
 #endif
+  ProbeFrameEnd(r);  // (SVR2011_TEST_SCENE)
   r->list->end();
   // Debug: SVR2011_NATIVE_TEST_STALL=<frame> stalls the GPU queue for good at
   // that frame (as a stuck GPU job would), to test WaitForFrame's way out.
@@ -5276,6 +5419,7 @@ void OnPresent(uint32_t front_buffer) {
     r->queue->executeCommandLists(submit, r->fences[r->back_index].get());
   }
   r->submitted[r->back_index] = true;
+  ProbeCollect(r);  // (SVR2011_TEST_SCENE)
   // (test: SVR2011_TEST_DEVICE_LOST_AT=<frame> - the device taken as lost there)
   static const uint64_t test_lost = uint64_t(EnvInt("SVR2011_TEST_DEVICE_LOST_AT", 0));
   if (backend::DeviceLost(r->device.get()) || (test_lost && r->frames == test_lost)) {
