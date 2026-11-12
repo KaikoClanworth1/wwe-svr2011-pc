@@ -2062,6 +2062,7 @@ std::atomic<bool> g_last_hidden{false};  // (OnPresent's frame wasn't shown)
 //                        and the shadow map's draws (the 1120 x 1120 target), each frame waited for (no overlap)
 //   log <text>           a line in the log
 //   key <F5|F6|F7|F8>    a free camera key (F8 lets the match run again, F5 F6 F8 holds it at a new moment)
+//   a & b                several commands in the same frame
 // The GPU times need the commands recorded on the render thread (native_record_thread false).
 namespace {
 constexpr uint32_t kProbeQueries = 64;
@@ -2151,6 +2152,8 @@ void ProbeCollect(Renderer* r) {
   g_probe.shadow_draws = 0;
 }
 
+void SceneCommand(const std::string& line, std::string& shot);
+
 // One line of SVR2011_TEST_SCENE per frame (none while measuring or waiting); `shot` names the picture to take.
 void SceneCommands(std::string& shot) {
   static const std::string file = [] {
@@ -2169,6 +2172,18 @@ void SceneCommands(std::string& shot) {
   in.close();
   std::ofstream(file, std::ios::trunc) << rest;
   while (!line.empty() && std::isspace(uint8_t(line.back()))) line.pop_back();
+  // (" & " between commands: all in the same frame - e.g. "shot x.ppm & key F8": the picture and the hold together)
+  std::vector<std::string> commands;
+  for (size_t at = 0;;) {
+    const size_t amp = line.find(" & ", at);
+    commands.push_back(line.substr(at, amp == std::string::npos ? std::string::npos : amp - at));
+    if (amp == std::string::npos) break;
+    at = amp + 3;
+  }
+  for (const std::string& command : commands) SceneCommand(command, shot);
+}
+
+void SceneCommand(const std::string& line, std::string& shot) {
   std::istringstream words(line);
   std::string verb;
   words >> verb;
@@ -3354,6 +3369,29 @@ RenderBufferReference Constants(Renderer* r, uint32_t device_offset, uint32_t by
 // hookable call), big-endian: byte-swapped 16 bytes at a time straight into
 // the upload; the constants loaded from memory for this draw (so far only
 // the shaders' literal c252-c255) take precedence.
+// The free camera's F8 hold (free_cam.h) stops the world updates, and with them the game's write of the light's view x
+// projection: the shadow map's draws read it from vertex constants c54-c57 (g_fm44ViewProj, the caster shader
+// 58FF12DD), which the scene's draws then set to the camera's. Held, the shadow map's draws found c54-c57 zero - every
+// caster at one depth, the whole picture lit: no real-time shadows in a held frame. So each running frame keeps those
+// four constants as its first shadow map draw has them, and a held frame's shadow map draws get them back when they
+// are zero. Nothing changes while the match runs.
+void HeldShadowLight(const ColorTarget* color) {
+  if (color->width != 1120 || color->height != 1120 || color->format != RenderFormat::R32_FLOAT) return;
+  static uint8_t kept[64];
+  static bool have = false;
+  static uint64_t kept_frame = ~0ull;
+  uint8_t* light = const_cast<uint8_t*>(Device()) + 0x780 + 16 * 54;  // (the device's mirror, big-endian: c54-c57)
+  bool zero = true;
+  for (int i = 0; i < 64 && zero; ++i) zero = light[i] == 0;
+  if (!svr2011::FreeCamPaused()) {
+    if (!zero && kept_frame != g_r->frames) std::memcpy(kept, light, 64), have = true, kept_frame = g_r->frames;
+    return;
+  }
+  if (!zero || !have) return;
+  std::memcpy(light, kept, 64);
+  g_const_dirty[0] |= (1ull << (63 - 54 / 4)) | (1ull << (63 - 57 / 4));  // (blocks c52-c55, c56-c59)
+}
+
 RenderBufferReference GpuConstants(Renderer* r, uint32_t first, uint32_t bytes) {
   ConstTimer timer(g_ct_gpu_ns);
   const uint32_t count = bytes / 16;
@@ -4519,6 +4557,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   {
     // (Superstar Threads' attire bake - the 2080x1024 target: its paint layers checked at every draw)
     textures::SetCheckEveryUse(targets.color->width == 2080 && targets.color->height == 1024);
+    HeldShadowLight(targets.color);
     RenderBufferReference constants[4] = {GpuConstants(r, 0, kVertexConstantsBytes),
                                            GpuConstants(r, 256, kPixelConstantsBytes),
                                            SharedConstants(r, alpha_test, vs, ps, ndc), {}};
