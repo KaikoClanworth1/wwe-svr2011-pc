@@ -155,10 +155,10 @@ struct Preset {
 constexpr int kScale360 = 1, kScale720 = 3, kScale1080 = 5, kScale1440 = 6;
 constexpr Preset kPresets[] = {
     {"MALI", kPresetAndroid, 0, 0, false, 2, kScale360, 1, 0},
-    {"SNAPDRAGON", kPresetAndroid, 2, 2, false, 0, kScale720, 1, 1},
-    {"SWITCH", kPresetSwitch, 2, 2, false, 2, kScale720, 1, 0},
-    {"STEAM DECK", kPresetDeck, 2, 2, false, 0, kScale720, 1, 1},
-    {"LOW END PC", kPresetPc, 1, 1, false, 1, kScale720, 1, 1},
+    {"SNAPDRAGON", kPresetAndroid, 2, 3, false, 0, kScale720, 1, 1},
+    {"SWITCH", kPresetSwitch, 2, 3, false, 2, kScale720, 1, 0},
+    {"STEAM DECK", kPresetDeck, 2, 3, false, 0, kScale720, 1, 1},
+    {"LOW END PC", kPresetPc, 1, 3, false, 1, kScale720, 1, 1},
     {"MEDIUM END PC", kPresetPc, 2, 3, false, 0, kScale1080, 1, 1},
     {"HIGH END PC", kPresetPc, 2, 3, true, 0, kScale1440, 2, 1},
 };
