@@ -2965,6 +2965,12 @@ bool P2POnlineMode() {
   return at && NowMs() - at < 30000;  // (between screens the sessions come and go)
 }
 
+namespace {
+uint32_t g_blank_slot = 0;
+}  // namespace
+
+uint32_t P2PBlankSlot() { return g_blank_slot; }
+
 bool P2PHostLeft() {
   const int64_t at = g_host_left_ms.load();
   return at && NowMs() - at < 60000;
@@ -3108,6 +3114,7 @@ std::optional<std::string> P2PFetch(uint8_t kind, const std::string& key, std::c
 void InstallP2P(rex::memory::Memory* memory) {
   if (!rex::cvar::Query<bool>("online_enabled") || !REXCVAR_GET(p2p_enabled)) return;
   g_memory = memory;
+  if ((g_blank_slot = memory->SystemHeapAlloc(256)) != 0) std::memset(Guest(g_blank_slot), 0, 256);
 #if defined(_WIN32)
   WSADATA wsa;
   WSAStartup(MAKEWORD(2, 2), &wsa);

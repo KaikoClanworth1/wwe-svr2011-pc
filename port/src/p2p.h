@@ -61,6 +61,10 @@ std::string P2PHiddenReason(int* sessions = nullptr);
 // answering): the game's "An error occurred during the match" says so (online.cpp).
 bool P2PHostLeft();
 
+// A zeroed 256-byte guest block (0 before InstallP2P): what the match's player
+// table reads for a session slot that is gone (net_stats.cpp).
+uint32_t P2PBlankSlot();
+
 // Online mode: the player in the ONLINE menus (the game's presence session) or
 // an online session / match - or was, in the last 30 s. Presence, the relay's
 // stream: only then (the offline menus show nobody online).
