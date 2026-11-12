@@ -139,6 +139,11 @@ nsp() {
   cp "$PORT/switch/icon.jpg" control/icon_AmericanEnglish.dat
   cp "$WORK/b/svr2011.nro" romfs/svr2011.nro
   cp "$NX_SPVC"/*.spvc romfs/game/native_shaders/
+  # Each shader's texture slots (.textures) and vertex inputs (.inputs) too: without them every texture is left
+  # out (a black screen). A card copied from a dev folder had them loose; a release has them only in
+  # shaders.spv.pak, which the Switch (.spvc) never reads.
+  cp "$NX_SPVC"/*.textures "$NX_SPVC"/*.inputs romfs/game/native_shaders/
+  [ "$(ls romfs/game/native_shaders/*.textures | wc -l)" -gt 0 ] || { echo "No .textures files in $NX_SPVC"; exit 1; }
   # (hacBrewPack prints key material: anything that looks like it is hidden.)
   "$WORK/hbp/hacbrewpack.exe" -k "$(cygpath -w "$NX_KEYS")" --titleid $TITLE --nologo --exefsdir exefs --romfsdir romfs \
     --controldir control --nspdir nsp 2>&1 | sed -E 's/[0-9A-Fa-f]{32,}/[hidden]/g' | grep -E "Created NSP:|rror" | cut -c1-90
