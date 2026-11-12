@@ -37,10 +37,6 @@
 #include "match_types.h"
 #include "online_net.h"
 
-REXCVAR_DEFINE_BOOL(online_version_check, true, "Online",
-                    "Ask GitHub for the newest release before going online (an older build stays offline until the "
-                    "update); off, and on a private test server, nothing is asked");
-
 #ifndef SVR2011_PORT_VERSION
 #define SVR2011_PORT_VERSION "dev"
 #endif
@@ -229,9 +225,8 @@ void CheckVersion(fs::path user_data) {
     g_version = Version::kLatest;
     return;
   }
-  if (!REXCVAR_GET(online_version_check) || TestServer()) {
-    REXLOG_INFO("online: version {} - the newest not asked ({})", mine,
-                REXCVAR_GET(online_version_check) ? "a private test server" : "online_version_check off");
+  if (TestServer()) {  // (no option for this: the check keeps online players on one version)
+    REXLOG_INFO("online: version {} - the newest not asked (a private test server)", mine);
     g_version = Version::kLatest;
     return;
   }
