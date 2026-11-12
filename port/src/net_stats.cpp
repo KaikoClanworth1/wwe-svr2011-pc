@@ -18,6 +18,7 @@
 #include "net_stats.h"
 #include "match_diag.h"
 #include "online.h"
+#include "p2p.h"
 #include "online_chat.h"
 #include "pad_types.h"
 
@@ -316,6 +317,29 @@ REX_HOOK_RAW(sub_8298E3A0) {
 }
 
 REXCVAR_DECLARE(bool, p2p_send_every_frame);  // (p2p.cpp)
+
+// A game dropped from its match while it stalled (frozen 6 s past the drop
+// timeout above in a test; report cd089d's friend) crashed when it woke: the
+// match's per-frame player table (sub_828A7F18, from sub_82892828) asks the
+// session for every player's slot by index (sub_828B92A0: the slot while its
+// +488 word says it is taken, else 0) and reads the slot's byte +208 without
+// looking - and by then the session had let the other player's slot go. That
+// one caller gets a blank slot instead of 0: the table keeps a zero there and
+// the game goes on to its own end of the match.
+REX_EXTERN(__imp__sub_828B92A0);
+REX_HOOK_RAW(sub_828B92A0) {
+  const uint32_t from = uint32_t(ctx.lr);
+  const uint32_t index = ctx.r4.u32;
+  __imp__sub_828B92A0(ctx, base);
+  if (ctx.r3.u32 != 0 || from != 0x828A7FEC) return;
+  const uint32_t blank = svr2011::P2PBlankSlot();
+  if (!blank) return;
+  static uint32_t said = 0;
+  if (said++ < 3 || said % 600 == 0)
+    REXLOG_WARN("net: player {}'s session slot is gone (dropped from the match) - the player table reads a blank one "
+                "(crash cd089d-thaw)", index);
+  ctx.r3.u64 = blank;
+}
 
 // A player whose game is gone (closed, crashed, cut off) froze every other
 // game ~15 s: gss drops a silent peer after its match timeout (session +744 =
