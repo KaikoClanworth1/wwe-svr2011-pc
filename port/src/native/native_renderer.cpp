@@ -1964,8 +1964,11 @@ void ApplyOutputSettings(Renderer* r) {
   } else if (scene_height > 0) {  // A chosen height (1080P): the 720p step above it, the scene scaled down to it.
     // (anti-aliasing multiplies the chosen height - 1080P at 2X draws 2160 lines and Present averages them down -
     // up to AUTO's most, 4x or the window's own; it used to be ignored here: 900P / 1080P / 2880P had no AA at all)
+    // ... and never past native_max_scale: 900P / 1080P set it to 2, so with AA they draw 1440 lines, as 1440P does.
+    // (Report 0d3fe5: a Mali phone on 1080P + AA drew 2160 lines - 3x, four times 1080P's pixels - at 15 fps.)
     const uint64_t with_aa = uint64_t(scene_height) * aa;
-    const uint64_t cap = std::max<uint64_t>(uint64_t(kHeight) * std::max<uint32_t>(4u, window_scale), uint64_t(scene_height));
+    // (limit: native_max_scale, at most AUTO's 4x or the window's own)
+    const uint64_t cap = std::max<uint64_t>(uint64_t(kHeight) * limit, uint64_t(scene_height));
     const uint32_t h = uint32_t(std::clamp<uint64_t>(std::min(with_aa, cap), kHeight / 4, uint64_t(kHeight) * kMaxRenderScale));
     scale = (h + kHeight - 1) / kHeight;
     res = std::clamp(float(h) / float(kHeight * scale), 0.25f, 1.0f);
