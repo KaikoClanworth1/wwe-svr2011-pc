@@ -1,5 +1,6 @@
 param([Parameter(Mandatory)][string]$Tag, [Parameter(Mandatory)][string]$Commands, [string[]]$Arg = @(),
-      [string]$Backend = "vulkan", [int]$Slot = 9, [int]$HoldAt = 25, [int]$WaitSecs = 900, [string]$Out = "")
+      [string]$Backend = "vulkan", [int]$Slot = 9, [int]$HoldAt = 25, [int]$WaitSecs = 900, [string]$Out = "",
+      [string]$Match = "")
 # scene_test - one held match for comparing settings on the same frame (SVR2011_TEST_SCENE, native_renderer.cpp). For
 # us only: tools\dev is never packaged.
 #
@@ -11,6 +12,9 @@ param([Parameter(Mandatory)][string]$Tag, [Parameter(Mandatory)][string]$Command
 # scene file. The game is stopped by its PID at the end and the log's "scene" lines are printed. Keep the crowd off
 # (--arena_crowd=off): its animation goes on while the match is held - everything else is the same frame, pixel for
 # pixel (tried 12 Nov, Vulkan and Direct3D 12). GPU times need native_record_thread false (passed here).
+# -Match "<svrtest match options>" (e.g. "--p1 EDGE --p2 KANE --arena 9 --rule 3C --entrances") plays that match
+# instead of the default route (give --p1); -HoldAt then counts from its "match: rule" line for --p1 (the loading and
+# any entrances come after it).
 $port = Split-Path $PSScriptRoot -Parent | Split-Path -Parent
 $w = if ($Out) { $Out } else { Join-Path $port "runs\scene" }
 New-Item -ItemType Directory -Force $w | Out-Null
@@ -19,7 +23,8 @@ $script = "$w\scene_$Tag.txt"
 $scene = "$w\scene_$Tag.cmd"
 [IO.File]::WriteAllText($scene, "")
 $env:SVR2011_TEST_SCENE = $scene
-$a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSScriptRoot\svrtest.ps1`"", "script", "`"$script`"",
+$how = if ($Match) { @("match") + ($Match -split ' ' | Where-Object { $_ }) } else { @("script", "`"$script`"") }
+$a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSScriptRoot\svrtest.ps1`"") + $how + @(
        "--backend", $Backend, "--slot", $Slot, "--name", "scene_$Tag", "--keep", "--arg", "--native_record_thread=false")
 foreach ($x in $Arg) { $a += "--arg", $x }
 $start = Get-Date
@@ -36,7 +41,10 @@ try {
     if (-not $d -or -not (Test-Path "$($d.FullName)\game.log")) { continue }
     $log = "$($d.FullName)\game.log"
     $t = Get-Content $log -ErrorAction SilentlyContinue
-    if (-not $held -and -not $matchAt -and ($t | Select-String -SimpleMatch "script input: all steps done")) { $matchAt = Get-Date }
+    # (-Match: its own match's line, with --p1's name - not the title screen's demo match before it)
+    $begun = if ($Match) { "match: rule .*" + [regex]::Escape(($Match -split ' ')[[array]::IndexOf(($Match -split ' '), '--p1') + 1]) + " \(person" }
+             else { [regex]::Escape("script input: all steps done") }
+    if (-not $held -and -not $matchAt -and ($t | Select-String -Pattern $begun)) { $matchAt = Get-Date }
     if (-not $held -and $matchAt -and ((Get-Date) - $matchAt).TotalSeconds -ge $HoldAt) {
       # (a hotkey runs when its line is read: added to the game's input file now, with the match running;
       # F8 needs the free camera on, which happens a frame after F6)
