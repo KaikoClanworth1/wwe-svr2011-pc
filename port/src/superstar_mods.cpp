@@ -4318,6 +4318,20 @@ void AddHighModsCc(PPCContext& ctx, uint8_t* base, uint32_t screen, uint32_t ids
 }
 }  // namespace
 
+// Test aid SVR2011_TEST_LIST_TRACE=1: each superstar list build below logged (its kind, caller, count before the
+// mods were added) - which screen fills which list (report 8d4a89).
+bool ListTrace() {
+  static const bool on = std::getenv("SVR2011_TEST_LIST_TRACE") != nullptr;
+  return on;
+}
+void TraceList(const char* fn, uint32_t screen, uint32_t kind, uint32_t lr, uint32_t count) {
+  if (!ListTrace()) return;
+  static std::atomic<int> n{0};
+  if (n.fetch_add(1) < 200)
+    REXLOG_INFO("[svr2011] superstar mods: test - list {} screen {:08X} kind {} from {:08X}: {} entries", fn, screen, kind,
+                lr, count);
+}
+
 REX_EXTERN(__imp__sub_8257B240);
 REX_HOOK_RAW(sub_8257B240) {
   const uint32_t id = ctx.r3.u32;
@@ -4337,8 +4351,10 @@ REX_HOOK_RAW(sub_8257B240) {
 REX_EXTERN(__imp__sub_82518F38);
 REX_HOOK_RAW(sub_82518F38) {
   const uint32_t screen = ctx.r3.u32;
+  const uint32_t lr_cc = uint32_t(ctx.lr);
   __imp__sub_82518F38(ctx, base);
   constexpr uint32_t kKind = 33608, kIds = 36536, kCount = 37424, kCap = 222;
+  TraceList("82518F38", screen, Rd32(base + screen + kKind), lr_cc, Rd32(base + screen + kCount));
   if (Rd32(base + screen + kKind) != 1) return;  // (DOWNLOADED SUPERSTAR)
   uint32_t n = std::min(Rd32(base + screen + kCount), kCap);
   const auto add = HighModsMissing(base, screen + kIds, n);
@@ -4357,6 +4373,7 @@ REX_HOOK_RAW(sub_82B972C8) {
   const uint32_t screen = ctx.r3.u32, kind = ctx.r4.u32;
   const PPCContext entry = ctx;
   __imp__sub_82B972C8(ctx, base);
+  TraceList("82B972C8", screen, kind, uint32_t(entry.lr), Rd32(base + screen + 4012));
   if (kind != 1) return;
   PPCContext c = entry;
   AddHighModsCc(c, base, screen, 1108, 2076, 3044, 4012, 242);
@@ -4402,6 +4419,7 @@ REX_HOOK_RAW(sub_82BA38B8) {
   const uint32_t screen = ctx.r3.u32, kind = ctx.r4.u32;
   const PPCContext entry = ctx;
   __imp__sub_82BA38B8(ctx, base);
+  TraceList("82BA38B8", screen, kind, uint32_t(entry.lr), Rd32(base + screen + 7280));
   if (kind != 2) return;
   PPCContext c = entry;
   AddHighModsCc(c, base, screen, 1136, 3184, 5232, 7280, 512);
