@@ -44,6 +44,8 @@ void OnlineTempForSave(uint8_t* base, bool saving);
 void PerModSavesForSave(uint8_t* base, bool saving);
 // After a save is loaded: the save's teams / titles / Universe cards that name a mod get its id back (refs.bin).
 void PerModSavesLoaded(uint8_t* base);
+// Once a frame: the fields the loader writes after the load hook (the title holders) get their mod back.
+void PerModSavesTick(uint8_t* base);
 bool IsSuperstarMod(uint32_t id);
 // The installed mods' entrance numbers (manifest entrance= and attire<N>_entrance=, without the fetched ones): the
 // CREATE AN ENTRANCE rows "MOD: <name>" (cae_mod_motions.cpp). base: the manifest's base superstar - a mod on a game
