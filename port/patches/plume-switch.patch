@@ -12,7 +12,7 @@ index 9d5874e..acf119c 100644
      typedef ANativeWindow* RenderWindow;
  #elif defined(PLUME_SDL_VULKAN_ENABLED)
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index 79a2e21..3ed3761 100644
+index 79a2e21..6fbbd41 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
 @@ -51,6 +51,7 @@ namespace plume {
@@ -42,7 +42,7 @@ index 79a2e21..3ed3761 100644
  #   elif defined(__ANDROID__)
          dstWidth = ANativeWindow_getWidth(desc.renderWindow);
          dstHeight = ANativeWindow_getHeight(desc.renderWindow);
-@@ -2842,6 +2848,136 @@ namespace plume {
+@@ -2842,6 +2848,138 @@ namespace plume {
          }
      }
  
@@ -102,6 +102,8 @@ index 79a2e21..3ed3761 100644
 +
 +    // [svr2011] GPU time per render pass, one frame in 300 (the log's "gpu passes" line).
 +    SvrGpuFrame g_svr_gpu_frame;
++    // (frames between two timed ones: 300 for the log; the scene scale's control asks for more)
++    std::atomic<uint32_t> g_svr_gpu_interval{300};
 +    namespace {
 +        enum SvrGpuState { kSvrGpuIdle, kSvrGpuRecording, kSvrGpuSubmitted, kSvrGpuPublished };
 +        std::mutex g_svr_gpu_lock;
@@ -147,7 +149,7 @@ index 79a2e21..3ed3761 100644
 +                }
 +                return;
 +            }
-+            if (g_svr_gpu_state != kSvrGpuIdle || ++g_svr_gpu_wait < 300) return;
++            if (g_svr_gpu_state != kSvrGpuIdle || ++g_svr_gpu_wait < g_svr_gpu_interval.load(std::memory_order_relaxed)) return;
 +            if (g_svr_gpu_pool == VK_NULL_HANDLE) {
 +                VkQueryPoolCreateInfo info = {};
 +                info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -179,7 +181,7 @@ index 79a2e21..3ed3761 100644
      void VulkanCommandList::begin() {
          vkResetCommandBuffer(vk, 0);
  
-@@ -2854,10 +2990,16 @@ namespace plume {
+@@ -2854,10 +2992,16 @@ namespace plume {
              fprintf(stderr, "vkBeginCommandBuffer failed with error code 0x%X.\n", res);
              return;
          }
@@ -196,7 +198,7 @@ index 79a2e21..3ed3761 100644
  
          VkResult res = vkEndCommandBuffer(vk);
          if (res != VK_SUCCESS) {
-@@ -2919,6 +3061,9 @@ namespace plume {
+@@ -2919,6 +3063,9 @@ namespace plume {
              imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
              imageMemoryBarrier.oldLayout = toImageLayout(interfaceTexture->textureLayout);
              imageMemoryBarrier.newLayout = toImageLayout(textureBarrier.layout);
@@ -206,7 +208,7 @@ index 79a2e21..3ed3761 100644
              imageMemoryBarrier.subresourceRange.levelCount = interfaceTexture->desc.mipLevels;
              imageMemoryBarrier.subresourceRange.layerCount = interfaceTexture->desc.arraySize;
              imageMemoryBarrier.subresourceRange.aspectMask = toAspectFlags(interfaceTexture->desc.format, interfaceTexture->desc.flags);
-@@ -2978,6 +3123,9 @@ namespace plume {
+@@ -2978,6 +3125,9 @@ namespace plume {
      void VulkanCommandList::drawInstanced(uint32_t vertexCountPerInstance, uint32_t instanceCount, uint32_t startVertexLocation, uint32_t startInstanceLocation) {
          assert(activeGraphicsPipelineLayout != nullptr);
          checkActiveRenderPass();
@@ -216,7 +218,7 @@ index 79a2e21..3ed3761 100644
  
          vkCmdDraw(vk, vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
      }
-@@ -2985,6 +3133,9 @@ namespace plume {
+@@ -2985,6 +3135,9 @@ namespace plume {
      void VulkanCommandList::drawIndexedInstanced(uint32_t indexCountPerInstance, uint32_t instanceCount, uint32_t startIndexLocation, int32_t baseVertexLocation, uint32_t startInstanceLocation) {
          assert(activeGraphicsPipelineLayout != nullptr);
          checkActiveRenderPass();
@@ -226,7 +228,7 @@ index 79a2e21..3ed3761 100644
  
          vkCmdDrawIndexed(vk, indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation, startInstanceLocation);
      }
-@@ -3566,6 +3717,15 @@ namespace plume {
+@@ -3566,6 +3719,15 @@ namespace plume {
              g_svr_render_passes.fetch_add(1, std::memory_order_relaxed);
              g_svr_render_pass_pixels.fetch_add(uint64_t(targetFramebuffer->width) * targetFramebuffer->height,
                                                 std::memory_order_relaxed);
@@ -242,7 +244,7 @@ index 79a2e21..3ed3761 100644
              VkRenderPassBeginInfo beginInfo = {};
              beginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
              beginInfo.renderPass = targetFramebuffer->renderPass;
-@@ -3581,6 +3741,13 @@ namespace plume {
+@@ -3581,6 +3743,13 @@ namespace plume {
          if (activeRenderPass != VK_NULL_HANDLE) {
              vkCmdEndRenderPass(vk);
              activeRenderPass = VK_NULL_HANDLE;
@@ -257,7 +259,7 @@ index 79a2e21..3ed3761 100644
      }
  
 diff --git a/plume_vulkan.h b/plume_vulkan.h
-index 6c1cf32..0e0dec5 100644
+index 6c1cf32..360a657 100644
 --- a/plume_vulkan.h
 +++ b/plume_vulkan.h
 @@ -9,6 +9,7 @@
@@ -268,7 +270,7 @@ index 6c1cf32..0e0dec5 100644
  #include <mutex>
  #include <set>
  #include <unordered_map>
-@@ -282,6 +283,23 @@ namespace plume {
+@@ -282,6 +283,24 @@ namespace plume {
          bool contains(const VulkanTexture *attachment) const;
      };
  
@@ -287,6 +289,7 @@ index 6c1cf32..0e0dec5 100644
 +        SvrGpuPass passes[kMax];
 +    };
 +    extern SvrGpuFrame g_svr_gpu_frame;
++    extern std::atomic<uint32_t> g_svr_gpu_interval;
 +#endif
 +
      struct VulkanQueryPool : RenderQueryPool {
