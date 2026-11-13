@@ -4602,7 +4602,11 @@ bool ReadModSave(const Mod& m, ModSave& s) {
     REXLOG_WARN("[svr2011] per-mod saves: {}.dat is damaged - its defaults instead", m.folder);
     return false;
   }
-  if (fingerprint != Fingerprint(m)) {
+  // Test aid SVR2011_TEST_MOD_SAVE_ANY=1: a .dat made by hand (no fingerprint of the mod's own) is taken.
+  static const bool any = std::getenv("SVR2011_TEST_MOD_SAVE_ANY") != nullptr;
+  if (fingerprint != Fingerprint(m) && any) {
+    REXLOG_INFO("[svr2011] per-mod saves: test - {}.dat taken whatever its fingerprint (SVR2011_TEST_MOD_SAVE_ANY)", m.folder);
+  } else if (fingerprint != Fingerprint(m)) {
     REXLOG_INFO("[svr2011] per-mod saves: {}.dat was made for another version of the mod - its defaults instead",
                 m.folder);
     return false;
@@ -4701,6 +4705,15 @@ void StartModSaves() {
 }
 
 // The 40-byte entries from the files: once the slot holds the mod's record again (its stub's entry still there).
+// They are in block B, which the loader writes after the load hook (as the title holders, RefsLoaded): the save's
+// stub entry came over the mod's own after it was put back. So each one put back (and, after a save is built, the
+// one built) is kept, and for ~10 s after it is put and after each save load (EntriesTick) a slot whose entry isn't
+// it any more gets it again.
+std::map<uint32_t, svrfmt::Bytes> g_entry_put;  // slot -> the mod's entry as put back / as last saved
+int g_entry_frames = 0;
+constexpr int kEntryWatchFrames = 600;
+std::mutex g_entry_mutex;  // (the load hook, the frame tick and the save writer: different threads)
+
 void PutBackEntries(uint8_t* base) {
   for (auto it = g_saved_entry.begin(); it != g_saved_entry.end();) {
     const Mod* m = ModOf(it->first);
@@ -4711,7 +4724,33 @@ void PutBackEntries(uint8_t* base) {
       continue;
     }
     std::memcpy(base + svr2011::RosterEntry(kEntries40, kEntry40Size, si), it->second.data(), kEntry40Size);
+    REXLOG_INFO("[svr2011] per-mod saves: id {} - its saved 40-byte entry put back", it->first);
+    {
+      std::lock_guard lock(g_entry_mutex);
+      g_entry_put[it->first] = it->second;
+      g_entry_frames = kEntryWatchFrames;
+    }
     it = g_saved_entry.erase(it);
+  }
+}
+
+// Once a frame while watched (and before a save is built): an entry put back that the late write replaced.
+void EntriesTick(uint8_t* base) {
+  std::lock_guard lock(g_entry_mutex);
+  if (g_entry_frames <= 0) return;
+  --g_entry_frames;
+  for (const auto& [slot, entry] : g_entry_put) {
+    const Mod* m = ModOf(slot);
+    const uint32_t si = m ? svr2011::RosterIndex(base, slot) : 512;
+    if (si >= 512) continue;
+    const uint8_t* sr = base + svr2011::RosterEntry(kRecords, kRecordSize, si);
+    uint8_t* se = base + svr2011::RosterEntry(kEntries40, kEntry40Size, si);
+    if (std::strncmp(reinterpret_cast<const char*>(sr + kFullName), m->name.c_str(), kNameLen - 1) ||
+        !std::memcmp(se, entry.data(), kEntry40Size))
+      continue;
+    std::memcpy(se, entry.data(), kEntry40Size);
+    if (FirstTime(fmt::format("entry again {}", slot)))
+      REXLOG_INFO("[svr2011] per-mod saves: id {} - its 40-byte entry put back again after the save's late write", slot);
   }
 }
 
@@ -4928,6 +4967,7 @@ void RefsTick(uint8_t* base) {
 // Before a save is built: the watch once more (a late write since the last frame), then still while it's built.
 void RefsBeforeSave(uint8_t* base) {
   RefsTick(base);
+  EntriesTick(base);
   g_refs_building = true;
 }
 }  // namespace
@@ -4967,6 +5007,10 @@ void PerModSavesForSave(uint8_t* base, bool saving) {
       ModSave s{svrfmt::Bytes(sr, sr + kRecordSize), svrfmt::Bytes(sp, sp + kProfileSize),
                 svrfmt::Bytes(se, se + kEntry40Size)};
       WriteModSave(m, s);
+      {
+        std::lock_guard lock(g_entry_mutex);
+        g_entry_put[m.slot] = s.entry;  // (EntriesTick: the entry this save holds for the mod, in its file)
+      }
       std::memcpy(sr, sr_stub->second.data(), kRecordSize);
       std::memcpy(sp, sp_stub->data(), kProfileSize);
       if (const auto e = g_stub_entry.find(m.slot); e != g_stub_entry.end()) std::memcpy(se, e->second.data(), kEntry40Size);
@@ -4987,9 +5031,14 @@ void PerModSavesForSave(uint8_t* base, bool saving) {
 // After a save is loaded (the sub_8257A218 hook): its fields' mods back from refs.bin - also once while folding back.
 void PerModSavesLoaded(uint8_t* base) {
   if (g_mod_saves_on || g_mod_saves_fold) RefsLoaded(base);
+  std::lock_guard lock(g_entry_mutex);
+  if (!g_entry_put.empty()) g_entry_frames = kEntryWatchFrames;  // (the late write of this load: EntriesTick)
 }
 
-void PerModSavesTick(uint8_t* base) { RefsTick(base); }
+void PerModSavesTick(uint8_t* base) {
+  RefsTick(base);
+  if (!g_refs_building) EntriesTick(base);
+}
 
 }  // namespace svr2011
 

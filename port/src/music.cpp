@@ -926,6 +926,16 @@ void InstallUserMusic(const std::filesystem::path& folder) {
     g_player->Pause(false);
   };
   music.set_volume = [](float volume) { g_player->SetVolume(volume); };
+  // Test aid SVR2011_TEST_PLAYLIST_CHECK=1: at start, each name the game is given that GamePlaylists cut (39
+  // characters, or a "~N" one) logged and played by that name - the entrance's lookup.
+  if (std::getenv("SVR2011_TEST_PLAYLIST_CHECK")) {
+    for (const auto& n : music.list_playlists()) {
+      if (n.size() < kGameNameChars && n.find(u'~') == std::u16string::npos) continue;
+      REXLOG_INFO("user music: test - game name \"{}\" ({} characters)", std::filesystem::path(n).string(), n.size());
+      music.play(n);
+      music.stop();
+    }
+  }
   XmpApp::SetHostMusic(std::move(music));
 }
 
