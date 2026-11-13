@@ -32,7 +32,7 @@ $port = Split-Path $tools -Parent
 . (Join-Path $tools "test_guard.ps1")
 
 $o = @{ p = @{}; arena = ""; rule = ""; attire = ""; mods = "none"; pad1 = ""; pad2 = ""; clock = "600,1200,1800"; play = "30s"; name = "lan"; args = @(); picks1 = ""; picks2 = ""; hostenv = @(); hostargs = @(); joinargs = @(); joinenv = @(); session = ""; rumble = $false; joinexe = ""
-       games = 2; pad3 = ""; picks3 = ""; join2env = @(); join2args = @(); close = $false }
+       games = 2; pad3 = ""; picks3 = ""; join2env = @(); join2args = @(); close = $false; again = $false }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
@@ -46,6 +46,7 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         '^--join2-arg$' { $o.join2args += $v; $i++; continue }
         '^--games$' { $o.games = [int]$v; $i++; continue }  # (3: a second joiner, join2)
         '^--close$' { $o.close = $true; continue }  # (the games close themselves after the play: exit codes and crash files in the result)
+        '^--again$' { $o.again = $true; continue }  # (after the first match ends - the caller's SVR2011_TEST_LOSE ends it - both pick again and play a second one)
         '^--rumble$' { $o.rumble = $true; continue }  # (ONLINE's ROYAL RUMBLE row instead of MATCH, both games)
         '^--arg$' { $o.args += $v; $i++; continue }  # (a game option for both games, e.g. --arg --big_roster=true)
         '^--(arena|rule|attire|mods|pad1|pad2|pad3|clock|play|name|picks1|picks2|picks3|session)$' { $o[$Matches[1]] = $v; $i++; continue }
@@ -142,6 +143,20 @@ function Wait-LogN([string]$side, [string]$pattern, [int]$n, [double]$secs) {  #
 }
 function In([string]$side, [string[]]$steps) { Add-Content (Join-Path $out "$side.input.txt") ($steps -join "`n") }
 function AnyExited { @($procs.Values | Where-Object { $_ -and $_.HasExited }).Count -gt 0 }
+# (--close: WM_CLOSE to every top-level window of the game - a test game's window is never shown (SVR2011_WINDOW_HIDDEN),
+# so .NET's CloseMainWindow finds none; the game's own quit path runs, as a player's click on the close box)
+Add-Type -Namespace SvrTest -Name Win32 -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lp);
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+public delegate bool EnumWindowsProc(IntPtr h, IntPtr lp);
+public static int CloseAll(uint pid) {
+    int n = 0;
+    EnumWindows((h, lp) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid) { PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); n++; } return true; }, IntPtr.Zero);
+    return n;
+}
+'@
+function Close-GameWindows([int]$procId) { [SvrTest.Win32]::CloseAll([uint32]$procId) }
 function Start-Side([string]$side, [string[]]$extra) {
     $inputFile = Join-Path $out "$side.input.txt"
     Set-Content $inputFile "" -NoNewline
@@ -171,6 +186,39 @@ function Start-Side([string]$side, [string[]]$extra) {
     foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_INPUT_FILE", "SVR2011_CONFIG", "SVR2011_USER_DATA") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
 }
 $online = "SVRDBG: boot: page online open"
+function Send-Picks([int]$nth) {
+    # picks: the host 1P, the joiner 2P (its cursor one to the right); A on both until the match starts
+    if ($o.picks1) { In "host" @(Get-Content $o.picks1) } else { In "host" @("press A 200", "wait 4000", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200") }
+    if ($o.picks2) { In "join" @(Get-Content $o.picks2) } else { In "join" @("press RIGHT 200", "wait 2000", "press A 200", "wait 4000", "press RIGHT 200", "wait 1500", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200") }
+    # (the second joiner 3P: its cursor two to the right)
+    if ($o.games -ge 3) {
+        if ($o.picks3) { In "join2" @(Get-Content $o.picks3) }
+        else { In "join2" @("press RIGHT 200", "wait 1500", "press RIGHT 200", "wait 2000", "press A 200", "wait 4000", "press RIGHT 200", "wait 1500", "press RIGHT 200", "wait 1500", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200") }
+    }
+    $until = (Get-Date).AddSeconds(180)
+    while ((Get-Date) -lt $until -and -not (Wait-LogN "host" "svr2011\] match starts" $nth 0.1)) {
+        if (AnyExited) { throw "a game exited before the match" }
+        if (-not $o.picks1) { In "host" @("press A 200") }; if (-not $o.picks2) { In "join" @("press A 200") }
+        if ($o.games -ge 3 -and -not $o.picks3) { In "join2" @("press A 200") }
+        Start-Sleep 4
+    }
+    if (-not (Wait-LogN "host" "svr2011\] match starts" $nth 0.1)) { throw "no match started ($nth)" }
+}
+function Play-Match {
+    # the match: each side's pad
+    $play = Seconds $o.play
+    if ($o.pad1) { In "host" @(Get-Content $o.pad1) }
+    if ($o.pad2) { In "join" @(Get-Content $o.pad2) }
+    if ($o.games -ge 3 -and $o.pad3) { In "join2" @(Get-Content $o.pad3) }
+    $until = (Get-Date).AddSeconds($play)
+    while ((Get-Date) -lt $until) {
+        if (AnyExited) { $script:ok = $false; $script:why = "a game exited in the match"; break }
+        if (-not $o.pad1) { In "host" @("press LEFT 500", "press X 150") }
+        if (-not $o.pad2) { In "join" @("press RIGHT 500", "press A 150") }
+        if ($o.games -ge 3 -and -not $o.pad3) { In "join2" @("press UP 500", "press X 150") }
+        Start-Sleep 3
+    }
+}
 try {
     for ($k = 0; $k -lt 40 -and -not (Get-NetTCPConnection -LocalPort $sp -State Listen -ErrorAction SilentlyContinue); $k++) { Start-Sleep -Milliseconds 500 }
     # host: ONLINE (dbg_boot) -> MATCH (it loads slowly) -> PLAYER MATCH -> CREATE SESSION, entrances off, CONTINUE
@@ -197,35 +245,19 @@ try {
         $timings.joined2_s = Since
     }
     Start-Sleep 12
-    # picks: the host 1P, the joiner 2P (its cursor one to the right); A on both until the match starts
-    if ($o.picks1) { In "host" @(Get-Content $o.picks1) } else { In "host" @("press A 200", "wait 4000", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200") }
-    if ($o.picks2) { In "join" @(Get-Content $o.picks2) } else { In "join" @("press RIGHT 200", "wait 2000", "press A 200", "wait 4000", "press RIGHT 200", "wait 1500", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200") }
-    # (the second joiner 3P: its cursor two to the right)
-    if ($o.games -ge 3) {
-        if ($o.picks3) { In "join2" @(Get-Content $o.picks3) }
-        else { In "join2" @("press RIGHT 200", "wait 1500", "press RIGHT 200", "wait 2000", "press A 200", "wait 4000", "press RIGHT 200", "wait 1500", "press RIGHT 200", "wait 1500", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200") }
-    }
-    $until = (Get-Date).AddSeconds(180)
-    while ((Get-Date) -lt $until -and -not (LogHas "host" "svr2011\] match starts")) {
-        if (AnyExited) { throw "a game exited before the match" }
-        if (-not $o.picks1) { In "host" @("press A 200") }; if (-not $o.picks2) { In "join" @("press A 200") }
-        if ($o.games -ge 3 -and -not $o.picks3) { In "join2" @("press A 200") }
-        Start-Sleep 4
-    }
-    if (-not (LogHas "host" "svr2011\] match starts")) { throw "no match started" }
+    Send-Picks 1
     $timings.match_s = Since
-    # the match: each side's pad
-    $play = Seconds $o.play
-    if ($o.pad1) { In "host" @(Get-Content $o.pad1) }
-    if ($o.pad2) { In "join" @(Get-Content $o.pad2) }
-    if ($o.games -ge 3 -and $o.pad3) { In "join2" @(Get-Content $o.pad3) }
-    $until = (Get-Date).AddSeconds($play)
-    while ((Get-Date) -lt $until) {
-        if (AnyExited) { $ok = $false; $why = "a game exited in the match"; break }
-        if (-not $o.pad1) { In "host" @("press LEFT 500", "press X 150") }
-        if (-not $o.pad2) { In "join" @("press RIGHT 500", "press A 150") }
-        if ($o.games -ge 3 -and -not $o.pad3) { In "join2" @("press UP 500", "press X 150") }
-        Start-Sleep 3
+    Play-Match
+    if ($o.again -and $ok) {
+        # (the first match ends - the caller's SVR2011_TEST_LOSE - and the games come back to the lobby; the first
+        # match's dumps are kept as m1_*, the second match writes its own; then both pick again and play)
+        if (-not (Wait-Log "host" "match end: step" 240)) { throw "the first match didn't end" }
+        $timings.ended_s = Since
+        Start-Sleep 30
+        foreach ($side in $sides) { Get-ChildItem (Join-Path $out $side) -Filter "state_clock_*.json" -ErrorAction SilentlyContinue | Rename-Item -NewName { "m1_" + $_.Name } }
+        Send-Picks 2
+        $timings.match2_s = Since
+        Play-Match
     }
 } catch {
     $ok = $false; $why = $_.Exception.Message
@@ -234,7 +266,7 @@ try {
     if ($o.close) {
         # (--close: each game's window asked to close, as a player's click on it; the game runs its own shutdown)
         $closeAt = Get-Date
-        foreach ($side in $sides) { $p = $procs[$side]; if ($p -and -not $p.HasExited) { $closed[$side] = if ($p.CloseMainWindow()) { "closing" } else { "no window to close" } } elseif ($p) { $closed[$side] = "exited before the close" } }
+        foreach ($side in $sides) { $p = $procs[$side]; if ($p -and -not $p.HasExited) { $n = Close-GameWindows $p.Id; $closed[$side] = if ($n) { "closing" } else { "no window to close" } } elseif ($p) { $closed[$side] = "exited before the close" } }
         foreach ($side in $sides) { $p = $procs[$side]; if ($p -and $closed[$side] -eq "closing") { $closed[$side] = if ($p.WaitForExit(40000)) { "exit code $($p.ExitCode) after $([math]::Round(($p.ExitTime - $closeAt).TotalSeconds, 1)) s" } else { "still running 40 s after the close (killed)" } } }
     }
     foreach ($p in $procs.Values) { if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; [void]$p.WaitForExit(15000) } }
