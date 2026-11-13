@@ -1085,7 +1085,9 @@ REX_HOOK_RAW(sub_82292D50) {
   // reports - "the CPU only reverses": a controller nobody holds played him).
   if (c) {
     static uint32_t told_match = 0, told = 0;
-    const uint32_t m = Rd32(base + 0x82EDEB48), person = Rd32(base + c + 1156), port = Rd32(base + c + 1152);
+    // (a match: its block and its first character - the title's demo match and the next one share the block)
+    const uint32_t m = Rd32(base + 0x82EDEB48) ^ Rd32(base + 0x82E3CC50), person = Rd32(base + c + 1156),
+                   port = Rd32(base + c + 1152);
     if (m != told_match) told_match = m, told = 0;
     if (m && person < 6 && !(told >> person & 1)) {
       told |= 1u << person;

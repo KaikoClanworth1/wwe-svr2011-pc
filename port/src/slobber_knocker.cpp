@@ -39,6 +39,7 @@
 #include <rex/ui/imgui_dialog.h>
 
 #include "generated/default/svr2011_init.h"
+#include "match_record.h"
 #include "match_hud.h"
 #include "match_types.h"
 #include "../modmaker/svrfmt/bytes.h"
@@ -489,6 +490,7 @@ REX_HOOK_RAW(sub_8280CFD0) {
     Wr32(base + pair + 20, other);
   }
   t_update_pair = pair, t_stand_in = false;
+  if (self) svr2011::MatchRecordAiUpdate(self);  // (match.json: a "CPU" none ran for is no AI)
   __imp__sub_8280CFD0(ctx, base);
   t_update_pair = 0;
   if (t_stand_in) {
