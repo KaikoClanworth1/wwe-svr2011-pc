@@ -15,6 +15,7 @@
 #include "big_roster.h"
 #include "match_diag.h"
 #include "match_types.h"
+#include "menu_hooks.h"
 #include "frame_rate.h"
 #include "mystery_opponent.h"
 #include "no_mods.h"
@@ -1144,6 +1145,7 @@ REX_HOOK_RAW(sub_82292D50) {
 REX_EXTERN(__imp__sub_82BAA6E8);
 REX_HOOK_RAW(sub_82BAA6E8) {
   const uint32_t table = ctx.r4.u32, size = ctx.r5.u32;
+  svr2011::MenusShown();  // (menu_hooks.h: after a Universe match the menus' settings come back here)
   std::vector<uint8_t> rows;
   if (g_memory && table) rows = WithRows(base + table, size);
   svr2011::LoadWatchDone("its menus read");

@@ -489,7 +489,8 @@ REX_HOOK_RAW(sub_827535C0) {
   static std::atomic<int> via_person_call{0};  // (calls from sub_82757308, the report's path)
   if (aid && entry && uint32_t(saved.lr) == 0x82757320u && Rd32(base + entry + 12) < 16) {
     if (++via_person_call == aid) {
-      REXLOG_WARN("[svr2011] entrance state: test - the current entry's person {} made 16 (person {} asked)",
+      // (sub_827535C0 takes one argument, r3 - the caller's object, not a person number)
+      REXLOG_WARN("[svr2011] entrance state: test - the current entry's person {} made 16 (asked with object {:08X})",
                   Rd32(base + entry + 12), ctx.r3.u32);
       Wr32(base + entry + 12, 16);
     }

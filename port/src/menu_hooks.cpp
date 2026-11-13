@@ -502,6 +502,17 @@ REX_HOOK_RAW(sub_82153EF8) {
   __imp__sub_82153EF8(ctx, base);
 }
 
+namespace svr2011 {
+void MenusShown() {
+  if (!InMatch()) return;  // (the start-up's menus, or menus already set)
+  REXLOG_INFO("[svr2011] menus are up after a match: the touch MENU layout, menus' frame rate and 16:9 back");
+  TouchGameInMatch(false);    // (the touch controller's MENU layout)
+  SetFrameRateInMatch(false);  // (menus at 60 fps; an armed match start dropped)
+  native::SetMatchScene(false);  // (wide screens: menus at 16:9)
+  SetDiscordScene(DiscordScene::kMenus);
+}
+}  // namespace svr2011
+
 // Main menu: go into the selected entry - sub_82447210(menu, by_player);
 // by_player (r4) is 1 when the player pressed A.
 REX_EXTERN(__imp__sub_82447210);
