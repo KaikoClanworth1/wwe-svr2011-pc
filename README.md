@@ -79,6 +79,7 @@ It also adds:
 - [Building from source](#building-from-source)
 - [Troubleshooting](#troubleshooting)
 - [Contributors](#contributors)
+- [Support the project](#support-the-project)
 - [Legal and credits](#legal-and-credits)
 
 ---
@@ -460,6 +461,20 @@ This makes `port/out/android/SvR2011.apk`, which holds no game data. The package
 > **AI disclosure:** this port was developed with Claude Code. Its commits carry a `Co-Authored-By: Claude` line. Every change was run and tested on the project lead's own PC.
 
 See [CONTRIBUTORS.md](CONTRIBUTORS.md).
+
+---
+
+## Support the project
+
+The port, the launcher, the Mod Maker and every update are free and stay free. Supporting is optional and unlocks nothing: everyone gets the same port.
+
+If you'd like to help anyway:
+
+- **Patreon:** https://www.patreon.com/c/KaikoClanworth
+- **Ko-fi:** https://ko-fi.com/kaikoclanworth
+- **PayPal:** https://www.paypal.com/donate/?hosted_button_id=MS4C2WC38N3W2
+
+The launcher has the same links at the bottom of its sidebar.
 
 ---
 
