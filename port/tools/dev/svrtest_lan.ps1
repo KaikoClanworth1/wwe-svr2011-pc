@@ -141,7 +141,10 @@ function Wait-LogN([string]$side, [string]$pattern, [int]$n, [double]$secs) {  #
     }
     return ((Test-Path $f) -and @(Select-String -Path $f -Pattern $pattern -ErrorAction SilentlyContinue).Count -ge $n)
 }
-function In([string]$side, [string[]]$steps) { Add-Content (Join-Path $out "$side.input.txt") ($steps -join "`n") }
+function In([string]$side, [string[]]$steps) {  # (the game reads the file now and then: a clash throws "Stream was not readable" - tried again)
+    for ($k = 0; $k -lt 10; $k++) { try { Add-Content (Join-Path $out "$side.input.txt") ($steps -join "`n") -ErrorAction Stop; return } catch { Start-Sleep -Milliseconds 150 } }
+    Add-Content (Join-Path $out "$side.input.txt") ($steps -join "`n")
+}
 function AnyExited { @($procs.Values | Where-Object { $_ -and $_.HasExited }).Count -gt 0 }
 # (--close: WM_CLOSE to every top-level window of the game - a test game's window is never shown (SVR2011_WINDOW_HIDDEN),
 # so .NET's CloseMainWindow finds none; the game's own quit path runs, as a player's click on the close box)
