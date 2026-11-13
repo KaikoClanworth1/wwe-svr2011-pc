@@ -2,7 +2,9 @@
 # file (script_input.h steps; Community Creations uploads: cc_upload.txt). For us only: tools\dev is never packaged.
 #
 #   svrtest_cc.ps1 [--script <steps file>] [--mods <folder>[,...]] [--userdata <dir>] [--env NAME=value ...]
-#                  [--name cc] [--secs 600]
+#                  [--name cc] [--secs 600] [--exe <path to a svr2011_dbg.exe>] [--slots <slots.txt>]
+#                  [--arg "<game option>" ...]   (--exe: another worktree's dbg build, for a log-only check;
+#                  --slot <n>: svrtest's game<n> folder; --slots: the superstar mods' ids, e.g. a mod on a big_roster id; --arg: e.g. --big_roster=true)
 #
 # Beyond script_input.h's steps the file may hold (handled here, not by the game):
 #   shot <label>     once every step before it is done (a "where" added, then the log's "script input: all steps
@@ -46,12 +48,13 @@ public static class SvrCcWin2 {
 [void][SvrCcWin2]::SetProcessDPIAware()
 
 $o = @{ script = (Join-Path $PSScriptRoot "cc_upload.txt"); mods = "none"; userdata = (Join-Path $port "runs\test_userdata_wwe13b")
-        env = @("SVR2011_TEST_CAW_UPLOAD=1"); name = "cc"; secs = "600" }
+        env = @("SVR2011_TEST_CAW_UPLOAD=1"); name = "cc"; secs = "600"; exe = "dbg"; slots = ""; slot = ""; args = @() }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
         '^--env$' { $o.env += $v; $i++; continue }
-        '^--(script|mods|userdata|name|secs)$' { $o[$Matches[1]] = $v; $i++; continue }
+        '^--arg$' { $o.args += $v; $i++; continue }
+        '^--(script|mods|userdata|name|secs|exe|slots|slot)$' { $o[$Matches[1]] = $v; $i++; continue }
         default { throw "svrtest_cc: unknown option $a" }
     }
 }
@@ -61,9 +64,12 @@ if (-not (Test-Path $o.script)) { throw "svrtest_cc: no steps file $($o.script)"
 Assert-NoPlayerGame
 
 # ---- the game folder, the run folder, private copies
-$prep = @(& (Join-Path $PSScriptRoot "svrtest.ps1") prepare --exe dbg --mods $o.mods)
+$prepArgs = @("prepare", "--exe", $o.exe, "--mods", $o.mods)
+if ($o.slots) { $prepArgs += "--slots", $o.slots }
+if ($o.slot) { $prepArgs += "--slot", $o.slot }  # (its own game folder runs\svrtest\game<n>: another chat's test may hold game\)
+$prep = @(& (Join-Path $PSScriptRoot "svrtest.ps1") @prepArgs)
 $game = [string]$prep[-1]
-$exe = Join-Path $game "svr2011_dbg.exe"
+$exe = Join-Path $game $(if ($o.exe -eq "dbg") { "svr2011_dbg.exe" } else { Split-Path $o.exe -Leaf })
 $root = Join-Path $port "runs\svrtest"
 $out = Join-Path $root ("{0}_{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), $o.name)
 New-Item -ItemType Directory -Force $out | Out-Null
@@ -74,8 +80,9 @@ function Mirror([string]$from, [string]$to) {
     robocopy $from $to /E /NFL /NDL /NJH /NJS /NP /R:1 /W:1 | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "svrtest_cc: copying $from failed" }
 }
-Mirror (Join-Path $src "ent_srv\data") (Join-Path $root "cc_srv\data")   # (fresh: no records from earlier runs)
-$ud = Join-Path $root "cc_ud"
+$srvData = Join-Path $root "cc_srv$($o.slot)\data"  # (per --slot: runs\ may be shared with other chats' tests)
+Mirror (Join-Path $src "ent_srv\data") $srvData   # (fresh: no records from earlier runs)
+$ud = Join-Path $root "cc_ud$($o.slot)"
 Mirror $o.userdata $ud
 # (online_files.cpp CheckVersion: GitHub's newest release, cached 6 h here - an old cached "newest" keeps a dev
 # build's version from turning online off: "a difference in game versions")
@@ -95,7 +102,7 @@ $t = (Get-Content (Join-Path $src "test_config_ent_down.toml") -Raw) -replace '(
 # ---- the server, the game
 $py = "C:\Users\Ranger\AppData\Local\Programs\Python\Python311\python.exe"
 $srvLog = Join-Path $out "server.log"
-$srv = Start-Process $py -ArgumentList "`"$port\server\server.py`" --test-open-accounts --host 127.0.0.1 --port $sp --data `"$(Join-Path $root 'cc_srv\data')`" --log `"$srvLog`"" -PassThru -WindowStyle Hidden
+$srv = Start-Process $py -ArgumentList "`"$port\server\server.py`" --test-open-accounts --host 127.0.0.1 --port $sp --data `"$srvData`" --log `"$srvLog`"" -PassThru -WindowStyle Hidden
 $log = Join-Path $out "game.log"
 $inputFile = Join-Path $out "input.txt"
 Set-Content $inputFile "" -NoNewline
@@ -129,7 +136,7 @@ try {
     $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
     foreach ($e in $o.env) { $n, $v = $e -split '=', 2; [Environment]::SetEnvironmentVariable($n, $v, "Process") }
     $gameArgs = @("--log_file=`"$log`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false", "--monitor=2", "--mnk_mode=false",
-                  "--p2p_port_mapping=false", "--p2p_relay=false", "--p2p_port=$p2p", "--dbg_out=`"$out`"")
+                  "--p2p_port_mapping=false", "--p2p_relay=false", "--p2p_port=$p2p", "--dbg_out=`"$out`"") + $o.args
     Use-SvrTestServer -GameDir $game -GameArgs $gameArgs | Out-Null
     $proc = Start-Process $exe -WorkingDirectory $game -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
     foreach ($e in $o.env) { [Environment]::SetEnvironmentVariable(($e -split '=', 2)[0], $null, "Process") }
