@@ -10,12 +10,17 @@
 #   NX_KEYS    your own prod.keys (nsp). Its contents are never printed.
 #   NX_VER     version in the NSP (default 0.1.0)
 #   NX_LIVE    ON only for a release: Report a problem may use the public server (default OFF)
+#   NX_LTO     ON: link-time optimisation (build)
+#   NX_PGO     generate: a build that counts what runs; use: a build steered by those counts (build)
+#   NX_PGO_DIR the profile's folder, under /work (default $NX_WORK/pgo)
+#   NX_BUILD   build folder (default $NX_WORK/b; a counting build needs its own)
 set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="$(cd "$HERE/../.." && pwd)"
 WORK="${NX_WORK:-/work/nx}"
 DRIVER="${NX_DRIVER:-$WORK/nvk-sdk}"
 TITLE=0500565220110000
+B="${NX_BUILD:-$WORK/b}"
 
 # The sources this port was built against.
 REX_URL=https://github.com/rexglue/rexglue-sdk
@@ -108,12 +113,12 @@ codegen() {
 
 build() {
   [ -f "$DRIVER/lib/libvulkan.a" ] || { echo "No driver at $DRIVER (NX_DRIVER)"; exit 1; }
-  cmake -G Ninja -S "$PORT/switch" -B "$WORK/b" -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake -DCMAKE_BUILD_TYPE=Release \
+  cmake -G Ninja -S "$PORT/switch" -B "$B" -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake -DCMAKE_BUILD_TYPE=Release \
     -DPython3_EXECUTABLE=/mingw64/bin/python -DSVR_SDK_ONLY=OFF -DSVR_PORT="$PORT" -DREXSDK_DIR="$WORK/rex" -DPLUME_DIR="$WORK/plume" \
-    -DSVR_GENERATED="$WORK/generated" -DNVK_SDK="$DRIVER" -DSVR_NX_REPORTS_LIVE="${NX_LIVE:-OFF}" -Wno-dev > "$WORK/configure.log" 2>&1 \
+    -DSVR_GENERATED="$WORK/generated" -DNVK_SDK="$DRIVER" -DSVR_NX_REPORTS_LIVE="${NX_LIVE:-OFF}"     -DSVR_NX_LTO="${NX_LTO:-OFF}" -DSVR_NX_PGO="${NX_PGO:-}" -DSVR_NX_PGO_DIR="${NX_PGO_DIR:-$WORK/pgo}" -Wno-dev > "$WORK/configure.log" 2>&1 \
     || { tail -20 "$WORK/configure.log"; exit 1; }
-  ninja -C "$WORK/b" -j "${NX_JOBS:-4}" svr2011 > "$WORK/build.log" 2>&1 || { grep -E "FAILED|error:|undefined reference" "$WORK/build.log" | head -30; exit 1; }
-  cd "$WORK/b"
+  ninja -C "$B" -j "${NX_JOBS:-4}" svr2011 > "$WORK/build.log" 2>&1 || { grep -E "FAILED|error:|undefined reference" "$WORK/build.log" | head -30; exit 1; }
+  cd "$B"
   nacptool --create "SvR 2011" "SvR 2011 port" "${NX_VER:-0.1.0}" svr2011.nacp
   aarch64-none-elf-strip -o svr2011.stripped.elf svr2011.elf
   elf2nro svr2011.stripped.elf svr2011.nro --nacp=svr2011.nacp > /dev/null
@@ -137,7 +142,7 @@ nsp() {
   # console's capture and SysDVR can take the game's picture. (Byte 0x3035 of the NACP.)
   printf '\001' | dd of=control/control.nacp bs=1 seek=$((0x3035)) conv=notrunc status=none
   cp "$PORT/switch/icon.jpg" control/icon_AmericanEnglish.dat
-  cp "$WORK/b/svr2011.nro" romfs/svr2011.nro
+  cp "$B/svr2011.nro" romfs/svr2011.nro
   cp "$NX_SPVC"/*.spvc romfs/game/native_shaders/
   # Each shader's texture slots (.textures) and vertex inputs (.inputs) too: without them every texture is left
   # out (a black screen). A card copied from a dev folder had them loose; a release has them only in

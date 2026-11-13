@@ -3,9 +3,10 @@
 // While loading: CPU 1785 MHz, from the start to the Start Screen and during the loads
 // after it. Not the system's boost mode: it takes the GPU down to 76.8 MHz, and the game's
 // loading screens count frames.
-// In the game: CPU 1785 MHz, GPU 768 MHz, memory 1600 MHz, in handheld too, at 30 fps as well:
-// with the console's normal clocks a match frame took 38 ms on the GPU, and 30 fps became 20.
-// Cvar switch_boost_60 turns that off.
+// In the game: the console's normal clocks for a game (user, 13 Nov 2026: 30 fps at stock clocks is the goal) -
+// CPU 1020 MHz; GPU 460.8 MHz and memory 1331.2 MHz in handheld, 768 and 1600 docked. They are asked for, because
+// left alone the system ran handheld at GPU 307.2 MHz (a practice frame took 38 ms on the GPU there).
+// Cvar switch_boost_60 = true raises them instead: CPU 1785 MHz, GPU 768 MHz, memory 1600 MHz, in handheld too.
 #include <switch.h>
 
 #include <atomic>
@@ -17,7 +18,7 @@
 
 #include "frame_rate.h"
 
-REXCVAR_DEFINE_BOOL(switch_boost_60, true, "GPU", "Switch: higher clocks in the game");
+REXCVAR_DEFINE_BOOL(switch_boost_60, false, "GPU", "Switch: higher clocks in the game");
 
 extern "C" volatile u64 g_nx_read_ticks, g_nx_read_bytes, g_nx_read_calls;
 struct NxFileStat {
@@ -39,6 +40,11 @@ u32 Rate(ClkrstSession* s) {
 
 void Want(ClkrstSession* s, u32 mhz) {
   if (Rate(s) != mhz) clkrstSetClockRate(s, mhz * 1000000);
+}
+
+// (for the rates that aren't whole MHz)
+void WantHz(ClkrstSession* s, u32 hz) {
+  if (Rate(s) != hz / 1000000) clkrstSetClockRate(s, hz);
 }
 
 constexpr u64 kTicksPerSecond = 19200000;
@@ -82,9 +88,9 @@ void Run() {
         Want(&emc, 1600);
       } else {
         Want(&cpu, loading && focus ? 1785 : 1020);
-        if (high) {
-          Want(&gpu, docked ? 768 : 307);
-          Want(&emc, docked ? 1600 : 1331);
+        if (focus) {
+          WantHz(&gpu, docked ? 768000000 : 460800000);
+          WantHz(&emc, docked ? 1600000000 : 1331200000);
         }
       }
       if (want != high) REXLOG_INFO("[nx] game clocks {}", want ? "on" : "off");

@@ -96,6 +96,7 @@ u64 __nx_exception_stack_size = sizeof(__nx_exception_stack);
 
 void NxProfileStart(void);
 void NxAbStart(void);
+void NxPgoStart(void);  // (nx_pgo.cpp, a counting build only)
 
 // Settings 2 to 3: 30 fps became the Switch's default. Only that line changes (the rest are the
 // player's), once; GRAPHICS -> FRAME RATE can set 60 again afterwards.
@@ -210,6 +211,9 @@ void userAppInit(void) {
   WriteSettings();
   NxProfileStart();
   NxAbStart();  // (clock readings in the log)
+#ifdef SVR_NX_PGO_GENERATE
+  NxPgoStart();
+#endif
   // Start-up marks, flushed at once: this works even if logging never starts.
   FILE* f = fopen(SVR_GAME_DIR "/logs/nx_start.txt", "w");
   if (f) {

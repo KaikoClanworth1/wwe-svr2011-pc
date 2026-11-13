@@ -54,6 +54,18 @@ The result is `$NX_WORK/pk/nsp/0500565220110000.nsp`. The keys are read by hacBr
 
 To test a change without packing an NSP, use `$NX_WORK/b/svr2011.nro`: copy it to `SvR2011/update/svr2011.nro` on the SD card, and the installed NSP starts it instead of its own copy.
 
+## LTO and PGO
+
+Both are off unless asked for. Neither has been measured on a console yet.
+
+- **LTO:** `NX_LTO=ON bash build_switch.sh build`. The game's code and the port's own code are optimised as one program at the link. The link takes much longer.
+- **PGO** takes three steps:
+  1. A counting build, in its own folder: `NX_PGO=generate NX_BUILD=$NX_WORK/bgen bash build_switch.sh build`. Put its `svr2011.nro` at `SvR2011/update/svr2011.nro` on the card and play what should be fast. It is slower than a normal build. Every 30 seconds it writes the session to `SvR2011/pgo/svr2011_<n>.stream` (`SvR2011/logs/nx_pgo.txt` lists the writes).
+  2. Copy `SvR2011/pgo` to the PC, then `bash pgo_merge.sh <that folder>`. The profile lands in `$NX_WORK/pgo`. Run it on the PC and drive the counting build was made on.
+  3. `NX_LTO=ON NX_PGO=use bash build_switch.sh build`. The sources must be the ones the counting build was made from: a changed function gets no profile.
+
+Remove `SvR2011/update/svr2011.nro` from the card to go back to the installed build.
+
 ## Test builds and release builds
 
 Report a problem sends to the public server only when the build is made with `NX_LIVE=ON`. Without it, a build sends only to the `online_server` in `svr2011.toml`, refuses the public server, and can trust a private server's certificate from `SvR2011/nx_test_ca.pem`. A release build ignores that file.

@@ -142,6 +142,18 @@ REXCVAR_DEFINE_DOUBLE(native_render_scale, 1.0, "GPU",
                       "(0.5 = 640 x 360, scaled up to the screen; 0.25 - 1). The HUD and menus' 2D art "
                       "are drawn into the same scene, so they get softer too.");
 
+#if defined(__SWITCH__)
+#define SVR_DYNAMIC_SCALE_DEFAULT true
+#else
+#define SVR_DYNAMIC_SCALE_DEFAULT false
+#endif
+REXCVAR_DEFINE_BOOL(native_dynamic_scale, SVR_DYNAMIC_SCALE_DEFAULT, "GPU",
+                    "Native renderer, Switch: the scene's resolution follows the GPU's time a frame - lowered in steps "
+                    "(85%, 75%, 480p) while a frame takes the GPU longer than the frame rate allows, raised again when "
+                    "there is room. native_render_scale is the most it goes to.");
+REXCVAR_DEFINE_DOUBLE(native_dynamic_scale_min, 2.0 / 3.0, "GPU",
+                      "Native renderer, Switch: the least native_dynamic_scale goes to (0.667 = 480p; 0.5 - 1)");
+
 REXCVAR_DEFINE_INT32(native_scene_height, 0, "GPU",
                      "Native renderer: the scene's height in pixels, between the 720p steps (900 / 1080: "
                      "2x scaled down to it). 0: native_max_scale and native_render_scale decide.");
@@ -871,6 +883,67 @@ bool g_fsr2 = false;
 bool g_dlss = false;
 // The intermediate's place in the 2D texture table: after the three placeholders, before the texture cache's.
 constexpr uint32_t kFsrSrv = 3;
+
+#if defined(__SWITCH__)
+// The log's "gpu passes" line: one frame's passes on the GPU - size, draws, ms (+ms since the pass before).
+void LogGpuFrame() {
+  const auto& gpu = plume::g_svr_gpu_frame;
+  std::string line;
+  double busy = 0;
+  for (uint32_t i = 0; i < gpu.count; i++) {
+    const auto& p = gpu.passes[i];
+    busy += p.ms;
+    line += fmt::format(" {}x{}/{}:{:.2f}", p.width, p.height, p.draws, p.ms);
+    if (p.gap_ms >= 0.05) line += fmt::format("(+{:.2f})", p.gap_ms);
+  }
+  REXLOG_INFO("native perf: gpu passes: {:.2f} ms first to last, {:.2f} in {} passes (driver tick {} ns):{}", gpu.total_ms, busy,
+              gpu.count, gpu.period, line);
+}
+
+// native_dynamic_scale: the share of native_render_scale the scene is drawn at now. The GPU's own time for a frame
+// decides (the driver's timers, a frame in about fifteen), not the frame rate: a frame the CPU holds up isn't made
+// faster by fewer pixels. Down a step after two timed frames in a row over the frame's budget; up a step after ten
+// seconds in which the step above would have fitted. Steps are few and far apart, because each one remakes the
+// scene's targets (a long frame).
+std::atomic<bool> g_gpu_log_wanted{false};
+float DynamicSceneScale(bool on, float least, uint64_t frame) {
+  constexpr float kSteps[] = {1.0f, 0.85f, 0.75f, 2.0f / 3.0f};
+  constexpr int kNumSteps = int(std::size(kSteps));
+  static int step = 0, over = 0, room = 0;
+  static uint64_t settle_until = 0;
+  plume::g_svr_gpu_interval.store(on ? 6 : 300, std::memory_order_relaxed);
+  if (!plume::g_svr_gpu_frame.ready.load(std::memory_order_acquire)) return on ? kSteps[step] : 1.0f;
+  const double gpu_ms = plume::g_svr_gpu_frame.total_ms;
+  if (!on || g_gpu_log_wanted.exchange(false)) LogGpuFrame();
+  plume::g_svr_gpu_frame.ready.store(false, std::memory_order_release);
+  if (!on) {
+    step = over = room = 0;
+    return 1.0f;
+  }
+  if (frame < settle_until) return kSteps[step];
+  const double frame_ms = 1000.0 / double(std::max(svr2011::FrameRateNow(), 1));
+  const double budget = frame_ms * 0.87;  // (the rest: the frame's hand-over, and frames that differ)
+  int next = step;
+  if (gpu_ms > budget) {
+    room = 0;
+    if (++over >= 2 && step + 1 < kNumSteps && kSteps[step + 1] >= least - 0.001f) next = step + 1;
+  } else {
+    over = 0;
+    // (as if every millisecond were the scene's pixels: the cautious guess)
+    const double up = step > 0 ? gpu_ms * double(kSteps[step - 1] * kSteps[step - 1]) / double(kSteps[step] * kSteps[step]) : 0;
+    room = step > 0 && up < frame_ms * 0.80 ? room + 1 : 0;
+    if (room >= 20) next = step - 1;
+  }
+  if (next != step) {
+    REXLOG_INFO("native renderer: scene scale {:.0f}% -> {:.0f}% (the GPU took {:.1f} ms of a {:.1f} ms frame)",
+                kSteps[step] * 100.0f, kSteps[next] * 100.0f, gpu_ms, frame_ms);
+    step = next;
+    over = room = 0;
+    settle_until = frame + 45;
+  }
+  return kSteps[step];
+}
+#endif
 
 // Whether a target of this guest size is the main scene (1280 x 720). Not Superstar Threads' attire bake
 // (2080 x 1024, read back by the game's CPU: WriteBackResolve): sized as the scene - native_render_scale /
@@ -1915,7 +1988,10 @@ void ApplyOutputSettings(Renderer* r) {
       REXCVAR_GET(native_shadows) ? float(std::clamp(REXCVAR_GET(native_shadow_size), 0.125, 1.0)) : 0.0625f;
   static const bool shadows_once = (g_shadows = REXCVAR_GET(native_shadows));
   (void)shadows_once;
-  static float res = float(REXCVAR_GET(native_render_scale));
+  static float user_res = float(REXCVAR_GET(native_render_scale));
+  static bool dynamic = REXCVAR_GET(native_dynamic_scale);
+  static float dynamic_min = float(REXCVAR_GET(native_dynamic_scale_min));
+  float res = user_res;
   static int32_t scene_height = REXCVAR_GET(native_scene_height);
   static bool fsr = REXCVAR_GET(native_upscale) != "off";
   static bool fsr2 = REXCVAR_GET(native_upscale) == "fsr2" || REXCVAR_GET(native_upscale) == "dlss";
@@ -1933,7 +2009,10 @@ void ApplyOutputSettings(Renderer* r) {
     effects = REXCVAR_GET(native_scale_effects);
     shadow_size = REXCVAR_GET(native_shadows) ? float(std::clamp(REXCVAR_GET(native_shadow_size), 0.125, 1.0)) : 0.0625f;
     g_shadows = REXCVAR_GET(native_shadows);
-    res = float(REXCVAR_GET(native_render_scale));
+    user_res = float(REXCVAR_GET(native_render_scale));
+    dynamic = REXCVAR_GET(native_dynamic_scale);
+    dynamic_min = float(std::clamp(REXCVAR_GET(native_dynamic_scale_min), 0.5, 1.0));
+    res = user_res;
     scene_height = REXCVAR_GET(native_scene_height);
     widescreen = REXCVAR_GET(native_widescreen);
     aa_checked = r->frames;
@@ -1962,6 +2041,9 @@ void ApplyOutputSettings(Renderer* r) {
                                                          std::max<uint32_t>(4u, window_scale));
   uint32_t scale = std::clamp<uint32_t>((need + kHeight - 1) / kHeight, 1, limit);
   const bool wide_changed = std::fabs(wide - g_wide) > 0.002f || std::fabs(tall - g_tall) > 0.002f;
+#if defined(__SWITCH__)
+  res *= DynamicSceneScale(dynamic, dynamic_min, r->frames);
+#endif
   res = std::clamp(res, 0.25f, 1.0f);
   if (scale > 1) res = 1.0f;  // (only below the Xbox 360's own resolution)
   // FSR 1: the scene at the quality's share of the window's height (the 720p step above it, scaled down to it), no
@@ -2326,21 +2408,7 @@ void UpdateTitle(Renderer* r) {
       REXLOG_INFO("native perf: render passes per frame {:.1f} ({:.1f} Mpixels loaded and stored)", passes / f,
                   pixels / f / 1e6);
 #if defined(__SWITCH__)
-      if (plume::g_svr_gpu_frame.ready.load(std::memory_order_acquire)) {
-        // One frame's passes on the GPU: size, draws, ms (+ms since the pass before).
-        const auto& gpu = plume::g_svr_gpu_frame;
-        std::string line;
-        double busy = 0;
-        for (uint32_t i = 0; i < gpu.count; i++) {
-          const auto& p = gpu.passes[i];
-          busy += p.ms;
-          line += fmt::format(" {}x{}/{}:{:.2f}", p.width, p.height, p.draws, p.ms);
-          if (p.gap_ms >= 0.05) line += fmt::format("(+{:.2f})", p.gap_ms);
-        }
-        REXLOG_INFO("native perf: gpu passes: {:.2f} ms first to last, {:.2f} in {} passes (driver tick {} ns):{}", gpu.total_ms, busy,
-                    gpu.count, gpu.period, line);
-        plume::g_svr_gpu_frame.ready.store(false, std::memory_order_release);
-      }
+      g_gpu_log_wanted = true;  // (DynamicSceneScale writes the next timed frame's line)
 #endif
     }
 #if defined(_WIN32)
