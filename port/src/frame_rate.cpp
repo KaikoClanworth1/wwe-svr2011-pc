@@ -78,6 +78,7 @@
 #include "players.h"
 #include "android_perf.h"
 #include "mem_trace.h"
+#include "ring_rules.h"
 #include "report_page.h"
 #include "superstar_mods.h"
 #include "../modmaker/svrfmt/bytes.h"
@@ -1585,6 +1586,7 @@ REX_EXTERN(__imp__sub_8269B2D0);
 REX_HOOK_RAW(sub_8269B2D0) {
   const uint32_t ptr = ctx.r3.u32;
   if (svr2011::MemTraceOn()) svr2011::MemTraceDelete(ptr, uint32_t(ctx.lr));  // (test aid: mem_trace.h)
+  svr2011::HeapWatchFree(ptr);  // (test aid SVR2011_TEST_HEAP_LOG=<heap>: ring_rules.h)
   if (svr2011::CawHeapFree(ptr)) return;  // (a CAW editor part from the fallback memory: caw_limits.h)
   // A pointer below the game heaps (0x40000000) that isn't a fallback block's start: the game's free (sub_8269AAD8)
   // reads its heap from the 16 bytes before it - garbage there, a crash (reports 752e29 / af80fa, Android 2.2.2: a

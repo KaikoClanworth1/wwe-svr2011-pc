@@ -18,4 +18,7 @@ void InstallRingRules(rex::memory::Memory* memory);
 // back to the game's ring).
 void SetRingRules(const std::string& manifest);
 
+// Test aid SVR2011_TEST_HEAP_LOG=<heap>: the heaps' delete (frame_rate.cpp sub_8269B2D0) was asked to free ptr - the
+// watched heap's live blocks (allocated, not yet freed) are logged every 10 s by the caller that asked for them.
+void HeapWatchFree(uint32_t ptr);
 }  // namespace svr2011
