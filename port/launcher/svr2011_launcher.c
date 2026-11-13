@@ -9342,8 +9342,8 @@ static void paint_window(HDC dc)
         s_kofi_link.top = k.top; s_kofi_link.bottom = k.top + z.cy;
         k.left += z.cx;
         SetTextColor(dc, RGB(150, 152, 162));
-        DrawTextW(dc, L"  B7 ", -1, &k, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
-        GetTextExtentPoint32W(dc, L"  B7 ", 3, &z);
+        DrawTextW(dc, L" \x00B7 ", -1, &k, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        GetTextExtentPoint32W(dc, L" \x00B7 ", 3, &z);
         k.left += z.cx;
         SetTextColor(dc, C_ACCENT);
         DrawTextW(dc, L"PayPal", -1, &k, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);

@@ -6,3 +6,5 @@
 *.patch -text
 port/BUILD_COMMIT.txt export-subst
 *.sh text eol=lf
+# (stored byte for byte: mixed line ends since early on - it was kept as binary by a stray NUL until 2.2.4)
+port/launcher/svr2011_launcher.c -text
