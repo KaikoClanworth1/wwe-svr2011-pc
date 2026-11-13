@@ -736,6 +736,7 @@ REX_HOOK_RAW(sub_828F2430) {
 
 namespace svr2011 {
 void MatchRecordAiUpdate(uint32_t character) {
+  if (static const bool on = TestMatchAllCpu(); !on) return;  // (svrtest's cpu=all test match only)
   std::lock_guard lock(g_ai_mutex);
   ++g_ai_updates[character];
 }
@@ -847,7 +848,10 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
       // 10 s after the bell, the "CPUs" the game's AI update (sub_8280CFD0) never ran for: svrtest's cpu=all gives
       // person 0 a CPU's port (+1152 6), yet no AI runs for him and no pad plays him - match.json gives him cpu false,
       // "no_ai", so nobody reads his idle as the AI's
-      if (!g.ai_checked && g.trail_second != ~0u && g.trail_second >= 10) {
+      // (svrtest's cpu=all test match only: in a player's match a real CPU can have none yet - a tag partner on the
+      // apron, a Rumble entrant waiting - and match.json stays as it was)
+      if (static const bool test = svr2011::TestMatchAllCpu(); test && !g.ai_checked && g.trail_second != ~0u &&
+                                                                g.trail_second >= 10) {
         g.ai_checked = true;
         std::lock_guard lock(g_ai_mutex);
         for (const auto& p : g.people) {

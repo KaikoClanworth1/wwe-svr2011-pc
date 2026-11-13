@@ -14,9 +14,12 @@ namespace svr2011 {
 
 // A match loads (menu_hooks.cpp sub_823EEB98, on the logic thread): its rand() seed (match.json "seeds").
 void MatchRecordMatchLoads();
-// A character's CPU AI update runs (slobber_knocker.cpp sub_8280CFD0): 10 s after the bell a "CPU" with none is
-// given in match.json as no AI ("no_ai", cpu false - a hidden test's cpu=all person 0).
+// A character's CPU AI update runs (slobber_knocker.cpp sub_8280CFD0). In svrtest's cpu=all test match only, 10 s
+// after the bell a "CPU" with none is given in match.json as no AI ("no_ai", cpu false - its person 0); a player's
+// match.json is left alone (a tag partner on the apron, a Rumble entrant waiting can have none yet).
 void MatchRecordAiUpdate(uint32_t character);
+// test_match.cpp: SVR2011_TEST_MATCH's cpu=all (svrtest --cpu all).
+bool TestMatchAllCpu();
 
 // Each world update (match_types.cpp MatchTypesUpdate, after the update's jobs): the folder at the bell, the trail.
 void MatchRecordUpdate(PPCContext& ctx, uint8_t* base);
