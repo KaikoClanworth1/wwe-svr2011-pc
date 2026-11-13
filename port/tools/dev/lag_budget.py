@@ -71,7 +71,7 @@ def changes(seq):
 def read_game_log(path):
     r = {"lead": None, "frames": 0, "waited": 0, "waits": 0, "longest": 0.0, "windows": []}
     for line in open(path, encoding="utf-8", errors="replace"):
-        m = re.search(r"net: input lead (\d+) frames \(the game's (\d+)\)", line)
+        m = re.search(r"net: input lead (\d+) frames \(the game's (\d+)(?:, the host's)?\)", line)
         if m:
             r["lead"] = (int(m.group(1)), int(m.group(2)))
         m = re.search(r"net: ([\d.]+) s, (\d+) frames .*?waited (\d+) frames \((\d+) ms\) in (\d+) waits, longest (\d+) ms", line)
