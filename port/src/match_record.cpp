@@ -784,7 +784,9 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
     }
     if (g.on && match) g.last_clock = clock;
     if (match && !g.on && clock <= 2) {  // (the bell: with a referee, after a match's load - not an attract match)
-      bool referee = false;
+      // (Royal Rumbles and battle royals have no referee: their rule instead)
+      const uint8_t rule = base[kLive];
+      bool referee = (rule >= 0x14 && rule <= 0x18) || (rule >= 0x22 && rule <= 0x25) || rule == 0x56;
       for (uint32_t i = 0; i < 10; ++i)
         if (const uint32_t c = Rd32(base + kChars + i * 4); c >= 0x40000000u && !(c & 3) && Rd32(base + c + 1156) == 6)
           referee = true;

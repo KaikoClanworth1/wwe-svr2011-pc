@@ -877,7 +877,7 @@ void RestoreRule(uint8_t* base) {
 // backstage, the backstage camera.
 constexpr uint32_t kStoryContext = 0x82E3C1F4;
 
-void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
+void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only, int keep_own = 0) {
   const uint32_t rules = Rd32(base + kRules);
   if (!rules) return;
   uint8_t* rec = base + rules + rule * kRuleSize;
@@ -923,7 +923,11 @@ void ShapeRule(uint8_t* base, uint32_t rule, uint32_t like, bool select_only) {
       for (int i = 2; i < kSlobberPeople; ++i) rec[2 + i * 3 + 2] = 2;
     }
   } else {
-    for (const Span& span : kShape) std::memcpy(rec + span.at, from + span.at, span.size);
+    for (const Span& span : kShape) {
+      // (keep_own: 1 the rule's own match family +44, 2 and its +52 / +64 too)
+      if ((keep_own >= 1 && span.at == 44) || (keep_own >= 2 && (span.at == 52 || span.at == 64))) continue;
+      std::memcpy(rec + span.at, from + span.at, span.size);
+    }
     for (uint32_t at : {kRule2People, kRule2FreeForAll}) rec2[at] = base[rules + kRule2 + like * kRule2Size + at];
   }
   REXLOG_INFO("match types: rule {:02X} set up like rule {:02X}{}", rule, like, select_only ? " (select screen)" : "");
@@ -1372,7 +1376,11 @@ REX_HOOK_RAW(sub_827374A0) {
   // free-for-all byte); back after the match (RestoreRule).
   constexpr uint32_t kSixTag = 0x08, kSixFreeForAll = 0x23;
   if (g_weapons && rule == kSixTag) {
-    ShapeRule(base, rule, kSixFreeForAll, false);
+    // (test aid SVR2011_TEST_WE_SHAPE=0|1|2: what of the battle royal's record it takes - 0 all, 1 not its match family
+    // +44, 2 nor +52 / +64)
+    static const int keep = [] { const std::string v = svr2011::Env("SVR2011_TEST_WE_SHAPE"); return v.empty() ? 0 : std::atoi(v.c_str()); }();
+    ShapeRule(base, rule, kSixFreeForAll, false, keep);
+    if (keep) REXLOG_INFO("match types: WEAPONS EVERYWHERE shape keeps rule {:02X}'s own {}", rule, keep >= 2 ? "+44 / +52 / +64" : "+44");
     REXLOG_INFO("match types: WEAPONS EVERYWHERE - 6-man as a free-for-all (shaped like rule {:02X})", kSixFreeForAll);
   }
   ctx.r4.u64 = played;
