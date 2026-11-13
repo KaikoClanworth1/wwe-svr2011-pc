@@ -409,8 +409,14 @@ $crashes = @(Get-ChildItem (Join-Path $userdata "crashes"), (Join-Path $game "Us
 if ($crashes) { $ok = $false; $why = "crashed: $($crashes -join ', ')" }
 $touched = @($watched | Where-Object { (Get-Item $_).LastWriteTimeUtc -ne $watchedTimes[$_] })
 if ($touched) { $ok = $false; $why = "GAME FILES CHANGED during the run: $($touched -join ', ')"; Write-Warning $why }
+# (wrestlers no CPU AI ran for 10 s after the bell - match_record.cpp's "record: person N ... no CPU AI" line: --cpu all
+# gives person 0 a CPU's port, yet no AI runs for him (13 Nov), so his idle / AI numbers are nobody's - not the CPU's)
+$players = @($lines | Where-Object { $_ -match '\] record: person (\d) \((.*)\) - no CPU AI ran for him in 10 s ' } | ForEach-Object {
+    if ($_ -match '\] record: person (\d) \((.*)\) - no CPU AI ran for him in 10 s ') { "person $($Matches[1]) $($Matches[2]) (no AI)" } })
+if ($players -and $o.cpu -eq "all") { Write-Warning "svrtest: --cpu all, but $($players -join ', ') - not the CPU" }
 $result = [ordered]@{
     ok = $ok; why = $why; command = "$Command $($Rest -join ' ')"; exe = (Join-Path $game $exeName); pid = $proc.Id; p2p_port = $p2p
+    no_ai = $players
     timings = $timings; match = @($lines | Where-Object { $_ -match 'test match: people|\] match: ' } | Select-Object -Last 2 | ForEach-Object { $_.Substring([Math]::Min(40, $_.Length)) })
     fps = $fps; errors = $errors.Count; first_errors = @($errors | Select-Object -First 5 | ForEach-Object { $_.Substring([Math]::Min(40, $_.Length)) })
     crashes = $crashes; game_files_changed = $touched; shots = $shots; states = @(Get-ChildItem $out -Filter "state_*.json" -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }); folder = $out; log = $log; kept_running = ($o.keep -and -not $proc.HasExited)
