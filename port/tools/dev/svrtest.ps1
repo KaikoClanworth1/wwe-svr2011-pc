@@ -226,7 +226,9 @@ foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_NATIVE_SHADER
 $steps = @()
 # (no --arena: arena 1 - but a Royal Rumble its own, as the game forces it (RUL +40: 22, story copy 0x56: 19); on
 # another arena its eliminated never leave, no slot frees up, and no entrant past the sixth comes in - 3 Nov)
-$ruleHex = if (-not $o.rule) { "" } elseif ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { "{0:X2}" -f [int]$o.rule } else { ($o.rule -replace '^0x', '').ToUpper() }
+# (--rule is hex, with or without 0x: "14" and "0x14" are the 10-man Royal Rumble - a short number used to be read
+# as decimal, "23" playing rule 0x17)
+$ruleHex = if (-not $o.rule) { "" } else { ($o.rule -replace '^0x', '').ToUpper() }
 $defaultArena = if ($ruleHex -in "14", "15", "16", "17", "18") { "22" } elseif ($ruleHex -eq "56") { "19" } else { "1" }
 if ($Command -eq "script" -and $o.p[1]) {  # (a script's "route match" with these people: test_match.cpp)
     $env:SVR2011_TEST_MATCH = "people=" + (@(1..6 | Where-Object { $o.p[$_] } | ForEach-Object { $o.p[$_] }) -join ",") + " arena=" + $(if ($o.arena) { $o.arena } else { $defaultArena })
@@ -244,7 +246,7 @@ if ($Command -in "match", "entrance") {
     # Rumble's other entrants are the game's own)
     if ($o.rule -notmatch '^(0x)?14$') { $spec += " exact=1" }
     $env:SVR2011_TEST_MATCH = $spec
-    if ($o.rule) { $env:SVR2011_TEST_RULE = $(if ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { "{0:X2}" -f [int]$o.rule } else { $o.rule -replace '^0x', '' }) }
+    if ($o.rule) { $env:SVR2011_TEST_RULE = $ruleHex }
     $steps = if ($o.boot) { @() } elseif ($o.entrances) { @("route normal", "pressuntil A test match: people") } else { @("route match") }
 } elseif ($Command -eq "open") {
     $steps = @()
@@ -274,7 +276,7 @@ if ($o.boot) {
     $env:SVR2011_TEST_MATCH = $null; $env:SVR2011_TEST_RULE = $null  # (the game's own boot fills the match)
     $bm = "people=$($people -join ',') arena=$(if ($o.arena) { $o.arena } else { 1 })"
     if ($o.attire) { $bm += " attires=$($o.attire)" }
-    if ($o.rule) { $bm += " rule=$(if ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { '{0:X2}' -f [int]$o.rule } else { $o.rule -replace '^0x', '' })" }
+    if ($o.rule) { $bm += " rule=$ruleHex" }
     if ($o.cpu -eq "all") { $bm += " cpu=all" }
     $gameArgs += "--dbg_boot=match", "--dbg_match=`"$bm`""
     if ($o.entrances) { $gameArgs += "--dbg_entrances=true" }
