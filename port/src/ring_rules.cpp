@@ -7,6 +7,7 @@
 // derives globals from it; the bottom rope's height is one of them
 // (0x82E354E4 = -12 - 3.4). Rope k (0 = bottom) is at that height minus
 // k * 4.2. Units: 1 = 10 cm, y points down.
+#include "util.h"
 #include "ring_rules.h"
 #include "caw_limits.h"
 #include "fps_overlay.h"
@@ -53,7 +54,7 @@ std::atomic<bool> g_no_ropes{false};  // every rope left out: rope gameplay off
 
 bool NoRopes(const Rules& r) { return !r.ropes[0] && !r.ropes[1] && !r.ropes[2]; }
 
-using svrfmt::Rd32, svrfmt::RdF, svrfmt::WrF;
+using svrfmt::Rd32, svrfmt::Wr32, svrfmt::RdF, svrfmt::WrF;
 
 Rules Parse(const std::string& text) {
   Rules r;
@@ -381,6 +382,80 @@ std::string GuestCallChain(PPCContext& ctx, uint8_t* base, int depth) {
     sp = back;
   }
   return s;
+}
+
+// The entrances' current entry (sub_8275DA50: the state + 12 + 416 * its +4) keeps the index of the person whose
+// entrance plays at +12, and a 16-slot table of them from +288. Five of its readers (sub_8275B1C8, B1F8, B230, B268,
+// B2F0) take index 16 and up - no one - as "the slot at address 0" and read guest page 0, which isn't mapped (PC or
+// Android): report 16504a / 289ab9 (Android 2.2.3, every time, a match starting after a run of entrance scenes)
+// crashed in sub_8275B230 reading guest 0xC, asked by the match's start (sub_825FE498 -> sub_82757308 ->
+// sub_827535C0) for person 6. How the index got past 15 isn't known. Here such a slot is an all-zero one (its record
+// count 0, its records an empty list): the callers see "no one" - sub_827535C0's -1.
+// Test aid SVR2011_TEST_ENTRY_NONE=<n>: the nth sub_827535C0 call from sub_82757308 finds the index 16.
+namespace {
+uint32_t g_zero_slot = 0;  // (guest: a zeroed slot - +12 its record at +64, zero too)
+bool EntryNone(uint8_t* base, uint32_t entry) {
+  if (!entry || Rd32(base + entry + 12) < 16 || !g_memory) return false;
+  if (!g_zero_slot && (g_zero_slot = g_memory->SystemHeapAlloc(256, 16))) {
+    std::memset(base + g_zero_slot, 0, 256);
+    Wr32(base + g_zero_slot + 12, g_zero_slot + 64);
+  }
+  if (!g_zero_slot) return false;
+  static std::atomic<int> told{0};
+  if (const int n = told.fetch_add(1); n < 4 || n % 1000 == 0)
+    REXLOG_WARN("[svr2011] entrance state: the current entry names no one (person {}) - an empty slot instead of page 0 "
+                "({} times)", Rd32(base + entry + 12), n + 1);
+  return true;
+}
+}  // namespace
+REX_EXTERN(__imp__sub_8275B1C8);
+REX_HOOK_RAW(sub_8275B1C8) {  // (the slot's record)
+  if (EntryNone(base, ctx.r3.u32)) {
+    ctx.r3.u64 = g_zero_slot + 64;
+    return;
+  }
+  __imp__sub_8275B1C8(ctx, base);
+}
+#define SVR2011_ENTRY_READER(fn)                      REX_EXTERN(__imp__##fn);                            REX_HOOK_RAW(fn) {                                    if (EntryNone(base, ctx.r3.u32)) {                    ctx.r3.u64 = 0;                                     return;                                           }                                                   __imp__##fn(ctx, base);                           }
+SVR2011_ENTRY_READER(sub_8275B1F8)  // (the record count: 0)
+SVR2011_ENTRY_READER(sub_8275B268)  // (a record found: none)
+SVR2011_ENTRY_READER(sub_8275B2F0)  // (the nth such: none)
+#undef SVR2011_ENTRY_READER
+// The match's start asks sub_827535C0 (via sub_82757308) for each person's entrance part: -1 when there is none,
+// which the game handles. With no one in the current entry, that answer.
+REX_EXTERN(__imp__sub_827535C0);
+REX_HOOK_RAW(sub_827535C0) {
+  if (!Rd32(base + kEntranceState)) {  // (no state object: the game's own way)
+    __imp__sub_827535C0(ctx, base);
+    return;
+  }
+  const auto saved = ctx;
+  ctx.r1.u64 = saved.r1.u32 - 0x100;
+  sub_8274FD38(ctx, base);  // (the current entry, as sub_827535C0 gets it)
+  const uint32_t entry = ctx.r3.u32;
+  ctx = saved;
+  static const int aid = std::atoi(svr2011::Env("SVR2011_TEST_ENTRY_NONE").c_str());
+  static std::atomic<int> via_person_call{0};  // (calls from sub_82757308, the report's path)
+  if (aid && entry && uint32_t(saved.lr) == 0x82757320u && Rd32(base + entry + 12) < 16) {
+    if (++via_person_call == aid) {
+      REXLOG_WARN("[svr2011] entrance state: test - the current entry's person {} made 16 (person {} asked)",
+                  Rd32(base + entry + 12), ctx.r3.u32);
+      Wr32(base + entry + 12, 16);
+    }
+  }
+  if (EntryNone(base, entry)) {
+    ctx.r3.u64 = 0xFFFFFFFFu;
+    return;
+  }
+  __imp__sub_827535C0(ctx, base);
+}
+REX_EXTERN(__imp__sub_8275B230);
+REX_HOOK_RAW(sub_8275B230) {  // (the records: an empty list)
+  if (EntryNone(base, ctx.r3.u32)) {
+    ctx.r3.u64 = g_zero_slot + 128;
+    return;
+  }
+  __imp__sub_8275B230(ctx, base);
 }
 
 REX_EXTERN(__imp__sub_82323748);
