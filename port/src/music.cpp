@@ -149,6 +149,30 @@ std::vector<std::pair<std::u16string, std::filesystem::path>> Playlists() {
   return lists;
 }
 
+// The playlists by the names the game is given: an entrance keeps its USER PLAYLIST song by name in 40 UTF-16
+// characters (+0xCC, the last one the end), so a longer name - a song file named after its video, 78 characters -
+// left the entrance an empty name and nothing played (report 28a2fa: Hurricane's song played from the jukebox, not
+// in his entrance). A name over 39 characters is cut to 39; one the cut makes the same as another ends "~2", "~3".
+constexpr size_t kGameNameChars = 39;
+std::vector<std::pair<std::u16string, std::filesystem::path>> GamePlaylists() {
+  auto lists = Playlists();
+  std::set<std::u16string> taken;
+  for (const auto& l : lists)
+    if (l.first.size() <= kGameNameChars) taken.insert(l.first);
+  for (auto& l : lists) {
+    if (l.first.size() <= kGameNameChars) continue;
+    std::u16string cut = l.first.substr(0, kGameNameChars);
+    for (int n = 2; taken.count(cut); ++n) {
+      const std::string num = "~" + std::to_string(n);
+      const std::u16string tag(num.begin(), num.end());
+      cut = l.first.substr(0, kGameNameChars - tag.size()) + tag;
+    }
+    taken.insert(cut);
+    l.first = cut;
+  }
+  return lists;
+}
+
 #if defined(_WIN32)
 // Plays one song on a loop on its own XAudio2 voice, on a thread of its own.
 class Player {
@@ -853,7 +877,7 @@ void InstallUserMusic(const std::filesystem::path& folder) {
   XmpApp::HostMusic music;
   music.list_playlists = [] {
     std::vector<std::u16string> names;
-    for (auto& [name, song] : Playlists()) names.push_back(name);
+    for (auto& [name, song] : GamePlaylists()) names.push_back(name);
     REXLOG_INFO("user music: {} playlist(s) in {}", names.size(), g_folder.string());
     return names;
   };
@@ -878,7 +902,7 @@ void InstallUserMusic(const std::filesystem::path& folder) {
         return true;
       }
     }
-    for (auto& [list, song] : Playlists()) {
+    for (auto& [list, song] : GamePlaylists()) {
       if (list == name) {
         REXLOG_INFO("user music: playing {}", song.string());
         JukeboxStopMyMusic();  // (the jukebox's MY MUSIC in the menus: jukebox.h)
