@@ -25,7 +25,7 @@ $tools = Split-Path $PSScriptRoot -Parent
 $port = Split-Path $tools -Parent
 . (Join-Path $tools "test_guard.ps1")
 
-$o = @{ p = @{}; arena = ""; rule = ""; attire = ""; mods = "none"; pad1 = ""; pad2 = ""; clock = "600,1200,1800"; play = "30s"; name = "lan"; args = @(); picks1 = ""; picks2 = ""; hostenv = @(); hostargs = @(); joinargs = @(); joinenv = @(); session = ""; rumble = $false }
+$o = @{ p = @{}; arena = ""; rule = ""; attire = ""; mods = "none"; pad1 = ""; pad2 = ""; clock = "600,1200,1800"; play = "30s"; name = "lan"; args = @(); picks1 = ""; picks2 = ""; hostenv = @(); hostargs = @(); joinargs = @(); joinenv = @(); session = ""; rumble = $false; joinexe = "" }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
@@ -34,6 +34,7 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         '^--host-env$' { $o.hostenv += $v; $i++; continue }  # (the host's only: each behind its own NAT box router)
         '^--host-arg$' { $o.hostargs += $v; $i++; continue }  # (a game option for one game, after the others: it wins)
         '^--join-arg$' { $o.joinargs += $v; $i++; continue }
+        '^--join-exe$' { $o.joinexe = $v; $i++; continue }  # (another build's svr2011_dbg.exe for the joiner: a mixed-version pair; it runs in the same game folder)
         '^--rumble$' { $o.rumble = $true; continue }  # (ONLINE's ROYAL RUMBLE row instead of MATCH, both games)
         '^--arg$' { $o.args += $v; $i++; continue }  # (a game option for both games, e.g. --arg --big_roster=true)
         '^--(arena|rule|attire|mods|pad1|pad2|clock|play|name|picks1|picks2|session)$' { $o[$Matches[1]] = $v; $i++; continue }
@@ -125,7 +126,8 @@ function Start-Side([string]$side, [string[]]$extra) {
     Use-SvrTestServer -GameDir $game -GameArgs $gameArgs | Out-Null
     $sideEnv = @(if ($side -eq "join") { $o.joinenv } else { $o.hostenv })
     foreach ($e in $sideEnv) { $k, $val = $e -split "=", 2; [Environment]::SetEnvironmentVariable($k, $val, "Process") }
-    $procs[$side] = Start-Process $exe -WorkingDirectory $game -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
+    $sideExe = if ($side -eq "join" -and $o.joinexe) { $o.joinexe } else { $exe }
+    $procs[$side] = Start-Process $sideExe -WorkingDirectory $game -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
     foreach ($e in $sideEnv) { [Environment]::SetEnvironmentVariable(($e -split "=", 2)[0], $null, "Process") }
     Set-SvrTestPriority $procs[$side]
     foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_INPUT_FILE", "SVR2011_CONFIG", "SVR2011_USER_DATA") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }

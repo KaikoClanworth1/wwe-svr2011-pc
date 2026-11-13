@@ -59,6 +59,7 @@ set(SVR2011_SOURCES
     src/p2p.cpp
     src/net_stats.cpp
     src/lockstep_lag.cpp
+    src/lockstep_tick_log.cpp
     src/net_sim.cpp
     src/paint_pages.cpp
     src/match_types.cpp
