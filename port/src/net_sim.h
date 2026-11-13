@@ -42,6 +42,10 @@ struct NetLink {
   std::string name;     // (its player's name, when its pings carry it)
 };
 std::vector<NetLink> NetLinks();  // (peers answered within the last 5 s)
+// The input lead this game would set for a match now, from its pings (net_stats.cpp PingLead: the worst peer's
+// one way + jitter + margin, in frames, + the extra frame; its floor applied; 0: no ping answered yet). A match
+// host puts it in its pings (p2p.cpp PingPacket) so the joiners set the host's lead, not their own.
+uint32_t NetLeadNow();
 void NetPeerName(uint32_t peer, const std::string& name);
 
 }  // namespace svr2011

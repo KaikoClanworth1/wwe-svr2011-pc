@@ -426,20 +426,30 @@ REX_HOOK_RAW(sub_829CAD20) {
   // (test: SVR2011_TEST_NET_LEAD=<frames> - that lead instead)
   static const int test_lead = [] { const char* v = std::getenv("SVR2011_TEST_NET_LEAD"); return v ? std::atoi(v) : 0; }();
   const uint32_t asked = ctx.r4.u32;
+  const char* whose = "";
   if (uint32_t(ctx.lr) == 0x829B604C) {
     if (test_lead > 0) {
       ctx.r4.u64 = uint32_t(test_lead);
     } else if (REXCVAR_GET(p2p_send_every_frame)) {
       const uint32_t floor = std::clamp<uint32_t>(REXCVAR_GET(p2p_lead_floor), 1, 6);
-      if (const uint32_t lead = PingLead()) ctx.r4.u64 = std::clamp<uint32_t>(lead, floor, std::max<uint32_t>(asked, floor));
+      uint32_t lead = PingLead();
+      // (a joiner: the lead the host's pings carry, so both sides set the same frame - each side's own ping rounds
+      // differently; the host's `asked` is this one too, the game shares it, so the clamp below agrees as well)
+      if (const uint32_t host = svr2011::P2PHostLead()) lead = host, whose = ", the host's";
+      if (lead) ctx.r4.u64 = std::clamp<uint32_t>(lead, floor, std::max<uint32_t>(asked, floor));
     }
-    REXLOG_INFO("net: input lead {} frames (the game's {}){}", ctx.r4.u32, asked,
+    REXLOG_INFO("net: input lead {} frames (the game's {}{}){}", ctx.r4.u32, asked, whose,
                 REXCVAR_GET(p2p_send_every_frame) ? ", inputs sent every frame" : "");
   }
   __imp__sub_829CAD20(ctx, base);
 }
 
 namespace svr2011 {
+
+uint32_t NetLeadNow() {
+  const uint32_t lead = PingLead();
+  return lead ? std::max<uint32_t>(lead, std::clamp<uint32_t>(REXCVAR_GET(p2p_lead_floor), 1, 6)) : 0;
+}
 
 NetStats NetStatsNow() {
   std::lock_guard lock(g_mutex);

@@ -134,6 +134,11 @@ bool P2PSendModXfer(uint64_t peer, const std::vector<uint8_t>& payload);
 bool P2PPeerDirect(uint64_t peer);
 uint64_t P2PSessionHost(uint64_t* session = nullptr);
 bool P2PHosting(uint64_t* session = nullptr);
+// The input lead the match's host sent in its pings within the last 5 s (0: this game hosts, no match session,
+// or a host from before this carried none): a joiner sets this instead of its own (net_stats.cpp), so both
+// sides of a match pick the same frame - each side's own ping rounds differently (12 and 13 on a 150 ms link,
+// 13 Nov 2026), and a pair runs as tight as the smaller lead: 330 holds in 3 minutes instead of 88.
+uint32_t P2PHostLead();
 // Lobby chat longer than the game's 64 bytes (online_chat.cpp): the same, a
 // message kind of its own.
 using P2PChatHandler = void (*)(const uint8_t* data, size_t size);
