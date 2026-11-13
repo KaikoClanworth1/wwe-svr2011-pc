@@ -30,6 +30,8 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 - **Ported arenas: mats, barricades and stands only showed from some camera angles** - fixed.
 - **Ported entrances: the face didn't move** - converted entrances now get a face track.
 - **Phones at about 50 fps: wrestlers shook** - fixed.
+- **Android, Universe: the "appear as Match #1?" question ignored taps** - tap YES or NO now.
+- **Android, Universe: after a match the menus kept the match's touch buttons** - the menu buttons come back.
 - **Phones: 1080P drew more than the Max scale setting** allowed - fixed.
 - **Online: a player was dropped after a 5-second hitch** - now 8 seconds, and a dropped game no longer crashes when it catches up.
 - **A crash report when closing the game** - fixed (potential).
