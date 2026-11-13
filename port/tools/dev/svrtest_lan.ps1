@@ -253,19 +253,19 @@ try {
     Play-Match
     if ($o.again -and $ok) {
         # (the first match ends - the caller's SVR2011_TEST_LOSE - the session is deleted and both games come back to
-        # the PLAYER MATCH menu (cursor on QUICK MATCH); the first match's dumps are kept as m1_*, the second match
+        # the MATCH menu (cursor on PLAYER MATCH); the first match's dumps are kept as m1_*, the second match
         # writes its own; then the host creates a session again, the joiner quick-matches, both pick and play)
         if (-not (Wait-Log "host" "p2p: lockstep off" 240)) { throw "the first match didn't end" }
         $timings.ended_s = Since
         Start-Sleep 20
         foreach ($side in $sides) { Get-ChildItem (Join-Path $out $side) -Filter "state_clock_*.json" -ErrorAction SilentlyContinue | Rename-Item -NewName { "m1_" + $_.Name } }
-        In "host" @("press DOWN 200", "wait 1200", "press DOWN 200", "wait 1200", "press A 200", "wait 12000")
+        In "host" @("press A 200", "wait 12000", "press DOWN 200", "wait 1200", "press DOWN 200", "wait 1200", "press A 200", "wait 12000")
         if ($o.session) { In "host" @(Get-Content $o.session) }
         else { In "host" @("press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press RIGHT 200", "wait 1200",
                            "press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press A 200") }
         if (-not (Wait-LogN "host" "session .* hosted \(flags 42F" 2 300)) { throw "the host made no second session" }
         $timings.hosted2_s = Since
-        In "join" @("press A 200", "wait 15000", "press A 200", "wait 15000", "press A 200")
+        In "join" @("press A 200", "wait 12000", "press A 200", "wait 15000", "press A 200", "wait 15000", "press A 200")
         if (-not (Wait-LogN "host" "join remote" 2 300)) { throw "the joiner didn't join the second session" }
         $timings.joined2_s = Since
         Start-Sleep 12
