@@ -1170,15 +1170,15 @@ void OnCandidates(const Mac& mac, Reader& r) {
 }
 
 // A ping: this game's time, then its player's name (for the peers' lobby ping list; older games stop reading before it),
-// then, from a match host, the input lead it would set now (NetLeadNow; the joiners set the same: P2PHostLead; 0 from a
-// joiner or with no ping answered yet; games from before it stop reading before it and set their own).
+// then the input lead (NetLeadNow: a joiner's own measure, for the host's choice; the host's choice itself, which the
+// joiners set: P2PHostLead; 0 with no ping answered yet; games from before it stop reading before it and set their own).
 std::vector<uint8_t> PingPacket() {
   Writer w;
   w.b = Header(kPing, NewNonce());
   w.u64(NowUs());
   const std::string name = rex::cvar::Query<std::string>("online_name").substr(0, 32);
   w.u8(uint8_t(name.size())), w.bytes(reinterpret_cast<const uint8_t*>(name.data()), name.size());
-  w.u8(uint8_t(P2PHosting() ? std::min<uint32_t>(NetLeadNow(), 255) : 0));
+  w.u8(uint8_t(std::min<uint32_t>(NetLeadNow(), 255)));
   return w.b;
 }
 
@@ -2951,6 +2951,16 @@ uint32_t P2PHostLead() {
     return it->second.lead_sent;
   }
   return 0;
+}
+
+uint32_t P2PPeersLead() {
+  // (pings go only to the peers of this game's current session, so a lead that came within 5 s is one of them)
+  const auto now = Clock::now();
+  uint32_t lead = 0;
+  std::lock_guard lock(g_mutex);
+  for (const auto& [mac, p] : g_peers)
+    if (p.lead_sent && now - p.lead_at <= std::chrono::seconds(5)) lead = std::max<uint32_t>(lead, p.lead_sent);
+  return lead;
 }
 
 void P2PSendMods(const std::vector<uint8_t>& payload) {

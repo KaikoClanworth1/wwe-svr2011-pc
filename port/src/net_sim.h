@@ -42,9 +42,11 @@ struct NetLink {
   std::string name;     // (its player's name, when its pings carry it)
 };
 std::vector<NetLink> NetLinks();  // (peers answered within the last 5 s)
-// The input lead this game would set for a match now, from its pings (net_stats.cpp PingLead: the worst peer's
-// one way + jitter + margin, in frames, + the extra frame; its floor applied; 0: no ping answered yet). A match
-// host puts it in its pings (p2p.cpp PingPacket) so the joiners set the host's lead, not their own.
+// The input lead this game's pings carry (p2p.cpp PingPacket; 0: no ping answered yet). A joiner: the lead its
+// own pings ask for (net_stats.cpp PingLead: the worst peer's one way + jitter + margin, in frames, + the extra
+// frame, its floor applied) - the host's material. A match host: the lead it set for the running match (latched
+// by its lead setter until the match session ends), before that the largest of its own and what its session's
+// joiners sent within 5 s (a joiner-joiner link can be the worst one). The joiners set the host's value.
 uint32_t NetLeadNow();
 void NetPeerName(uint32_t peer, const std::string& name);
 

@@ -139,6 +139,9 @@ bool P2PHosting(uint64_t* session = nullptr);
 // sides of a match pick the same frame - each side's own ping rounds differently (12 and 13 on a 150 ms link,
 // 13 Nov 2026), and a pair runs as tight as the smaller lead: 330 holds in 3 minutes instead of 88.
 uint32_t P2PHostLead();
+// The largest input lead the peers this game pings sent within the last 5 s (its session's other players;
+// 0: none): a host's own measure covers only its links, so it sets and advertises the largest of all.
+uint32_t P2PPeersLead();
 // Lobby chat longer than the game's 64 bytes (online_chat.cpp): the same, a
 // message kind of its own.
 using P2PChatHandler = void (*)(const uint8_t* data, size_t size);

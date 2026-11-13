@@ -417,6 +417,9 @@ uint32_t PingLead() {
   return uint32_t(std::ceil(ms / (1000.0f / 60.0f))) + std::min<uint32_t>(REXCVAR_GET(p2p_lead_extra), 3);
 }
 
+std::atomic<uint32_t> g_set_lead{0};     // (a host: the lead its setter last set, for its pings - NetLeadNow)
+std::atomic<uint64_t> g_set_session{0};  // (the session it was set in; another session: not latched)
+
 }  // namespace
 
 // gss's lead setter (sub_829CAD20: +2920, frames); before a match it's called
@@ -433,10 +436,19 @@ REX_HOOK_RAW(sub_829CAD20) {
     } else if (REXCVAR_GET(p2p_send_every_frame)) {
       const uint32_t floor = std::clamp<uint32_t>(REXCVAR_GET(p2p_lead_floor), 1, 6);
       uint32_t lead = PingLead();
-      // (a joiner: the lead the host's pings carry, so both sides set the same frame - each side's own ping rounds
-      // differently; the host's `asked` is this one too, the game shares it, so the clamp below agrees as well)
-      if (const uint32_t host = svr2011::P2PHostLead()) lead = host, whose = ", the host's";
+      // (the host: the largest of its own and its joiners' measures - a joiner-joiner link can be the worst one -
+      // and the value it sets is what its pings carry from now on (NetLeadNow), so a joiner setting a moment
+      // later sets the same frame even when the host's ping drifts; a joiner: the host's value. The game's own
+      // `asked` is shared, so the clamp below agrees on every side.)
+      uint64_t session = 0;
+      const bool hosting = svr2011::P2PHosting(&session);
+      if (hosting) {
+        if (const uint32_t peers = svr2011::P2PPeersLead(); peers > lead) lead = peers, whose = ", a joiner's link";
+      } else if (const uint32_t host = svr2011::P2PHostLead()) {
+        lead = host, whose = ", the host's";
+      }
       if (lead) ctx.r4.u64 = std::clamp<uint32_t>(lead, floor, std::max<uint32_t>(asked, floor));
+      if (hosting && lead) g_set_lead = ctx.r4.u32, g_set_session = session;
     }
     REXLOG_INFO("net: input lead {} frames (the game's {}{}){}", ctx.r4.u32, asked, whose,
                 REXCVAR_GET(p2p_send_every_frame) ? ", inputs sent every frame" : "");
@@ -447,8 +459,12 @@ REX_HOOK_RAW(sub_829CAD20) {
 namespace svr2011 {
 
 uint32_t NetLeadNow() {
-  const uint32_t lead = PingLead();
-  return lead ? std::max<uint32_t>(lead, std::clamp<uint32_t>(REXCVAR_GET(p2p_lead_floor), 1, 6)) : 0;
+  const uint32_t own = PingLead();
+  const uint32_t mine = own ? std::max<uint32_t>(own, std::clamp<uint32_t>(REXCVAR_GET(p2p_lead_floor), 1, 6)) : 0;
+  uint64_t session = 0;
+  if (!P2PHosting(&session)) return mine;
+  if (g_set_lead && g_set_session == session) return g_set_lead;  // (the lead set for this session's match)
+  return std::max(mine, P2PPeersLead());
 }
 
 NetStats NetStatsNow() {
