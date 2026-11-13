@@ -362,14 +362,16 @@ namespace {
 }  // namespace
 
 // The lead's parts (the lag budget, 11 Nov 2026: on every link the lag is the lead, and the lead is the trip
-// plus this margin; the floor of 3 was 2 frames of a LAN match's 3). Until 2.2.2: floor 3, margin 12 ms, one
-// extra frame - the same build plays that way with --p2p_lead_floor=3 --p2p_lead_margin_ms=12
-// --p2p_lead_extra=1 --p2p_hold_poll_ms=0 (lockstep_lag.cpp: a late input no longer costs a whole frame, which
-// is what the margin was for).
+// plus this margin). Until 2.2.2 the floor was 3: 2 frames of a LAN match's 3 (the 13 Nov rounds: a LAN press
+// applied after 40 ms at lead 3, 20 ms at lead 2, no more holds). The margin and the extra frame stay: without
+// them (13 Nov, margin 0 / extra 0) a simulated 80 ms link got lead 6 instead of 8 and held a frame 140 times
+// in 3 minutes (13 at lead 8), and the host's own press applied later (136 ms, not 120); a 150 ms link got
+// leads 12 and 11 (the two sides rounded differently) and a press applied after 236 ms, not 203. The old
+// values play as --p2p_lead_floor=3.
 REXCVAR_DEFINE_UINT32(p2p_lead_floor, 2, "Online", "An online match's input lead at least this many frames (1-6)");
-REXCVAR_DEFINE_UINT32(p2p_lead_margin_ms, 0, "Online",
+REXCVAR_DEFINE_UINT32(p2p_lead_margin_ms, 12, "Online",
                       "Milliseconds added to the worst peer's one-way time + jitter before it becomes the lead (0-50)");
-REXCVAR_DEFINE_UINT32(p2p_lead_extra, 0, "Online", "Frames added to the lead on top of the trip (0-3)");
+REXCVAR_DEFINE_UINT32(p2p_lead_extra, 1, "Online", "Frames added to the lead on top of the trip (0-3)");
 
 namespace {
 

@@ -24,7 +24,11 @@
 
 #include "generated/default/svr2011_init.h"
 
-REXCVAR_DEFINE_UINT32(p2p_hold_poll_ms, 10, "Online",
+// Off by default (13 Nov 2026): in three after-rounds (LAN, 80 ms, 150 ms simulated links) this hook never
+// reported a poll while the 80 ms link held a frame 140 times, so the holds come through another path of the
+// tick (its check at lr 0x8289511C, reached without a pump, or the +2268/+2272 count after sub_82892C50);
+// the hook stays for that follow-up, --p2p_hold_poll_ms=10 turns it on.
+REXCVAR_DEFINE_UINT32(p2p_hold_poll_ms, 0, "Online",
                       "Milliseconds an online match's tick keeps asking for a late input (every ms) before it holds "
                       "the frame (0: a late input holds a whole frame, as the game does; up to 15)");
 
