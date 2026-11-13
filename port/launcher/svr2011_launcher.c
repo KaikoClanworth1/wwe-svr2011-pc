@@ -121,6 +121,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 #define REPO_URL          L"https://github.com/KaikoClanworth1/wwe-svr2011-pc"
 #define KOFI_URL          L"https://ko-fi.com/kaikoclanworth"
 #define PAYPAL_URL        L"https://www.paypal.com/donate/?hosted_button_id=MS4C2WC38N3W2"
+#define PATREON_URL       L"https://www.patreon.com/c/KaikoClanworth"
 #define CREDIT_LINE       L"Launcher - Version " PORT_VERSION L" - By KaikoClanworth"
 #define CREDIT_LINK       L"Download free at github.com/KaikoClanworth1/wwe-svr2011-pc"
 #define MAIN_TITLE        CREDIT_LINE L" - " CREDIT_LINK
@@ -242,6 +243,7 @@ static int mod_tab_at(POINT pt);
 static RECT      s_credit_link;            /* the credit's link (top right of every page), for clicks */
 static RECT      s_kofi_link;              /* "Support me: ko-fi" (bottom of the sidebar), for clicks */
 static RECT      s_paypal_link;            /* ... " / PayPal" after it */
+static RECT      s_patreon_link;           /* "Support me: Patreon" on the line above them */
 static int       s_dpi = 96;
 static HICON     s_icon;
 #define TAB_CTL_MAX 64   /* a page's controls (more are created but never shown) */
@@ -9320,14 +9322,20 @@ static void paint_window(HDC dc)
     }
     r.left = S(36); r.right = S(SB_W - 10); r.top = cl.bottom - S(34); r.bottom = cl.bottom - S(12);
     DrawTextW(dc, v, -1, &r, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
-    /* "Support me: ko-fi" above the version: the link opens the Ko-fi page. */
+    /* "Support me: Patreon", then "ko-fi / PayPal" under it, above the version: each link opens its page (support
+       only - everything stays free). */
     {
         SIZE z;
-        RECT k = { S(20), cl.bottom - S(56), S(SB_W - 10), cl.bottom - S(34) };
+        RECT k = { S(20), cl.bottom - S(78), S(SB_W - 10), cl.bottom - S(56) };
         DrawTextW(dc, L"Support me: ", -1, &k, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
         GetTextExtentPoint32W(dc, L"Support me: ", 12, &z);
         k.left += z.cx;
         SetTextColor(dc, C_ACCENT);
+        DrawTextW(dc, L"Patreon", -1, &k, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        GetTextExtentPoint32W(dc, L"Patreon", 7, &z);
+        s_patreon_link.left = k.left; s_patreon_link.right = k.left + z.cx;
+        s_patreon_link.top = k.top; s_patreon_link.bottom = k.top + z.cy;
+        k.left = S(20); k.top = cl.bottom - S(56); k.bottom = cl.bottom - S(34);
         DrawTextW(dc, L"ko-fi", -1, &k, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
         GetTextExtentPoint32W(dc, L"ko-fi", 5, &z);
         s_kofi_link.left = k.left; s_kofi_link.right = k.left + z.cx;
@@ -9887,6 +9895,10 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             ShellExecuteW(w, L"open", KOFI_URL, NULL, NULL, SW_SHOWNORMAL);
             return 0;
         }
+        if (PtInRect(&s_patreon_link, pt)) {
+            ShellExecuteW(w, L"open", PATREON_URL, NULL, NULL, SW_SHOWNORMAL);
+            return 0;
+        }
         if (k >= 0 && k_nav[k].tab == TAB_SETUP && setup_step(s_cur_tab) < 0)
             show_tab(setup_first_step());
         else if (k >= 0 && k_nav[k].tab != nav_tab(s_cur_tab))
@@ -9922,7 +9934,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             POINT pt;
             GetCursorPos(&pt);
             ScreenToClient(w, &pt);
-            if (nav_at(pt.x, pt.y) >= 0 || PtInRect(&s_credit_link, pt) || PtInRect(&s_kofi_link, pt) || PtInRect(&s_paypal_link, pt) ||
+            if (nav_at(pt.x, pt.y) >= 0 || PtInRect(&s_credit_link, pt) || PtInRect(&s_kofi_link, pt) || PtInRect(&s_paypal_link, pt) || PtInRect(&s_patreon_link, pt) ||
                 play_link_at(pt) >= 0 || step_at(pt) >= 0 || mod_tab_at(pt) >= 0) {
                 SetCursor(LoadCursor(NULL, IDC_HAND));
                 return TRUE;
