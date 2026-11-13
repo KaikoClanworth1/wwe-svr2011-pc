@@ -167,6 +167,46 @@ void NoteText(const uint8_t* base, uint32_t layout, uint32_t element) {
   d.text[n] = 0;
 }
 
+// The game's YES / NO boxes ("All of tonight's matches are finished..." in the Universe, "The changes you've made will be
+// lost...") draw over whatever menu is open - its group stays the one under them - on the menus' own layout. Each answer
+// has its text (id 1000, x its middle) and a bar marker (id 8013, type 8) whose colour at +40..+52 is the lit one's red
+// (1, 0, 0, a pulsing alpha), the other's white with alpha 0 - or, once the light has moved off it, red with alpha 0. So
+// lit: red and seen with some alpha lately (the pulse passes 0 for a frame). The left / right d-pad goes to the other
+// answer (they wrap).
+constexpr uint32_t kMarkerId = 8013, kMarkerType = 8;
+constexpr auto kMarkerLit = std::chrono::milliseconds(400);
+struct Marker {
+  uint32_t element = 0;
+  float x = 0, y = 0;
+  bool lit = false;
+  Clock::time_point seen, shown;  // (shown: last drawn red with some alpha)
+};
+Marker g_markers[16];
+std::mutex g_marker_mutex;
+
+void NoteMarker(const uint8_t* base, uint32_t layout, uint32_t element) {
+  const uint8_t* e = base + element;
+  const uint32_t desc = Rd32(e + 192);
+  if (desc < 0x10000 || Rd32(e + 196) || Rd32(base + desc) != kMarkerId || Rd32(base + desc + 4) != kMarkerType) return;
+  const uint8_t* L = base + layout;
+  const float x = RdF(e + 160) + RdF(L + 144) + RdF(e + 4) * RdF(L + 160);
+  const float y = RdF(e + 164) + RdF(L + 148) + RdF(e + 8) * RdF(L + 164);
+  const bool red = RdF(e + 40) > 0.5f && RdF(e + 44) < 0.25f && RdF(e + 48) < 0.25f;
+  const auto now = Clock::now();
+  std::lock_guard lock(g_marker_mutex);
+  Marker* slot = nullptr;
+  for (Marker& m : g_markers)
+    if (m.element == element) slot = &m;
+  if (!slot) {
+    for (Marker& m : g_markers)
+      if (!slot || m.seen < slot->seen) slot = &m;  // (a free or the oldest)
+    *slot = Marker{element};
+  }
+  if (red && RdF(e + 52) > 0.05f) slot->shown = now;
+  slot->x = x, slot->y = y, slot->seen = now;
+  slot->lit = red && now - slot->shown < kMarkerLit;
+}
+
 // The character select's panels, by player. The tiles aren't layout elements: a fixed table, 21 x 3 tiles of 24 x 30
 // from (66.7, 192) of 640 x 360; the wide ones are 2 columns of one kind.
 constexpr uint32_t kSelectGroup = 0x7D0, kGridCols = 21, kGridRows = 3;
@@ -428,6 +468,55 @@ bool PromptTap(float x, float y, svr2011::MenuTouchPress press) {
   return true;
 }
 
+// A YES / NO box (see NoteMarker): two markers on one line, each under a text, one of them lit. A tap on the lit answer
+// is A; on the other, the d-pad to it (left for the left one), then A. Before the menu under it gets the tap.
+bool DialogTap(float x, float y, svr2011::MenuTouchPress press) {
+  std::vector<Marker> marks;
+  {
+    const auto now = Clock::now();
+    std::lock_guard lock(g_marker_mutex);
+    for (const Marker& m : g_markers)
+      if (m.element && now - m.seen < kRecent) marks.push_back(m);
+  }
+  if (g_log && !marks.empty()) {
+    std::string s;
+    for (const Marker& m : marks) s += fmt::format(" [{:.0f},{:.0f} {}]", m.x, m.y, m.lit ? "lit" : "-");
+    REXLOG_INFO("[svr2011] menu touch: box markers{} (tap {:.0f},{:.0f})", s, x, y);
+  }
+  if (marks.size() != 2 || std::fabs(marks[0].y - marks[1].y) > 1) return false;
+  if (marks[0].x > marks[1].x) std::swap(marks[0], marks[1]);
+  const float gap = marks[1].x - marks[0].x;
+  if (gap < 120 || gap > 260 || marks[0].lit == marks[1].lit) return false;
+  // (each marker carries its answer's text - the words in any language)
+  int texts = 0;
+  {
+    const auto now = Clock::now();
+    std::lock_guard lock(g_drawn_mutex);
+    for (const Drawn& d : g_drawn)
+      if (d.element && d.text[0] && now - d.seen < kRecent && std::fabs(d.y - marks[0].y) < 2)
+        for (const Marker& m : marks)
+          if (std::fabs(d.x - m.x) < 6) ++texts;
+  }
+  if (texts < 2) return false;
+  // (the tap: on an answer's bar - half the gap either side of its middle, a bar's height)
+  if (std::fabs(y - (marks[0].y + 4)) > 14) return false;
+  int answer = -1;
+  for (int k = 0; k < 2; ++k)
+    if (std::fabs(x - marks[k].x) < gap / 2) answer = k;
+  if (answer < 0) return false;
+  const bool lit = marks[answer].lit;
+  REXLOG_INFO("[svr2011] menu touch: YES / NO box - the {} answer ({} lit)", answer == 0 ? "left" : "right",
+              marks[0].lit ? "left" : "right");
+  std::lock_guard lock(g_slot_mutex);
+  if (lit)
+    g_queue = {0x1000};  // (A)
+  else
+    g_queue = {uint16_t(answer == 0 ? 0x0004 : 0x0008), 0x1000};  // (d-pad left / right, A)
+  g_queue_press = press, g_queue_last = Clock::time_point{};
+  g_slot_moving = true;
+  return true;
+}
+
 bool SlotTap(float x, float y, svr2011::MenuTouchPress press) {
   {
     std::lock_guard lock(g_panel_mutex);
@@ -528,6 +617,7 @@ bool MenuTouchTap(float fx, float fy, MenuTouchPress press) {
   uint32_t group = 0, cursor = 0;
   if (!ScriptMenuState(&group, &cursor)) return false;
   const float x = fx * 640, y = fy * 360;
+  if (DialogTap(x, y, press)) return true;  // (a YES / NO box over the menu: before the menu under it)
   if (group == kSelectGroup) return VsTap(x, y, press) || GridTap(x, y, press);
   if (group == kTagGroup || group == kSixGroup)
     return VsTap(x, y, press) || PromptTap(x, y, press) || SlotTap(x, y, press) || GridTap(x, y, press);
@@ -598,6 +688,7 @@ REX_EXTERN(__imp__sub_823D4008);
 REX_HOOK_RAW(sub_823D4008) {
   if (g_log) LogElement(base, ctx.r3.u32, ctx.r4.u32);
   NoteText(base, ctx.r3.u32, ctx.r4.u32);
+  NoteMarker(base, ctx.r3.u32, ctx.r4.u32);
   RowMoveTick();
   SlotMoveTick();
   ShotAid();
