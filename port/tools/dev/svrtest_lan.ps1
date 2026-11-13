@@ -195,7 +195,10 @@ foreach ($n in ($o.clock -split ',' | Where-Object { $_ })) {
         # (who by name, its "(id N)" left out: with --join-env SVR2011_TEST_SLOT_SWAP the two games number a mod differently)
         $na = [string]$pa.name -replace ' \(id \d+\)', ''; $nb = [string]$pb.name -replace ' \(id \d+\)', ''
         if ($na -ne $nb) { $diff += "person $($pa.index) name $($pa.name) / $($pb.name)" }
-        foreach ($f in "last_move", "position_bits", "motion", "root_bits") { if ([string]$pa.$f -ne [string]$pb.$f) { $diff += "person $($pa.index) $f $($pa.$f) / $($pb.$f)" } }
+        # (last_move left out: it is the newest move-table lookup, and the match thread looks slots up many times a
+        # frame while the dump is written from the frame thread - the 13 Nov 2026 LAN round caught one side mid-scan
+        # (slot 8 vs slot 180) at clock 1800 and matched again at 3600; the motion field is the move being played)
+        foreach ($f in "position_bits", "motion", "root_bits") { if ([string]$pa.$f -ne [string]$pb.$f) { $diff += "person $($pa.index) $f $($pa.$f) / $($pb.$f)" } }
     }
     $checks += [ordered]@{ clock = [int]$n; same = ($diff.Count -eq 0); differences = $diff }
 }
