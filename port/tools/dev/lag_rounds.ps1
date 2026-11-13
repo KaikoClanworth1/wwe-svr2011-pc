@@ -7,8 +7,7 @@
 # 3 inputs so a lost one costs nothing); without it the LAN path (the game's socket straight to the peer).
 # -Lead N: both games' input lead forced to N frames (SVR2011_TEST_NET_LEAD). -GameArgs: game options for both games
 # (e.g. --p2p_hold_poll_ms=0 --p2p_lead_floor=3 --p2p_lead_margin_ms=12 --p2p_lead_extra=1 = the lead and holds as before the lever). -WaitQuiet: before each round, wait until no
-# other chat's test game or build runs (svr2011*, ninja, clang, lld-link, rexglue, java) and the CPU is under 40% twice a minute
-# apart; a round that ran more than -SlowLimit seconds under 57 takes a second (a build started) is run again, twice at most.
+# other chat's test game runs and the CPU is under 75% twice half a minute apart (builds at idle priority are not waited for); a round that ran more than -SlowLimit seconds under 57 takes a second (a build started) is run again, twice at most.
 #   .\lag_rounds.ps1 [-Links "", "80,20,2", "150,40,5"] [-Play 180s] [-Out "E:\SvR2011 Work\lag"] [-Tag a] [-Tunnel] [-Lead 2] [-WaitQuiet]
 param([string[]]$Links = @("", "80,20,2", "150,40,5"), [string]$Play = "180s", [string]$Out = "E:\SvR2011 Work\lag",
       [string]$Tag = "", [switch]$Tunnel, [int]$Lead = 0, [switch]$WaitQuiet, [int]$SlowLimit = 25, [string[]]$GameArgs = @())
@@ -18,14 +17,17 @@ $runs = Join-Path (Split-Path (Split-Path $d -Parent) -Parent) "runs\svrtest"
 $logs = Join-Path $Out "logs"
 New-Item -ItemType Directory -Force $logs | Out-Null
 $env:SVRTEST_SERVER_PORT_FROM = "8530"
+if (-not $env:SVR2011_AFFINITY) { $env:SVR2011_AFFINITY = "FF00" }  # (test games on cores 8-15, the house rule of 12 Nov; test_guard pins them)
 function Wait-Quiet {
+    # (builds run at idle priority on cores 12-15 and are not waited for; another chat's test game shares the test
+    # cores 8-15 and is; after 60 min of waiting the round runs anyway - the slow-seconds re-run covers it)
     if (-not $WaitQuiet) { return }
-    $calm = 0
-    while ($calm -lt 2) {
-        $busy = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(svr2011.*|ninja|clang|clang\+\+|lld-link|rexglue|java|MSBuild|cl)$' })
+    $calm = 0; $t0 = Get-Date
+    while ($calm -lt 2 -and ((Get-Date) - $t0).TotalMinutes -lt 60) {
+        $busy = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^svr2011' })
         $load = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
-        if ($busy.Count -eq 0 -and $load -lt 40) { $calm++ } else { $calm = 0; "waiting for a quiet PC ($(Get-Date -Format HH:mm:ss)): $($busy.Count) busy process(es) [$(($busy | Select-Object -ExpandProperty ProcessName -Unique) -join ', ')], load $load%" }
-        Start-Sleep -Seconds 60
+        if ($busy.Count -eq 0 -and $load -lt 75) { $calm++ } else { $calm = 0; "waiting for a quiet PC ($(Get-Date -Format HH:mm:ss)): $($busy.Count) test game(s) of other chats, load $load%" }
+        Start-Sleep -Seconds 30
     }
 }
 foreach ($link in $Links) {
@@ -33,6 +35,9 @@ foreach ($link in $Links) {
   for ($try = 0; $try -lt 3; $try++) {
     $name = $name0 + $(if ($try) { "_r$try" } else { "" })
     Wait-Quiet
+    # (the game asks GitHub for the newest release and goes offline when it is older - this build may be; the answer
+    # it caches in its user data (online_version.txt, 6 h) says "0" here: nothing newer, and no GitHub call in a test)
+    foreach ($ud in "lan_ud_host", "lan_ud_join") { [IO.File]::WriteAllText((Join-Path $runs "$ud\online_version.txt"), "$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) 0`n") }
     $hostIn = Join-Path $logs "$name`_host_input.txt"; $joinIn = Join-Path $logs "$name`_join_input.txt"
     $envs = @("--host-env", "SVR2011_NET_INPUT_LOG=$hostIn", "--join-env", "SVR2011_NET_INPUT_LOG=$joinIn")
     if ($link) { $envs += @("--host-env", "SVR2011_TEST_NET_DELAY=$link", "--join-env", "SVR2011_TEST_NET_DELAY=$link") }
