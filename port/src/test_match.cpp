@@ -38,6 +38,7 @@
 #include "generated/default/svr2011_init.h"
 #include "arena_mods.h"
 #include "fast_start.h"
+#include "match_record.h"
 #include "p2p.h"
 #include "rtwm_streak.h"
 #include "script_input.h"
@@ -162,6 +163,10 @@ bool Applies() {
 }
 
 }  // namespace
+
+namespace svr2011 {
+bool TestMatchAllCpu() { return Config().all_cpu; }  // (match_record.h: the no_ai check)
+}  // namespace svr2011
 
 // The match's arena: the match screen's choice (its object, *0x82EDEB48:
 // +244, read by sub_8247B6C8(screen); sub_82773F00 copies it to the live

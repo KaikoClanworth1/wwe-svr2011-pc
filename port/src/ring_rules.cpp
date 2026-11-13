@@ -7,6 +7,7 @@
 // derives globals from it; the bottom rope's height is one of them
 // (0x82E354E4 = -12 - 3.4). Rope k (0 = bottom) is at that height minus
 // k * 4.2. Units: 1 = 10 cm, y points down.
+#include "util.h"
 #include "ring_rules.h"
 #include "caw_limits.h"
 #include "fps_overlay.h"
@@ -18,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
+#include <map>
 #include <chrono>
 #include <mutex>
 #include <sstream>
@@ -53,7 +55,7 @@ std::atomic<bool> g_no_ropes{false};  // every rope left out: rope gameplay off
 
 bool NoRopes(const Rules& r) { return !r.ropes[0] && !r.ropes[1] && !r.ropes[2]; }
 
-using svrfmt::Rd32, svrfmt::RdF, svrfmt::WrF;
+using svrfmt::Rd32, svrfmt::Wr32, svrfmt::RdF, svrfmt::WrF;
 
 Rules Parse(const std::string& text) {
   Rules r;
@@ -142,6 +144,24 @@ void LogFighter(uint8_t* base, uint32_t f) {
 // (sub_8269A8D8(size, align) for the thread's heap, sub_8269A478).
 bool g_heap_log = false;
 int g_heap_watch = -1;  // (SVR2011_TEST_HEAP_LOG=<heap 2-53>: every allocation in that heap too)
+// (and its live blocks: ptr -> size, the caller that asked - sub_826A4128's or sub_8269BA30's caller when one of them
+// asked - logged every 10 s; frees from sub_8269B2D0's hook)
+std::mutex g_watch_mutex;
+std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_watch_live;
+thread_local uint32_t t_watch_outer = 0;
+void WatchNew(uint32_t ptr, uint32_t size, uint32_t caller) {
+  std::lock_guard lock(g_watch_mutex);
+  g_watch_live[ptr] = {size, t_watch_outer ? t_watch_outer : caller};
+  static auto last = std::chrono::steady_clock::now();
+  if (std::chrono::steady_clock::now() - last < std::chrono::seconds(10)) return;
+  last = std::chrono::steady_clock::now();
+  std::map<uint32_t, std::pair<uint32_t, uint64_t>> by;  // caller -> count, bytes
+  uint64_t bytes = 0;
+  for (const auto& [p, v] : g_watch_live) ++by[v.second].first, by[v.second].second += v.first, bytes += v.first;
+  std::string s;
+  for (const auto& [c, v] : by) s += fmt::format(" | {:08X} x{} {} KB", c, v.first, v.second / 1024);
+  REXLOG_INFO("[svr2011] heap {} live: {} blocks, {} KB{}", g_heap_watch, g_watch_live.size(), bytes / 1024, s);
+}
 
 // A failed allocation the hooks below had no fallback for: logged once per heap and caller (every one with the
 // test aid) - a player's crash report then names it (27 Oct: an Extreme Rules weapon load wrote to such a 0 at
@@ -184,7 +204,22 @@ void LogHeapTable(const uint8_t* base) {
 // Heap 41 too (0.3 MB, grown below): its 88-byte blocks for the loader thread (sub_821593A8 -> sub_826A1D38 /
 // sub_826A41xx) - with 104 superstar + 55 arena mods it was full after some matches and the game read the 0 it got
 // (2.2.1 reports c92f5a, PC: lr 826A416C, the crash after quitting a match; 0c22ef, Android: the same thread).
+// 2.2.3 report 8da1ac (190 superstar mods, 109 move packs, 22 arenas; Universe, then CREATE A MOVE-SET): the grown
+// heap (2092 KB) was full too - 88 bytes at lr 826A416C, abort. What it holds: the game's text (*0x82E3CD48, the
+// "NONE" table): sub_823940C8 reads a PACH of string databases ("sdb", 7-80 KB each), each one an 88-byte stream
+// (sub_826A4128 -> sub_826A40A0) and a copy of its file (sub_826A3E30, sub_8269BBA0 64-byte aligned, lr 8269BC0C),
+// all in heap 41. A screen's set is freed by the next (SVR2011_TEST_HEAP_LOG=41: one block left at each load, in
+// menus, CAM, two Universe matches, with 33 mods too) - what filled the player's isn't known. A failed allocation
+// there now takes CPU fallback memory (LoaderFallback, given back by the delete hook), the abort only after that.
 constexpr uint32_t kLoaderHeap = 41, kGameHeap41Kb = 300;
+uint32_t LoaderFallback(uint32_t size, uint32_t align, uint32_t caller) {
+  const uint32_t p = svr2011::FallbackBlock(size, true, std::max<uint32_t>(16, align));
+  static std::atomic<int> told{0};
+  if (const int n = ++told; p && (n <= 5 || n % 200 == 0))
+    REXLOG_WARN("[svr2011] heap 41 (the game's text) full - {} bytes from the fallback memory at {:08X} (lr {:08X}, "
+                "{} so)", size, p, caller, n);
+  return p;
+}
 constexpr uint32_t kExhaustedHeaps[] = {kMatchLoadHeap, kLoaderHeap};
 void HeapExhausted(const uint8_t* base, uint32_t heap, uint32_t size, uint32_t lr) {
   static std::atomic<bool> ending{false};
@@ -232,6 +267,7 @@ bool ForcedFail(uint32_t heap) {
 REX_EXTERN(__imp__sub_8269A8D8);
 REX_HOOK_RAW(sub_8269A8D8) {
   const uint32_t size = ctx.r3.u32, caller = uint32_t(ctx.lr);  // (the caller: ctx.lr after the call can be the allocator's own)
+  const uint32_t align = ctx.r4.u32;
   __imp__sub_8269A8D8(ctx, base);
   if (static const bool aid = std::getenv("SVR2011_TEST_HEAP_FAIL") != nullptr; aid && ctx.r3.u32) {
     const auto saved = ctx;
@@ -255,6 +291,11 @@ REX_HOOK_RAW(sub_8269A8D8) {
     // bank's textures are copied into it; a wrestler's model heap 17-20, its small blocks - physical as its big ones,
     // sub_8269BA30's hook: a Created Superstar with many parts filled 17 in Road to WrestleMania and the story's copy of
     // 337 bytes, sub_823C6858, wrote to the 0 it got: report c85461)
+    if (heap == kLoaderHeap)  // (the game's text: LoaderFallback)
+      if (const uint32_t p = LoaderFallback(size, align < 4096 ? align : 16, caller)) {
+        ctx.r3.u64 = p;
+        return;
+      }
     const bool model_heap = heap >= 17 && heap <= 20;
     if ((heap == svr2011::kStageHeap || heap == svr2011::kWeaponHeap || model_heap || (heap == kMatchLoadHeap && size >= kMatchLoadFallbackMin)) &&
         svr2011::BigModelMemory())
@@ -281,8 +322,11 @@ REX_HOOK_RAW(sub_8269A8D8) {
     sub_8269A478(ctx, base);
     const uint32_t heap = ctx.r3.u32;
     ctx = saved;
-    if (int(heap) == g_heap_watch)
-      REXLOG_INFO("[svr2011] heap {}: {} bytes at {:08X} (lr {:08X})", heap, size, ctx.r3.u32, caller);
+    if (int(heap) == g_heap_watch) {
+      REXLOG_INFO("[svr2011] heap {}: {} bytes at {:08X} (lr {:08X}{})", heap, size, ctx.r3.u32, caller,
+                  t_watch_outer ? fmt::format(" < {:08X}", t_watch_outer) : std::string());
+      WatchNew(ctx.r3.u32, size, caller);
+    }
   }
   static bool listed = false;
   if (!listed && Rd32(base + 0x82EC5F48)) {
@@ -294,7 +338,10 @@ REX_HOOK_RAW(sub_8269A8D8) {
 REX_EXTERN(__imp__sub_8269BA30);
 REX_HOOK_RAW(sub_8269BA30) {
   const uint32_t units = ctx.r3.u32, caller = uint32_t(ctx.lr);  // 16-byte units; the caller (as sub_8269A8D8's)
+  const uint32_t outer = t_watch_outer;
+  if (g_heap_watch >= 0 && !outer) t_watch_outer = caller;
   __imp__sub_8269BA30(ctx, base);
+  t_watch_outer = outer;
   if (static const bool aid = std::getenv("SVR2011_TEST_HEAP_FAIL") != nullptr; aid && ctx.r3.u32) {
     const auto saved = ctx;
     sub_8269A478(ctx, base);
@@ -318,6 +365,11 @@ REX_HOOK_RAW(sub_8269BA30) {
     // character file is read whole (sub_826A1420, lr 826A14EC): a 547k-vertex superstar's 27 MB ch.pac didn't fit)
     // (and the wrestlers' model heaps 17-20: the 547k-vertex superstar's model asked one for 28.7 MB this way - GPU
     // data, so the physical fallback, as model_mem.cpp's model-heap one)
+    if (heap == kLoaderHeap)  // (the game's text: LoaderFallback)
+      if (const uint32_t p = LoaderFallback(units * 16, 16, caller)) {
+        ctx.r3.u64 = p;
+        return;
+      }
     const bool model_heap = heap >= 17 && heap <= 20;
     if ((heap == svr2011::kWeaponHeap || heap == svr2011::kStageHeap || heap == 53 || model_heap ||
          (heap == kMatchLoadHeap && units * 16 >= kMatchLoadFallbackMin)) &&
@@ -381,6 +433,80 @@ std::string GuestCallChain(PPCContext& ctx, uint8_t* base, int depth) {
     sp = back;
   }
   return s;
+}
+
+// The entrances' current entry (sub_8275DA50: the state + 12 + 416 * its +4) keeps the index of the person whose
+// entrance plays at +12, and a 16-slot table of them from +288. Five of its readers (sub_8275B1C8, B1F8, B230, B268,
+// B2F0) take index 16 and up - no one - as "the slot at address 0" and read guest page 0, which isn't mapped (PC or
+// Android): report 16504a / 289ab9 (Android 2.2.3, every time, a match starting after a run of entrance scenes)
+// crashed in sub_8275B230 reading guest 0xC, asked by the match's start (sub_825FE498 -> sub_82757308 ->
+// sub_827535C0) for person 6. How the index got past 15 isn't known. Here such a slot is an all-zero one (its record
+// count 0, its records an empty list): the callers see "no one" - sub_827535C0's -1.
+// Test aid SVR2011_TEST_ENTRY_NONE=<n>: the nth sub_827535C0 call from sub_82757308 finds the index 16.
+namespace {
+uint32_t g_zero_slot = 0;  // (guest: a zeroed slot - +12 its record at +64, zero too)
+bool EntryNone(uint8_t* base, uint32_t entry) {
+  if (!entry || Rd32(base + entry + 12) < 16 || !g_memory) return false;
+  if (!g_zero_slot && (g_zero_slot = g_memory->SystemHeapAlloc(256, 16))) {
+    std::memset(base + g_zero_slot, 0, 256);
+    Wr32(base + g_zero_slot + 12, g_zero_slot + 64);
+  }
+  if (!g_zero_slot) return false;
+  static std::atomic<int> told{0};
+  if (const int n = told.fetch_add(1); n < 4 || n % 1000 == 0)
+    REXLOG_WARN("[svr2011] entrance state: the current entry names no one (person {}) - an empty slot instead of page 0 "
+                "({} times)", Rd32(base + entry + 12), n + 1);
+  return true;
+}
+}  // namespace
+REX_EXTERN(__imp__sub_8275B1C8);
+REX_HOOK_RAW(sub_8275B1C8) {  // (the slot's record)
+  if (EntryNone(base, ctx.r3.u32)) {
+    ctx.r3.u64 = g_zero_slot + 64;
+    return;
+  }
+  __imp__sub_8275B1C8(ctx, base);
+}
+#define SVR2011_ENTRY_READER(fn)                      REX_EXTERN(__imp__##fn);                            REX_HOOK_RAW(fn) {                                    if (EntryNone(base, ctx.r3.u32)) {                    ctx.r3.u64 = 0;                                     return;                                           }                                                   __imp__##fn(ctx, base);                           }
+SVR2011_ENTRY_READER(sub_8275B1F8)  // (the record count: 0)
+SVR2011_ENTRY_READER(sub_8275B268)  // (a record found: none)
+SVR2011_ENTRY_READER(sub_8275B2F0)  // (the nth such: none)
+#undef SVR2011_ENTRY_READER
+// The match's start asks sub_827535C0 (via sub_82757308) for each person's entrance part: -1 when there is none,
+// which the game handles. With no one in the current entry, that answer.
+REX_EXTERN(__imp__sub_827535C0);
+REX_HOOK_RAW(sub_827535C0) {
+  if (!Rd32(base + kEntranceState)) {  // (no state object: the game's own way)
+    __imp__sub_827535C0(ctx, base);
+    return;
+  }
+  const auto saved = ctx;
+  ctx.r1.u64 = saved.r1.u32 - 0x100;
+  sub_8274FD38(ctx, base);  // (the current entry, as sub_827535C0 gets it)
+  const uint32_t entry = ctx.r3.u32;
+  ctx = saved;
+  static const int aid = std::atoi(svr2011::Env("SVR2011_TEST_ENTRY_NONE").c_str());
+  static std::atomic<int> via_person_call{0};  // (calls from sub_82757308, the report's path)
+  if (aid && entry && uint32_t(saved.lr) == 0x82757320u && Rd32(base + entry + 12) < 16) {
+    if (++via_person_call == aid) {
+      REXLOG_WARN("[svr2011] entrance state: test - the current entry's person {} made 16 (person {} asked)",
+                  Rd32(base + entry + 12), ctx.r3.u32);
+      Wr32(base + entry + 12, 16);
+    }
+  }
+  if (EntryNone(base, entry)) {
+    ctx.r3.u64 = 0xFFFFFFFFu;
+    return;
+  }
+  __imp__sub_827535C0(ctx, base);
+}
+REX_EXTERN(__imp__sub_8275B230);
+REX_HOOK_RAW(sub_8275B230) {  // (the records: an empty list)
+  if (EntryNone(base, ctx.r3.u32)) {
+    ctx.r3.u64 = g_zero_slot + 128;
+    return;
+  }
+  __imp__sub_8275B230(ctx, base);
 }
 
 REX_EXTERN(__imp__sub_82323748);
@@ -622,3 +748,21 @@ void SetRingRules(const std::string& manifest) {
 }
 
 }  // namespace svr2011
+
+namespace svr2011 {
+void HeapWatchFree(uint32_t ptr) {
+  if (g_heap_watch < 0 || !ptr) return;
+  std::lock_guard lock(g_watch_mutex);
+  g_watch_live.erase(ptr);
+}
+}  // namespace svr2011
+
+// (test aid SVR2011_TEST_HEAP_LOG=<heap>: sub_826A4128's caller - a file's 88-byte stream object, heap 41's - as the
+// live blocks' caller)
+REX_EXTERN(__imp__sub_826A4128);
+REX_HOOK_RAW(sub_826A4128) {
+  const uint32_t outer = t_watch_outer;
+  if (g_heap_watch >= 0 && !outer) t_watch_outer = uint32_t(ctx.lr);
+  __imp__sub_826A4128(ctx, base);
+  t_watch_outer = outer;
+}

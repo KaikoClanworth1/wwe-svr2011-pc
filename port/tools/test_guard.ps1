@@ -110,6 +110,12 @@ function Test-SvrPrivatePath([string]$path) {
 # non-local server. Returns the server the game will use.
 function Use-SvrTestServer([string]$GameDir = "", $GameArgs = @(), [string]$Config = "") {
     if ($env:REX_ONLINE_SERVER -eq $SvrDeadServer) { Remove-Item Env:REX_ONLINE_SERVER }  # (ours: decide again)
+    # (the game asks GitHub for the newest release before going online - not from a test: the game skips it on a
+    # private server from 12 Nov 2026, and for older builds the answer it caches in its user data says "nothing newer")
+    $ud = if ($env:SVR2011_USER_DATA) { $env:SVR2011_USER_DATA } elseif ($GameDir) { Join-Path $GameDir "UserData" } else { "" }
+    if ($ud -and (Test-Path -LiteralPath $ud)) {
+        try { [IO.File]::WriteAllText((Join-Path $ud "online_version.txt"), "$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) 0`n") } catch { }
+    }
     $cfg = if ($Config) { $Config } elseif ($env:SVR2011_CONFIG) { $env:SVR2011_CONFIG } elseif ($GameDir) { Join-Path $GameDir "svr2011.toml" } else { "" }
     $arg = ""
     foreach ($m in [regex]::Matches(($GameArgs -join " "), '--online_server=("[^"]*"|\S+)')) { $arg = $m.Groups[1].Value.Trim('"') }

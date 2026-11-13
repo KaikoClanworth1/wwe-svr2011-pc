@@ -126,19 +126,22 @@ REX_HOOK_RAW(sub_8291DD70) {
   __imp__sub_8291DD70(ctx, base);
 }
 
-// D3DDevice_SetVertexShaderConstantF / SetPixelShaderConstantF(device, start, data, count)
+// D3DDevice_SetVertexShaderConstantF / SetPixelShaderConstantF(device, start, data, count): which is which by where
+// they write - sub_82920800 at device + (start + 120) * 16 = the vertex mirror (Device() + 0x780), sub_829208D8 at
+// (start + 376) * 16 = the pixel mirror (+ 0x1780). The stages were swapped here before 12 Nov (vertex writes marked
+// pixel blocks dirty and the reverse: extra compares; the flush hook below marks the right stage, so no wrong pixels).
 REX_EXTERN(__imp__sub_829208D8);
-REX_HOOK_RAW(sub_829208D8) {
+REX_HOOK_RAW(sub_829208D8) {  // (pixel)
   const uint32_t start = ctx.r4.u32, count = ctx.r6.u32;
   __imp__sub_829208D8(ctx, base);
-  if (nr::Enabled()) nr::OnSetShaderConstants(false, start, count);
+  if (nr::Enabled()) nr::OnSetShaderConstants(true, start, count);
 }
 
 REX_EXTERN(__imp__sub_82920800);
-REX_HOOK_RAW(sub_82920800) {
+REX_HOOK_RAW(sub_82920800) {  // (vertex)
   const uint32_t start = ctx.r4.u32, count = ctx.r6.u32;
   __imp__sub_82920800(ctx, base);
-  if (nr::Enabled()) nr::OnSetShaderConstants(true, start, count);
+  if (nr::Enabled()) nr::OnSetShaderConstants(false, start, count);
 }
 
 // D3D internal: write dirty shader constants from the device mirror to the GPU.

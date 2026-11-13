@@ -82,6 +82,7 @@
 #include "free_cam.h"
 #include "gpu_probe.h"
 #include "../util.h"
+#include "../free_cam.h"
 #if SVR2011_DEBUG_SUITE
 #include "debug_suite/debug_suite.h"
 #endif
@@ -96,6 +97,9 @@ REXCVAR_DEFINE_BOOL(native_scale_effects, kScaleEffectsDefault, "GPU",
                     "Native renderer: render shadows, reflections and glow at the render scale too "
                     "(false: at the Xbox 360's size, faster on weak GPUs)");
 
+REXCVAR_DEFINE_DOUBLE(native_shadow_size, 1.0, "GPU",
+                      "Native renderer: the shadow map's size, a share of its full size (1, 0.5, 0.25: SHADOW QUALITY "
+                      "HIGH, MEDIUM, LOW) - smaller is cheaper and blurrier.");
 REXCVAR_DEFINE_BOOL(native_shadows, true, "GPU",
                     "Native renderer: the characters' and the arena's real-time shadows (false: nothing "
                     "is drawn into the shadow map - no shadows, fewer draws). Applies at once.");
@@ -858,6 +862,9 @@ bool g_scale_effects = true;
 // native_shadows off: draws into the shadow map (the 1120 x 1120 32-bit float
 // target) are skipped; its clear stays, so nothing reads as shadowed.
 bool g_shadows = true;
+// native_shadow_size: the shadow map's host size as a share of its scaled size (SHADOW QUALITY: 1, 0.5, 0.25).
+float g_shadow_size = 1.0f;
+bool ShadowMap(uint32_t width, uint32_t height) { return width == 1120 && height == 1120; }
 
 // native_render_scale: the main scene's targets (and their resolves and the
 // frame images) have this fraction of the scale's pixels per side - weak GPUs.
@@ -985,6 +992,7 @@ constexpr float kMaxWide = 2.0f;  // (32:9)
 // The host width of a target of this guest size.
 uint32_t HostWidth(uint32_t width, uint32_t height, uint32_t scale) {
   const uint32_t w = width * scale;
+  if (ShadowMap(width, height) && g_shadow_size < 1.0f) return std::max(64u, uint32_t(std::lround(float(w) * g_shadow_size)));
   const float f = SceneTarget(width, height) ? std::max(g_wide, 1.0f) * g_res : 1.0f;
   if (f == 1.0f) return w;
   return (uint32_t(std::lround(float(w) * f)) + 1) & ~1u;
@@ -993,6 +1001,7 @@ uint32_t HostWidth(uint32_t width, uint32_t height, uint32_t scale) {
 // The host height of a target of this guest size.
 uint32_t HostHeight(uint32_t width, uint32_t height, uint32_t scale) {
   const uint32_t h = height * scale;
+  if (ShadowMap(width, height) && g_shadow_size < 1.0f) return std::max(64u, uint32_t(std::lround(float(h) * g_shadow_size)));
   const float f = SceneTarget(width, height) ? std::max(g_tall, 1.0f) * g_res : 1.0f;
   if (f == 1.0f) return h;
   return (uint32_t(std::lround(float(h) * f)) + 1) & ~1u;
@@ -1974,6 +1983,9 @@ void ApplyOutputSettings(Renderer* r) {
   static uint32_t aa = aa_level();
   static int32_t max_scale = REXCVAR_GET(native_max_scale);
   static bool effects = REXCVAR_GET(native_scale_effects);
+  // (SHADOWS off: nothing is drawn into the map, but it was still cleared and resolved at full size - most of its cost)
+  static float shadow_size =
+      REXCVAR_GET(native_shadows) ? float(std::clamp(REXCVAR_GET(native_shadow_size), 0.125, 1.0)) : 0.0625f;
   static const bool shadows_once = (g_shadows = REXCVAR_GET(native_shadows));
   (void)shadows_once;
   static float user_res = float(REXCVAR_GET(native_render_scale));
@@ -1995,6 +2007,7 @@ void ApplyOutputSettings(Renderer* r) {
     aa = aa_level();
     max_scale = REXCVAR_GET(native_max_scale);
     effects = REXCVAR_GET(native_scale_effects);
+    shadow_size = REXCVAR_GET(native_shadows) ? float(std::clamp(REXCVAR_GET(native_shadow_size), 0.125, 1.0)) : 0.0625f;
     g_shadows = REXCVAR_GET(native_shadows);
     user_res = float(REXCVAR_GET(native_render_scale));
     dynamic = REXCVAR_GET(native_dynamic_scale);
@@ -2046,8 +2059,11 @@ void ApplyOutputSettings(Renderer* r) {
   } else if (scene_height > 0) {  // A chosen height (1080P): the 720p step above it, the scene scaled down to it.
     // (anti-aliasing multiplies the chosen height - 1080P at 2X draws 2160 lines and Present averages them down -
     // up to AUTO's most, 4x or the window's own; it used to be ignored here: 900P / 1080P / 2880P had no AA at all)
+    // ... and never past native_max_scale: 900P / 1080P set it to 2, so with AA they draw 1440 lines, as 1440P does.
+    // (Report 0d3fe5: a Mali phone on 1080P + AA drew 2160 lines - 3x, four times 1080P's pixels - at 15 fps.)
     const uint64_t with_aa = uint64_t(scene_height) * aa;
-    const uint64_t cap = std::max<uint64_t>(uint64_t(kHeight) * std::max<uint32_t>(4u, window_scale), uint64_t(scene_height));
+    // (limit: native_max_scale, at most AUTO's 4x or the window's own)
+    const uint64_t cap = std::max<uint64_t>(uint64_t(kHeight) * limit, uint64_t(scene_height));
     const uint32_t h = uint32_t(std::clamp<uint64_t>(std::min(with_aa, cap), kHeight / 4, uint64_t(kHeight) * kMaxRenderScale));
     scale = (h + kHeight - 1) / kHeight;
     res = std::clamp(float(h) / float(kHeight * scale), 0.25f, 1.0f);
@@ -2066,7 +2082,7 @@ void ApplyOutputSettings(Renderer* r) {
 #endif
 #endif
   const bool res_changed = std::fabs(res - g_res) > 0.001f;
-  if (scale == g_scale && effects == g_scale_effects && out_w == g_out_w && out_h == g_out_h &&
+  if (scale == g_scale && effects == g_scale_effects && shadow_size == g_shadow_size && out_w == g_out_w && out_h == g_out_h &&
       !wide_changed && !res_changed && r->outputs[0]) {
     return;
   }
@@ -2074,7 +2090,7 @@ void ApplyOutputSettings(Renderer* r) {
   // Idle: nothing in flight may still use what is replaced.
   if (!WaitIdle(r, "output change")) return;
   r->garbage.clear();
-  if (scale != g_scale || effects != g_scale_effects || wide_changed || res_changed) {
+  if (scale != g_scale || effects != g_scale_effects || shadow_size != g_shadow_size || wide_changed || res_changed) {
     g_res = res;
     textures::ForgetResolved();
     r->color_targets.clear();
@@ -2084,6 +2100,7 @@ void ApplyOutputSettings(Renderer* r) {
     r->present_source = 0;
     g_scale = scale;
     g_scale_effects = effects;
+    g_shadow_size = shadow_size;
     g_wide = wide;
     g_tall = tall;
     SetCameraAspect(kAspect16x9 * wide / tall);
@@ -2132,6 +2149,169 @@ std::atomic<bool> g_half_frames{false};
 std::atomic<bool> g_half_suspended{false};  // (the PC can't keep 60 Hz: every frame shown - SetHalfSuspended)
 std::atomic<bool> g_last_hidden{false};  // (OnPresent's frame wasn't shown)
 
+// ---------------------------------------------------------------------------
+// Test aid: SVR2011_TEST_SCENE=<file> - a repeatable scene for comparing settings. Hold a match first (the free
+// camera's scripted keys: hotkey F6, hotkey F6, hotkey F7, hotkey F8 - the world stops, the same frame is drawn
+// again and again), then write lines to <file>; the renderer takes one at a time and removes it:
+//   set <cvar> <value>   a setting, at once (the renderer reads most of them every 30 frames: wait 40 after)
+//   wait <frames>        nothing for that many frames
+//   shot <file.ppm>      the next frame to a picture
+//   gpu <frames> <label> the GPU's time for that many frames, logged as "scene gpu: <label> ..." - the whole frame
+//                        and the shadow map's draws (the 1120 x 1120 target), each frame waited for (no overlap)
+//   log <text>           a line in the log
+//   key <F5|F6|F7|F8>    a free camera key (F8 lets the match run again, F5 F6 F8 holds it at a new moment)
+//   a & b                several commands in the same frame
+// The GPU times need the commands recorded on the render thread (native_record_thread false).
+namespace {
+constexpr uint32_t kProbeQueries = 64;
+struct SceneProbe {
+  std::unique_ptr<plume::RenderQueryPool> pool;
+  uint32_t next = 0;        // timestamps written this frame
+  bool active = false;      // this frame is measured
+  bool in_shadow = false;   // drawing into the shadow map
+  int frames_left = 0;      // frames still to measure
+  int wait = 0;             // frames to wait before the next line
+  std::string label;
+  std::vector<double> frame_ms, shadow_ms;
+  uint64_t draws = 0;
+  uint64_t shadow_draws = 0;  // (draws meant for the shadow map: drawn, or skipped with SHADOWS off)
+} g_probe;
+
+void ProbeStamp(Renderer* r) {
+  if (g_probe.next < kProbeQueries) r->list->writeTimestamp(g_probe.pool.get(), g_probe.next++);
+}
+
+void ProbeFrameBegin(Renderer* r) {
+  if (g_probe.active || g_probe.frames_left <= 0) return;
+  if (r->recorder) {
+    REXLOG_WARN("scene gpu: {} not measured - set native_record_thread to false", g_probe.label);
+    g_probe.frames_left = 0;
+    return;
+  }
+  if (!g_probe.pool) g_probe.pool = r->device->createQueryPool(kProbeQueries);
+  if (!g_probe.pool) {
+    REXLOG_WARN("scene gpu: no timestamp queries on this GPU");
+    g_probe.frames_left = 0;
+    return;
+  }
+  r->list->resetQueryPool(g_probe.pool.get(), 0, kProbeQueries);
+  g_probe.next = 0;
+  g_probe.in_shadow = false;
+  g_probe.active = true;
+  ProbeStamp(r);
+}
+
+void ProbeTarget(Renderer* r, const ColorTarget* color) {
+  if (!g_probe.active) return;
+  const bool shadow = color->width == 1120 && color->height == 1120 && color->format == RenderFormat::R32_FLOAT;
+  if (shadow != g_probe.in_shadow && g_probe.next + 2 < kProbeQueries) {
+    ProbeStamp(r);
+    g_probe.in_shadow = shadow;
+  }
+}
+
+void ProbeFrameEnd(Renderer* r) {
+  if (!g_probe.active) return;
+  if (g_probe.in_shadow) ProbeStamp(r), g_probe.in_shadow = false;
+  ProbeStamp(r);
+  g_probe.draws += r->frame_stats.draws;
+}
+
+double Median(std::vector<double> v) {
+  if (v.empty()) return 0.0;
+  std::sort(v.begin(), v.end());
+  return v[v.size() / 2];
+}
+
+void ProbeCollect(Renderer* r) {
+  if (!g_probe.active) return;
+  g_probe.active = false;
+  if (!WaitForFrame(r, r->back_index, "scene gpu")) return;
+  g_probe.pool->queryResults();
+  const uint64_t* q = g_probe.pool->getResults();
+  const uint32_t n = g_probe.next;
+  if (n >= 2) {
+    double shadow = 0.0;
+    for (uint32_t i = 1; i + 2 < n; i += 2) shadow += double(q[i + 1] - q[i]) / 1e6;  // (pairs: in, out)
+    g_probe.frame_ms.push_back(double(q[n - 1] - q[0]) / 1e6);
+    g_probe.shadow_ms.push_back(shadow);
+  }
+  if (--g_probe.frames_left > 0) return;
+  const size_t count = g_probe.frame_ms.size();
+  REXLOG_INFO("scene gpu: {}: frame median {:.3f} ms (min {:.3f}), shadow map median {:.3f} ms, {} frames, draws {}, "
+              "shadow map draws {}",
+              g_probe.label, Median(g_probe.frame_ms),
+              count ? *std::min_element(g_probe.frame_ms.begin(), g_probe.frame_ms.end()) : 0.0,
+              Median(g_probe.shadow_ms), count, count ? g_probe.draws / count : 0,
+              count ? g_probe.shadow_draws / count : 0);
+  g_probe.frame_ms.clear();
+  g_probe.shadow_ms.clear();
+  g_probe.draws = 0;
+  g_probe.shadow_draws = 0;
+}
+
+void SceneCommand(const std::string& line, std::string& shot);
+
+// One line of SVR2011_TEST_SCENE per frame (none while measuring or waiting); `shot` names the picture to take.
+void SceneCommands(std::string& shot) {
+  static const std::string file = [] {
+    const char* v = std::getenv("SVR2011_TEST_SCENE");
+    return std::string(v ? v : "");
+  }();
+  if (file.empty() || g_probe.frames_left > 0) return;
+  if (g_probe.wait > 0) {
+    --g_probe.wait;
+    return;
+  }
+  std::ifstream in(file);
+  std::string line;
+  if (!in || !std::getline(in, line)) return;
+  std::string rest((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  std::ofstream(file, std::ios::trunc) << rest;
+  while (!line.empty() && std::isspace(uint8_t(line.back()))) line.pop_back();
+  // (" & " between commands: all in the same frame - e.g. "shot x.ppm & key F8": the picture and the hold together)
+  std::vector<std::string> commands;
+  for (size_t at = 0;;) {
+    const size_t amp = line.find(" & ", at);
+    commands.push_back(line.substr(at, amp == std::string::npos ? std::string::npos : amp - at));
+    if (amp == std::string::npos) break;
+    at = amp + 3;
+  }
+  for (const std::string& command : commands) SceneCommand(command, shot);
+}
+
+void SceneCommand(const std::string& line, std::string& shot) {
+  std::istringstream words(line);
+  std::string verb;
+  words >> verb;
+  if (verb == "set") {
+    std::string name, value;
+    words >> name >> value;
+    rex::cvar::SetFlagByName(name, value);
+    REXLOG_INFO("scene: {} = {}", name, value);
+  } else if (verb == "wait") {
+    words >> g_probe.wait;
+  } else if (verb == "shot") {
+    std::getline(words >> std::ws, shot);
+    REXLOG_INFO("scene: shot {}", shot);
+  } else if (verb == "gpu") {
+    words >> g_probe.frames_left;
+    std::getline(words >> std::ws, g_probe.label);
+  } else if (verb == "key") {
+    std::string name;
+    words >> name;
+    if (!svr2011::FreeCamScriptKey(name.c_str(), 100)) REXLOG_WARN("scene: unknown key '{}'", name);
+  } else if (verb == "log") {
+    std::string text;
+    std::getline(words >> std::ws, text);
+    REXLOG_INFO("scene: {}", text);
+  } else if (!verb.empty()) {
+    REXLOG_WARN("scene: unknown line '{}'", line);
+  }
+}
+}  // namespace
+
 bool BeginFrame(Renderer* r) {
   if (r->frame_open) return true;
   if (g_main) ApplyTextureQuality(r);
@@ -2155,6 +2335,7 @@ bool BeginFrame(Renderer* r) {
     r->list = r->recorder.get();
   }
   r->list->begin();
+  ProbeFrameBegin(r);  // (SVR2011_TEST_SCENE)
   r->list_state = {};
   r->constant_uploads[0] = r->constant_uploads[1] = {};
   r->rings[r->back_index].offset = 0;
@@ -2468,6 +2649,7 @@ Targets CurrentTargets(Renderer* r) {
 // Binds the current targets for drawing / clearing.
 bool BindTargets(Renderer* r, const Targets& t) {
   if (!t.color) return false;
+  ProbeTarget(r, t.color);  // (SVR2011_TEST_SCENE)
   Transition(r, t.color->resource.get(), t.color->layout, RenderTextureLayout::COLOR_WRITE);
   if (t.depth) Transition(r, t.depth->resource.get(), t.depth->layout, RenderTextureLayout::DEPTH_WRITE);
   std::unique_ptr<plume::RenderFramebuffer>& fb = t.color->framebuffers[t.depth];
@@ -3271,6 +3453,29 @@ RenderBufferReference Constants(Renderer* r, uint32_t device_offset, uint32_t by
 // hookable call), big-endian: byte-swapped 16 bytes at a time straight into
 // the upload; the constants loaded from memory for this draw (so far only
 // the shaders' literal c252-c255) take precedence.
+// The free camera's F8 hold (free_cam.h) stops the world updates, and with them the game's write of the light's view x
+// projection: the shadow map's draws read it from vertex constants c54-c57 (g_fm44ViewProj, the caster shader
+// 58FF12DD), which the scene's draws then set to the camera's. Held, the shadow map's draws found c54-c57 zero - every
+// caster at one depth, the whole picture lit: no real-time shadows in a held frame. So each running frame keeps those
+// four constants as its first shadow map draw has them, and a held frame's shadow map draws get them back when they
+// are zero. Nothing changes while the match runs.
+void HeldShadowLight(const ColorTarget* color) {
+  if (color->width != 1120 || color->height != 1120 || color->format != RenderFormat::R32_FLOAT) return;
+  static uint8_t kept[64];
+  static bool have = false;
+  static uint64_t kept_frame = ~0ull;
+  uint8_t* light = const_cast<uint8_t*>(Device()) + 0x780 + 16 * 54;  // (the device's mirror, big-endian: c54-c57)
+  bool zero = true;
+  for (int i = 0; i < 64 && zero; ++i) zero = light[i] == 0;
+  if (!svr2011::FreeCamPaused()) {
+    if (!zero && kept_frame != g_r->frames) std::memcpy(kept, light, 64), have = true, kept_frame = g_r->frames;
+    return;
+  }
+  if (!zero || !have) return;
+  std::memcpy(light, kept, 64);
+  g_const_dirty[0] |= (1ull << (63 - 54 / 4)) | (1ull << (63 - 57 / 4));  // (blocks c52-c55, c56-c59)
+}
+
 RenderBufferReference GpuConstants(Renderer* r, uint32_t first, uint32_t bytes) {
   ConstTimer timer(g_ct_gpu_ns);
   const uint32_t count = bytes / 16;
@@ -4012,6 +4217,9 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     ++r->frame_stats.skipped_target;
     return;
   }
+  if (g_probe.active && targets.color->width == 1120 && targets.color->height == 1120 &&
+      targets.color->format == RenderFormat::R32_FLOAT)
+    ++g_probe.shadow_draws;  // (SVR2011_TEST_SCENE)
   if (!g_shadows && targets.color->width == 1120 && targets.color->height == 1120 &&
       targets.color->format == RenderFormat::R32_FLOAT) {
     ++r->frame_stats.skipped_target;  // (native_shadows off: the shadow map keeps its clear)
@@ -4433,6 +4641,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   {
     // (Superstar Threads' attire bake - the 2080x1024 target: its paint layers checked at every draw)
     textures::SetCheckEveryUse(targets.color->width == 2080 && targets.color->height == 1024);
+    HeldShadowLight(targets.color);
     RenderBufferReference constants[4] = {GpuConstants(r, 0, kVertexConstantsBytes),
                                            GpuConstants(r, 256, kPixelConstantsBytes),
                                            SharedConstants(r, alpha_test, vs, ps, ndc), {}};
@@ -5268,6 +5477,7 @@ void OnPresent(uint32_t front_buffer) {
   }();
   static uint32_t shot_request_poll = 0;
   std::string requested_file;
+  SceneCommands(requested_file);  // (SVR2011_TEST_SCENE)
   const bool capture = !r->hidden_frame && g_capture_wanted.exchange(false);  // (RequestFrameCapture)
   if (capture) test_shot = true;
   // (the frame shown before this one: its image is still in the ring - kOutputs - for a few frames)
@@ -5317,6 +5527,7 @@ void OnPresent(uint32_t front_buffer) {
     }
   }
 #endif
+  ProbeFrameEnd(r);  // (SVR2011_TEST_SCENE)
   r->list->end();
   // Debug: SVR2011_NATIVE_TEST_STALL=<frame> stalls the GPU queue for good at
   // that frame (as a stuck GPU job would), to test WaitForFrame's way out.
@@ -5344,6 +5555,7 @@ void OnPresent(uint32_t front_buffer) {
     r->queue->executeCommandLists(submit, r->fences[r->back_index].get());
   }
   r->submitted[r->back_index] = true;
+  ProbeCollect(r);  // (SVR2011_TEST_SCENE)
   // (test: SVR2011_TEST_DEVICE_LOST_AT=<frame> - the device taken as lost there)
   static const uint64_t test_lost = uint64_t(EnvInt("SVR2011_TEST_DEVICE_LOST_AT", 0));
   if (backend::DeviceLost(r->device.get()) || (test_lost && r->frames == test_lost)) {

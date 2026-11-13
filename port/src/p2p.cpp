@@ -61,6 +61,7 @@
 #include "match_types.h"
 #include "script_input.h"
 
+REXCVAR_DECLARE(uint32_t, p2p_drop_seconds);  // (net_stats.cpp: the match's silent-player timeout)
 REXCVAR_DEFINE_BOOL(p2p_enabled, true, "Online", "Peer-to-peer online matches (with online_enabled)");
 REXCVAR_DEFINE_UINT32(p2p_port, 36000, "Online",
                       "This game's port base for online matches (UDP; a second game on the same PC: 36100)");
@@ -446,6 +447,8 @@ struct Peer {
   std::map<std::pair<uint16_t, uint16_t>, uint32_t> delivered;  // (v2: last sequence passed on, by to / from port)
   Clock::time_point game_traffic{};    // game packets last passed either way (a session together)
   Clock::time_point pinged{};          // last pinged (the ping loop skips peers of earlier sessions)
+  uint8_t lead_sent = 0;               // the input lead its pings carry (a match host's choice; 0 none)
+  Clock::time_point lead_at{};         // (when it last came)
 };
 
 Candidate* FindCandidate(Peer& p, uint32_t ip, uint16_t port) {
@@ -1166,13 +1169,16 @@ void OnCandidates(const Mac& mac, Reader& r) {
   if (answer) SendCandidates(back);
 }
 
-// A ping: this game's time, then its player's name (for the peers' lobby ping list; older games stop reading before it).
+// A ping: this game's time, then its player's name (for the peers' lobby ping list; older games stop reading before it),
+// then the input lead (NetLeadNow: a joiner's own measure, for the host's choice; the host's choice itself, which the
+// joiners set: P2PHostLead; 0 with no ping answered yet; games from before it stop reading before it and set their own).
 std::vector<uint8_t> PingPacket() {
   Writer w;
   w.b = Header(kPing, NewNonce());
   w.u64(NowUs());
   const std::string name = rex::cvar::Query<std::string>("online_name").substr(0, 32);
   w.u8(uint8_t(name.size())), w.bytes(reinterpret_cast<const uint8_t*>(name.data()), name.size());
+  w.u8(uint8_t(std::min<uint32_t>(NetLeadNow(), 255)));
   return w.b;
 }
 
@@ -1498,10 +1504,13 @@ void PingLoop() {
       NetSimSend([path, b = PingPacket()] { Send(path, b); });
     }
     // The session's host gone in a match (its game closed or cut off): the game
-    // ends the session for everyone after its drop timeout, saying only "a
-    // connection error" - this says why (a notice now; the game's "An error
-    // occurred during the match" reworded: online.cpp, P2PHostLeft).
+    // ends the session for everyone after its drop timeout (p2p_drop_seconds,
+    // net_stats.cpp), saying only "a connection error" - this says why (a
+    // notice now; the game's "An error occurred during the match" reworded:
+    // online.cpp, P2PHostLeft). Said a second before that drop: a host that
+    // merely stalls for less (report cd089d) is not announced as gone.
     if (in_match) {
+      const auto silent = std::chrono::seconds(std::clamp<uint32_t>(REXCVAR_GET(p2p_drop_seconds), 3, 15) - 1);
       std::lock_guard lock(g_mutex);
       const auto now = Clock::now();
       for (const auto& [object, local] : g_sessions) {
@@ -1510,8 +1519,7 @@ void PingLoop() {
         if (it == g_peers.end()) continue;
         const Peer& h = it->second;
         const auto heard = std::max(h.direct_ok, h.relay_ok);
-        if (heard == Clock::time_point{} || now - heard < std::chrono::seconds(4) ||
-            g_host_left_session == local.session.id)
+        if (heard == Clock::time_point{} || now - heard < silent || g_host_left_session == local.session.id)
           continue;
         g_host_left_session = local.session.id;
         g_host_left_ms = NowMs();
@@ -1711,12 +1719,17 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
       if (r.ok) NetSimSend([back, b = std::move(w.b)] { Send(back, b); });
       if (const size_t n = r.u8(); r.ok && n && r.need(n)) {  // (its player's name)
         const std::string name(reinterpret_cast<const char*>(data + r.at), n);
+        r.at += n;
         uint32_t fake = 0;
         {
           std::lock_guard lock(g_mutex);
           if (auto it = g_peers.find(mac); it != g_peers.end()) fake = it->second.fake;
         }
         if (fake) NetPeerName(fake, name);
+      }
+      if (const uint8_t lead = r.u8(); r.ok && lead) {  // (a match host's input lead: P2PHostLead)
+        std::lock_guard lock(g_mutex);
+        if (auto it = g_peers.find(mac); it != g_peers.end()) it->second.lead_sent = lead, it->second.lead_at = Clock::now();
       }
       break;
     }
@@ -2929,6 +2942,27 @@ bool P2PHosting(uint64_t* session) {
   return false;
 }
 
+uint32_t P2PHostLead() {
+  std::lock_guard lock(g_mutex);
+  for (const auto& [object, local] : g_sessions) {
+    if (local.host || local.session.public_slots + local.session.private_slots < 2) continue;
+    const auto it = g_peers.find(MacOf(local.session.host.data()));
+    if (it == g_peers.end() || !it->second.lead_sent || Clock::now() - it->second.lead_at > std::chrono::seconds(5)) return 0;
+    return it->second.lead_sent;
+  }
+  return 0;
+}
+
+uint32_t P2PPeersLead() {
+  // (pings go only to the peers of this game's current session, so a lead that came within 5 s is one of them)
+  const auto now = Clock::now();
+  uint32_t lead = 0;
+  std::lock_guard lock(g_mutex);
+  for (const auto& [mac, p] : g_peers)
+    if (p.lead_sent && now - p.lead_at <= std::chrono::seconds(5)) lead = std::max<uint32_t>(lead, p.lead_sent);
+  return lead;
+}
+
 void P2PSendMods(const std::vector<uint8_t>& payload) {
   if (g_socket == kBadSocket || payload.size() > 50000) return;
   std::vector<Path> peers;
@@ -2961,6 +2995,12 @@ bool P2POnlineMode() {
   const int64_t at = g_online_at;
   return at && NowMs() - at < 30000;  // (between screens the sessions come and go)
 }
+
+namespace {
+uint32_t g_blank_slot = 0;
+}  // namespace
+
+uint32_t P2PBlankSlot() { return g_blank_slot; }
 
 bool P2PHostLeft() {
   const int64_t at = g_host_left_ms.load();
@@ -3105,6 +3145,7 @@ std::optional<std::string> P2PFetch(uint8_t kind, const std::string& key, std::c
 void InstallP2P(rex::memory::Memory* memory) {
   if (!rex::cvar::Query<bool>("online_enabled") || !REXCVAR_GET(p2p_enabled)) return;
   g_memory = memory;
+  if ((g_blank_slot = memory->SystemHeapAlloc(256)) != 0) std::memset(Guest(g_blank_slot), 0, 256);
 #if defined(_WIN32)
   WSADATA wsa;
   WSAStartup(MAKEWORD(2, 2), &wsa);

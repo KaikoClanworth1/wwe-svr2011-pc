@@ -25,7 +25,7 @@ $tools = Split-Path $PSScriptRoot -Parent
 $port = Split-Path $tools -Parent
 . (Join-Path $tools "test_guard.ps1")
 
-$o = @{ p = @{}; arena = ""; rule = ""; attire = ""; mods = "none"; pad1 = ""; pad2 = ""; clock = "600,1200,1800"; play = "30s"; name = "lan"; args = @(); picks1 = ""; picks2 = ""; hostenv = @(); hostargs = @(); joinargs = @(); joinenv = @(); session = ""; rumble = $false }
+$o = @{ p = @{}; arena = ""; rule = ""; attire = ""; mods = "none"; pad1 = ""; pad2 = ""; clock = "600,1200,1800"; play = "30s"; name = "lan"; args = @(); picks1 = ""; picks2 = ""; hostenv = @(); hostargs = @(); joinargs = @(); joinenv = @(); session = ""; rumble = $false; joinexe = "" }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
@@ -34,6 +34,7 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         '^--host-env$' { $o.hostenv += $v; $i++; continue }  # (the host's only: each behind its own NAT box router)
         '^--host-arg$' { $o.hostargs += $v; $i++; continue }  # (a game option for one game, after the others: it wins)
         '^--join-arg$' { $o.joinargs += $v; $i++; continue }
+        '^--join-exe$' { $o.joinexe = $v; $i++; continue }  # (another build's svr2011_dbg.exe for the joiner: a mixed-version pair; it runs in the same game folder)
         '^--rumble$' { $o.rumble = $true; continue }  # (ONLINE's ROYAL RUMBLE row instead of MATCH, both games)
         '^--arg$' { $o.args += $v; $i++; continue }  # (a game option for both games, e.g. --arg --big_roster=true)
         '^--(arena|rule|attire|mods|pad1|pad2|clock|play|name|picks1|picks2|session)$' { $o[$Matches[1]] = $v; $i++; continue }
@@ -77,7 +78,8 @@ Mirror (Join-Path $src "ent_srv\data") (Join-Path $root "lan_srv\data")
 Mirror (Join-Path $src "test_userdata_ent_down") (Join-Path $root "lan_ud_host")
 Mirror (Join-Path $src "test_userdata_ent_up") (Join-Path $root "lan_ud_join")
 $listen = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $_.LocalPort })
-$sp = 8460..8499 | Where-Object { $_ -notin $listen } | Select-Object -Last 1
+$spFrom = if ($env:SVRTEST_SERVER_PORT_FROM) { [int]$env:SVRTEST_SERVER_PORT_FROM } else { 8460 }  # (a chat's own range: its first port, 40 ports from it)
+$sp = $spFrom..($spFrom + 39) | Where-Object { $_ -notin $listen } | Select-Object -Last 1
 $udp = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | ForEach-Object { $_.LocalPort })
 $hp = 36540, 36560, 36580 | Where-Object { $_ -notin $udp } | Select-Object -Last 1
 $jp = 36640, 36660, 36680 | Where-Object { $_ -notin $udp } | Select-Object -Last 1
@@ -124,7 +126,8 @@ function Start-Side([string]$side, [string[]]$extra) {
     Use-SvrTestServer -GameDir $game -GameArgs $gameArgs | Out-Null
     $sideEnv = @(if ($side -eq "join") { $o.joinenv } else { $o.hostenv })
     foreach ($e in $sideEnv) { $k, $val = $e -split "=", 2; [Environment]::SetEnvironmentVariable($k, $val, "Process") }
-    $procs[$side] = Start-Process $exe -WorkingDirectory $game -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
+    $sideExe = if ($side -eq "join" -and $o.joinexe) { $o.joinexe } else { $exe }
+    $procs[$side] = Start-Process $sideExe -WorkingDirectory $game -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
     foreach ($e in $sideEnv) { [Environment]::SetEnvironmentVariable(($e -split "=", 2)[0], $null, "Process") }
     Set-SvrTestPriority $procs[$side]
     foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_INPUT_FILE", "SVR2011_CONFIG", "SVR2011_USER_DATA") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
@@ -192,7 +195,10 @@ foreach ($n in ($o.clock -split ',' | Where-Object { $_ })) {
         # (who by name, its "(id N)" left out: with --join-env SVR2011_TEST_SLOT_SWAP the two games number a mod differently)
         $na = [string]$pa.name -replace ' \(id \d+\)', ''; $nb = [string]$pb.name -replace ' \(id \d+\)', ''
         if ($na -ne $nb) { $diff += "person $($pa.index) name $($pa.name) / $($pb.name)" }
-        foreach ($f in "last_move", "position_bits", "motion", "root_bits") { if ([string]$pa.$f -ne [string]$pb.$f) { $diff += "person $($pa.index) $f $($pa.$f) / $($pb.$f)" } }
+        # (last_move left out: it is the newest move-table lookup, and the match thread looks slots up many times a
+        # frame while the dump is written from the frame thread - the 13 Nov 2026 LAN round caught one side mid-scan
+        # (slot 8 vs slot 180) at clock 1800 and matched again at 3600; the motion field is the move being played)
+        foreach ($f in "position_bits", "motion", "root_bits") { if ([string]$pa.$f -ne [string]$pb.$f) { $diff += "person $($pa.index) $f $($pa.$f) / $($pb.$f)" } }
     }
     $checks += [ordered]@{ clock = [int]$n; same = ($diff.Count -eq 0); differences = $diff }
 }

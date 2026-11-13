@@ -18,6 +18,7 @@
 #include "net_stats.h"
 #include "match_diag.h"
 #include "online.h"
+#include "p2p.h"
 #include "online_chat.h"
 #include "pad_types.h"
 
@@ -317,13 +318,41 @@ REX_HOOK_RAW(sub_8298E3A0) {
 
 REXCVAR_DECLARE(bool, p2p_send_every_frame);  // (p2p.cpp)
 
+// A game dropped from its match while it stalled (frozen 6 s past the drop
+// timeout above in a test; report cd089d's friend) crashed when it woke: the
+// match's per-frame player table (sub_828A7F18, from sub_82892828) asks the
+// session for every player's slot by index (sub_828B92A0: the slot while its
+// +488 word says it is taken, else 0) and reads the slot's byte +208 without
+// looking - and by then the session had let the other player's slot go. That
+// one caller gets a blank slot instead of 0: the table keeps a zero there and
+// the game goes on to its own end of the match.
+REX_EXTERN(__imp__sub_828B92A0);
+REX_HOOK_RAW(sub_828B92A0) {
+  const uint32_t from = uint32_t(ctx.lr);
+  const uint32_t index = ctx.r4.u32;
+  __imp__sub_828B92A0(ctx, base);
+  if (ctx.r3.u32 != 0 || from != 0x828A7FEC) return;
+  const uint32_t blank = svr2011::P2PBlankSlot();
+  if (!blank) return;
+  static uint32_t said = 0;
+  if (said++ < 3 || said % 600 == 0)
+    REXLOG_WARN("net: player {}'s session slot is gone (dropped from the match) - the player table reads a blank one "
+                "(crash cd089d-thaw)", index);
+  ctx.r3.u64 = blank;
+}
+
 // A player whose game is gone (closed, crashed, cut off) froze every other
 // game ~15 s: gss drops a silent peer after its match timeout (session +744 =
 // 15000 ms, set through sub_829B60C8 when the session enters state 7 - by
 // sub_829B3A48 and sub_829B43C8; the lobby's +740 by sub_829B3918). The match
 // timeout is now p2p_drop_seconds: the same drop (the game's own "has left and
 // will be replaced by AI", or - the host - the session's end), sooner.
-REXCVAR_DEFINE_UINT32(p2p_drop_seconds, 5, "Online",
+// 8 s, not 5: a game that merely stalls (report cd089d, 12 Nov 2026: a friend's
+// game silent 5.1 s, its pings back right after) was dropped for good at 5 s,
+// while a quit only costs the others the wait - 8 s keeps a stall of up to
+// ~8 s in the match and still ends a quit in about half the game's 15 s. The
+// host-left notice (p2p.cpp) follows this timeout.
+REXCVAR_DEFINE_UINT32(p2p_drop_seconds, 8, "Online",
                       "Seconds a silent player freezes an online match before the game drops them (3-15)");
 REX_EXTERN(__imp__sub_829B60C8);
 REX_HOOK_RAW(sub_829B60C8) {
@@ -359,8 +388,24 @@ REX_HOOK_RAW(sub_829CAD08) {  // (the send interval getter: +3208, low byte)
 
 namespace {
 
-// The lead for the worst peer measured: one way + jitter + 12 ms, in frames
-// (0: no measurement yet).
+}  // namespace
+
+// The lead's parts (the lag budget, 11 Nov 2026: on every link the lag is the lead, and the lead is the trip
+// plus this margin). Until 2.2.2 the floor was 3: 2 frames of a LAN match's 3 (the 13 Nov rounds: a LAN press
+// applied after 40 ms at lead 3, 20 ms at lead 2, no more holds). The margin and the extra frame stay: without
+// them (13 Nov, margin 0 / extra 0) a simulated 80 ms link got lead 6 instead of 8 and held a frame 140 times
+// in 3 minutes (13 at lead 8), and the host's own press applied later (136 ms, not 120); a 150 ms link got
+// leads 12 and 11 (the two sides rounded differently) and a press applied after 236 ms, not 203. The old
+// values play as --p2p_lead_floor=3.
+REXCVAR_DEFINE_UINT32(p2p_lead_floor, 2, "Online", "An online match's input lead at least this many frames (1-6)");
+REXCVAR_DEFINE_UINT32(p2p_lead_margin_ms, 12, "Online",
+                      "Milliseconds added to the worst peer's one-way time + jitter before it becomes the lead (0-50)");
+REXCVAR_DEFINE_UINT32(p2p_lead_extra, 1, "Online", "Frames added to the lead on top of the trip (0-3)");
+
+namespace {
+
+// The lead for the worst peer measured: one way + jitter + p2p_lead_margin_ms,
+// in frames, + p2p_lead_extra (0: no measurement yet).
 uint32_t PingLead() {
   float one_way = -1, jitter = 0;
   for (const auto& l : svr2011::NetLinks()) {
@@ -368,8 +413,12 @@ uint32_t PingLead() {
     jitter = std::max(jitter, (l.worst_ms - l.rtt_ms) / 2);
   }
   if (one_way < 0) return 0;
-  return uint32_t(std::ceil((one_way + jitter + 12.0f) / (1000.0f / 60.0f))) + 1;
+  const float ms = one_way + jitter + float(std::min<uint32_t>(REXCVAR_GET(p2p_lead_margin_ms), 50));
+  return uint32_t(std::ceil(ms / (1000.0f / 60.0f))) + std::min<uint32_t>(REXCVAR_GET(p2p_lead_extra), 3);
 }
+
+std::atomic<uint32_t> g_set_lead{0};     // (a host: the lead its setter last set, for its pings - NetLeadNow)
+std::atomic<uint64_t> g_set_session{0};  // (the session it was set in; another session: not latched)
 
 }  // namespace
 
@@ -380,19 +429,43 @@ REX_HOOK_RAW(sub_829CAD20) {
   // (test: SVR2011_TEST_NET_LEAD=<frames> - that lead instead)
   static const int test_lead = [] { const char* v = std::getenv("SVR2011_TEST_NET_LEAD"); return v ? std::atoi(v) : 0; }();
   const uint32_t asked = ctx.r4.u32;
+  const char* whose = "";
   if (uint32_t(ctx.lr) == 0x829B604C) {
     if (test_lead > 0) {
       ctx.r4.u64 = uint32_t(test_lead);
     } else if (REXCVAR_GET(p2p_send_every_frame)) {
-      if (const uint32_t lead = PingLead()) ctx.r4.u64 = std::clamp<uint32_t>(lead, 3, std::max<uint32_t>(asked, 3));
+      const uint32_t floor = std::clamp<uint32_t>(REXCVAR_GET(p2p_lead_floor), 1, 6);
+      uint32_t lead = PingLead();
+      // (the host: the largest of its own and its joiners' measures - a joiner-joiner link can be the worst one -
+      // and the value it sets is what its pings carry from now on (NetLeadNow), so a joiner setting a moment
+      // later sets the same frame even when the host's ping drifts; a joiner: the host's value. The game's own
+      // `asked` is shared, so the clamp below agrees on every side.)
+      uint64_t session = 0;
+      const bool hosting = svr2011::P2PHosting(&session);
+      if (hosting) {
+        if (const uint32_t peers = svr2011::P2PPeersLead(); peers > lead) lead = peers, whose = ", a joiner's link";
+      } else if (const uint32_t host = svr2011::P2PHostLead()) {
+        lead = host, whose = ", the host's";
+      }
+      if (lead) ctx.r4.u64 = std::clamp<uint32_t>(lead, floor, std::max<uint32_t>(asked, floor));
+      if (hosting && lead) g_set_lead = ctx.r4.u32, g_set_session = session;
     }
-    REXLOG_INFO("net: input lead {} frames (the game's {}){}", ctx.r4.u32, asked,
+    REXLOG_INFO("net: input lead {} frames (the game's {}{}){}", ctx.r4.u32, asked, whose,
                 REXCVAR_GET(p2p_send_every_frame) ? ", inputs sent every frame" : "");
   }
   __imp__sub_829CAD20(ctx, base);
 }
 
 namespace svr2011 {
+
+uint32_t NetLeadNow() {
+  const uint32_t own = PingLead();
+  const uint32_t mine = own ? std::max<uint32_t>(own, std::clamp<uint32_t>(REXCVAR_GET(p2p_lead_floor), 1, 6)) : 0;
+  uint64_t session = 0;
+  if (!P2PHosting(&session)) return mine;
+  if (g_set_lead && g_set_session == session) return g_set_lead;  // (the lead set for this session's match)
+  return std::max(mine, P2PPeersLead());
+}
 
 NetStats NetStatsNow() {
   std::lock_guard lock(g_mutex);

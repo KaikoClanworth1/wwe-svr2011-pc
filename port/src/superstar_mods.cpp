@@ -3957,6 +3957,7 @@ void CheckModProfiles(uint8_t* base) {
     std::lock_guard lock(g_slots_mutex);
     RedoHandovers(base, true);  // (a slot handed over at a save load: the save's own write after it)
   }
+  svr2011::PerModSavesTick(base);  // (key refs in the save's late-written part: the title holders)
   UniverseModsTick(base);  // (the game wrote its save: the mods' Universe side table beside it)
   MarksTick(base);  // (and which mod each slot's saved profile is: mod_profiles.txt)
   svr2011::StoryModsTick();  // (Story Designer's stories that name a mod: story_mods.cpp)
@@ -4317,6 +4318,20 @@ void AddHighModsCc(PPCContext& ctx, uint8_t* base, uint32_t screen, uint32_t ids
 }
 }  // namespace
 
+// Test aid SVR2011_TEST_LIST_TRACE=1: each superstar list build below logged (its kind, caller, count before the
+// mods were added) - which screen fills which list (report 8d4a89).
+bool ListTrace() {
+  static const bool on = std::getenv("SVR2011_TEST_LIST_TRACE") != nullptr;
+  return on;
+}
+void TraceList(const char* fn, uint32_t screen, uint32_t kind, uint32_t lr, uint32_t count) {
+  if (!ListTrace()) return;
+  static std::atomic<int> n{0};
+  if (n.fetch_add(1) < 200)
+    REXLOG_INFO("[svr2011] superstar mods: test - list {} screen {:08X} kind {} from {:08X}: {} entries", fn, screen, kind,
+                lr, count);
+}
+
 REX_EXTERN(__imp__sub_8257B240);
 REX_HOOK_RAW(sub_8257B240) {
   const uint32_t id = ctx.r3.u32;
@@ -4336,8 +4351,10 @@ REX_HOOK_RAW(sub_8257B240) {
 REX_EXTERN(__imp__sub_82518F38);
 REX_HOOK_RAW(sub_82518F38) {
   const uint32_t screen = ctx.r3.u32;
+  const uint32_t lr_cc = uint32_t(ctx.lr);
   __imp__sub_82518F38(ctx, base);
   constexpr uint32_t kKind = 33608, kIds = 36536, kCount = 37424, kCap = 222;
+  TraceList("82518F38", screen, Rd32(base + screen + kKind), lr_cc, Rd32(base + screen + kCount));
   if (Rd32(base + screen + kKind) != 1) return;  // (DOWNLOADED SUPERSTAR)
   uint32_t n = std::min(Rd32(base + screen + kCount), kCap);
   const auto add = HighModsMissing(base, screen + kIds, n);
@@ -4356,6 +4373,7 @@ REX_HOOK_RAW(sub_82B972C8) {
   const uint32_t screen = ctx.r3.u32, kind = ctx.r4.u32;
   const PPCContext entry = ctx;
   __imp__sub_82B972C8(ctx, base);
+  TraceList("82B972C8", screen, kind, uint32_t(entry.lr), Rd32(base + screen + 4012));
   if (kind != 1) return;
   PPCContext c = entry;
   AddHighModsCc(c, base, screen, 1108, 2076, 3044, 4012, 242);
@@ -4401,6 +4419,7 @@ REX_HOOK_RAW(sub_82BA38B8) {
   const uint32_t screen = ctx.r3.u32, kind = ctx.r4.u32;
   const PPCContext entry = ctx;
   __imp__sub_82BA38B8(ctx, base);
+  TraceList("82BA38B8", screen, kind, uint32_t(entry.lr), Rd32(base + screen + 7280));
   if (kind != 2) return;
   PPCContext c = entry;
   AddHighModsCc(c, base, screen, 1136, 3184, 5232, 7280, 512);
@@ -4601,7 +4620,11 @@ bool ReadModSave(const Mod& m, ModSave& s) {
     REXLOG_WARN("[svr2011] per-mod saves: {}.dat is damaged - its defaults instead", m.folder);
     return false;
   }
-  if (fingerprint != Fingerprint(m)) {
+  // Test aid SVR2011_TEST_MOD_SAVE_ANY=1: a .dat made by hand (no fingerprint of the mod's own) is taken.
+  static const bool any = std::getenv("SVR2011_TEST_MOD_SAVE_ANY") != nullptr;
+  if (fingerprint != Fingerprint(m) && any) {
+    REXLOG_INFO("[svr2011] per-mod saves: test - {}.dat taken whatever its fingerprint (SVR2011_TEST_MOD_SAVE_ANY)", m.folder);
+  } else if (fingerprint != Fingerprint(m)) {
     REXLOG_INFO("[svr2011] per-mod saves: {}.dat was made for another version of the mod - its defaults instead",
                 m.folder);
     return false;
@@ -4700,6 +4723,15 @@ void StartModSaves() {
 }
 
 // The 40-byte entries from the files: once the slot holds the mod's record again (its stub's entry still there).
+// They are in block B, which the loader writes after the load hook (as the title holders, RefsLoaded): the save's
+// stub entry came over the mod's own after it was put back. So each one put back (and, after a save is built, the
+// one built) is kept, and for ~10 s after it is put and after each save load (EntriesTick) a slot whose entry isn't
+// it any more gets it again.
+std::map<uint32_t, svrfmt::Bytes> g_entry_put;  // slot -> the mod's entry as put back / as last saved
+int g_entry_frames = 0;
+constexpr int kEntryWatchFrames = 600;
+std::mutex g_entry_mutex;  // (the load hook, the frame tick and the save writer: different threads)
+
 void PutBackEntries(uint8_t* base) {
   for (auto it = g_saved_entry.begin(); it != g_saved_entry.end();) {
     const Mod* m = ModOf(it->first);
@@ -4710,7 +4742,33 @@ void PutBackEntries(uint8_t* base) {
       continue;
     }
     std::memcpy(base + svr2011::RosterEntry(kEntries40, kEntry40Size, si), it->second.data(), kEntry40Size);
+    REXLOG_INFO("[svr2011] per-mod saves: id {} - its saved 40-byte entry put back", it->first);
+    {
+      std::lock_guard lock(g_entry_mutex);
+      g_entry_put[it->first] = it->second;
+      g_entry_frames = kEntryWatchFrames;
+    }
     it = g_saved_entry.erase(it);
+  }
+}
+
+// Once a frame while watched (and before a save is built): an entry put back that the late write replaced.
+void EntriesTick(uint8_t* base) {
+  std::lock_guard lock(g_entry_mutex);
+  if (g_entry_frames <= 0) return;
+  --g_entry_frames;
+  for (const auto& [slot, entry] : g_entry_put) {
+    const Mod* m = ModOf(slot);
+    const uint32_t si = m ? svr2011::RosterIndex(base, slot) : 512;
+    if (si >= 512) continue;
+    const uint8_t* sr = base + svr2011::RosterEntry(kRecords, kRecordSize, si);
+    uint8_t* se = base + svr2011::RosterEntry(kEntries40, kEntry40Size, si);
+    if (std::strncmp(reinterpret_cast<const char*>(sr + kFullName), m->name.c_str(), kNameLen - 1) ||
+        !std::memcmp(se, entry.data(), kEntry40Size))
+      continue;
+    std::memcpy(se, entry.data(), kEntry40Size);
+    if (FirstTime(fmt::format("entry again {}", slot)))
+      REXLOG_INFO("[svr2011] per-mod saves: id {} - its 40-byte entry put back again after the save's late write", slot);
   }
 }
 
@@ -4735,11 +4793,34 @@ std::vector<uint32_t> IdFields() {
   return f;
 }
 
+// A field's kind for the log: "title 4.0" (title 4's first holder), "team 7", "card 17.1", "list 3".
+std::string RefKind(uint32_t off) {
+  constexpr uint32_t P = 0x364B4;
+  if (off >= 0x7CD70 && off < 0x7CD70 + 56) return fmt::format("title {}.{}", (off - 0x7CD70) / 4, (off - 0x7CD70) / 2 % 2);
+  if (off >= 0xF5C8 && off < 0xF5C8 + 70 * 270) return fmt::format("team {}", (off - 0xF5C8) / 270);
+  if (off >= P + 14942 && off < P + 20808) return fmt::format("card {}.{}", (off - P - 14942) / 88, (off - P - 14942) % 88 / 12 - 1);
+  if (off >= P + 20808 && off < P + 20808 + 240 * 12) return fmt::format("list {}", (off - P - 20808) / 12);
+  return "field";
+}
+
 struct Ref {
   uint32_t off;
   std::string folder;
   uint16_t stub;
 };
+// SaveData.dat holds the image after a header: block A (image offsets below 0x3C15C) at +0x1C, block B at +0x18.
+uint32_t SaveFileShift(uint32_t off) { return off < 0x3C15C ? 0x1C : 0x18; }
+// The load's fields watched for the loader's late write (RefsTick).
+struct RefWait {
+  uint32_t off;
+  uint16_t slot, stub;
+  bool done;
+};
+std::mutex g_refs_mutex;
+std::vector<RefWait> g_refs_wait;
+int g_refs_wait_frames = 0;
+constexpr int kRefsWaitFrames = 600;  // (~10 s; the late write came within the first frames in the test)
+std::atomic<bool> g_refs_building{false};  // (the save being built: its fields hold the stand-ins on purpose)
 std::vector<std::pair<uint32_t, uint16_t>> g_refs_live;  // (field, the mod's id) while the save is built
 svrfmt::Bytes g_refs_written;
 
@@ -4843,25 +4924,69 @@ void RefsLoaded(uint8_t* base) {
   const uint32_t save = Rd32(base + 0x82E407B4);
   std::vector<Ref> refs;
   if (!save || ModSavesDir().empty() || !ReadRefs(RefsFile(), refs)) return;
-  int back = 0, gone = 0, changed = 0;
+  // (the file's own value of each field: the loader writes block B - the title holders among it - into the image
+  // after this hook, so the image there still holds the new Universe's champions; report 4d3d59)
+  svrfmt::Bytes file;
+  const bool have_file = !g_save_file.empty() && svrfmt::ReadFile(g_save_file.string(), file);
+  int back = 0, gone = 0, changed = 0, waiting = 0;
+  std::lock_guard lock(g_refs_mutex);
+  g_refs_wait.clear();
   for (const Ref& r : refs) {
     const Mod* m = nullptr;
     for (const auto& x : g_mods)
       if (!x.temp && x.folder == r.folder) m = &x;
-    if (Rd16(base + save + r.off) != r.stub) {
-      ++changed;  // (the save was written without this refs.bin - another copy of SaveData.dat)
+    const uint32_t now = Rd16(base + save + r.off), at = r.off + SaveFileShift(r.off);
+    const uint32_t saved = have_file && at + 2 <= file.size() ? Rd16(file.data() + at) : now;
+    if (saved != r.stub || !m) {  // (named: a report says which fields lost their mod)
+      if (saved != r.stub) ++changed;  // (the save was written without this refs.bin - another copy of SaveData.dat)
+      else ++gone;
+      REXLOG_INFO("[svr2011] per-mod saves: refs.bin - {} {:05X} ({}) not given back: {}, stand-in {}, the save holds {}",
+                  RefKind(r.off), r.off, r.folder, saved != r.stub ? "no longer the stand-in" : "mod not installed",
+                  r.stub, saved);
       continue;
     }
-    if (!m) {
-      ++gone;
-      continue;
-    }
-    svrfmt::Wr16(base + save + r.off, uint16_t(m->slot));
-    ++back;
+    if (now == r.stub) svrfmt::Wr16(base + save + r.off, uint16_t(m->slot)), ++back;
+    else ++waiting;
+    g_refs_wait.push_back({r.off, uint16_t(m->slot), r.stub, now == r.stub});
   }
-  REXLOG_INFO("[svr2011] per-mod saves: refs.bin - {} field(s) given their mod back, {} mod(s) not installed (stand-in "
-              "kept), {} field(s) no longer the stand-in",
-              back, gone, changed);
+  g_refs_wait_frames = g_refs_wait.empty() ? 0 : kRefsWaitFrames;
+  REXLOG_INFO("[svr2011] per-mod saves: refs.bin - {} field(s) given their mod back, {} after the save's late write, {} "
+              "mod(s) not installed (stand-in kept), {} field(s) no longer the stand-in",
+              back, waiting, gone, changed);
+}
+
+// Once a frame: the fields the load gave back (or will) are watched for a while - the loader's late write of block B
+// puts the file's stand-ins in after the load hook; each field holding its stand-in again gets the mod's id.
+void RefsTick(uint8_t* base) {
+  std::lock_guard lock(g_refs_mutex);
+  if (!g_refs_wait_frames || g_refs_building) return;
+  const uint32_t save = Rd32(base + 0x82E407B4);
+  if (!save) return;
+  int now_back = 0;
+  for (RefWait& w : g_refs_wait)
+    if (Rd16(base + save + w.off) == w.stub) {
+      svrfmt::Wr16(base + save + w.off, w.slot);
+      if (!w.done) {
+        w.done = true;
+        ++now_back;
+        REXLOG_INFO("[svr2011] per-mod saves: refs.bin - {} {:05X} given id {} after the save's late write", RefKind(w.off),
+                    w.off, w.slot);
+      }
+    }
+  if (--g_refs_wait_frames == 0) {
+    int left = 0;
+    for (const RefWait& w : g_refs_wait) left += !w.done;
+    if (left) REXLOG_WARN("[svr2011] per-mod saves: refs.bin - {} field(s) never held their stand-in after the load", left);
+    g_refs_wait.clear();
+  }
+  (void)now_back;
+}
+
+// Before a save is built: the watch once more (a late write since the last frame), then still while it's built.
+void RefsBeforeSave(uint8_t* base) {
+  RefsTick(base);
+  EntriesTick(base);
+  g_refs_building = true;
 }
 }  // namespace
 
@@ -4879,6 +5004,7 @@ void PerModSavesForSave(uint8_t* base, bool saving) {
     }
     return;
   }
+  if (saving) RefsBeforeSave(base);
   for (const auto& m : g_mods) {
     if (m.temp) continue;  // (a fetched mod: OnlineTempForSave)
     const uint32_t si = svr2011::RosterIndex(base, m.slot);
@@ -4899,6 +5025,10 @@ void PerModSavesForSave(uint8_t* base, bool saving) {
       ModSave s{svrfmt::Bytes(sr, sr + kRecordSize), svrfmt::Bytes(sp, sp + kProfileSize),
                 svrfmt::Bytes(se, se + kEntry40Size)};
       WriteModSave(m, s);
+      {
+        std::lock_guard lock(g_entry_mutex);
+        g_entry_put[m.slot] = s.entry;  // (EntriesTick: the entry this save holds for the mod, in its file)
+      }
       std::memcpy(sr, sr_stub->second.data(), kRecordSize);
       std::memcpy(sp, sp_stub->data(), kProfileSize);
       if (const auto e = g_stub_entry.find(m.slot); e != g_stub_entry.end()) std::memcpy(se, e->second.data(), kEntry40Size);
@@ -4913,11 +5043,19 @@ void PerModSavesForSave(uint8_t* base, bool saving) {
     REXLOG_INFO("[svr2011] per-mod saves: the save is built with {} mod slot(s) as stubs", g_live_while_saving.size());
   if (!saving) g_live_while_saving.clear();
   RefsForSave(base, saving);  // (teams, titles, Universe cards and list: key refs)
+  if (!saving) g_refs_building = false;
 }
 
 // After a save is loaded (the sub_8257A218 hook): its fields' mods back from refs.bin - also once while folding back.
 void PerModSavesLoaded(uint8_t* base) {
   if (g_mod_saves_on || g_mod_saves_fold) RefsLoaded(base);
+  std::lock_guard lock(g_entry_mutex);
+  if (!g_entry_put.empty()) g_entry_frames = kEntryWatchFrames;  // (the late write of this load: EntriesTick)
+}
+
+void PerModSavesTick(uint8_t* base) {
+  RefsTick(base);
+  if (!g_refs_building) EntriesTick(base);
 }
 
 }  // namespace svr2011

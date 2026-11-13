@@ -61,6 +61,10 @@ std::string P2PHiddenReason(int* sessions = nullptr);
 // answering): the game's "An error occurred during the match" says so (online.cpp).
 bool P2PHostLeft();
 
+// A zeroed 256-byte guest block (0 before InstallP2P): what the match's player
+// table reads for a session slot that is gone (net_stats.cpp).
+uint32_t P2PBlankSlot();
+
 // Online mode: the player in the ONLINE menus (the game's presence session) or
 // an online session / match - or was, in the last 30 s. Presence, the relay's
 // stream: only then (the offline menus show nobody online).
@@ -130,6 +134,14 @@ bool P2PSendModXfer(uint64_t peer, const std::vector<uint8_t>& payload);
 bool P2PPeerDirect(uint64_t peer);
 uint64_t P2PSessionHost(uint64_t* session = nullptr);
 bool P2PHosting(uint64_t* session = nullptr);
+// The input lead the match's host sent in its pings within the last 5 s (0: this game hosts, no match session,
+// or a host from before this carried none): a joiner sets this instead of its own (net_stats.cpp), so both
+// sides of a match pick the same frame - each side's own ping rounds differently (12 and 13 on a 150 ms link,
+// 13 Nov 2026), and a pair runs as tight as the smaller lead: 330 holds in 3 minutes instead of 88.
+uint32_t P2PHostLead();
+// The largest input lead the peers this game pings sent within the last 5 s (its session's other players;
+// 0: none): a host's own measure covers only its links, so it sets and advertises the largest of all.
+uint32_t P2PPeersLead();
 // Lobby chat longer than the game's 64 bytes (online_chat.cpp): the same, a
 // message kind of its own.
 using P2PChatHandler = void (*)(const uint8_t* data, size_t size);

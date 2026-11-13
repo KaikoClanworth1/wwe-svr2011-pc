@@ -5,6 +5,7 @@
 #include "mod_transfer.h"
 #include "no_mods.h"
 
+#include <regex>
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -208,10 +209,24 @@ bool VersionNewer(const std::string& a, const std::string& b) {
   return false;
 }
 
+// A private test server (127.x, localhost, [::1]: what the test scripts allow a
+// test game) means a test: nothing outside is contacted then, GitHub included.
+bool TestServer() {
+  const std::string url = rex::cvar::Query<std::string>("online_server");
+  static const std::regex local(R"(^\s*https?://(127\.\d+\.\d+\.\d+|localhost|\[::1\])(:\d+)?(/|$))",
+                               std::regex::icase);
+  return std::regex_search(url, local);
+}
+
 void CheckVersion(fs::path user_data) {
   rex::thread::set_current_thread_name("version check");
   const std::string mine = svr2011::PortVersion();
   if (mine.empty() || !std::isdigit(static_cast<unsigned char>(mine[0]))) {  // (a developer build: no check)
+    g_version = Version::kLatest;
+    return;
+  }
+  if (TestServer()) {  // (no option for this: the check keeps online players on one version)
+    REXLOG_INFO("online: version {} - the newest not asked (a private test server)", mine);
     g_version = Version::kLatest;
     return;
   }
