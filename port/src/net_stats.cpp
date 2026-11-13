@@ -419,6 +419,8 @@ uint32_t PingLead() {
 
 std::atomic<uint32_t> g_set_lead{0};     // (a host: the lead its setter last set, for its pings - NetLeadNow)
 std::atomic<uint64_t> g_set_session{0};  // (the session it was set in; another session: not latched)
+std::atomic<uint32_t> g_adv_lead{0};     // (a host: the lead its pings last carried before its setter ran - what
+std::atomic<uint64_t> g_adv_session{0};  //  the joiners took; the setter sets that one, so every side agrees)
 
 }  // namespace
 
@@ -444,6 +446,11 @@ REX_HOOK_RAW(sub_829CAD20) {
       const bool hosting = svr2011::P2PHosting(&session);
       if (hosting) {
         if (const uint32_t peers = svr2011::P2PPeersLead(); peers > lead) lead = peers, whose = ", a joiner's link";
+        // (the joiners' setters run before the host's - 200 ms before it in the 13 Nov 2026 rounds - and take the
+        // lead the host's pings carried then; the host sets that same value, not a fresh measure that may have
+        // moved a frame since: a three-game round had the host at 8 and both joiners at 9 "the host's")
+        if (const uint32_t adv = g_adv_lead.load(); adv && g_adv_session.load() == session && adv != lead)
+          lead = adv, whose = ", as its pings said";
       } else if (const uint32_t host = svr2011::P2PHostLead()) {
         lead = host, whose = ", the host's";
       }
@@ -464,7 +471,9 @@ uint32_t NetLeadNow() {
   uint64_t session = 0;
   if (!P2PHosting(&session)) return mine;
   if (g_set_lead && g_set_session == session) return g_set_lead;  // (the lead set for this session's match)
-  return std::max(mine, P2PPeersLead());
+  const uint32_t lead = std::max(mine, P2PPeersLead());
+  if (lead) g_adv_lead = lead, g_adv_session = session;  // (what this ping tells the joiners: the setter's value)
+  return lead;
 }
 
 NetStats NetStatsNow() {
