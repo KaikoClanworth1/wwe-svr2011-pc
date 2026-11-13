@@ -3622,6 +3622,7 @@ void Draw() {
     Hint("The superstar's abilities (up to 8). Unticked: the style's.");
     if (g_star.own_abilities) {
       ImGui::Indent();
+      ImGui::PushID("abilities");  // ("Durability" is an attribute's slider too: one ID, the tick did nothing)
       int col = 0;
       for (const auto& a : kAbilities) {
         bool on = std::find(g_star.abilities.begin(), g_star.abilities.end(), a.id) != g_star.abilities.end();
@@ -3635,6 +3636,7 @@ void Draw() {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", a.about);
         ImGui::EndDisabled();
       }
+      ImGui::PopID();
       ImGui::Unindent();
     }
     const COMDLG_FILTERSPEC txt[] = {{L"Moves list (*.txt)", L"*.txt"}};
