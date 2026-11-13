@@ -12,6 +12,11 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 - **WWE '13 Attitude Era DLC** superstars can be converted in the Mod Maker's porters.
 - **Match recordings** now also cover Royal Rumbles and battle royals.
 
+## 🎮 Nintendo Switch
+- **Runs at the console's normal clocks** while you play (it used to raise them), so it uses less battery and runs cooler. If your matches run slower than before, set `switch_boost_60 = true` in `SvR2011/svr2011.toml` to get the higher clocks back.
+- **Automatic resolution**: in heavy scenes the 3D picture drops a little in sharpness (85%, 75%, down to 480p) to keep the frame rate, then goes back up. Turn it off with `native_dynamic_scale = false`.
+- **A faster build of the game** (link-time and profile-guided optimisation).
+
 ## 🛠️ Fixes
 - **Universe: title holders reshuffled** after adding or removing a mod - fixed (broken since 2.1.9).
 - **Entrance music and motions moving to other superstars** after a mod change - potential fix.
