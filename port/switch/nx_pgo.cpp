@@ -1,7 +1,7 @@
 // Profile-guided optimisation, step 1 (a build with -DSVR_NX_PGO=generate only): the counts of every branch the
 // game and the port ran, written to the card as /SvR2011/pgo/svr2011_<session>.stream. On the PC
 // tools/pgo_merge.sh turns the sessions into the profile the next build reads (-DSVR_NX_PGO=use).
-// The whole session is written again every two minutes (the counts only grow), into a .tmp that then replaces the
+// The whole session is written again every 30 seconds (the counts only grow), into a .tmp that then replaces the
 // last one: the game is closed from HOME without exiting, and a write cut short must leave the one before it.
 // The stream is the one GCC's manual describes for systems without libgcov's own files ("Profiling and Test
 // Coverage in Freestanding Environments"): per object, its file name then its counts.
@@ -21,7 +21,7 @@ Result __real_threadStart(Thread* t);
 
 namespace {
 
-constexpr u64 kPeriodNs = 120ull * 1000000000ull;
+constexpr u64 kPeriodNs = 30ull * 1000000000ull;
 constexpr int kMaxBlocks = 64;
 
 struct Out {

@@ -60,7 +60,7 @@ Both are off unless asked for. Neither has been measured on a console yet.
 
 - **LTO:** `NX_LTO=ON bash build_switch.sh build`. The game's code and the port's own code are optimised as one program at the link. The link takes much longer.
 - **PGO** takes three steps:
-  1. A counting build, in its own folder: `NX_PGO=generate NX_BUILD=$NX_WORK/bgen bash build_switch.sh build`. Put its `svr2011.nro` at `SvR2011/update/svr2011.nro` on the card and play what should be fast. It is slower than a normal build. Every two minutes it writes the session to `SvR2011/pgo/svr2011_<n>.stream` (`SvR2011/logs/nx_pgo.txt` lists the writes).
+  1. A counting build, in its own folder: `NX_PGO=generate NX_BUILD=$NX_WORK/bgen bash build_switch.sh build`. Put its `svr2011.nro` at `SvR2011/update/svr2011.nro` on the card and play what should be fast. It is slower than a normal build. Every 30 seconds it writes the session to `SvR2011/pgo/svr2011_<n>.stream` (`SvR2011/logs/nx_pgo.txt` lists the writes).
   2. Copy `SvR2011/pgo` to the PC, then `bash pgo_merge.sh <that folder>`. The profile lands in `$NX_WORK/pgo`. Run it on the PC and drive the counting build was made on.
   3. `NX_LTO=ON NX_PGO=use bash build_switch.sh build`. The sources must be the ones the counting build was made from: a changed function gets no profile.
 

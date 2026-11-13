@@ -10,12 +10,20 @@ IN="$1"
 PGO="${NX_PGO_DIR:-${NX_WORK:-/work/nx}/pgo}"
 [ -d "$IN" ] || { echo "pgo_merge.sh <folder with the .stream files>"; exit 1; }
 mkdir -p "$PGO"
-[ -z "$(ls "$PGO"/*.gcda 2> /dev/null)" ] || { echo "$PGO already has a profile: move it aside first"; exit 1; }
+[ -z "$(find "$PGO" -name '*.gcda' | head -1)" ] || { echo "$PGO already has a profile: move it aside first"; exit 1; }
 export PATH=/opt/devkitpro/devkitA64/bin:$PATH
+# (as a file, not through stdin: Windows would read stdin as text)
 n=0
 for f in "$IN"/*.stream; do
   [ -f "$f" ] || continue
-  aarch64-none-elf-gcov-tool merge-stream < "$f"
+  aarch64-none-elf-gcov-tool merge-stream "$(cygpath -m "$f")"
   n=$((n + 1))
 done
-echo "pgo: $n sessions, $(ls "$PGO"/*.gcda 2> /dev/null | wc -l) objects in $PGO"
+# The compiler names each object's file by the folder it was built in, as Windows sees it (C~/msys64/work/...), under
+# the profile folder: the counting build's. They move to the name the build that reads them looks for.
+USE="$PGO/$(cygpath -m "${NX_BUILD:-${NX_WORK:-/work/nx}/b}" | sed 's/:/~/')"
+mkdir -p "$USE"
+find "$PGO" -name '*.gcda' -not -path "$USE/*" -exec mv {} "$USE/" \;
+find "$PGO" -depth -type d -empty -delete
+python "$(dirname "${BASH_SOURCE[0]}")/pgo_summary.py" "$USE" "$n"
+echo "pgo: $n sessions, $(ls "$USE"/*.gcda 2> /dev/null | wc -l) objects in $USE"

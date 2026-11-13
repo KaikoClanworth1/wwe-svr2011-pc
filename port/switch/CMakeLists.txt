@@ -111,9 +111,10 @@ target_compile_options(svr2011 PRIVATE -O2)
 # PGO generate: every branch of both targets is counted; nx_pgo.cpp writes the counts on the console (libgcov's own
 # way, a file per object at exit at the build machine's paths, doesn't fit: the game is closed from HOME, and those
 # paths aren't there). The counts are registered in a section instead of by constructors.
-# PGO use: the counts, merged on the PC (tools/pgo_merge.sh), steer inlining, layout and branches. Objects are named
-# relative to the build folder, so the two builds may be in different folders. Code the sessions never ran is compiled
-# as without a profile.
+# PGO use: the counts, merged on the PC (tools/pgo_merge.sh), steer inlining, layout and branches. Each object's
+# profile is named by its build folder (under MSYS the compiler's own view of that folder never matches
+# -fprofile-prefix-path, so it isn't stripped): pgo_merge.sh moves the counting build's files to the reading build's
+# name. Code the sessions never ran is compiled as without a profile.
 if(SVR_NX_LTO)
   foreach(t svr2011_recomp svr2011)
     target_compile_options(${t} PRIVATE -flto -fno-fat-lto-objects)
@@ -134,7 +135,7 @@ if(SVR_NX_PGO STREQUAL "generate")
     "-fno-profile-generate;-fno-lto")
   target_compile_definitions(svr2011 PRIVATE SVR_NX_PGO_GENERATE=1)
 elseif(SVR_NX_PGO STREQUAL "use")
-  file(GLOB SVR_PGO_GCDA "${SVR_NX_PGO_DIR}/*.gcda")
+  file(GLOB_RECURSE SVR_PGO_GCDA "${SVR_NX_PGO_DIR}/*.gcda")
   if(NOT SVR_PGO_GCDA)
     message(FATAL_ERROR "SVR_NX_PGO=use: no .gcda files in ${SVR_NX_PGO_DIR}")
   endif()
