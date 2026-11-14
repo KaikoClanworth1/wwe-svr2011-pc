@@ -48,6 +48,9 @@ bool StockPlays(uint16_t id);
 // The game move a slot of `category` (0-127) falls back to in a match when its own has no record:
 // computed at each MOVS/WAZE load (0 = none / not loaded).
 uint16_t CategoryDefaultMove(int category);
+// Its candidates in order (the game's moves of that category it always shows, then the others) - a match's
+// fallback takes the first one whose motion its banks have (cam_mod_moves.cpp, report 0afa16).
+std::vector<uint16_t> CategoryDefaultMoves(int category);
 
 // Has a match's move `id` nothing to play: a record with category bits but no motion in the game's banks (its
 // DLC's too) or a pack (NoMotionMove), a pack's move whose motions are missing or left out of a bank, or a move a

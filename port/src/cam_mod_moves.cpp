@@ -194,6 +194,67 @@ const std::pair<int, int>& TestMissing() {
   return test;
 }
 
+// Whether the match's motion banks have motion `id` (any x, y): the bank lists *0x82E3CC40 / *0x82E3C108, 68 slots
+// each, a bank's entries at +276 (16 bytes, sorted by id << 16 | x << 8 | y, count at +272) - as sub_82394740 looks
+// one up. No lists (a menu): true, nothing to judge by.
+bool MotionInBanks(uint8_t* base, uint16_t id) {
+  const auto at = [&](uint32_t a) { return base + a + REX_PHYS_HOST_OFFSET(a); };
+  bool any = false;
+  for (const uint32_t list_at : {0x82E3CC40u, 0x82E3C108u}) {
+    const uint32_t list = Rd32(base + list_at);
+    if (!list) continue;
+    any = true;
+    for (uint32_t k = 0; k < 68; ++k) {
+      uint32_t b = Rd32(at(list + 4 * k));
+      if (!b) continue;
+      if (Rd32(at(b)) != 0x734B4D59 && Rd32(at(b)) != 0x73424D59) b -= 16;
+      const uint32_t n = Rd32(at(b + 272));
+      if (!n || n > 65536) continue;
+      uint32_t lo = 0, hi = n;  // (the first entry at or past id << 16)
+      while (lo < hi) {
+        const uint32_t mid = (lo + hi) / 2;
+        if (Rd32(at(b + 276 + mid * 16)) < uint32_t(id) << 16) lo = mid + 1;
+        else hi = mid;
+      }
+      if (lo < n && Rd32(at(b + 276 + lo * 16)) >> 16 == id) return true;
+    }
+  }
+  return !any;
+}
+
+// The fallback for a category in this match: its first candidate the banks have (report 0afa16, 2.2.4: category 3's
+// first game move, 5109, has a record and category bits but no motion in any bank - a pack move's slot fell back to
+// it after a lock-up and both wrestlers froze in motion 5109). Picked once per category while the bank lists stay.
+uint16_t MatchDefault(uint8_t* base, uint32_t cat) {
+  static std::mutex mu;
+  static uint32_t lists = 0;
+  static std::map<uint32_t, uint16_t> picked;
+  const uint32_t now = Rd32(base + 0x82E3CC40) ^ (Rd32(base + 0x82E3C108) << 1);
+  {
+    std::lock_guard lock(mu);
+    if (now != lists) lists = now, picked.clear();
+    if (const auto it = picked.find(cat); it != picked.end()) return it->second;
+  }
+  uint16_t pick = svr2011::CategoryDefaultMove(int(cat));
+  // (the banks are filled while the match loads: judged from 2 s of the match world on - before that the first
+  // candidate, not kept)
+  if (Rd32(base + 0x82E3CD0C) < 120) return pick;
+  if (!MotionInBanks(base, pick)) {
+    const uint16_t skipped = pick;
+    for (const uint16_t id : svr2011::CategoryDefaultMoves(int(cat)))
+      if (id != skipped && !svr2011::NoMotionMove(id) && !svr2011::MoveMissing(id, true) && svr2011::StockPlays(id) &&
+          MotionInBanks(base, id)) {
+        pick = id;
+        break;
+      }
+    REXLOG_WARN("[svr2011] cam mods: category {}'s fallback move {} has no motion in this match's banks - {}", cat,
+                skipped, pick != skipped ? fmt::format("{} instead", pick) : std::string("no other move found, kept"));
+  }
+  std::lock_guard lock(mu);
+  picked[cat] = pick;
+  return pick;
+}
+
 uint32_t MatchMove(uint8_t* base, uint32_t slot, uint32_t got) {
   if (slot >= 224) return got;
   static bool once = false;
@@ -259,7 +320,7 @@ uint32_t MatchMove(uint8_t* base, uint32_t slot, uint32_t got) {
         !svr2011::OnlinePackMoveAllowed(id) ||
         (svr2011::PackMove(id) && svr2011::MoveUsable(id) == 0 && !networked())))
     return got;
-  const uint16_t def = svr2011::CategoryDefaultMove(int(cat));
+  const uint16_t def = MatchDefault(base, cat);
   if (!def) {
     static int nolog = 0;
     if (nolog++ < 8) REXLOG_WARN("[svr2011] cam mods: slot {} move {} has no record and category {} has no move to use", slot, id, cat);
