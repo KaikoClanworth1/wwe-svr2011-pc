@@ -242,6 +242,13 @@ class D3D12Backend final : public Backend {
   void ClearFrame() override { d3d12::ClearFrame(); }
   bool DeviceLost(plume::RenderDevice* device) override { return d3d12::DeviceLost(device); }
   void ReportDeviceLost(plume::RenderDevice* device) override { d3d12::ReportDeviceLost(device); }
+  void TestRemoveDevice(plume::RenderDevice* device) override {
+    d3d12::ComPtr<ID3D12Device5> d5;
+    if (ID3D12Device* d = d3d12::Native(device); d && SUCCEEDED(d->QueryInterface(IID_PPV_ARGS(&d5)))) {
+      REXLOG_WARN("native renderer: test - the Direct3D 12 device removed (SVR2011_TEST_REMOVE_DEVICE_AT)");
+      d5->RemoveDevice();
+    }
+  }
   void ReleaseFence(plume::RenderCommandFence* fence) override { d3d12::ReleaseFence(fence); }
   void DrainDebugMessages(plume::RenderDevice* device) override {
     d3d12::DrainDebugMessages(device);

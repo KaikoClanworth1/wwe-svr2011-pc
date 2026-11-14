@@ -69,6 +69,8 @@
 #include <rex/thread.h>
 
 #include "crash_report.h"
+#include <SDL3/SDL_messagebox.h>     // (OnHostGpuLost's notice)
+#include <rex/system/gpu_plugin.h>  // (SetHostGpuLossHandler)
 #include "native/gpu.h"
 #include "native/recording_list.h"
 #if SVR2011_FSR2
@@ -1048,6 +1050,54 @@ void Fail(const char* reason = "it stopped working") {
 
 using svr2011::EnvFlag;
 
+// The host GPU lost for good (rex::system::SetHostGpuLossHandler, set at the device's creation): the graphics system
+// calls this instead of abort(). Report 101f23 (2.2.4, GTX 1660 Ti, Direct3D 12 at render scale 4x with 4x
+// anti-aliasing): "DEVICE_HUNG (TDR)" twice in 15 minutes, each an abort with no word to the player. Now the log says
+// what the renderer asked of the GPU, a notice tells the player what to lower, and the game ends (no crash report: the
+// log keeps the device-removed lines). No notice in test games (SVR2011_TEST_NO_DIALOGS / SVR2011_WINDOW_HIDDEN).
+void OnHostGpuLost() {
+  // The renderer's own report of the removal (DRED: the command list and op that stopped, the faulting allocation)
+  // runs on its thread and ends with Fail(): waited for, up to 3 s - the abort cut it off in 101f23's logs.
+  std::string why;
+  for (int i = 0; i < 30 && why.empty(); ++i) {
+    {
+      std::lock_guard lock(g_fail_mutex);
+      why = g_fail_reason;
+    }
+    if (why.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  const int32_t aa_cvar = REXCVAR_GET(native_aa);
+  const uint32_t aa = aa_cvar > 0 ? uint32_t(std::clamp<int32_t>(aa_cvar, 1, 4))
+                                  : (rex::cvar::Query<bool>("native_2x_msaa") ? 2u : 1u);
+  const uint32_t scale = g_scale;
+  REXLOG_ERROR("native renderer: the GPU was lost for good ({}; render scale {}x, anti-aliasing {}x) - the game "
+               "ends with a notice",
+               why.empty() ? "device lost" : why, scale, aa);
+  rex::FlushLogging();
+  if (!EnvFlag("SVR2011_TEST_NO_DIALOGS") && !EnvFlag("SVR2011_WINDOW_HIDDEN")) {
+    std::string text = "The graphics card stopped responding and was reset, so the game has to close.\n\n";
+    if (scale > 1 || aa > 1) {
+      text += fmt::format("The game was drawing at render scale {}x with {}x anti-aliasing - a lot for this "
+                          "graphics card. ",
+                          scale, aa);
+#if defined(__ANDROID__)
+      text += "In the launcher's Quality settings, lower Render resolution or turn Anti-aliasing off, then play "
+              "again.";
+#else
+      text += "Lower ANTI-ALIASING (2X or OFF) and RENDER RESOLUTION (AUTO or less) in the launcher's or the "
+              "game's GRAPHICS settings, then play again.";
+#endif
+    } else {
+      text += "Updating the graphics driver can help.";
+    }
+    if (why.find("restart the game") != std::string::npos) text += "\n\n" + why.substr(why.find("restart the game"));
+    text += "\n\nIf it keeps happening, send a problem report from the launcher (it includes the game's log).";
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "SvR 2011 - the graphics card stopped responding", text.c_str(),
+                             nullptr);
+  }
+  std::_Exit(5);
+}
+
 int EnvInt(const char* name, int fallback) {
   char* v = nullptr;
   size_t n = 0;
@@ -1645,6 +1695,7 @@ bool Initialize() {
     return false;
   }
   REXLOG_INFO("native renderer: GPU {}", r->device->getDescription().name);
+  rex::system::SetHostGpuLossHandler(&OnHostGpuLost);  // (a device lost for good: a notice, not abort())
 #if defined(_WIN32)
   {  // (for reports: what a GPU that runs out of memory had)
     MEMORYSTATUSEX m = {sizeof(m)};
@@ -5558,6 +5609,9 @@ void OnPresent(uint32_t front_buffer) {
   ProbeCollect(r);  // (SVR2011_TEST_SCENE)
   // (test: SVR2011_TEST_DEVICE_LOST_AT=<frame> - the device taken as lost there)
   static const uint64_t test_lost = uint64_t(EnvInt("SVR2011_TEST_DEVICE_LOST_AT", 0));
+  // (test: SVR2011_TEST_REMOVE_DEVICE_AT=<frame> - the device really removed there, Direct3D 12: report 101f23's path)
+  static const uint64_t test_remove = uint64_t(EnvInt("SVR2011_TEST_REMOVE_DEVICE_AT", 0));
+  if (test_remove && r->frames == test_remove) backend::TestRemoveDevice(r->device.get());
   if (backend::DeviceLost(r->device.get()) || (test_lost && r->frames == test_lost)) {
     ReportDeviceRemoved(r);
     return;
