@@ -39,6 +39,8 @@ class Backend {
   virtual void ClearFrame() = 0;
   virtual bool DeviceLost(plume::RenderDevice* device) = 0;
   virtual void ReportDeviceLost(plume::RenderDevice* device) = 0;
+  // Test aid (SVR2011_TEST_REMOVE_DEVICE_AT): the device removed for real where the API can (Direct3D 12).
+  virtual void TestRemoveDevice(plume::RenderDevice*) {}
   virtual void ReleaseFence(plume::RenderCommandFence* fence) = 0;
   virtual void DrainDebugMessages(plume::RenderDevice* device) = 0;
   virtual void LogBuffer(plume::RenderBuffer* buffer, uint64_t size) = 0;
@@ -88,6 +90,8 @@ void ClearFrame();
 // the faulting allocation when the driver tells).
 bool DeviceLost(plume::RenderDevice* device);
 void ReportDeviceLost(plume::RenderDevice* device);
+// Test aid (report 101f23): removes the device for real (Direct3D 12: ID3D12Device5::RemoveDevice - a TDR's path).
+void TestRemoveDevice(plume::RenderDevice* device);
 // Sets `fence` from the CPU, so work waiting on it (the emulator's queue,
 // for a frame) runs on after the GPU stopped answering.
 void ReleaseFence(plume::RenderCommandFence* fence);

@@ -61,6 +61,9 @@ bool DeviceLost(plume::RenderDevice* device) { return g_backend && g_backend->De
 void ReportDeviceLost(plume::RenderDevice* device) {
   if (g_backend) g_backend->ReportDeviceLost(device);
 }
+void TestRemoveDevice(plume::RenderDevice* device) {
+  if (g_backend) g_backend->TestRemoveDevice(device);
+}
 void ReleaseFence(plume::RenderCommandFence* fence) {
   if (g_backend) g_backend->ReleaseFence(fence);
 }

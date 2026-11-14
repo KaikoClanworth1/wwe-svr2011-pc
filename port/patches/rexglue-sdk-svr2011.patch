@@ -469,6 +469,25 @@ index c2c4fd4..ae8dcff 100644
  
    static inline void InitHostExceptions(u32& csr) noexcept {
      csr &= ~ExceptionMask;  // Clear enable bits to disable exceptions
+diff --git a/include/rex/system/gpu_plugin.h b/include/rex/system/gpu_plugin.h
+index 453c210..32813fe 100644
+--- a/include/rex/system/gpu_plugin.h
++++ b/include/rex/system/gpu_plugin.h
+@@ -46,6 +46,14 @@ struct GpuCreateInfo {
+ using GpuAbiVersionFn = uint32_t (*)();
+ using GpuCreateFn = IGraphicsSystem* (*)(uint32_t abi_version, const GpuCreateInfo* info);
+ 
++// [svr2011] The host GPU device lost for good (Direct3D 12 device removed - a TDR -, Vulkan device lost): the graphics
++// system calls the handler the game set here (from the thread that saw the loss; it is expected not to return: tell
++// the player and end the process) instead of FatalError's abort(). Kept in rexruntime: the GPU plugin and the game
++// both reach it. (Report 101f23, 2.2.4: a GTX 1660 Ti at 4x render scale + 4x AA aborted with no word.)
++using HostGpuLossHandler = void (*)();
++void SetHostGpuLossHandler(HostGpuLossHandler handler);
++HostGpuLossHandler GetHostGpuLossHandler();
++
+ // Loads rexgpu-<name> from the executable's directory and constructs its
+ // graphics system. Returns nullptr after logging a detailed error (missing
+ // file, missing exports, ABI mismatch, or factory failure). The library
 diff --git a/include/rex/system/util/string_utils.h b/include/rex/system/util/string_utils.h
 index e2b0470..06d6fea 100644
 --- a/include/rex/system/util/string_utils.h
@@ -2145,7 +2164,7 @@ index a5c97a0..77b865e 100644
    return true;
  }
 diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
-index 8f2fcb0..77d4a36 100644
+index 8f2fcb0..375c2d0 100644
 --- a/src/graphics/graphics_system.cpp
 +++ b/src/graphics/graphics_system.cpp
 @@ -9,7 +9,10 @@
@@ -2159,7 +2178,14 @@ index 8f2fcb0..77d4a36 100644
  
  #include <algorithm>
  #include <cctype>
-@@ -31,10 +34,17 @@
+@@ -25,16 +28,24 @@
+ #include <rex/kernel/xboxkrnl/video.h>
+ #include <rex/logging.h>
+ #include <rex/stream.h>
++#include <rex/system/gpu_plugin.h>  // [svr2011] (SetHostGpuLossHandler)
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xthread.h>
+ #include <rex/ui/graphics_provider.h>
  #include <rex/ui/window.h>
  #include <rex/ui/windowed_app_context.h>
  
@@ -2177,7 +2203,7 @@ index 8f2fcb0..77d4a36 100644
  REXCVAR_DEFINE_BOOL(store_shaders, true, "GPU",
                      "Store shaders persistently and load them when loading games to avoid "
                      "runtime spikes and freezes when playing the game not for the first time.");
-@@ -158,8 +168,56 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+@@ -158,8 +169,56 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
              std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / refresh_rate_hz));
          uint64_t no_vsync_interval_ticks = std::max(uint64_t(1), guest_tick_frequency / 1000);
          uint64_t last_frame_time = chrono::Clock::QueryGuestTickCount();
@@ -2234,7 +2260,7 @@ index 8f2fcb0..77d4a36 100644
            uint64_t interval_ticks =
                REXCVAR_GET(vsync) ? vsync_interval_ticks : no_vsync_interval_ticks;
            while (current_time - last_frame_time >= interval_ticks) {
-@@ -168,6 +226,9 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+@@ -168,6 +227,9 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
            }
            rex::thread::Sleep(std::chrono::milliseconds(1));
          }
@@ -2244,7 +2270,7 @@ index 8f2fcb0..77d4a36 100644
          return 0;
        }));
    // TODO: set_can_debugger_suspend not yet ported
-@@ -217,6 +278,12 @@ void GraphicsSystem::OnHostGpuLossFromAnyThread([[maybe_unused]] bool is_respons
+@@ -217,6 +279,16 @@ void GraphicsSystem::OnHostGpuLossFromAnyThread([[maybe_unused]] bool is_respons
    if (host_gpu_loss_reported_.test_and_set(std::memory_order_relaxed)) {
      return;
    }
@@ -2254,10 +2280,14 @@ index 8f2fcb0..77d4a36 100644
 +  REXLOG_ERROR("Graphics device lost - waiting for diagnostics");
 +  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 +  rex::FlushLogging();
++  // [svr2011] (report 101f23) The game's handler tells the player and ends the process (gpu_plugin.h).
++  if (const auto handler = rex::system::GetHostGpuLossHandler()) {
++    handler();
++  }
    rex::FatalError("Graphics device lost (probably due to an internal error)");
  }
  
-@@ -312,8 +379,10 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
+@@ -312,8 +384,10 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
    //          interrupt_callback_, source, cpu);
  
    uint64_t args[] = {source, interrupt_callback_data_};
@@ -4594,10 +4624,32 @@ index 1254710..4c50b3a 100644
    assert(buffer_ptr);
    assert(fetch_ptr);
 diff --git a/src/system/gpu_plugin_loader.cpp b/src/system/gpu_plugin_loader.cpp
-index 754fa13..1e20c8c 100644
+index 754fa13..674805a 100644
 --- a/src/system/gpu_plugin_loader.cpp
 +++ b/src/system/gpu_plugin_loader.cpp
-@@ -55,8 +55,14 @@ std::vector<platform::DynamicLibrary>& LoadedPlugins() {
+@@ -11,6 +11,7 @@
+ 
+ #include <rex/system/gpu_plugin.h>
+ 
++#include <atomic>  // [svr2011]
+ #include <filesystem>
+ #include <string>
+ #include <vector>
+@@ -24,6 +25,13 @@
+ 
+ namespace rex::system {
+ 
++// [svr2011] (gpu_plugin.h) the game's device-loss handler.
++namespace {
++std::atomic<HostGpuLossHandler> g_host_gpu_loss_handler{nullptr};
++}  // namespace
++void SetHostGpuLossHandler(HostGpuLossHandler handler) { g_host_gpu_loss_handler.store(handler); }
++HostGpuLossHandler GetHostGpuLossHandler() { return g_host_gpu_loss_handler.load(); }
++
+ namespace {
+ 
+ // Plugin binaries follow the SDK's per-config postfix convention; this TU is
+@@ -55,8 +63,14 @@ std::vector<platform::DynamicLibrary>& LoadedPlugins() {
  }  // namespace
  
  std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::string_view backend) {
