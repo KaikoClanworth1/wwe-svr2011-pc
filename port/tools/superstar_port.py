@@ -1768,6 +1768,13 @@ def model_w(g, cid, pac11, out, portrait):
         w13_char.write_epk8(template104(pac11), [(b'EMD ', n, b) for n, b in kept + gear], tmp)
         raw = open(tmp, 'rb').read()
     open(tmp, 'wb').write(raw)
+    model_w.split = []
+    if raw[:4] == b'EPK8':   # (an attire's piece worn for the entrance only -> its entrance model, kind 4: report 08b661)
+        _, groups = ch_tool.epk8_read(raw)
+        ents = [(n, b) for t, es in groups if t == b'EMD ' for n, b in es if n.strip(b'\0')]
+        split, model_w.split = w13_char.entrance_split(ents)
+        if model_w.split:
+            w13_char.write_epk8(template104(pac11), [(b'EMD ', n, b) for n, b in split], tmp)
     ptmp = None
     if portrait:   # (w13_char takes the portrait as a file)
         ptmp = tmp + '.portrait.dds'
@@ -1951,6 +1958,8 @@ def buildW(cid, outdir, o, rep):
         import model_budget
         pages = model_budget.model_pages(os.path.join(mod, 'ch.pac'))
         note('model: %s ch%d.pac, %d attires (w13_char)' % (gw.label, cid, len(pages)))
+        for n_ in getattr(model_w, 'split', []):
+            note(n_)
         gear_now = sorted(n for n in pac_children(os.path.join(mod, 'ch.pac')) if n.endswith('4'))
         if gear_now:
             note('entrance gear: %s%s' % (', '.join(gear_now), ' (the %s gear pieces merged into the body)' % gw.label
@@ -2182,6 +2191,8 @@ def build_single(cid, outdir, o, rep):
             drop('attires past %d (2011 has 4 at most): %s' % (g.max_attires, ', '.join(left)))
         for e in getattr(model_w, 'extras', []):
             drop(e)
+        for n_ in getattr(model_w, 'split', []):
+            note(n_)
         gear = [n for n in pac_children(out) if n.endswith('4')]
     elif game == 'svr2007':
         import svr07_char

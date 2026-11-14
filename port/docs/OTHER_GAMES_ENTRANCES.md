@@ -522,10 +522,22 @@ same slot, else the one closest in length, its poses only (its cues dropped), cu
 length, the first record with the standard event block. A team member takes the donor's same object's face,
 else its entrant's. The report's `face` note names the donor.
 
+## Props only the source has (report 08b661)
+
+- Props 2011's evtobj lacks come from the source: its DLC pacs (`pac/evt/evtobj_dlc<nn>.pac`, packages' own), then its disc
+  `evtobj.pac` (WWE '13's Gangrel fire 2726), as new evtobj entries (`svrmod wwe13prop`). EPK8 / EPAC group count fields are in
+  words: 12-byte entries count / 3 also in EPK8 (read as / 4, the last entries of a group were lost: Gangrel's goblet 2723 / 2724).
+- Pyro also from the disc's `prtcls_dlc<nn>.pac` when `prtcls.pac` has no set for the number (WWE '13 Attitude Era 50-57).
+- A prop with no 2011 track gets its own pose from the source's root channel (0x75 records, node 0): in a hand - the source's
+  events 166 / 167 / 164 -> 2011 bb / bc / b7, and 180 v -> 72 v (the holder), checked on the shared entrances' belts -
+  root = 10 x (x, z, -y), angles = zyx of M R13 (M the same axis change; fitted on 3009 in 800-824, 20 of 20 keys); not in a
+  hand: the vehicles' frame (root x 10, `_yxz`). Before, such a prop had events only and never showed (held in no hand).
+- Checked in game (Gangrel 53 as 120): the goblet in his right hand on the ramp and at the steps, set down on the steps.
+
 ## The global object (lights and effects)
 
 Tracks x 10..14 go with slot 0, 60..64 with slot 5, 110..114 with slot 10; y 52..59 are moving lights, y 50 holds op 137. WWE 2K14 conversions now
-use the entrance's own tracks (`wwe13_entrance.global_track`), not a stock donor's. A donor changes the look of the whole entrance: with Triple H 102's, Goldberg
+use the entrance's own tracks (`wwe13_entrance.global_track`), not a stock donor's; WWE '13 too since 14 Nov (report 08b661: Gangrel 53 goes red and dark as in the source, where 510's donor tracks left the arena lit). A donor changes the look of the whole entrance: with Triple H 102's, Goldberg
 361 goes nearly black. The other games keep the donor until they are played (`OWN_GLOBAL_GAMES`).
 
 Record: u8 hold (that many skipped frames follow; at most 0x5f), 3 f32 LE position, 3 s16 LE angles, 3 u16 LE colour. Position = source x 100, from y 50 x 10;

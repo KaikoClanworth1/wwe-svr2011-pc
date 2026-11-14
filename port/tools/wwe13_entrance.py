@@ -169,8 +169,9 @@ def xdec(raw, svrmod):
 
 def epk8_entries(d):
     """EPK8 / 2K14 EPAC -> {(group, name): unpacked bytes}; group header {4CC, u16 count field, u16 kind, u32};
-    kind bit 0: 16-byte entries (name[8]), count field / 4; else 12-byte (name[4]), count field / 4 in EPK8
-    and / 3 in EPAC"""
+    the count field is in words: kind bit 0: 16-byte entries (name[8]), count field / 4; else 12-byte (name[4]),
+    count field / 3 (EPK8 too: WWE '13's evtobj_dlc01.pac SOBJ holds 5 props, count field 15 - read as / 4 it gave
+    3 and Gangrel's goblet 2723 / 2724 were left out, report 08b661; every 12-byte group of WWE '12-2K14 fits / 3)"""
     out = collections.OrderedDict()
     epac = d[:4] == b'EPAC'
     tsz = struct.unpack_from('<I', d, 4)[0]
@@ -180,7 +181,7 @@ def epk8_entries(d):
         cnt4, kind = struct.unpack_from('<HH', d, p + 4)
         p += 12
         nl = 8 if kind & 1 else 4
-        for _ in range(cnt4 // (3 if epac and not kind & 1 else 4)):
+        for _ in range(cnt4 // (4 if kind & 1 else 3)):
             nm = d[p:p + nl].decode('latin-1').strip(' \0')
             sec, sz = struct.unpack_from('<II', d, p + nl)
             b = d[0x4000 + sec * 0x800:0x4000 + sec * 0x800 + sz * 0x100]
@@ -414,7 +415,8 @@ def global_donor(stock, obj13, prefer=None):
 # position x 100, from y 50 x 10; angles: 2011's zyx = the source's zyx x GLOBAL_AXES; the source's event 87 starts
 # a track (no event in 2011), 88 and 256 end it (op 1, 00), 208 is op 137 (as on any object).
 GLOBAL_AXES = ((0, 0, 1), (-1, 0, 0), (0, -1, 0))
-OWN_GLOBAL_GAMES = {'wwe2k14'}  # (the others keep a stock donor until they are played)
+OWN_GLOBAL_GAMES = {'wwe2k14', 'wwe13'}  # (the others keep a stock donor until they are played; WWE '13 played 14 Nov,
+# Gangrel 53: his own red, dark lights where the donor's left the arena lit - report 08b661)
 
 
 def _key_at(keys, t):
@@ -572,6 +574,17 @@ def map_event(cid, typ, d, okind, frame0):
             return [bytes([182])]
         if cid == 179:
             return [bytes([180, v & 0xff])]
+        # (a prop held by a character: the hand 166 / 167 and the holder 180 v - checked on the shared entrances,
+        # the belts of 800-824: 167 + 180 4 -> bc 72 04, 166 -> bb; 164 -> b7 (7 of 7). Unmapped before, a prop
+        # only the source has kept no track and never reached the hand: Gangrel's goblet, report 08b661)
+        if cid == 164:
+            return [bytes([183])]
+        if cid == 166:
+            return [bytes([187])]
+        if cid == 167:
+            return [bytes([188])]
+        if cid == 180 and typ == 1:
+            return [bytes([114, v & 0xff])]
         if cid == 256:
             return [bytes([1, 0])]
     if okind in ('rope', 'turnbuckle'):
@@ -674,6 +687,61 @@ def rope_track(m, nframes, events):
 def events_track(nframes, events):
     recs = [(f, ymks.join_record(b''.join(ev), b'')) for f, ev in sorted(events.items()) if ev]
     return ymks.build_stream(ymks.make_stream(recs, nframes))
+
+
+# ---- a prop with no 2011 track (a model only the source has - WWE '13's Gangrel goblet 2724, report 08b661): its own
+# pose, from the source's root channel, as 2011's 0x75 prop records [count 0][3h root][24-bit node mask][3h node 0].
+# Held (in a hand: the source's events 164 / 166 / 167 - map_event - with the slot's parent): fitted on the belt
+# 3009 the shared entrances 800-824 hold (20 of 20 keys exact): root = 10 x (x, z, -y) of the source's, node 0 = angles (a, b, c) with Rz(c) Ry(b) Rx(a) = M R13, M the
+# same (x, y, z) -> (x, z, -y). Not in a hand: as the vehicles' (root x 10, angles by _yxz).
+PROP_ROOT = '#0c5879e5'
+_M_HELD = np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], dtype=float)
+
+
+def _qmat(q):
+    x, y, z, w = q
+    n = math.sqrt(x * x + y * y + z * z + w * w) or 1.0
+    x, y, z, w = x / n, y / n, z / n, w / n
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def _held_angles(q):
+    """source rotation -> (a, b, c): Rz(c) Ry(b) Rx(a) = M R13"""
+    R = _M_HELD @ _qmat(q)
+    b = math.asin(max(-1.0, min(1.0, -R[2, 0])))
+    a = math.atan2(R[2, 1], R[2, 2])
+    c = math.atan2(R[1, 0], R[0, 0])
+    return a, b, c
+
+
+def prop_pose_track(m, nf, events, held):
+    """the source prop's root channel -> 2011 prop track data (a record where the pose changes), or None"""
+    tr = m['tracks'].get(PROP_ROOT)
+    if tr is None:
+        return None
+    last, recs, prev = m['frames'] - 1, [], None
+    for f in range(nf):
+        r = Y.sample_track(tr, min(2 * f, last))
+        p = r['pos'] if r['pos'] is not None else (0.0, 0.0, 0.0)
+        q = r['rot'] if r['rot'] is not None else (0.0, 0.0, 0.0, 1.0)
+        if held:
+            root = (10 * p[0], 10 * p[2], -10 * p[1])
+            ang = _held_angles(q)
+        else:
+            root = tuple(10 * v for v in p)
+            ang = _yxz(q)
+        root = tuple(max(-32768, min(32767, int(round(float(v))))) for v in root)
+        pose = bytes([0x75, 0]) + struct.pack('<3h', *root) + bytes([1, 0, 0]) + struct.pack('<3h', *(_s16a(v) for v in ang))
+        if pose == prev:
+            pose = b''
+        else:
+            prev = pose
+        ev = b''.join(events.get(f, []))
+        if pose or ev:
+            recs.append((f, ymks.join_record(ev, pose)))
+    return ymks.build_stream(ymks.make_stream(recs, nf))
 
 
 def is_static(m):
@@ -981,8 +1049,18 @@ def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None
                     if not is_static(m):
                         rep['notes'].append('object %d (%d,%d): animated WWE \'13 prop pose replaced by 2011\'s %d track' % (i, x, y, o['model']))
                 else:
-                    data = events_track(nf, evs)
-                    rep['notes'].append('object %d (%d,%d): prop %d has no 2011 track: events only (held pose)' % (i, x, y, o['model']))
+                    data = None
+                    # (held: in a hand - the source's hand event 164 / 166 / 167 in the segment - the hand's frame; else
+                    # the vehicles' frame, a parent or not: Gangrel's goblet set down on the steps is on object 0
+                    # with no hand, and stood there only so)
+                    held = any(c['id'] in (164, 166, 167) for ev_ in block_events(leaf, off) for c in ev_['commands'])
+                    data = prop_pose_track(m, nf, evs, held=held)
+                    if data is not None:
+                        rep['notes'].append('object %d (%d,%d): prop %d - its own pose (%s)' % (i, x, y, o['model'],
+                                            'in a hand' if held else 'not in a hand'))
+                    else:
+                        data = events_track(nf, evs)
+                        rep['notes'].append('object %d (%d,%d): prop %d has no 2011 track: events only (held pose)' % (i, x, y, o['model']))
             else:
                 rep['dropped'].append('object %d (%d,%d): %s track' % (i, x, y, k))
                 continue

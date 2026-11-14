@@ -756,6 +756,49 @@ EXTRA_MODELS = range(0x10, 0x100)   # (JBOY children past the textures: 2K14 Hog
 MOVE_PROPS = ('sock',)
 
 
+# (an extra model worn for the entrance only: WWE '13 Val Venis's towel 00005502 0x1d, the necklace of 00035604 /
+# 00035612, 2K14 Hollywood Hogan's T-shirt in his entrance model 04 - all 0x1d. In a match model it went into the body
+# and stayed on all match - report 08b661: entrance_split makes it the attire's entrance model, kind 4)
+ENTRANCE_PIECES = (0x1d,)
+
+
+def entrance_split(entries):
+    """[(name, blob)] model pac entries (name '%06d%02d': id, attire * 10 + kind) -> (entries, notes): a match model
+    (kind 2) with an entrance piece (ENTRANCE_PIECES) and no kind 4 of its own -> kind 2 without the piece + kind 4 =
+    the model as it was (2011 wears an attire's kind 4 for its entrance, then the match model: docs/
+    ENTRANCE_ATTIRES.md 4). An attire with no kind 4 enters in attire 1's (..04): when that one is added here, the
+    other attires without one get a kind 4 of their own, a copy of their match model."""
+    names = {n for n, _ in entries}
+    out, notes, added = [], [], set()
+    for n, b in entries:
+        if not (len(n) == 8 and n[7:8] == b'2') or n[:7] + b'4' in names:
+            out.append((n, b))
+            continue
+        try:
+            kids = svrfmt.pach_read(ch_tool.unpack(b))
+        except ValueError:
+            out.append((n, b))
+            continue
+        piece = [i for i, x in kids if i in ENTRANCE_PIECES and ch_tool.unpack(x)[:4] == b'JBOY']
+        if not piece:
+            out.append((n, b))
+            continue
+        out.append((n, svrfmt.pach_write([(i, x) for i, x in kids if i not in piece])))
+        out.append((n[:7] + b'4', b))
+        added.add(n[:7] + b'4')
+        notes.append('attire %s: model %s (worn for the entrance only) is in its entrance model %s, not the match model'
+                     % (n.decode('latin1'), ', '.join('0x%x' % i for i in piece), (n[:7] + b'4').decode('latin1')))
+    if any(g[6:7] == b"0" for g in added):   # (attire 1's kind 4 added: the others' entrances would wear it)
+        have = {n[:7] for n, _ in out if len(n) == 8 and n[7:8] == b'4'}
+        for n, b in list(out):
+            if len(n) == 8 and n[7:8] == b'2' and n[:7] not in have:
+                out.append((n[:7] + b'4', b))
+                notes.append('attire %s: its own entrance model %s (a copy of the match model), so it doesn\'t enter in '
+                             'attire 1\'s' %(n.decode('latin1'), (n[:7] + b'4').decode('latin1')))
+    out.sort(key=lambda e: e[0])
+    return out, notes
+
+
 def extra_models(kids13):
     """an attire's extra models the body / hair / lash conversion doesn't take: JBOY children 0x10-0xff, and 0x271a
     when 0x2710 is the hair (2K16+ keep their hair at 0x271a alone)"""
