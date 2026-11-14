@@ -217,6 +217,7 @@ struct Mod {
   // what it puts into a profile (base, own moves, entrance numbers, created entrance, theme, movie, victory):
   // a save's profile for the slot made for another mod - or this one before an update - isn't kept (CheckSavedProfiles)
   uint32_t fingerprint = 0;
+  uint32_t fingerprint_old = 0;  // (2.2.4's formula, with this run's theme name and movie number: marks and files from then)
   std::vector<uint32_t> caes_set;
   std::vector<uint8_t> abilities;  // (manifest abilities=a,b,...; record +230.., up to 8)
   // its height: a factor of the base's (manifest height=1.05; 0 = the base's)
@@ -638,8 +639,14 @@ void SetOwnMoves(uint8_t* profile, const Mod& m) {
       profile[kEntrance + k] = uint8_t(m.entrance >> 8), profile[kEntrance + k + 1] = uint8_t(m.entrance);
 }
 
-// The mod's fingerprint (Mod::fingerprint): FNV-1a over what SetOwnMoves / SetEntranceMedia / SetCaeParts put in.
-uint32_t Fingerprint(const Mod& m) {
+// The mod's fingerprint (Mod::fingerprint): FNV-1a over what the mod itself puts into a profile - its base, own
+// moves, entrance numbers, created entrance, game theme (music=) and victory. Not what the port gives it at install:
+// the theme's playlist name ("<name> [<folder>]" when the name is taken) and the movie number (the first free one,
+// which moves as other mods take the numbers below it - report 690443: Brock Lesnar's 744 -> 745 -> 747, so his
+// saved profile read as "made for an older brock_lesnar" and was handed over at every start, his entrance and
+// move edits lost). SetEntranceMedia brings a slot's theme and movie up to date without a handover.
+// `old`: 2.2.4's formula (the name and number in) - marks and per-mod files written by it still match.
+uint32_t Fingerprint(const Mod& m, bool old = false) {
   uint32_t h = 2166136261u;
   const auto add = [&](const void* p, size_t n) {
     for (size_t i = 0; i < n; ++i) h = (h ^ static_cast<const uint8_t*>(p)[i]) * 16777619u;
@@ -650,12 +657,17 @@ uint32_t Fingerprint(const Mod& m) {
   add_int(m.entrance);
   for (int e : m.attire_entrance) add_int(e);
   add(m.cae.data(), m.cae.size());
-  add(m.song.data(), m.song.size());
-  add_int(m.movie);
+  if (old) {
+    add(m.song.data(), m.song.size());
+    add_int(m.movie);
+  } else {
+    add("fp2", 3);  // (never equal to an old one by chance of layout)
+  }
   add_int(m.music);
   add_int(m.victory);
   return h;
 }
+bool SameVersion(const Mod& m, uint32_t fp) { return fp == m.fingerprint || fp == m.fingerprint_old; }
 
 // A created entrance's part of the entrance block (docs/ENTRANCE_ATTIRES.md 1): the five scene parts (34 bytes each
 // from +0x1C: motion +14, pyro +10 (5000 = none), ...) and the created-entrance flags +0xC6..+0xC9 (+0xC7 != 0: the
@@ -1207,6 +1219,7 @@ void LoadMods() {
     REXLOG_INFO("[svr2011] superstar mods: {} as id {} (from {}, key {}){}", m.name, m.slot, m.base, m.key,
                 temp ? " - fetched from the session's host, this run only" : "");
     m.fingerprint = Fingerprint(m);
+    m.fingerprint_old = Fingerprint(m, true);
     if (!m.victory_song.empty()) svr2011::SetVictoryTrack(m.slot, m.victory_song, m.victory_gain);
     g_mods.push_back(std::move(m));
   }
@@ -1860,7 +1873,7 @@ void CheckSavedProfiles(uint8_t* base) {
     std::string why;
     if (const auto k = marks.find(m.slot); k != marks.end()) {
       if (k->second.folder != m.folder) why = "made for " + k->second.folder;
-      else if (k->second.fp != m.fingerprint) why = "made for an older " + m.folder;
+      else if (!SameVersion(m, k->second.fp)) why = "made for an older " + m.folder;
       else SetOwned(m.slot);  // (this mod's, this version: a renamed record stays its)
     } else {
       // (a save from before the file, or a slot new to it: does the profile look like this mod's?)
@@ -4710,9 +4723,9 @@ bool ReadModSave(const Mod& m, ModSave& s) {
   }
   // Test aid SVR2011_TEST_MOD_SAVE_ANY=1: a .dat made by hand (no fingerprint of the mod's own) is taken.
   static const bool any = std::getenv("SVR2011_TEST_MOD_SAVE_ANY") != nullptr;
-  if (fingerprint != Fingerprint(m) && any) {
+  if (!SameVersion(m, fingerprint) && any) {
     REXLOG_INFO("[svr2011] per-mod saves: test - {}.dat taken whatever its fingerprint (SVR2011_TEST_MOD_SAVE_ANY)", m.folder);
-  } else if (fingerprint != Fingerprint(m)) {
+  } else if (!SameVersion(m, fingerprint)) {
     REXLOG_INFO("[svr2011] per-mod saves: {}.dat was made for another version of the mod - its defaults instead",
                 m.folder);
     return false;
