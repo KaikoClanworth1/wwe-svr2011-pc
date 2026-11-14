@@ -3480,6 +3480,8 @@ constexpr uint32_t kCawBlocks = 0xB6364, kCawBlock = 0x24818, kCawPoseByte = 0x2
 constexpr uint32_t kCawPoseMotion = 1010;
 uint32_t g_pose_bank = 0;                               // (guest: the loader of EDIT/MOT, while it's loaded)
 int g_panel_pose_x[6] = {-1, -1, -1, -1, -1, -1};       // (per panel: the x of its pose)
+std::chrono::steady_clock::time_point g_pose_started[6];  // (per panel: its pose's last start - kPoseLoop)
+constexpr auto kPoseLoop = std::chrono::milliseconds(2500);
 
 int CawPose(uint32_t id, uint32_t attire) {
   if (id >= 50 || attire >= 4 || g_save_file.empty()) return 0;
@@ -3582,9 +3584,32 @@ REX_HOOK_RAW(sub_8273D758) {
 // A panel's motion starts here (r5 motion, r6 x); a pose put off to later is in the panel's +120 for sub_8273DF80.
 REX_EXTERN(__imp__sub_8273D978);
 REX_HOOK_RAW(sub_8273D978) {
-  if (ctx.r5.u32 == kCawPoseMotion && ctx.r4.u32 < 6 && g_panel_pose_x[ctx.r4.u32] >= 0)
-    ctx.r6.u64 = uint32_t(g_panel_pose_x[ctx.r4.u32]);
+  const uint32_t panel = ctx.r4.u32;
+  const bool pose = ctx.r5.u32 == kCawPoseMotion && panel < 6 && g_panel_pose_x[panel] >= 0;
+  if (pose) ctx.r6.u64 = uint32_t(g_panel_pose_x[panel]);
   __imp__sub_8273D978(ctx, base);
+  if (pose && ctx.r3.u32 == 1) g_pose_started[panel] = std::chrono::steady_clock::now();  // (it started: kPoseLoop)
+}
+// A CAW's pose loops (report 2b7c0d, 2.2.4: EDIT/MOT's poses play once and hold their last frame - the game's own
+// select motions loop by themselves, and a held pose read as "static"). sub_8273F9A0(mgr) runs every frame on the
+// select screen: a panel playing its pose kPoseLoop after its last start gets it again (sub_8273D978, as the game
+// asks a panel's motion; the hook above sets the pose's x and notes the start).
+REX_EXTERN(__imp__sub_8273F9A0);
+REX_HOOK_RAW(sub_8273F9A0) {
+  const uint32_t mgr = ctx.r3.u32;
+  __imp__sub_8273F9A0(ctx, base);
+  if (!g_pose_bank) return;
+  const auto now = std::chrono::steady_clock::now();
+  for (uint32_t panel = 0; panel < 6; ++panel) {
+    if (g_panel_pose_x[panel] < 0 || now - g_pose_started[panel] < kPoseLoop) continue;
+    g_pose_started[panel] = now;  // (tried: not again before kPoseLoop, started or not)
+    const auto saved = ctx;
+    ctx.r1.u64 = saved.r1.u32 - 0x100;
+    ctx.r3.u64 = mgr, ctx.r4.u64 = panel, ctx.r5.u64 = kCawPoseMotion, ctx.r6.u64 = uint32_t(g_panel_pose_x[panel]);
+    ctx.r7.u64 = 0, ctx.r8.u64 = 0;
+    sub_8273D978(ctx, base);
+    ctx = saved;
+  }
 }
 // (r3 the screen, r4 the panel) A panel's first motion starts here, with x 0 or the +120 sub_8273D978 put off: while it
 // runs, motion 1010 is that panel's pose - in the check that it's there and in the start.
@@ -3602,6 +3627,7 @@ REX_HOOK_RAW(sub_82396E80) {
 REX_EXTERN(__imp__sub_8273DF80);
 REX_HOOK_RAW(sub_8273DF80) {
   g_starting_pose_x = ctx.r4.u32 < 6 ? g_panel_pose_x[ctx.r4.u32] : -1;
+  if (g_starting_pose_x >= 0) g_pose_started[ctx.r4.u32] = std::chrono::steady_clock::now();
   __imp__sub_8273DF80(ctx, base);
   g_starting_pose_x = -1;
 }
@@ -3632,9 +3658,13 @@ REX_HOOK_RAW(sub_8273D4A0) {
     if (const char* q = std::strchr(v, '=')) as = uint32_t(std::atoi(q + 1));
   // (a Created Superstar with a pose set, once its bank has a slot; else as any CAW)
   if (ctx.r4.u32 < 6) g_panel_pose_x[ctx.r4.u32] = -1;
-  if (id < 50 && ctx.r4.u32 < 6 && g_pose_bank && Rd32(base + g_pose_bank + 44) != 0xFFFFFFFFu) {
+  // (test aid SVR2011_TEST_POSE_ALL=<pose>: every panel plays that Menu Screen Pose, as a Created Superstar's - the
+  // select cursor starts on a disc superstar: A on it picks him, this asks; with SVR2011_TEST_CAW_POSE set, so the
+  // screen loads EDIT/MOT)
+  static const int pose_all = [] { const char* v = std::getenv("SVR2011_TEST_POSE_ALL"); return v ? std::atoi(v) : 0; }();
+  if ((id < 50 || pose_all) && ctx.r4.u32 < 6 && g_pose_bank && Rd32(base + g_pose_bank + 44) != 0xFFFFFFFFu) {
     const uint32_t which = Rd32(base + slot + 20) == 1 ? 64 : 44;
-    if (const int pose = CawPose(id, Rd32(base + slot + which + 4))) {
+    if (const int pose = pose_all ? pose_all : CawPose(id, Rd32(base + slot + which + 4))) {
       const uint32_t panel = ctx.r4.u32;
       const auto saved = ctx;
       ctx.r1.u64 = saved.r1.u32 - 0x100;
