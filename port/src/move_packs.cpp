@@ -2428,7 +2428,8 @@ namespace {
 // the last MOVS/WAZE loaded (after the packs' patch).
 std::mutex g_usable_mutex;
 std::vector<bool> g_usable;  // (empty: not loaded yet)
-std::vector<uint16_t> g_defaults;  // category -> its fallback move (CategoryDefaultMove)
+std::vector<std::vector<uint16_t>> g_defaults;  // category -> its fallback moves in order (CategoryDefaultMove)
+std::vector<int32_t> g_default_pick;             // category -> the one CategoryDefaultMove took (-1: not yet)
 std::vector<bool> g_record, g_bits;  // a record with the id at all / with category bits (MoveMissing)
 std::vector<bool> g_past_pack;       // ids a pack has given (Mods\PacOverlay\pack_moves.txt, kept across starts)
 std::vector<bool> g_stock_ok;        // the stock game plays the id without packs (a record with bits, or EXH data)
@@ -2459,10 +2460,11 @@ void SetMoveTables(const uint8_t* w) {
   // the mod's own)
   for (const auto& [id, from] : g_copies)
     if (NeverStarts(id, from)) usable[id] = false;
-  // per category, the move a slot falls back to in a match when its own has no record (cam_mod_moves.cpp):
-  // the first game move (not a pack's) of that category the game always shows (unlock 512 or 1-3), else
-  // its first game move
-  std::vector<uint16_t> defaults(128, 0), any(128, 0);
+  // per category, the moves a slot falls back to in a match when its own has no record (cam_mod_moves.cpp), in
+  // order: the game's moves (not a pack's) of that category the game always shows (unlock 512 or 1-3), then its
+  // other game moves - CategoryDefaultMove takes the first one that plays (report 0afa16: category 3's first,
+  // 5109, has a record and no motion in any bank - both wrestlers froze in it after a lock-up)
+  std::vector<std::vector<uint16_t>> defaults(128), any(128);
   for (uint32_t k = 0, n = Le32(w + 4); k < n; ++k) {
     const uint8_t* r = w + 272 + size_t(k) * 160;
     const uint16_t id = Le16(r + 0x90), unlock = Le16(r + 0x78);
@@ -2470,15 +2472,14 @@ void SetMoveTables(const uint8_t* w) {
     const bool shown = unlock == 512 || (unlock >= 1 && unlock <= 3);
     for (int c = 0; c < 128; ++c) {
       if (!(r[c >> 3] >> (c & 7) & 1)) continue;
-      if (!any[c]) any[c] = id;
-      if (shown && !defaults[c]) defaults[c] = id;
+      (shown ? defaults[c] : any[c]).push_back(id);
     }
   }
-  for (int c = 0; c < 128; ++c)
-    if (!defaults[c]) defaults[c] = any[c];
+  for (int c = 0; c < 128; ++c) defaults[c].insert(defaults[c].end(), any[c].begin(), any[c].end());
   std::lock_guard lock(g_usable_mutex);
   g_usable = std::move(usable);
   g_defaults = std::move(defaults);
+  g_default_pick.assign(128, -1);
   g_record = std::move(record);
   g_bits = std::move(bits);
 }
@@ -2575,9 +2576,30 @@ namespace svr2011 {
 // (g_waze / g_names / g_copies are set once at start-up, before the game runs)
 bool PackMove(uint16_t id) { return g_waze.count(id) || g_names.count(id) || g_copies.count(id); }
 
-uint16_t CategoryDefaultMove(int category) {
+std::vector<uint16_t> CategoryDefaultMoves(int category) {
   std::lock_guard lock(g_usable_mutex);
-  return category >= 0 && size_t(category) < g_defaults.size() ? g_defaults[category] : 0;
+  return category >= 0 && size_t(category) < g_defaults.size() ? g_defaults[category] : std::vector<uint16_t>{};
+}
+
+uint16_t CategoryDefaultMove(int category) {
+  std::vector<uint16_t> list;
+  {
+    std::lock_guard lock(g_usable_mutex);
+    if (category < 0 || size_t(category) >= g_defaults.size()) return 0;
+    if (size_t(category) < g_default_pick.size() && g_default_pick[category] >= 0) return uint16_t(g_default_pick[category]);
+    list = g_defaults[category];
+  }
+  // (the first that plays: a motion the game or a pack has, a record the game starts - not one the match would
+  // freeze in, as 0afa16's 5109; none of them: the first, as before)
+  uint16_t pick = list.empty() ? 0 : list.front();
+  for (const uint16_t id : list)
+    if (!NoMotionMove(id) && !MoveMissing(id, true) && StockPlays(id)) {
+      pick = id;
+      break;
+    }
+  std::lock_guard lock(g_usable_mutex);
+  if (size_t(category) < g_default_pick.size()) g_default_pick[category] = pick;
+  return pick;
 }
 
 std::vector<std::pair<std::string, std::string>> MovePacks() {
