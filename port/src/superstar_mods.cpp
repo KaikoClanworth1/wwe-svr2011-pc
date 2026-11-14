@@ -526,13 +526,31 @@ bool SameBytes(const fs::path& a, const fs::path& b) {
 std::string ThemeName(const Mod& m, const fs::path& music, const fs::path& theme) {
   ReadThemeOwners();
   const std::string plain = FileName(m.name);
+  // Names are compared ignoring case: the Music folder's file names do (Windows), and the game finds an entrance's
+  // song by the exact name it was given (report 690443: the player's "BROCK LESNAR.mp3" was there; the mod's theme
+  // "Brock Lesnar" was copied onto it - his song overwritten - and listed as "BROCK LESNAR", so the entrance found no
+  // "Brock Lesnar" and played nothing). A file of the name in another case with other bytes is the player's: the mod
+  // takes its tagged name. With the theme's own bytes it is the port's copy: renamed to the mod's case.
+  auto lower = [](std::string s) {
+    for (char& c : s) c = char(std::tolower(uint8_t(c)));
+    return s;
+  };
+  std::vector<fs::path> recase;  // (the port's copies under the name in another case)
   auto taken = [&](const std::string& n) {
-    if (const auto it = g_theme_owner.find(n); it != g_theme_owner.end()) return it->second != m.folder;
+    recase.clear();
+    const auto it = g_theme_owner.find(n);
+    if (it != g_theme_owner.end() && it->second != m.folder) return true;
     std::error_code ec;
     if (fs::is_directory(music / n, ec)) return true;
     for (const auto& e : fs::directory_iterator(music, ec)) {
-      if (!e.is_regular_file(ec) || e.path().stem().string() != n) continue;
-      return !SameBytes(e.path(), theme);  // (a player's own song - or the port's, from before the list)
+      if (!e.is_regular_file(ec) || lower(e.path().stem().string()) != lower(n)) continue;
+      const bool same = SameBytes(e.path(), theme);
+      if (e.path().stem().string() == n) {
+        if (it == g_theme_owner.end() && !same) return true;  // (a player's own song - or the port's, before the list)
+        continue;
+      }
+      if (!same) return true;  // (another case, other bytes: the player's)
+      recase.push_back(e.path());
     }
     return false;
   };
@@ -540,6 +558,15 @@ std::string ThemeName(const Mod& m, const fs::path& music, const fs::path& theme
   if (taken(name)) {
     const std::string tag = " [" + m.folder.substr(0, 30) + "]";
     name = FileName(plain.substr(0, plain.size() + tag.size() > 39 ? 39 - tag.size() : plain.size()) + tag);
+    taken(name);  // (the tagged name's own copies in another case)
+  }
+  for (const fs::path& f : recase) {  // (a case-only rename: through a temporary name)
+    std::error_code ec;
+    const fs::path tmp = fs::path(f).concat(".recase"), to = f.parent_path() / fs::u8path(name + f.extension().string());
+    fs::rename(f, tmp, ec);
+    if (!ec) fs::rename(tmp, to, ec);
+    REXLOG_INFO("[svr2011] superstar mods: {}: theme file {} renamed to {} (the entrance names it so){}", m.folder,
+                f.filename().string(), to.filename().string(), ec ? " - failed: " + ec.message() : "");
   }
   if (g_theme_owner[name] != m.folder) g_theme_owner[name] = m.folder, WriteThemeOwners();
   return name;
