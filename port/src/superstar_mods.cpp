@@ -1757,6 +1757,22 @@ void KeepPoolPlaceholders(uint8_t* base) {
 // it as "the player's edits"). At a save load such a slot is handed over (ApplyRecords: the mod's own profile;
 // RedoHandovers: again after the save's late write). A save from before the file: a slot whose saved profile has
 // fewer than half of the mod's own moves (or, with none, not its entrance) is taken as another mod's.
+// Slots whose record and profile are this run's mod's own (report 354d4e): the save's marks (mod_profiles.txt) name
+// this mod with this version, or this run already set the slot up after the save's load. The game lets a player
+// rename a superstar (the record's full name, +34; its second name +102 stays): Misawa renamed "Mitsuharu Misawa"
+// read as "another mod held this slot" at the next record pass, and his edited move-set was replaced by his base's
+// (John Cena's). For these slots the name is no test of who owns them.
+std::set<uint32_t> g_owned;
+std::mutex g_owned_mutex;
+bool Owned(uint32_t slot) {
+  std::lock_guard lock(g_owned_mutex);
+  return g_owned.count(slot) > 0;
+}
+void SetOwned(uint32_t slot) {
+  std::lock_guard lock(g_owned_mutex);
+  g_owned.insert(slot);
+}
+
 std::set<uint32_t> g_stale;  // slots to hand over at this load's ApplyRecords
 fs::file_time_type g_marks_seen;
 fs::path MarksFile() { return g_save_file.empty() ? fs::path() : g_save_file.parent_path() / ".universe" / "mod_profiles.txt"; }
@@ -1782,6 +1798,10 @@ void WriteMarks() {
 void CheckSavedProfiles(uint8_t* base) {
   constexpr size_t kHeader = 0x18, kSaveProfiles = 0x3C160;
   g_stale.clear();
+  {
+    std::lock_guard lock(g_owned_mutex);
+    g_owned.clear();  // (a save loaded: who owns each slot is this save's, below and in ApplyRecords)
+  }
   g_marks_seen = SaveWriteTime();  // (the save just loaded: not a write)
   svrfmt::Bytes file;
   if (g_save_file.empty() || !svrfmt::ReadFile(g_save_file.string(), file) ||
@@ -1814,6 +1834,7 @@ void CheckSavedProfiles(uint8_t* base) {
     if (const auto k = marks.find(m.slot); k != marks.end()) {
       if (k->second.folder != m.folder) why = "made for " + k->second.folder;
       else if (k->second.fp != m.fingerprint) why = "made for an older " + m.folder;
+      else SetOwned(m.slot);  // (this mod's, this version: a renamed record stays its)
     } else {
       // (a save from before the file, or a slot new to it: does the profile look like this mod's?)
       size_t own = 0, same = 0;
@@ -1942,7 +1963,15 @@ void ApplyRecords(uint8_t* base) {
       g_handed[m.slot] = {svrfmt::Bytes(sp, sp + kProfileSize), kHandoverFrames};  // (RedoHandovers)
       REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {} (its saved profile was another mod's)", m.base, m.slot);
     }
-    if (!std::strncmp(reinterpret_cast<char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) {
+    const bool same_name = !std::strncmp(reinterpret_cast<char*>(sr + kFullName), m.name.c_str(), kNameLen - 1);
+    const bool owned = !same_name && !stale && Owned(m.slot) &&
+                       !PlaceholderName(m.slot, std::string(reinterpret_cast<char*>(sr + kFullName), 0,
+                                                             strnlen(reinterpret_cast<char*>(sr + kFullName), kNameLen)));
+    if (owned && FirstTime(fmt::format("renamed {} {:.32}", m.slot, reinterpret_cast<char*>(sr + kFullName))))
+      REXLOG_INFO("[svr2011] superstar mods: id {} ({}) is named \"{:.32}\" in the save - renamed by the player, its "
+                  "moves, entrance and edits kept", m.slot, m.folder, reinterpret_cast<char*>(sr + kFullName));
+    if (same_name || owned) {
+      if (g_save_loaded) SetOwned(m.slot);
       sr[kSelectable] = Selectable(m), sr[kDlc] = 1;
       OwnSelectTile(sr, br);  // (a save from before 2.0.5 has the base's)
       SetHeight(sr, br, m);
@@ -1991,6 +2020,7 @@ void ApplyRecords(uint8_t* base) {
         OwnSelectTile(sr, br);
         SetHeight(sr, br, m);
         UniverseBrand(sr, m);
+        if (g_save_loaded) SetOwned(m.slot);
         continue;
       }
     }
@@ -2015,6 +2045,7 @@ void ApplyRecords(uint8_t* base) {
     if (const char* e = std::getenv("SVR2011_TEST_STAR_EDIT"); e && uint32_t(std::atoi(e)) == m.slot)
       for (uint32_t i = 0; i < 15; ++i) sr[i] = i == 7 ? sr[i] : 20;
     REXLOG_INFO("[svr2011] superstar mods: record {} -> id {} ({}; was \"{}\")", m.base, m.slot, m.name, was);
+    if (g_save_loaded) SetOwned(m.slot);  // (the mod's record from here: a later rename keeps it its)
   }
   RedoHandovers(base, false);
   PutBackEntries(base);
