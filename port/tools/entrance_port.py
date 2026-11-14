@@ -914,6 +914,10 @@ def dlc_props(src, game, evp11, rep):
     # of one catalog - suggestion 6135d5)
     try:
         disc = ['pac/evt/' + f for f in src.listdir('pac/evt') if re.match(r'(?i)evtobj_dlc\d+\.pac$', f)]
+        # (then the disc's own evtobj.pac, for a prop 2011's lacks - WWE '13's Gangrel fire 2726, report 08b661; only
+        # ids 2011 doesn't have reach here, and the DLC pacs come first)
+        if disc:
+            disc += ['pac/evt/' + f for f in src.listdir('pac/evt') if f.lower() == 'evtobj.pac']
     except Exception:   # noqa: BLE001
         disc = []
     if not packages and not disc:
@@ -1405,6 +1409,22 @@ def pyro(src, g, entrance, number, d, rep):
         return
     name = '%04d' % entrance
     pce = ents.get(('PCE6', name))
+    where = 'prtcls.pac'
+    if pce is None and g not in ('wwe2k16', 'wwe2k17'):
+        # (the disc's prtcls_dlc<nn>.pac: WWE '13's Attitude Era superstars' sets - Gangrel's fire, PCE6 0053, report
+        # 08b661; their entrances are on the disc too, unlocked by a package)
+        try:
+            for f in sorted(src.listdir('pac')):
+                if re.match(r'(?i)prtcls_dlc\d+\.pac$', f):
+                    raw = src.read('pac/' + f)
+                    if raw[:4] not in (b'EPAC', b'EPK8'):
+                        raw = E13.xdec(raw, E13.find_svrmod(SVRMOD))
+                    more = E13.epk8_entries(raw)
+                    if ('PCE6', name) in more:
+                        ents, pce, where = more, more[('PCE6', name)], f
+                        break
+        except Exception as x:   # noqa: BLE001
+            rep['notes'].append("pyro: the disc's prtcls_dlc pacs not readable (%s)" % x)
     if pce is None:
         rep['notes'].append('pyro: the source has no particle set for entrance %d' % entrance)
         return
@@ -1417,7 +1437,7 @@ def pyro(src, g, entrance, number, d, rep):
         lines.append('pacentry prtcls.pac %s %04d %s' % (grp, number, fn))
     with open(os.path.join(d, 'pack.txt'), 'a', newline='\r\n') as f:
         f.write('\n'.join(lines) + '\n')
-    rep['notes'].append('pyro: prtcls.pac PCE6/LPE6 %s -> %04d%s' % (name, number, '' if ('LPE6', name) in ents else ' (LPE6 from PCE6)'))
+    rep['notes'].append('pyro: %s PCE6/LPE6 %s -> %04d%s' % (where, name, number, '' if ('LPE6', name) in ents else ' (LPE6 from PCE6)'))
 
 
 TITANTRON_DIRS = ('movies/titantron', 'MOVIES/TITANTRON', 'movies/Titantron')

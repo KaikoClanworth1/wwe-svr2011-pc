@@ -95,6 +95,12 @@ EMD entry in a mod's ch.pac (or attireN.pac) already works as that attire's entr
 A mod built from Undertaker / Punk / Cena / HBK / Morrison's pac inherits that superstar's
 entrance coat unless the entry is dropped (a Mod Maker check).
 
+Ported models (`w13_char.entrance_split`, report 08b661): a WWE '12-2K17 match model (kind 2) with an extra model at
+PACH child 0x1d - worn for the entrance only: WWE '13 Val Venis's towel, ch356's necklace, 2K14 Hogan's T-shirt in his
+04 - and no kind 4 of its own becomes kind 2 without it + kind 4 with it; when that kind 4 is attire 1's, the other
+attires without one get a copy of their kind 2 as kind 4 (else they would enter in attire 1's). Checked in game: Val
+Venis walks out in the towel, the match model has none.
+
 Per-(id, attire) prop and belt attach offsets come from a text table read by `sub_82761C88`.
 
 ## 5. Open
