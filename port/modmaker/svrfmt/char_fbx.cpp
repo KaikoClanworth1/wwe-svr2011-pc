@@ -375,24 +375,31 @@ FbxChains FindFbxChains(const std::vector<FbxBone>& bones, const std::vector<std
     return hair != 0 && head >= 0 && targets[size_t(i)].empty() && !is_cloth(i) && IsHairBoneName(bones[size_t(i)].name) && under(i, head);
   };
   // (runs: from where one starts - its parent isn't one, or branches - down its single children)
-  auto runs = [&](const std::function<bool(int)>& in, size_t need, std::vector<std::vector<int>>& out, int& short_ones) {
+  // The game's chain record holds 16 nodes and its set-up doesn't check (docs/HAIR_PHYSICS.md: nodes at C+16+80j,
+  // rest lengths from C+1296): a longer chain wrote over the next one and past the table - report f6848d, a scarf of
+  // 17 bones ("scarfb.000".."scarfb.013_end_end_end") froze the world update and crashed the game wherever the model
+  // loaded. A hair strand's bones are its nodes (16 at most); a cloth chain gets a tip node after its last bone (15).
+  // The bones past the cut ride on the chain's last bone.
+  auto runs = [&](const std::function<bool(int)>& in, size_t need, size_t most, std::vector<std::vector<int>>& out,
+                  int& short_ones) {
     for (size_t i = 0; i < nb; ++i) {
       const int pa = bones[i].parent;
       if (!in(int(i)) || (pa >= 0 && in(pa) && kids[size_t(pa)].size() == 1)) continue;
       std::vector<int> s{int(i)};
-      while (kids[size_t(s.back())].size() == 1 && in(kids[size_t(s.back())][0]) && s.size() < 24) s.push_back(kids[size_t(s.back())][0]);
+      while (kids[size_t(s.back())].size() == 1 && in(kids[size_t(s.back())][0]) && s.size() < 64) s.push_back(kids[size_t(s.back())][0]);
+      if (s.size() > most) s.resize(most), ++r.cut;
       if (s.size() >= need) out.push_back(std::move(s));
       else if (s.size() >= 2) ++short_ones;
     }
     std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.size() > b.size(); });
   };
   std::vector<std::vector<int>> hair_runs;
-  runs(is_hair, 4, hair_runs, r.short_hair);
+  runs(is_hair, 4, 16, hair_runs, r.short_hair);
   for (auto& h : hair_runs) {
     if (hair < 0 && IsSecondaryBoneName(bones[size_t(h[0])].name)) ++r.secondary;
     else r.hair.push_back(std::move(h));
   }
-  runs(is_cloth, 3, r.cloth, r.short_cloth);
+  runs(is_cloth, 3, 15, r.cloth, r.short_cloth);
   if (r.hair.size() > 16) r.over += int(r.hair.size() - 16), r.hair.resize(16);
   if (r.hair.size() + r.cloth.size() > 16) r.over += int(r.hair.size() + r.cloth.size() - 16), r.cloth.resize(16 - r.hair.size());
   return r;
@@ -1400,6 +1407,7 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
     for (const auto& c : ch.cloth) strands.push_back(c), strand_parent.push_back(c.front() >= 0 && parent[size_t(c.front())] >= 0 ? wbone[size_t(parent[size_t(c.front())])] : "koshi");
     if (ch.over) rep.warnings.push_back(std::to_string(ch.over) + " moving hair / cloth chain(s) past the 16 the game moves: they ride on their bone");
     if (ch.short_hair) rep.warnings.push_back(std::to_string(ch.short_hair) + " hair strand(s) with under 4 bones ride on the head (the game's chains need 4)");
+    if (ch.cut) rep.warnings.push_back(std::to_string(ch.cut) + " moving hair / cloth chain(s) longer than the game's 16 joints - cut to 16 (the bones past it ride on the last one)");
     if (ch.short_cloth) rep.warnings.push_back(std::to_string(ch.short_cloth) + " cloth chain(s) with under 3 bones ride on their bone");
     if (ch.secondary) rep.mesh_lines.push_back("hair: " + std::to_string(ch.secondary) + " VRChat secondary hair chain(s) (J_Sec_*) left out - their weights on the head");
     for (size_t si = 0; si < strands.size(); ++si)
@@ -1411,6 +1419,20 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
         else std::snprintf(n, sizeof n, "kami_b%02d_%02d", int(si), int(j - 1));
         wbone[size_t(strands[si][k])] = n;
       }
+    // (the bones under a chain that aren't in it - past the 16-joint cut, or a branch - ride on its nearest joint)
+    std::vector<char> in_chain(nb, 0);
+    for (const auto& s : strands)
+      for (int b : s) in_chain[size_t(b)] = 1;
+    for (size_t i = 0; i < nb; ++i) {
+      if (in_chain[i] || !targets[i].empty()) continue;
+      for (int p = parent[i], n = 0; p >= 0 && n <= int(nb); p = parent[size_t(p)], ++n) {
+        if (!targets[size_t(p)].empty()) break;  // (a mapped bone first: its weights stay there)
+        if (in_chain[size_t(p)]) {
+          wbone[i] = wbone[size_t(p)];
+          break;
+        }
+      }
+    }
   }
   std::vector<std::string> out_bones;
   std::map<std::string, int> out_index;

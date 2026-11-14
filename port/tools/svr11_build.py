@@ -667,6 +667,9 @@ class Builder:
                     hang = 'atama'
                 joints = joints.get('joints') or []
             P = [np.array(j, float) for j in joints]
+            if len(P) > 16:   # (the game's chain record holds 16 nodes, unchecked: more wrote past it - report f6848d)
+                self.warnings.append('chain %d: %d joints, the game moves at most 16 - cut to 16' % (ci, len(P)))
+                P = P[:16]
             if len(P) < 4:   # (a chain needs a pivot, a pinned node, one that moves and a tip target)
                 self.warnings.append('hair chain %d: %d joints, at least 4 needed - left out' % (ci, len(P)))
                 continue

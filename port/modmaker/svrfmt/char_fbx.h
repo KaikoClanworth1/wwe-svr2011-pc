@@ -52,6 +52,7 @@ bool ReadFbxSkeleton(const std::string& path, std::vector<FbxBone>& out, std::st
 struct FbxChains {
   std::vector<std::vector<int>> hair, cloth;
   int short_hair = 0, short_cloth = 0, secondary = 0, over = 0;  // (too short; J_Sec_ left out; past the 16)
+  int cut = 0;  // chains cut to the game's 16 nodes a chain (a cloth chain's tip is a node too: 15 bones)
 };
 FbxChains FindFbxChains(const std::vector<FbxBone>& bones, const std::vector<std::string>& targets, int hair,
                         const std::map<std::string, bool>& cloth);

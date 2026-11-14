@@ -15,6 +15,7 @@
 #include <mutex>
 
 #include <rex/hook.h>
+#include <rex/logging.h>
 #include <rex/ppc.h>
 
 #include "generated/default/svr2011_init.h"
@@ -99,4 +100,28 @@ REX_HOOK_RAW(sub_8216A9E8) {
   const uint32_t h = ctx.r3.u32;
   __imp__sub_8216A9E8(ctx, base);
   if (Wanted(base, h)) Dump(base, h, "C1");
+}
+
+// A chain record holds 16 nodes (C+16+80j; its rest lengths from C+1296), and the set-up (8216DC60 -> 8216D3C0)
+// counts a chain's nodes by name, kami_bNN_00, _01 ... until one is missing, without a bound. A model with a longer
+// chain - a Mod Maker 2.2.4 FBX import with a 17-bone scarf, report f6848d - made the step read past the record and
+// crash at lr 8216DC3C (from the draw's join, 82225508) wherever it loaded: the select screen, Training, a match.
+// The Mod Maker and the builder now cut chains to 16; for models already built, each chain's count is held to 16
+// after the set-up.
+REX_EXTERN(__imp__sub_8216DC60);
+REX_HOOK_RAW(sub_8216DC60) {
+  const uint32_t h = ctx.r3.u32;
+  __imp__sub_8216DC60(ctx, base);
+  if (!h) return;
+  const uint32_t chains = std::min<uint32_t>(svrfmt::Rd32(base + h + 752), 16);
+  for (uint32_t i = 0; i < chains; ++i) {
+    uint8_t* c = base + h + 768 + 1408 * i;
+    const uint32_t n = svrfmt::Rd32(c);
+    if (n <= 16) continue;
+    svrfmt::Wr32(c, 16);
+    static int told = 0;
+    if (told++ < 8)
+      REXLOG_WARN("[svr2011] hair chains: chain {} has {} nodes, the game's record holds 16 - held to 16 (rebuild the "
+                  "mod in the Mod Maker 2.2.5+)", i, n);
+  }
 }
