@@ -5715,19 +5715,21 @@ index ade5dd2..9151f01 100644
    read_range.Begin = 0;
    read_range.End = 0;
 diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
-index 7360ed9..dd6a163 100644
+index 7360ed9..407962e 100644
 --- a/src/ui/presenter.cpp
 +++ b/src/ui/presenter.cpp
-@@ -11,6 +11,8 @@
+@@ -11,7 +11,10 @@
  
  #include <algorithm>
  #include <atomic>
 +#include <chrono>
 +#include <thread>
  #include <cctype>
++#include <cstdlib>  // [svr2011] (getenv)
  #include <utility>
  
-@@ -26,6 +28,24 @@
+ #include <rex/assert.h>
+@@ -26,6 +29,24 @@
  #include <ffx_api/ffx_upscale.h>
  #endif
  
@@ -5752,7 +5754,7 @@ index 7360ed9..dd6a163 100644
  REXCVAR_DEFINE_BOOL(host_present_from_non_ui_thread, true, "UI/Presenter",
                      "Allow presentation from non-UI thread");
  
-@@ -277,6 +297,17 @@ GuestOutputPaintConfig BuildGuestOutputPaintConfigFromCVar() {
+@@ -277,6 +298,17 @@ GuestOutputPaintConfig BuildGuestOutputPaintConfigFromCVar() {
  namespace rex {
  namespace ui {
  
@@ -5770,7 +5772,7 @@ index 7360ed9..dd6a163 100644
  void Presenter::FatalErrorHostGpuLossCallback([[maybe_unused]] bool is_responsible,
                                                [[maybe_unused]] bool statically_from_ui_thread) {
    rex::FatalError("Graphics device lost (probably due to an internal error)");
-@@ -446,9 +477,31 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+@@ -446,9 +478,31 @@ void Presenter::PaintFromUIThread(bool force_paint) {
    // Reset ui_thread_paint_requested_ unconditionally also, regardless of
    // whether the UI needs to be drawn - the flag may be set to try reconnecting,
    // for example.
@@ -5803,7 +5805,25 @@ index 7360ed9..dd6a163 100644
    PaintResult paint_result = PaintResult::kNotPresented;
    bool request_repaint_at_tick = false;
    bool request_repaint_immediately = false;
-@@ -541,6 +594,7 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+@@ -465,7 +519,16 @@ void Presenter::PaintFromUIThread(bool force_paint) {
+     }
+     // Try to recover from the connection becoming outdated in the previous
+     // paint.
+-    if (surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedOutdated) {
++    // [svr2011] (report b673c6) Also from a surface that was zero-area (minimised) at the last try: a forced paint
++    // (the window exposed again) reconnects it - otherwise only a resize did, and a window restored at its old size
++    // gets none.
++    static const bool no_restore_fix = [] {
++      const char* v = std::getenv("SVR2011_TEST_NO_RESTORE_FIX");  // (test aid: the old behaviour)
++      return v && *v == '1';
++    }();
++    if (surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedOutdated ||
++        (surface_paint_connection_state_ == SurfacePaintConnectionState::kUnconnectedRetryAtStateChange &&
++         !no_restore_fix)) {
+       UpdateSurfacePaintConnectionFromUIThread(nullptr, false);
+     }
+     // If still paintable or recovered successfully, paint.
+@@ -541,6 +604,7 @@ void Presenter::PaintFromUIThread(bool force_paint) {
        request_repaint_at_tick = true;
      }
    }
@@ -5811,7 +5831,7 @@ index 7360ed9..dd6a163 100644
    if (request_repaint_at_tick || request_repaint_immediately) {
      RequestPaintOrConnectionRecoveryViaWindow(request_repaint_immediately);
    }
-@@ -592,6 +646,7 @@ bool Presenter::RefreshGuestOutput(
+@@ -592,6 +656,7 @@ bool Presenter::RefreshGuestOutput(
        last_acquired_and_ready,
        (last_acquired_and_ready & 3) | (guest_output_mailbox_writable_ << 2),
        std::memory_order_acq_rel, std::memory_order_relaxed)) {}
@@ -5819,7 +5839,7 @@ index 7360ed9..dd6a163 100644
    // Now, it's known that `ready == writable` on the host presentation side.
    // Take the next `writable` with this assumption about its current value in
    // mind.
-@@ -1497,7 +1552,15 @@ bool Presenter::InSurfaceOnMonitorFromUIThread() const {
+@@ -1497,7 +1562,15 @@ bool Presenter::InSurfaceOnMonitorFromUIThread() const {
  Presenter::PaintResult Presenter::PaintAndPresent(bool execute_ui_drawers) {
    assert_false(execute_ui_drawers && !is_in_ui_thread_paint_);
    assert_true(surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedPaintable);
@@ -5900,6 +5920,35 @@ index 0000000..b1ba2a6
 +
 +}  // namespace ui
 +}  // namespace rex
+diff --git a/src/ui/surface_win.cpp b/src/ui/surface_win.cpp
+index 8cd18a1..a050986 100644
+--- a/src/ui/surface_win.cpp
++++ b/src/ui/surface_win.cpp
+@@ -11,15 +11,24 @@
+ 
+ #include <rex/ui/surface_win.h>
+ 
++#include <atomic>
++
+ namespace rex {
+ namespace ui {
+ 
++// [svr2011] Test aid (SVR2011_TEST_MINIMIZE, window_sdl.cpp): the surface reads as zero-area, as a minimised window's.
++std::atomic<bool> g_test_zero_surface{false};
++
+ #if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP | WINAPI_PARTITION_GAMES)
+ bool Win32HwndSurface::GetSizeImpl(uint32_t& width_out, uint32_t& height_out) const {
+   RECT client_rect;
+   if (!GetClientRect(hwnd(), &client_rect)) {
+     return false;
+   }
++  if (g_test_zero_surface.load(std::memory_order_relaxed)) {
++    width_out = height_out = 0;
++    return true;
++  }
+   // GetClientRect returns a rectangle with 0 origin.
+   width_out = uint32_t(client_rect.right);
+   height_out = uint32_t(client_rect.bottom);
 diff --git a/src/ui/vulkan/vulkan_device.cpp b/src/ui/vulkan/vulkan_device.cpp
 index 8197bb4..e74870e 100644
 --- a/src/ui/vulkan/vulkan_device.cpp
@@ -6499,19 +6548,49 @@ index 9eeb902..1352d33 100644
    if (with_presentation) {
      provider->ui_samplers_ = UISamplers::Create(provider->vulkan_device_.get());
      if (!provider->ui_samplers_) {
+diff --git a/src/ui/window.cpp b/src/ui/window.cpp
+index b4e045f..6e4409f 100644
+--- a/src/ui/window.cpp
++++ b/src/ui/window.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <cstdlib>  // [svr2011] (getenv)
+ #include <iterator>
+ 
+ #include <rex/assert.h>
+@@ -610,6 +611,16 @@ void Window::OnMinimized(WindowDestructionReceiver& destruction_receiver) {
+ }
+ 
+ void Window::OnRestored(WindowDestructionReceiver& destruction_receiver) {
++  // [svr2011] (report b673c6) A minimised window's surface is zero-area: the presenter disconnects and retries at the
++  // next surface state change - a resize. Restored at the size it had (full screen, alt-tab back), no resize comes
++  // (OnActualSizeUpdate sees the same size): the picture stayed frozen while the game ran on. Retry here.
++  static const bool no_fix = [] {
++    const char* v = std::getenv("SVR2011_TEST_NO_RESTORE_FIX");  // (test aid: the old behaviour)
++    return v && *v == '1';
++  }();
++  if (presenter_surface_ && !no_fix) {
++    presenter_->OnSurfaceResizeFromUIThread();
++  }
+   if (!CanSendEventsToListeners()) {
+     return;
+   }
 diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
-index 2251429..8ae96d6 100644
+index 2251429..28ca0fb 100644
 --- a/src/ui/window_sdl.cpp
 +++ b/src/ui/window_sdl.cpp
-@@ -15,6 +15,7 @@
+@@ -15,6 +15,8 @@
  
  #include <algorithm>
  #include <cmath>
++#include <cstdio>  // [svr2011] (sscanf)
 +#include <cstdlib>
  #include <cstring>
  #include <filesystem>
  
-@@ -28,6 +29,11 @@
+@@ -28,6 +30,11 @@
  #include <rex/ui/flags.h>
  #include <rex/ui/sdl_virtual_key.h>
  
@@ -6523,19 +6602,29 @@ index 2251429..8ae96d6 100644
  #if REX_PLATFORM_WIN32
  #include <rex/ui/surface_win.h>
  #elif REX_PLATFORM_MAC
-@@ -35,6 +41,8 @@
+@@ -35,6 +42,11 @@
  #include <SDL3/SDL_metal.h>
  
  #include <rex/ui/surface_mac.h>
 +#elif REX_PLATFORM_ANDROID
 +#include <rex/ui/surface_android.h>  // [svr2011]
++#include <atomic>   // [svr2011] (SVR2011_TEST_MINIMIZE)
++#include <chrono>
++#include <thread>
  #else
  #include <X11/Xlib-xcb.h>
  #include <rex/ui/surface_gnulinux.h>
-@@ -133,6 +141,15 @@ WindowSDL::~WindowSDL() {
+@@ -133,6 +145,22 @@ WindowSDL::~WindowSDL() {
    DestroySDLWindow();
  }
  
++// [svr2011] Test aid (SVR2011_TEST_MINIMIZE): surface_win.cpp.
++#if REX_PLATFORM_WIN32
++extern std::atomic<bool> g_test_zero_surface;
++#else
++static std::atomic<bool> g_test_zero_surface{false};
++#endif
++
 +// [svr2011] SVR2011_WINDOW_HIDDEN=1: test games with no visible window at all.
 +static bool WindowHiddenForTests() {
 +  static const bool hidden = [] {
@@ -6548,7 +6637,7 @@ index 2251429..8ae96d6 100644
  bool WindowSDL::OpenImpl() {
    // SDL window coordinates are physical pixels on Windows and X11. Cocoa
    // uses logical points and applies the backing scale itself.
-@@ -171,7 +188,9 @@ bool WindowSDL::OpenImpl() {
+@@ -171,7 +199,9 @@ bool WindowSDL::OpenImpl() {
    }
  
    if (IsFullscreen()) {
@@ -6559,7 +6648,7 @@ index 2251429..8ae96d6 100644
      SDL_SetWindowFullscreen(sdl_window_, true);
    }
  #if REX_PLATFORM_MAC
-@@ -183,7 +202,22 @@ bool WindowSDL::OpenImpl() {
+@@ -183,7 +213,44 @@ bool WindowSDL::OpenImpl() {
    // desired state so a reopened window comes back with the state it had.
    ApplyTextInputActiveNow();
    ApplyCursorVisibilityNow();
@@ -6580,10 +6669,32 @@ index 2251429..8ae96d6 100644
 +  if (!WindowHiddenForTests()) {
 +    SDL_ShowWindow(sdl_window_);
 +  }
++  // [svr2011] Test aid (report b673c6): SVR2011_TEST_MINIMIZE=<at s>,<for s> - a minimise and, <for s> later, a
++  // restore at the same size (RESTORED, then EXPOSED), as alt-tab out of full screen and back gives, with no window
++  // shown: the events are pushed, the surface reads as zero-area meanwhile (surface_win.cpp).
++  if (const char* m = std::getenv("SVR2011_TEST_MINIMIZE"); m && *m) {
++    double at = 0, length = 0;
++    if (std::sscanf(m, "%lf,%lf", &at, &length) == 2 && at > 0 && length > 0) {
++      const SDL_WindowID id = sdl_window_id_;
++      std::thread([id, at, length] {
++        auto push = [id](Uint32 type) {
++          SDL_Event e{};
++          e.type = type;
++          e.window.windowID = id;
++          SDL_PushEvent(&e);
++        };
++        std::this_thread::sleep_for(std::chrono::duration<double>(at));
++        push(SDL_EVENT_WINDOW_MINIMIZED);
++        std::this_thread::sleep_for(std::chrono::duration<double>(length));
++        push(SDL_EVENT_WINDOW_RESTORED);
++        push(SDL_EVENT_WINDOW_EXPOSED);
++      }).detach();
++    }
++  }
  
    // Actualize state for the common Window code. Listener dispatch is handled
    // by Window::Open after OpenImpl returns; these only record initial state.
-@@ -288,13 +322,44 @@ uint32_t WindowSDL::GetLatestDpiImpl() const {
+@@ -288,13 +355,44 @@ uint32_t WindowSDL::GetLatestDpiImpl() const {
    if (scale <= 0.0f) {
      return GetMediumDpi();
    }
@@ -6628,7 +6739,7 @@ index 2251429..8ae96d6 100644
    SDL_SetWindowFullscreen(sdl_window_, IsFullscreen());
  }
  
-@@ -369,6 +434,9 @@ void WindowSDL::FocusImpl() {
+@@ -369,6 +467,9 @@ void WindowSDL::FocusImpl() {
    if (!sdl_window_) {
      return;
    }
@@ -6638,7 +6749,7 @@ index 2251429..8ae96d6 100644
    SDL_RaiseWindow(sdl_window_);
  }
  
-@@ -398,6 +466,17 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+@@ -398,6 +499,17 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
        SDL_Metal_DestroyView(metal_view);
      }
    }
@@ -6656,7 +6767,26 @@ index 2251429..8ae96d6 100644
  #else
    SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
    if (allowed_types & Surface::kTypeFlag_WaylandSurface) {
-@@ -549,6 +628,14 @@ void WindowSDL::HandleTextInputEvent(SDL_Event& event) {
+@@ -484,9 +596,18 @@ void WindowSDL::HandleWindowEvent(SDL_Event& event) {
+       OnPaint(true);
+       break;
+     case SDL_EVENT_WINDOW_MINIMIZED:
++      if (std::getenv("SVR2011_TEST_MINIMIZE")) {  // [svr2011] (test aid: the surface gone, as when minimised)
++        g_test_zero_surface = true;
++        REXLOG_INFO("window: test - minimised (surface zero-area)");
++        if (presenter()) presenter()->OnSurfaceResizeFromUIThread();
++      }
+       OnMinimized(destruction_receiver);
+       break;
+     case SDL_EVENT_WINDOW_RESTORED:
++      if (std::getenv("SVR2011_TEST_MINIMIZE")) {  // [svr2011] (test aid)
++        g_test_zero_surface = false;
++        REXLOG_INFO("window: test - restored at the same size");
++      }
+       OnRestored(destruction_receiver);
+       break;
+     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+@@ -549,6 +670,14 @@ void WindowSDL::HandleTextInputEvent(SDL_Event& event) {
  }
  
  void WindowSDL::HandleMouseEvent(SDL_Event& event) {
@@ -6671,7 +6801,7 @@ index 2251429..8ae96d6 100644
    // SDL3 reports float window coordinates; listeners expect physical pixels.
    float density = GetPixelDensity();
    WindowDestructionReceiver destruction_receiver(this);
-@@ -588,4 +675,59 @@ void WindowSDL::HandleMouseEvent(SDL_Event& event) {
+@@ -588,4 +717,59 @@ void WindowSDL::HandleMouseEvent(SDL_Event& event) {
    }
  }
  
