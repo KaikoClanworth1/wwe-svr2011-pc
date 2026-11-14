@@ -473,7 +473,14 @@ class Builder:
             if mat(m).get('cutout'):
                 return 'texture'
             return mat(m).get('specular_alpha') or ''
-        atlas = Atlas([col_key(m) for m in meshes if m.get('kind', 'skin') != 'lash'] or [''])
+        # (lashes too: the lash model's 'color' is this same packed sheet, so a lash with its own png gets its own cell
+        # and one sharing a body png that cell - left out, a lash png of its own wasn't in the atlas and uvmap_for's
+        # look-up raised "list.index(x): x not in list" once the sheet had 2+ cells: 2.2.4 report, milky_fbx)
+        atlas = Atlas([col_key(m) for m in meshes] or [''])
+        for m in meshes:
+            if m.get('kind') == 'lash' and not col_key(m) and len(atlas.keys) > 1:
+                self.warnings.append('%s: a lash with no colour png - its cell in the packed sheet is plain grey'
+                                     % m.get('name'))
         for m in meshes:
             u = [uv for uv in m['uvs']]
             if atlas.keys and len(atlas.keys) > 1 and any(not (-0.001 <= x <= 1.001) for uv in u for x in uv):
