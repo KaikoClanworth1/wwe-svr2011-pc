@@ -1108,6 +1108,7 @@ REX_HOOK_RAW(sub_82905058) {
                                                              (base[out + 7] > 0x40 ? 0x800 : 0))
                                                 : 0);  // (arena_mods.h: LB/RB, LT/RT as 0x400/0x800)
     if (user == 0) svr2011::CheckModProfiles(base);  // (superstar_mods.h)
+    if (user == 0) svr2011::CcListTest(ctx, base);  // (test aid SVR2011_TEST_CC_LIST)
     svr2011::MatchRecordPad(user, ctx.r3.u32, base + out);  // (the match's inputs.bin: match_record.h)
   }
 }
