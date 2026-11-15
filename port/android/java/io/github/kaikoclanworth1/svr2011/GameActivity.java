@@ -120,6 +120,7 @@ public class GameActivity extends SDLActivity {
     protected void onCreate(Bundle savedInstanceState) {
         running = true;
         InstallActivity.init(this);
+        NoMedia.ensure(InstallActivity.gameFolder());  // (the movies out of the Gallery: NoMedia.java)
         // The native side's "program folder" (settings, saves, logs, disc
         // files): rex::filesystem::GetExecutableFolder() reads it. Set before
         // SDLActivity loads the libraries and starts the game's main.

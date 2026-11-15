@@ -60,6 +60,7 @@ public class LauncherActivity extends Activity {
         super.onCreate(savedInstanceState);
         ProblemReport.ctx = getApplicationContext();  // (report.txt's "last exit" lines)
         InstallActivity.init(this);
+        NoMedia.ensure(InstallActivity.gameFolder());  // (the movies out of the Gallery: NoMedia.java)
         getWindow().setStatusBarColor(kBackground);
         getWindow().setNavigationBarColor(kBackground);
         settings_ = new GameSettings(InstallActivity.gameFolder());
