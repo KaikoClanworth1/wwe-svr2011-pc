@@ -5,6 +5,11 @@
 // UserData/suggestions.json, the PC's file too) with our answer: Sure
 // (planned), No (not planned), or Done in <version>, each with an optional
 // note. Asked each time it opens.
+//
+// (Not yet on Android: the PC launcher's SUPPORTERS tab - launcher/supporters_tab.c. A page like this one would
+// plug into the same endpoint: GET <server>/api/supporters, no token, answering {"supporters":[{"name",
+// "platform","since"}]} newest first - server/supporters.py - with the line "Supporting is optional and unlocks
+// nothing - everything stays free. Thank you!" and the Patreon / Ko-fi / PayPal links.)
 package io.github.kaikoclanworth1.svr2011;
 
 import android.app.AlertDialog;

@@ -231,6 +231,7 @@ td.acts { text-align: right; white-space: nowrap; }
     <button role="tab" id="tab-names" aria-controls="p-names">Names <span class="count" id="n-names"></span></button>
     <button role="tab" id="tab-reports" aria-controls="p-reports">Reports <span class="count" id="n-reports"></span></button>
     <button role="tab" id="tab-suggestions" aria-controls="p-suggestions">Suggestions <span class="count" id="n-sug"></span></button>
+    <button role="tab" id="tab-supporters" aria-controls="p-supporters">Supporters <span class="count" id="n-sup"></span></button>
     <button role="tab" id="tab-settings" aria-controls="p-settings">Settings</button>
     <button role="tab" id="tab-logs" aria-controls="p-logs">Logs</button>
   </nav>
@@ -476,6 +477,24 @@ td.acts { text-align: right; white-space: nowrap; }
     <div id="suggestions"><span class="empty">Loading&hellip;</span></div>
   </section>
 
+  <section role="tabpanel" id="p-supporters" aria-labelledby="tab-supporters" tabindex="0" hidden>
+    <p class="note" id="sup-sources"></p>
+    <h2>Add by hand</h2>
+    <p class="intro">For PayPal donors (or anyone else) who ask to be listed. The launcher's SUPPORTERS tab shows the
+      name and the platform only - never an amount. Setup: <code>docs/SUPPORTERS_SETUP.md</code>.</p>
+    <p><input class="filter" id="sup-name" maxlength="60" placeholder="Name as it should show" aria-label="Supporter's name">
+      <select class="filter" id="sup-platform" aria-label="Platform"><option value="paypal">PayPal</option><option value="other">Other</option></select>
+      <button class="btn" id="sup-add">Add</button></p>
+    <h2>Supporters <span class="spacer"></span><button class="btn" id="sup-poll">Check Patreon now</button>
+      <input class="filter" id="f-sup" placeholder="Filter" aria-label="Filter supporters"></h2>
+    <p class="intro">Listed: public, active and not hidden. Ko-fi supporters who kept their payment private, and patrons
+      who stopped, are kept here but never listed. A hidden name stays hidden whatever comes in later.</p>
+    <div class="scroll"><table>
+      <thead><tr><th>Name</th><th>Platform</th><th>Since</th><th>State</th><th></th></tr></thead>
+      <tbody id="supporters"><tr><td colspan="5" class="empty">Loading&hellip;</td></tr></tbody>
+    </table></div>
+  </section>
+
   <section role="tabpanel" id="p-settings" aria-labelledby="tab-settings" tabindex="0" hidden>
     <h2>Settings</h2>
     <div class="set" id="settings"><span class="empty">Loading&hellip;</span></div>
@@ -602,9 +621,59 @@ td.acts { text-align: right; white-space: nowrap; }
     else if (name === 'comments') loadComments();
     else if (name === 'names') { loadNames(); loadFlagged(); loadCommentWords(); }
     else if (name === 'reports' || name === 'suggestions') loadReports();
+    else if (name === 'supporters') loadSupporters();
     else if (name === 'settings') { if (!settingsList.length) settings(); }
     else if (name === 'logs') log();
   }
+
+  // ---- supporters (supporters.py: Ko-fi's webhook, the Patreon poll, names added by hand)
+  var supporters = [];
+  var SUP_PLATFORM = {kofi: 'Ko-fi', patreon: 'Patreon', paypal: 'PayPal', other: 'Other'};
+  function renderSupporters() {
+    var f = el('f-sup').value.toLowerCase();
+    var rows = supporters.filter(function (s) { return !f || (s.name + ' ' + s.platform).toLowerCase().indexOf(f) >= 0; });
+    el('supporters').innerHTML = rows.length ? rows.map(function (s) {
+      var listed = s.public && s.active && !s.hidden;
+      var state = s.hidden ? '<span class="tag bad">hidden</span>' : !s.public ? '<span class="tag">private - not listed</span>' :
+                  !s.active ? '<span class="tag">no longer active</span>' : '<span class="tag on">listed</span>';
+      return '<tr><td>' + esc(s.name) + '</td><td>' + esc(SUP_PLATFORM[s.platform] || s.platform) +
+        (s.kind ? ' <span class="note">' + esc(s.kind) + '</span>' : '') + '</td><td>' + ago(s.since) + '</td><td>' + state +
+        '</td><td class="acts">' + (s.hidden ? '<button class="btn" data-sup="' + s.id + '" data-act="show">Show</button>'
+                                             : '<button class="btn danger" data-sup="' + s.id + '" data-act="hide">Hide</button>') +
+        (s.by_hand ? ' <button class="btn danger" data-sup="' + s.id + '" data-act="remove">Remove</button>' : '') + '</td></tr>';
+    }).join('') : '<tr><td colspan="5" class="empty">No supporters yet.</td></tr>';
+    el('n-sup').textContent = supporters.filter(function (s) { return s.public && s.active && !s.hidden; }).length || '';
+  }
+  function loadSupporters() {
+    return api('api/admin/supporters').then(function (d) {
+      supporters = d.rows || [];
+      var p = d.patreon || {};
+      el('sup-sources').innerHTML = 'Ko-fi webhook: <b>' + (d.kofi ? 'ON' : 'OFF (no token file)') + '</b> &middot; Patreon: <b>' +
+        (p.on ? 'ON' : 'OFF (no token file)') + '</b>' + (p.last ? ' - last check ' + ago(p.last) + ': ' + esc(p.result) : '');
+      renderSupporters();
+    }).catch(function () {});
+  }
+  el('f-sup').addEventListener('input', renderSupporters);
+  el('supporters').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-sup]');
+    if (!b) return;
+    var act = b.getAttribute('data-act');
+    if (act === 'remove' && !confirm('Remove this name from the list?')) return;
+    api('api/admin/supporter/' + b.getAttribute('data-sup') + '/' + act, {method: 'POST'}).then(loadSupporters)
+      .catch(function (err) { alert('Not done: ' + err.message); });
+  });
+  el('sup-add').addEventListener('click', function () {
+    api('api/admin/supporters/add', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                     body: JSON.stringify({name: el('sup-name').value, platform: el('sup-platform').value})})
+      .then(function () { el('sup-name').value = ''; loadSupporters(); })
+      .catch(function (err) { alert('Not added: ' + err.message); });
+  });
+  el('sup-poll').addEventListener('click', function () {
+    el('sup-poll').disabled = true;
+    api('api/admin/supporters/patreon', {method: 'POST'}).then(loadSupporters)
+      .catch(function (err) { alert('Not checked: ' + err.message); })
+      .then(function () { el('sup-poll').disabled = false; });
+  });
 
   // ---- overview
   function cssVar(k) { return getComputedStyle(document.documentElement).getPropertyValue(k).trim(); }
