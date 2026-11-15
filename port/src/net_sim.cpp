@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
@@ -118,6 +120,25 @@ bool CountsOn() {
   return on;
 }
 
+// Test aid: SVR2011_TEST_NET_DELAY_SAW=<period s>,<rise ms> - on top of SVR2011_TEST_NET_DELAY the delay climbs
+// <rise> ms over each <period> s and drops back (a sawtooth from the game's start): the peers' lead estimates keep
+// moving a frame every few seconds, for the lead setters' agreement (net_stats.cpp: a host's measure that moves
+// between its last ping and its setter).
+int SawMs() {
+  static const std::pair<double, double> saw = [] {
+    double period = 0, rise = 0;
+    if (const char* v = std::getenv("SVR2011_TEST_NET_DELAY_SAW"); v && std::sscanf(v, "%lf,%lf", &period, &rise) == 2 && period > 0 && rise > 0) {
+      REXLOG_INFO("net sim: the delay climbs {:.0f} ms over every {:.0f} s (sawtooth)", rise, period);
+      return std::make_pair(period, rise);
+    }
+    return std::make_pair(0.0, 0.0);
+  }();
+  if (saw.first <= 0) return 0;
+  static const auto t0 = Clock::now();
+  const double t = std::chrono::duration<double>(Clock::now() - t0).count();
+  return int(std::fmod(t, saw.first) / saw.first * saw.second);
+}
+
 }  // namespace
 
 bool NetSimActive() { return Config().on; }
@@ -132,7 +153,7 @@ void NetSimSend(std::function<void()> send) {
   if (c.loss > 0 && std::uniform_real_distribution<double>(0, 1)(rng) < c.loss) return;
   const int jitter = c.jitter_ms ? std::uniform_int_distribution<int>(0, c.jitter_ms)(rng) : 0;
   // (in order, as most internet paths keep them)
-  const auto due = std::max(g_last_due, Clock::now() + std::chrono::milliseconds(c.delay_ms + jitter));
+  const auto due = std::max(g_last_due, Clock::now() + std::chrono::milliseconds(c.delay_ms + SawMs() + jitter));
   g_last_due = due;
   g_queue.emplace(due, std::move(send));
   g_sim_wake.notify_one();
