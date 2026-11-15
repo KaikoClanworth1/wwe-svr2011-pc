@@ -63,6 +63,7 @@ import namefilter
 import relay
 import reports
 import signup
+import supporters
 import thumbs
 
 HERE = Path(__file__).resolve().parent
@@ -740,6 +741,11 @@ class Service:
                                                               "allow": list(discovery_social.COMMENT_WORDS_ALLOW)})
         self.social_limits = discovery_social.Limiter()
         self.accounts.names = self.names
+        # (the launcher's SUPPORTERS tab: Ko-fi's webhook, a Patreon poll, names added by hand - supporters.py)
+        self.supporters = supporters.Supporters(
+            self.store, gs.log, getattr(args, "kofi_token_file", None), getattr(args, "patreon_token_file", None),
+            getattr(args, "patreon_api", None) or supporters.PATREON_API, getattr(args, "patreon_campaign", "") or "",
+            flagged=lambda name: self.names.enabled and self.names.match(name) is not None)
         self.signup = signup.Signup(self.store, self.accounts, gs.log,
                                     open_accounts=bool(getattr(args, "test_open_accounts", False)),
                                     exempt=(getattr(args, "admin_account", None) or "").strip(),
@@ -1577,6 +1583,78 @@ class Service:
             request["admin_session"] = s
             return await handler(self, request)
         return wrapped
+
+    # Supporters (supporters.py; docs/SUPPORTERS_SETUP.md): the public list, Ko-fi's webhook, the dashboard's tab.
+
+    async def api_supporters(self, request):
+        rows = await asyncio.get_running_loop().run_in_executor(None, self.supporters.public_list)
+        return web.json_response({"ok": True, "supporters": rows,
+                                  "links": {"patreon": "https://www.patreon.com/c/KaikoClanworth",
+                                            "kofi": "https://ko-fi.com/kaikoclanworth",
+                                            "paypal": "https://www.paypal.com/donate/?hosted_button_id=MS4C2WC38N3W2"}},
+                                 headers={"Cache-Control": "public, max-age=60"})
+
+    async def api_supporters_kofi(self, request):
+        """Ko-fi's webhook: a form with `data` (JSON). 200 fast; its token checked; each message once."""
+        try:
+            form = await request.post()
+        except Exception:
+            return web.json_response({"ok": False, "error": "Send a form."}, status=400)
+        data = form.get("data")
+        if not isinstance(data, str) or len(data) > 65536:
+            return web.json_response({"ok": False, "error": "No data."}, status=400)
+        status, answer = await asyncio.get_running_loop().run_in_executor(None, self.supporters.kofi, data)
+        return web.json_response(answer, status=status)
+
+    @admin_only
+    async def admin_supporters(self, request):
+        """GET: every supporter (hidden and private ones too) and the sources' state."""
+        rows = await asyncio.get_running_loop().run_in_executor(None, self.supporters.admin_rows)
+        return web.json_response({"ok": True, "rows": rows, "kofi": self.supporters.kofi_on(),
+                                  "patreon": dict(self.supporters.patreon_state, on=self.supporters.patreon_on())})
+
+    @admin_only
+    async def admin_supporters_add(self, request):
+        """POST {name, platform: paypal|other}: a supporter added by hand (listed at once)."""
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            return web.json_response({"ok": False, "error": "Send a JSON object."}, status=400)
+        sid, why = await asyncio.get_running_loop().run_in_executor(
+            None, self.supporters.add_by_hand, body.get("name"), str(body.get("platform") or ""))
+        if not sid:
+            return web.json_response({"ok": False, "error": why}, status=400)
+        gs.log("admin: supporter #%d added by hand" % sid)
+        return web.json_response({"ok": True, "id": sid})
+
+    @admin_only
+    async def admin_supporter_action(self, request):
+        """POST .../supporter/{id}/hide | show | remove (remove: hand-added ones only)."""
+        try:
+            sid = int(request.match_info["id"])
+        except ValueError:
+            return web.json_response({"ok": False, "error": "No such supporter."}, status=404)
+        action = request.match_info["action"]
+        loop = asyncio.get_running_loop()
+        if action in ("hide", "show"):
+            ok = await loop.run_in_executor(None, self.supporters.set_hidden, sid, action == "hide")
+        elif action == "remove":
+            ok = await loop.run_in_executor(None, self.supporters.remove_by_hand, sid)
+        else:
+            return web.json_response({"ok": False, "error": "hide, show or remove."}, status=400)
+        if not ok:
+            return web.json_response({"ok": False, "error": "No such supporter (remove: added by hand only)."},
+                                     status=404)
+        gs.log("admin: supporter #%d %s" % (sid, {"hide": "hidden", "show": "shown", "remove": "removed"}[action]))
+        return web.json_response({"ok": True})
+
+    @admin_only
+    async def admin_supporters_patreon(self, request):
+        """POST: poll Patreon now."""
+        line = await asyncio.get_running_loop().run_in_executor(None, self.supporters.patreon_poll)
+        return web.json_response({"ok": True, "result": line})
 
     # Discovery: players' .svrmod mods (discovery.py). Browsing, pictures and downloads need no account;
     # uploads need one (its name is the author); owners delete their own, the dashboard hides / deletes any.
@@ -3502,7 +3580,19 @@ class Service:
             "error: unhandled in the event loop: %s\n%s" % (ctx.get("message"), "".join(traceback.format_exception(
                 ctx["exception"])) if ctx.get("exception") else "")))
         Watchdog(loop).start()
-        tasks = [asyncio.create_task(minutes()), asyncio.create_task(janitor()), asyncio.create_task(health())]
+        async def patreon():  # (the supporters' Patreon list: every 6 hours; off without a token file)
+            every = float(os.environ.get("SVR2011_PATREON_EVERY", supporters.PATREON_EVERY))  # (tests: shorter)
+            await asyncio.sleep(min(30.0, every))
+            while True:
+                try:
+                    if self.supporters.patreon_on():
+                        await asyncio.get_running_loop().run_in_executor(None, self.supporters.patreon_poll)
+                except Exception:
+                    gs.log("error:", traceback.format_exc())
+                await asyncio.sleep(every)
+
+        tasks = [asyncio.create_task(minutes()), asyncio.create_task(janitor()), asyncio.create_task(health()),
+                 asyncio.create_task(patreon())]
         yield
         for t in tasks:
             t.cancel()
@@ -3551,6 +3641,8 @@ class Service:
         app.router.add_post(b + "/api/reports/status", self.api_report_status)
         app.router.add_post(b + "/api/reports/reply", self.api_report_reply)
         app.router.add_post(b + "/api/reports/edit", self.api_report_edit)
+        app.router.add_get(b + "/api/supporters", self.api_supporters)
+        app.router.add_post(b + "/api/supporters/kofi", self.api_supporters_kofi)
         self.relay.routes(app, b)
         app.router.add_get("/__health", self.health)
         app.router.add_get(b + "/api/storage/wanted", self.api_storage_wanted)  # (the storage node's watchdog)
@@ -3598,6 +3690,10 @@ class Service:
             app.router.add_get(p + "/api/admin/discovery/comments", self.admin_discovery_comments)
             app.router.add_post(p + "/api/admin/discovery/comment/{cid}/{action}", self.admin_discovery_comment)
             app.router.add_post(p + "/api/admin/discovery/mute", self.admin_discovery_mute)
+            app.router.add_get(p + "/api/admin/supporters", self.admin_supporters)
+            app.router.add_post(p + "/api/admin/supporters/add", self.admin_supporters_add)
+            app.router.add_post(p + "/api/admin/supporters/patreon", self.admin_supporters_patreon)
+            app.router.add_post(p + "/api/admin/supporter/{id}/{action}", self.admin_supporter_action)
         app.cleanup_ctx.append(self.background)
         return app
 
@@ -3835,6 +3931,12 @@ def main():
                     help="list the accounts made more than DAYS ago and not seen for DAYS (with --yes: delete them, "
                          "as the dashboard's Delete does), then exit - with the server stopped")
     ap.add_argument("--yes", action="store_true", help="(--prune-accounts) really delete")
+    ap.add_argument("--kofi-token-file", default="/etc/svr2011/kofi_token",
+                    help="(supporters) Ko-fi's webhook verification token; no file = Ko-fi off")
+    ap.add_argument("--patreon-token-file", default="/etc/svr2011/patreon_token",
+                    help="(supporters) the Patreon creator access token; no file = Patreon off")
+    ap.add_argument("--patreon-campaign", default="", help="(supporters) the campaign id (default: the token's first)")
+    ap.add_argument("--patreon-api", default=supporters.PATREON_API, help=argparse.SUPPRESS)  # (tests: a mock)
     args = ap.parse_args()
     if args.set_admin_password:
         return aa.set_password_cli(args.admin_password_file or os.path.join(args.data, "admin_password"))
