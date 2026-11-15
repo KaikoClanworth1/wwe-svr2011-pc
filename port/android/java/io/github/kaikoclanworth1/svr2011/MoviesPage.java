@@ -378,6 +378,7 @@ final class MoviesPage {
             try {
                 int n = MovieMaker.make(v, s, fit, max, out,
                     p -> a_.runOnUiThread(() -> progress_.setProgress(p)), cancel_);
+                NoMedia.ensure(InstallActivity.gameFolder());  // (a first movie makes Custom Movies: out of the Gallery)
                 result[0] = "Made " + out.getName() + " (" + (n / MovieMaker.FPS) + " s). In the game: CREATE AN "
                     + "ENTRANCE → FINALIZE → MOVIE, after NONE.";
             } catch (Throwable e) {

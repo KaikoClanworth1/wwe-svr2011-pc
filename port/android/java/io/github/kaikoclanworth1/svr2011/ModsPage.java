@@ -666,6 +666,7 @@ final class ModsPage {
             throw new IOException("can't move the new copy in (the installed copy is unchanged)");
         }
         deleteTree(old);
+        NoMedia.ensure(InstallActivity.gameFolder());  // (a first mod makes Mods: its movie out of the Gallery)
         if (off) new FileOutputStream(new File(dest, "disabled")).close();
         if (attire) {
             try (OutputStream o = new FileOutputStream(new File(dest, ".installed"))) {  // (the install order: the newer moves)
