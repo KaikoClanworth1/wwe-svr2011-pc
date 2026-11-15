@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+struct PPCContext;  // (rex/ppc.h)
+
 namespace rex::memory {
 class Memory;
 }
@@ -46,6 +48,8 @@ void PerModSavesForSave(uint8_t* base, bool saving);
 void PerModSavesLoaded(uint8_t* base);
 // Once a frame: the fields the loader writes after the load hook (the title holders) get their mod back.
 void PerModSavesTick(uint8_t* base);
+// Test aid SVR2011_TEST_CC_LIST=1: Community Creations' superstar list built once and logged (the pad hook).
+void CcListTest(PPCContext& ctx, uint8_t* base);
 bool IsSuperstarMod(uint32_t id);
 // The installed mods' entrance numbers (manifest entrance= and attire<N>_entrance=, without the fetched ones): the
 // CREATE AN ENTRANCE rows "MOD: <name>" (cae_mod_motions.cpp). base: the manifest's base superstar - a mod on a game

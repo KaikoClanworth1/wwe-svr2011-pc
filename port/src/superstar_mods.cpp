@@ -4469,6 +4469,72 @@ REX_HOOK_RAW(sub_82518F38) {
                 add.size(), n);
 }
 
+// The same list's rows: which can be picked (report e41776). sub_82519130(screen) clears a flag per row (screen
+// +34620 + 4i, the ids at +36536) and sets it for kind 1 only when the id is "downloaded" (sub_828B6CD0), usable and
+// owned (and, while +37444 is 0, sub_8257B210(id)). sub_828B6CD0 answers 0 for every id from 322 before it reads the
+// record, so big roster's mods - added to the list above - were rows that couldn't be picked: Community Creations'
+// move-set download offered no big roster superstar to apply it to (397df159 made the apply itself take them). A
+// big roster mod's row gets the flag as the game gives a mod below 322 (+37444 0: sub_8257B210 still asked).
+REX_EXTERN(__imp__sub_82519130);
+REX_HOOK_RAW(sub_82519130) {
+  const uint32_t screen = ctx.r3.u32;
+  const PPCContext entry = ctx;
+  __imp__sub_82519130(ctx, base);
+  constexpr uint32_t kKind = 33608, kFlags = 34620, kIds = 36536, kCount = 37424, kAny = 37444, kCap = 222;
+  static const bool stock = std::getenv("SVR2011_TEST_CC_LIST_STOCK") != nullptr;  // (test aid: the game's flags only)
+  if (stock || !screen || !svr2011::BigRosterOn() || Rd32(base + screen + kKind) != 1) return;
+  const uint32_t n = std::min(Rd32(base + screen + kCount), kCap);
+  const bool any = Rd32(base + screen + kAny) != 0;
+  int set = 0;
+  PPCContext c = entry;
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint32_t id = Rd32(base + screen + kIds + i * 4);
+    if (id < 322 || id >= svr2011::kMaxIds || !ModOf(id) || Rd32(base + screen + kFlags + i * 4)) continue;
+    if (!any && !CallR3(c, base, sub_8257B210, id)) continue;
+    Wr32(base + screen + kFlags + i * 4, 1), ++set;
+  }
+  if (ListTrace() || set) {
+    static std::atomic<int> told{0};
+    if (told.fetch_add(1) < 6)
+      REXLOG_INFO("[svr2011] superstar mods: Community Creations' superstar list - {} big roster mod(s) can be picked "
+                  "({} rows, all ids {})", set, n, any ? "offered" : "with data");
+  }
+}
+
+namespace svr2011 {
+// Test aid SVR2011_TEST_CC_LIST=1 (report e41776): once, a while after the save is loaded, Community Creations'
+// superstar list is built on a scratch screen by the game's own builders - sub_82518F38 (kind 1, downloaded, any id
+// offered) then sub_82519130 (the rows' pick flags) - and the rows logged: ids from 322 and how many can be picked.
+// _STOCK=1: the game's flags only (the fix left out).
+void CcListTest(PPCContext& ctx, uint8_t* base) {
+  static const bool on = std::getenv("SVR2011_TEST_CC_LIST") != nullptr;
+  static int frames = 0;
+  if (!on || !g_save_loaded || !g_memory || ++frames != 600) return;
+  constexpr uint32_t kSize = 40960, kKind = 33608, kFlags = 34620, kIds = 36536, kCount = 37424, kAny = 37444;
+  const uint32_t s = g_memory->SystemHeapAlloc(kSize, 0x10);
+  if (!s) return;
+  std::memset(base + s, 0, kSize);
+  Wr32(base + s + kKind, 1);
+  Wr32(base + s + kAny, 1);
+  CallR3(ctx, base, sub_82518F38, s);
+  CallR3(ctx, base, sub_82519130, s);
+  const uint32_t n = std::min<uint32_t>(Rd32(base + s + kCount), 222);
+  uint32_t high = 0, high_on = 0, low = 0, low_on = 0;
+  std::string ids;
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint32_t id = Rd32(base + s + kIds + i * 4), on_ = Rd32(base + s + kFlags + i * 4) != 0;
+    if (id >= 322) {
+      ++high, high_on += on_;
+      if (ids.size() < 120) ids += fmt::format(" {}{}", id, on_ ? "" : "(off)");
+    } else {
+      ++low, low_on += on_;
+    }
+  }
+  REXLOG_INFO("[svr2011] superstar mods: test - CC superstar list: {} rows; ids below 322: {} ({} can be picked); "
+              "from 322: {} ({} can be picked):{}", n, low, low_on, high, high_on, ids);
+}
+}  // namespace svr2011
+
 REX_EXTERN(__imp__sub_82B972C8);
 REX_HOOK_RAW(sub_82B972C8) {
   const uint32_t screen = ctx.r3.u32, kind = ctx.r4.u32;
