@@ -398,3 +398,7 @@ REX_HOOK_RAW(sub_822104F8) {
                 "(the game read past its table here: a crash) ({} times)",
                 Rd32(base, ch + 1156), motion, slots[0], slots[1], slots[2], slots[3], n);
 }
+
+namespace svr2011 {
+bool MotionInMatchBanks(uint8_t* base, uint16_t id) { return MotionInBanks(base, id); }
+}  // namespace svr2011

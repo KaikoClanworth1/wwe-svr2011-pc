@@ -15,6 +15,7 @@
 #include "big_roster.h"
 #include "match_diag.h"
 #include "match_types.h"
+#include "cam_mod_moves.h"
 #include "menu_hooks.h"
 #include "frame_rate.h"
 #include "mystery_opponent.h"
@@ -2687,6 +2688,61 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
                         (frames + 1 - since[i]) / 60, i, Rd32(base + ch[i] + 212), j, Rd32(base + ch[j] + 212));
           since[i] = since[j] = frames + 1;
         }
+  }
+  // A wrestler in a motion no bank has (report b6f4f0, 2.2.4 online: Triple H's 7551, cut short by a run-in, went on to
+  // 1852 - in none of the game's pacs - and he stood in it for the rest of the match; 7017d6's jump to 23231 the same
+  // way). A second in it: he's started on 446 (down on the mat, the game's own way up from it: 0, 20, standing), as
+  // JumpAct starts a motion. Only one alone in it: two in one missing motion are a pair, and one of a pair started on
+  // its own crashed (the lock-up above) - logged. Match state and the banks only: alike on every machine with the
+  // same files (lockstep). Test aids: SVR2011_TEST_MISSING_JUMP=<person>,<frame> - at that match frame the person
+  // starts motion 1852; SVR2011_TEST_MISSING_GUARD_OFF=1 - no guard.
+  {
+    static const bool off = std::getenv("SVR2011_TEST_MISSING_GUARD_OFF") != nullptr;
+    static const std::pair<int, uint32_t> jump = [] {
+      int p = -1, f = 0;
+      if (const char* v = std::getenv("SVR2011_TEST_MISSING_JUMP")) std::sscanf(v, "%d,%d", &p, &f);
+      return std::make_pair(p, uint32_t(f));
+    }();
+    constexpr uint32_t kDown = 446, kHold = 60;
+    static uint32_t motion_of[6] = {}, missing_for[6] = {};
+    const uint32_t frames = Rd32(base + 0x82E3CD0C);
+    if (jump.first >= 0 && jump.first < 6 && frames == jump.second)
+      if (const uint32_t c = Rd32(base + kChars + uint32_t(jump.first) * 4)) {
+        PPCContext k = ctx;
+        k.r3.u64 = c, k.r4.u64 = 1852, k.r5.u64 = 0, k.r6.u64 = 0;
+        k.f1.f64 = 0.0;
+        sub_82396E80(k, base);
+        REXLOG_INFO("match types: test - person {} starts motion 1852 (state {})", jump.first, Rd32(base + c + 212));
+      }
+    uint32_t ch[6] = {};
+    for (uint32_t i = 0; i < 6; ++i) {
+      ch[i] = Rd32(base + kChars + i * 4);
+      const uint32_t m = ch[i] ? Rd32(base + ch[i] + 212) & 0x7FFF : 0;
+      if (m != motion_of[i] || !m) motion_of[i] = m, missing_for[i] = 0;
+      // (the game's own search missed it - the unsorted banks too: 128 is in one of those - and the sorted lists lack it)
+      else if (frames > 60 && svr2011::MatchBoxMotionMissing(m) && !svr2011::MotionInMatchBanks(base, uint16_t(m)))
+        ++missing_for[i];
+      else missing_for[i] = 0;
+    }
+    for (uint32_t i = 0; i < 6; ++i) {
+      if (missing_for[i] != kHold) continue;
+      bool pair = false;
+      for (uint32_t j = 0; j < 6; ++j) pair |= j != i && ch[j] && motion_of[j] == motion_of[i];
+      static int logged = 0;
+      if (pair || off || !svr2011::MotionInMatchBanks(base, kDown)) {
+        if (logged++ < 40)
+          REXLOG_WARN("match types: person {} in motion {}, which no bank has, for 1 s - {}", i, motion_of[i],
+                      off ? "guard off (test aid)" : pair ? "a pair in it: left as it is" : "no 446 in the banks either");
+        continue;
+      }
+      PPCContext k = ctx;
+      k.r3.u64 = ch[i], k.r4.u64 = kDown, k.r5.u64 = 0, k.r6.u64 = 0;
+      k.f1.f64 = 0.0;
+      sub_82396E80(k, base);
+      if (logged++ < 40)
+        REXLOG_WARN("match types: person {} in motion {}, which no bank has, for 1 s - started on {} (state {})", i,
+                    motion_of[i], kDown, Rd32(base + ch[i] + 212));
+    }
   }
   // Research aid (stuck wrestlers, B11/B12): SVR2011_TEST_STUCK_CHARS=1 - each
   // second, people 0-5 whose place and motion (+212) haven't changed for 10 s

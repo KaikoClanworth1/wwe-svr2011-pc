@@ -54,6 +54,10 @@ class XAudio2AudioDriver : public rex::audio::AudioDriver {
   uint32_t next_frame_ = 0;
   double log_sum_ = 0;     // SVR2011_AUDIO_LEVEL
   uint32_t log_frames_ = 0;
+  // (every run: the loudness the game made and the loudness sent to the device, logged at ~10 s, ~1 min and ~3 min -
+  // a "no sound at all" report then says whether the game was silent or the sound left it: report 901b72)
+  double check_game_ = 0, check_sent_ = 0;
+  uint32_t check_frames_ = 0, check_total_ = 0;
   std::array<std::array<float, kGuestChannels * kChannelSamples>, kFrameCount> frames_{};
 };
 
