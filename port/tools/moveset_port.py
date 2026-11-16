@@ -16,7 +16,8 @@ A 2011 move is used when it has a motion (some records are cut moves) and 2011's
 slot or in the same menu group (pro_slots.json "menu") - a strike doesn't land in a grapple slot.
 Taunts (unless port_taunts is False - superstar_port --no-taunts) are ported on a taunt template (the base's taunt in that slot, else another 2011 taunt on YMBs
 banks), on a free record in the template's thousand: moves_port's YMBs path. Submissions on YMBs banks
-keep the base's.
+keep the base's, and so do holds moves_port would copy from a 2011 submission (HoldOffRange: no free
+record in 21000-21499, the only ids the game runs holds on).
 """
 import collections
 import glob
@@ -248,6 +249,11 @@ def port_moveset(c):
             MP.DEADLINE, MP.QUIET, MP.STAGES = t0 + limit, True, [('start', t0)]
             try:
                 MP.convert(a, r)
+            except MP.HoldOffRange as e:   # (a hold with no record the game runs holds on: the base's move)
+                for to in tos:
+                    rows.append((None, to, v, nm, 'base kept (a hold: no free 2011 submission record)', base[to // 2]))
+                c.rep['warnings'].append('moveset: "%s": %s - the base move kept' % (nm, e))
+                continue
             except MP.TimeLimit:
                 for to in tos:
                     rows.append((None, to, v, nm, 'base kept (port over %d s: stopped)' % limit, base[to // 2]))

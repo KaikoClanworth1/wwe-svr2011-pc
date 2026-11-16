@@ -126,6 +126,11 @@ class TimeLimit(Exception):
     pass
 
 
+class HoldOffRange(BadInput):
+    """a hold on a 2011 submission template with no free record in 21000-21499: the game tells a hold by its id, so
+    a copy elsewhere plays its first part and holds the attacker there (reports c017e9, a36c2d) - not ported"""
+
+
 # (a move on YMBs banks - a submission, a taunt - solves the limb IK per phase and bank: 2K15's Kimura Lock (5 hold
 # phases) took 184 s and moveset_port's 120 s a move stopped it - the base move kept, "missing from CREATE A MOVE-SET",
 # report 20261104-093125. Such a move gets this much more once.)
@@ -2117,6 +2122,13 @@ def convert(a, rep):
             rep['notes'].append('id %s -> %d: a free record among the tag team moves (%d-%d, %d free)' % (
                 new_id, nid, lo_hi[0], lo_hi[1] - 1, len(tfree)))
             new_id, why = nid, 'a free tag team record'
+    if tid and 21000 <= tid < 21500 and new_id and not 21000 <= new_id < 21500:
+        # (the game's submission checks go by id - sub_821B57F8 and its family, 21000-21499 - and none of those records
+        # is free: on 3903 Marcus Cor Von's hold left him standing in its first part while his opponent got up, every
+        # time, report a36c2d; Sabu's SS Camel Clutch on 5962 held at frame 74, c017e9. The game refuses such copies
+        # too, move_packs.cpp HoldOffRange.)
+        raise HoldOffRange('a hold on %d %s: 2011 runs holds only on records 21000-21499 and none is free (%d '
+                           'would freeze) - not ported' % (tid, g11.waze[tid][1], new_id))
     if not new_id:
         raise RuntimeError('no free 2011 move record')
     rep['notes'].append('template %d %s (%s)' % (tid, g11.waze[tid][1], 'option' if a.get('template') else
