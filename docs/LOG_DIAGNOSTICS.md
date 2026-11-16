@@ -14,6 +14,9 @@ world update.
   - online or offline;
   - the CPU tab values (`cpu_reversal_chance`, `cpu_reversal_rates`, `cpu_damage_level`, `cpu_pin_level`,
     `cpu_momentum_level`; -1 = the game's own).
+- **Camera:** `camera: <kind> (mode N), eye (x, y, z)` - follow, cut (a big move's camera cut, with its moves and when
+  they ended), snap (the cut's one-frame jump), rumble, backstage or the builder's address; mode 0x82E3CCF8 (1 play,
+  6 entrances). trail.txt has it once a second.
 - **Per person** (0-5 wrestlers, 6 the referee, 7 / 8 the announcers):
   - name, and the superstar mod's folder if it is one;
   - the current motion and state (`lying` = motions 430-448, `standing` = 20500, else `-`);
@@ -28,6 +31,8 @@ world update.
   - `weapon slot N made (model M)`, `... picked up by person P`, `... dropped by person P`, `weapon slot N gone`
     (broken or removed). Models are `bgEtc` STG/WPON pack ids.
   - `motion N missed by every bank (person P)`: a person is in a motion no bank has (see detectors).
+  - `camera cut on (P:M ...)` / `camera cut off after S s`: a big move's camera cut, with the moves on as it began;
+    `camera view built from <kind> (mode N)`: another camera than play's built the view (first time each a match).
 - The **clock** is the match clock: 60 a second, from the bell. The box starts at the bell; the menu's attract match
   (no referee) isn't written.
 
@@ -58,6 +63,8 @@ Each one logs the box with its reason as the first line: `[svr2011] box: match b
 | `two wrestlers held in one motion frame for 10 s` | A frozen grapple pair (`match_diag.cpp`; also its own `match state` lines) | 1 per match |
 | `no wrestler asked for a move for 30 s` | Both stopped (`match_diag.cpp`) | 1 per match |
 | `world update stuck` | `frame_rate.cpp`'s watchdog (also its thread dump lines) | 1 per match |
+| `a camera cut held S s after its move ended (P:M ...)` | A big move's camera cut (the match camera's +268) still on 5 s after every move on when it began (people 0-5, not standing / walking / lying) ended - report ec87bf | 1 per match |
+| `the camera hasn't moved for S s while person P moved D (...)` | In play (camera mode 1), the game's own eye stood still 5 s while a wrestler moved 10 or more: the "camera not moving" reports | 1 per match |
 
 ## Other match lines (older, still logged)
 
@@ -75,4 +82,7 @@ Each one logs the box with its reason as the first line: `[svr2011] box: match b
   - `nan`: a NaN position;
   - `missing`: its motion missed by every bank;
   - `crash`: a fault on the world update's thread, for a crash file with the box.
+- `SVR2011_TEST_CUT_HOLD=<s>`: the match's first camera cut is held on that many seconds after the game ends it.
+- `SVR2011_TEST_CAM_FREEZE=<s>,<for s>`: the scene's eye and direction stay where they were from that second of the
+  match.
 - `SVR2011_TEST_MATCH_STATE=<s>`: a `match state` dump `s` seconds into the match.

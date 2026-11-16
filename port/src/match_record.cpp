@@ -39,6 +39,7 @@
 
 #include "arena_mods.h"
 #include "caw_limits.h"
+#include "match_box.h"
 #include "match_diag.h"
 #include "frame_rate.h"
 #include "menu_hooks.h"
@@ -664,7 +665,8 @@ void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
     std::fwrite(head, 4, 4, g.inputs);
   }
   if ((g.trail = std::fopen((g.dir / "trail.txt").string().c_str(), "wb")))
-    std::fputs("# second | person x y z motion (once a second from the bell; y down, the ring's mat -12)\n", g.trail);
+    std::fputs("# second | person x y z motion ... | cam <kind> <mode> eye <x y z> [<the cut's person:motion ...> <s in it>s [ended <s>s]]"
+               " (once a second from the bell; y down, the ring's mat -12)\n", g.trail);
   g.fallback_peak = svr2011::FallbackBytesInUse();
   std::string loaded = fmt::format("at the bell (update {}, clock {}):\n  fallback memory {} KB\n  weapons (slot:model):",
                                    g_updates, clock, g.fallback_peak / 1024);
@@ -841,6 +843,7 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
           line += fmt::format(" | {} {:.1f} {:.1f} {:.1f} {}", Rd32(base + c + 1156), RdF(base + c + 288), RdF(base + c + 292),
                               RdF(base + c + 296), Rd32(base + c + 212));
         }
+        line += svr2011::MatchBoxCameraTrail();  // (" | cam <kind> <mode> ...": report ec87bf)
         std::fputs((line + "\n").c_str(), g.trail);
         std::fflush(g.trail);
         if (g.inputs) std::fflush(g.inputs);  // (a hung game that is killed keeps its pads up to the last second)
