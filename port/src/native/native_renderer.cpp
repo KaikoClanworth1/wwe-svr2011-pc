@@ -1092,8 +1092,13 @@ void OnHostGpuLost() {
     }
     if (why.find("restart the game") != std::string::npos) text += "\n\n" + why.substr(why.find("restart the game"));
     text += "\n\nIf it keeps happening, send a problem report from the launcher (it includes the game's log).";
+#if defined(__SWITCH__)  // no SDL message box on the console: the notice goes to the log
+    REXLOG_ERROR("native renderer: {}", text);
+    rex::FlushLogging();
+#else
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "SvR 2011 - the graphics card stopped responding", text.c_str(),
                              nullptr);
+#endif
   }
   std::_Exit(5);
 }

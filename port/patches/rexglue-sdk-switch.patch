@@ -1167,7 +1167,7 @@ index d90945b..49780a9 100644
  
  set_target_properties(rexgpu-xenos PROPERTIES
 diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
-index 2531c00..c4cc122 100644
+index 8738429..443f6cf 100644
 --- a/src/system/CMakeLists.txt
 +++ b/src/system/CMakeLists.txt
 @@ -48,7 +48,11 @@ set(REXSYSTEM_SOURCES
@@ -1184,10 +1184,10 @@ index 2531c00..c4cc122 100644
  add_library(rex::system ALIAS rexruntime)
  add_library(rex::kernel ALIAS rexruntime)
 diff --git a/src/system/gpu_plugin_loader.cpp b/src/system/gpu_plugin_loader.cpp
-index 1e20c8c..9f71bd0 100644
+index 674805a..6f670ca 100644
 --- a/src/system/gpu_plugin_loader.cpp
 +++ b/src/system/gpu_plugin_loader.cpp
-@@ -22,6 +22,10 @@
+@@ -23,6 +23,10 @@
  #include <rex/platform.h>
  #include <rex/platform/dynlib.h>
  
@@ -1197,8 +1197,8 @@ index 1e20c8c..9f71bd0 100644
 +
  namespace rex::system {
  
- namespace {
-@@ -55,6 +59,17 @@ std::vector<platform::DynamicLibrary>& LoadedPlugins() {
+ // [svr2011] (gpu_plugin.h) the game's device-loss handler.
+@@ -63,6 +67,17 @@ std::vector<platform::DynamicLibrary>& LoadedPlugins() {
  }  // namespace
  
  std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::string_view backend) {
@@ -1216,7 +1216,7 @@ index 1e20c8c..9f71bd0 100644
  #if defined(__ANDROID__)
    // [svr2011] Packaged in the APK's native libraries: loaded by name.
    std::filesystem::path path = PluginFileName(name);
-@@ -106,6 +121,7 @@ std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::strin
+@@ -114,6 +129,7 @@ std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::strin
    LoadedPlugins().push_back(std::move(library));
    REXSYS_DEBUG("GPU plugin '{}' loaded ({})", name, path.filename().string());
    return std::unique_ptr<IGraphicsSystem>(graphics_system);
@@ -1545,19 +1545,19 @@ index 73f90ca..41fa380 100644
        case Surface::kTypeIndex_AndroidNativeWindow: {
          auto& android_native_window_surface =
 diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
-index 9145077..c00c527 100644
+index 28ca0fb..20214e5 100644
 --- a/src/ui/window_sdl.cpp
 +++ b/src/ui/window_sdl.cpp
-@@ -41,7 +41,7 @@ REXCVAR_DEFINE_BOOL(fullscreen_exclusive, false, "UI/Window",
+@@ -42,7 +42,7 @@ REXCVAR_DEFINE_BOOL(fullscreen_exclusive, false, "UI/Window",
  #include <SDL3/SDL_metal.h>
  
  #include <rex/ui/surface_mac.h>
 -#elif REX_PLATFORM_ANDROID
 +#elif REX_PLATFORM_ANDROID || REX_PLATFORM_SWITCH
  #include <rex/ui/surface_android.h>  // [svr2011]
- #else
- #include <X11/Xlib-xcb.h>
-@@ -452,8 +452,8 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+ #include <atomic>   // [svr2011] (SVR2011_TEST_MINIMIZE)
+ #include <chrono>
+@@ -499,8 +499,8 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
        SDL_Metal_DestroyView(metal_view);
      }
    }
@@ -1569,10 +1569,10 @@ index 9145077..c00c527 100644
      SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
      auto* window = static_cast<ANativeWindow*>(
 diff --git a/thirdparty/CMakeLists.txt b/thirdparty/CMakeLists.txt
-index f102b56..9a88dcd 100644
+index 9f26378..044c08d 100644
 --- a/thirdparty/CMakeLists.txt
 +++ b/thirdparty/CMakeLists.txt
-@@ -301,7 +301,15 @@ if(UNIX AND NOT APPLE)
+@@ -312,7 +312,15 @@ if(UNIX AND NOT APPLE)
      set(SDL_PIPEWIRE_SHARED   ON  CACHE BOOL "" FORCE)
  endif()
  
