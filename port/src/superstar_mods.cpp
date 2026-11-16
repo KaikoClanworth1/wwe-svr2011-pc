@@ -4454,15 +4454,28 @@ REX_HOOK_RAW(sub_82518F38) {
   const uint32_t screen = ctx.r3.u32;
   const uint32_t lr_cc = uint32_t(ctx.lr);
   __imp__sub_82518F38(ctx, base);
-  constexpr uint32_t kKind = 33608, kIds = 36536, kCount = 37424, kCap = 222;
+  // A cap of 220, not the table's 222 (report 155f7d): sub_825197B0 rounds the count up to whole pages of 10 (+33600)
+  // and the rows' value pass sub_82519338 walks that many - 230 from a count of 221 or 222, so rows 222-229 read
+  // the fields after the 222-slot id table (+37424 on) as ids and sub_8257B240 / sub_8257AB68 read past memory
+  // (access violation at lr 825193F0 switching CREATE A MOVE-SET's tabs). Rows up to 220 stay in the table; the
+  // ones the page adds past the count hold id 0, as the game's own lists do.
+  // Test aid SVR2011_TEST_CC_LIST_CAP=<n>: another cap (222: the rows as 2.2.5 left them, to see the crash).
+  static const uint32_t kCap = [] {
+    const char* e = std::getenv("SVR2011_TEST_CC_LIST_CAP");
+    const int v = e ? std::atoi(e) : 0;
+    constexpr uint32_t kTable = 222, kPage = 10;  // (the id table's slots; sub_825197B0's page)
+    return v > 0 && v <= int(kTable) ? uint32_t(v) : kTable / kPage * kPage;
+  }();
+  constexpr uint32_t kKind = 33608, kIds = 36536, kCount = 37424;
   TraceList("82518F38", screen, Rd32(base + screen + kKind), lr_cc, Rd32(base + screen + kCount));
   if (Rd32(base + screen + kKind) != 1) return;  // (DOWNLOADED SUPERSTAR)
-  uint32_t n = std::min(Rd32(base + screen + kCount), kCap);
+  const uint32_t had = Rd32(base + screen + kCount);
+  uint32_t n = std::min(had, kCap);
   const auto add = HighModsMissing(base, screen + kIds, n);
   for (uint32_t id : add)
     if (n < kCap) Wr32(base + screen + kIds + n * 4, id), ++n;
+  if (n != had) Wr32(base + screen + kCount, n);  // (also a game count past the cap: its own ids 50-321)
   if (add.empty()) return;
-  Wr32(base + screen + kCount, n);
   static std::atomic<int> told{0};
   if (told.fetch_add(1) < 6)
     REXLOG_INFO("[svr2011] superstar mods: CREATE A MOVE-SET's downloaded list - {} mod(s) from id 322 added ({} in all)",
@@ -4516,8 +4529,19 @@ void CcListTest(PPCContext& ctx, uint8_t* base) {
   std::memset(base + s, 0, kSize);
   Wr32(base + s + kKind, 1);
   Wr32(base + s + kAny, 1);
+  // =junk: the words after the id table (+37428 on, a real screen's other fields; +37444 kept) hold junk, as on
+  // the player's screen in report 155f7d - rows read past the table then crash as they did.
+  if (const char* v = std::getenv("SVR2011_TEST_CC_LIST"); v && std::strcmp(v, "junk") == 0)
+    for (uint32_t at = 37428; at < 36536 + 230 * 4; at += 4)
+      if (at != kAny) Wr32(base + s + at, 0xA1A09D0Au);
   CallR3(ctx, base, sub_82518F38, s);
   CallR3(ctx, base, sub_82519130, s);
+  // The page rows (sub_825197B0: the count rounded up to 10s at +33600) and their value pass (sub_82519338, which
+  // crashed in report 155f7d when the rows ran past the 222-slot table).
+  CallR3(ctx, base, sub_825197B0, s);
+  CallR3(ctx, base, sub_82519338, s);
+  REXLOG_INFO("[svr2011] superstar mods: test - CC superstar list: count {}, page rows {} (the table holds 222)",
+              Rd32(base + s + kCount), Rd32(base + s + 33600));
   const uint32_t n = std::min<uint32_t>(Rd32(base + s + kCount), 222);
   uint32_t high = 0, high_on = 0, low = 0, low_on = 0;
   std::string ids;
