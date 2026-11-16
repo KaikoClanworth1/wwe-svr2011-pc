@@ -116,6 +116,7 @@ void XAudio2AudioDriver::SubmitFrame(uint32_t frame_ptr) {
 
   // Tests: SVR2011_AUDIO_LEVEL=1 logs the game's loudness (front left/right,
   // read before muting) every ~5 s.
+  double game_square = 0;  // (this frame's front left/right mean square: the checks below too)
   {
     double sum = 0;
     for (uint32_t i = 0; i < 2 * kChannelSamples; ++i) {
@@ -125,6 +126,7 @@ void XAudio2AudioDriver::SubmitFrame(uint32_t frame_ptr) {
       sum += double(f) * f;
     }
     const double mean_square = sum / (2 * kChannelSamples);
+    game_square = mean_square;
     static const bool log_level = [] {
       char* v = nullptr;
       size_t n = 0;
@@ -152,6 +154,26 @@ void XAudio2AudioDriver::SubmitFrame(uint32_t frame_ptr) {
     rex::audio::conversion::sequential_6_BE_to_interleaved_2_LE(
         output, input, kChannelSamples, rex::audio::GetStereoFold(),
         rex::audio::GetOutputGain());
+  }
+
+  // (the ~1 s before each check point: the game's front left/right and every channel sent)
+  {
+    constexpr uint32_t kSecond = 188, kAt[] = {1880, 11280, 33840};  // (~10 s, ~1 min, ~3 min at 187.5 frames/s)
+    ++check_total_;
+    bool in_window = false;
+    for (const uint32_t at : kAt) in_window |= check_total_ + kSecond > at && check_total_ <= at;
+    if (in_window) {
+      double sent = 0;
+      for (uint32_t i = 0; i < output_channels_ * kChannelSamples; ++i) sent += double(output[i]) * output[i];
+      check_game_ += game_square;
+      check_sent_ += sent / (output_channels_ * kChannelSamples);
+      if (++check_frames_ == kSecond) {
+        REXAPU_INFO("audio check: game rms {:.5f}, sent rms {:.5f} ({} ch{})", std::sqrt(check_game_ / kSecond),
+                    std::sqrt(check_sent_ / kSecond), output_channels_, AudioMuted() ? ", audio_mute" : "");
+        check_game_ = check_sent_ = 0;
+        check_frames_ = 0;
+      }
+    }
   }
 
   XAUDIO2_BUFFER buffer = {};
