@@ -23,6 +23,17 @@ void MatchBoxMotionLooked(uint32_t id, bool found);
 // never found it: the missing-motion guard (match_types.cpp) asks.
 bool MatchBoxMotionMissing(uint32_t id);
 
+// The scene view was just built (match_types.cpp sub_82227150, view 0x82E3CC00) - any thread. `lr` says who built
+// it: the match camera (sub_822285F0, 0x82228894), its cut snap (sub_822280B0, 0x822281B4: one frame as a big move's
+// camera cut begins or ends), the Rumble's, backstage's ...; `camera` (their r31) is the match camera object, whose
+// +268 is set while a big move's camera cut is on. The box notes the camera each world update: its kind, the game's
+// camera mode (0x82E3CCF8) and, for a cut, the moves that were on when it began (report ec87bf: "camera not moving
+// after a move").
+void MatchBoxCameraView(uint32_t lr, uint32_t camera, float eye_x, float eye_y, float eye_z);
+
+// trail.txt's camera part for this second (match_record.cpp): " | cam <kind> <mode>[ <person>:<motion>... <s>s]".
+std::string MatchBoxCameraTrail();
+
 // The box as text (`why`: what asked for it; `full`: every motion and event, else the last few) - any thread.
 std::string MatchBoxText(const char* why, bool full);
 

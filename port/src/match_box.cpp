@@ -77,6 +77,49 @@ uint32_t g_event_n = 0;
 uint32_t g_rule = 0xFFFFFFFF;
 std::array<uint32_t, kObjectSlots> g_object{}, g_holder{};
 std::map<uint16_t, std::string> g_pack_of;  // move id -> the pack (its folder), this match
+
+// The camera (report ec87bf, "camera not moving after a move": the view stayed on the mat with no HUD while the match
+// ran on). Who built the scene view last (MatchBoxCameraView, any thread) and, per world update, the camera's kind,
+// the game's camera mode, and a big move's camera cut (the match camera's +268 set; sub_822280B0 builds one snap frame
+// as it begins and ends): the moves on when it began (people 0-5 not standing, walking or lying) and when the last of
+// them ended.
+constexpr uint32_t kCameraMode = 0x82E3CCF8;
+constexpr uint32_t kFollowBuild = 0x82228894, kCutBuild = 0x822281B4, kRumbleBuild = 0x82331AFC, kBackstageBuild = 0x822F324C;
+constexpr uint32_t kCutOn = 268;    // (match camera: a big move's camera cut on)
+constexpr uint32_t kCutHeld = 300;  // (world updates after its moves ended: 5 s)
+std::atomic<uint32_t> g_view_lr{0}, g_view_camera{0};
+std::atomic<float> g_eye_x{0}, g_eye_y{0}, g_eye_z{0};
+struct Camera {
+  uint32_t lr = 0, mode = 0;
+  bool cut = false;
+  uint32_t cut_clock = 0, ended_clock = 0;  // (ended: 0 while one of its moves is on)
+  std::array<uint32_t, 6> cut_motion{};     // (the moves' motions when it began; 0: none)
+  bool told = false;
+  std::array<uint32_t, 4> other{};  // (other builders noted this match)
+  // a camera that stopped: its eye hasn't moved since `still_clock` (the people's places then, to see them move)
+  float ex = 0, ey = 0, ez = 0;
+  uint32_t still_clock = 0;
+  std::array<std::array<float, 2>, 6> still_at{};
+  bool told_still = false;
+} g_cam;
+constexpr uint32_t kStillHeld = 300;  // (world updates: 5 s)
+constexpr float kStillMoved = 10.0f;  // (how far someone moved meanwhile)
+std::string CameraKind(uint32_t lr) {
+  switch (lr) {
+    case 0: return "none";
+    case kFollowBuild: return "follow";
+    case kCutBuild: return "snap";
+    case kRumbleBuild: return "rumble";
+    case kBackstageBuild: return "backstage";
+    default: return fmt::format("{:08X}", lr);
+  }
+}
+std::string CutMotions() {
+  std::string s;
+  for (uint32_t i = 0; i < 6; ++i)
+    if (g_cam.cut_motion[i]) s += fmt::format("{}{}:{}", s.empty() ? "" : " ", i, g_cam.cut_motion[i]);
+  return s.empty() ? std::string("no move") : s;
+}
 std::array<uint8_t, kPeople> g_told_teleport{}, g_told_nan{}, g_told_missing{};
 uint32_t g_told_refloop = 0, g_logged = 0;
 std::vector<std::string> g_logged_why;
@@ -114,6 +157,8 @@ void StartMatch(uint8_t* base) {
   g_test_missing = 0;
   g_pack_of.clear();
   g_referee = false;
+  g_cam = {};
+  g_view_lr = 0, g_view_camera = 0;  // (the match camera is made anew: the next view names it)
   for (const auto& [kind, folder] : MovePacks())  // (once a match: which pack each pack move comes from)
     for (const uint16_t id : MovePackMoves(kind, folder)) g_pack_of.emplace(id, folder);
   ++g_match_number;
@@ -247,6 +292,76 @@ void MatchBoxUpdate(PPCContext& ctx, uint8_t* base) {
       }
     }
     TestBox(clock, referee, p0, nan_test);
+    // The camera: its kind and mode each update; a cut's moves; a cut held past its moves (ec87bf)
+    {
+      const uint32_t lr = g_view_lr.load(std::memory_order_relaxed);
+      g_cam.lr = lr, g_cam.mode = Rd32(base + kCameraMode);
+      const uint32_t cam = lr == kFollowBuild || lr == kCutBuild ? g_view_camera.load(std::memory_order_relaxed) : 0;
+      if (lr && lr != kFollowBuild && lr != kCutBuild)
+        for (auto& o : g_cam.other) {
+          if (o == lr) break;
+          if (!o) {
+            o = lr;
+            AddEvent(clock, fmt::format("camera view built from {} (mode {})", CameraKind(lr), g_cam.mode));
+            break;
+          }
+        }
+      // Test aid: SVR2011_TEST_CUT_HOLD=<s> - the match's first camera cut is held on (+268 set again) for <s> seconds
+      // after the game ends it: a cut that outlives its move, for the detector below.
+      static const uint32_t hold = std::getenv("SVR2011_TEST_CUT_HOLD") ? uint32_t(std::atoi(std::getenv("SVR2011_TEST_CUT_HOLD"))) * 60 : 0;
+      static uint32_t hold_match = 0, hold_until = 0;
+      if (hold && cam >= 0x40000000u && !(cam & 3) && g_cam.cut && !Rd32(base + cam + kCutOn) && hold_match != g_match_number)
+        hold_match = g_match_number, hold_until = clock + hold,
+        AddEvent(clock, fmt::format("test: the camera cut held on for {} s", hold / 60));
+      if (hold && hold_match == g_match_number && clock < hold_until && cam >= 0x40000000u && !(cam & 3))
+        svrfmt::Wr32(base + cam + kCutOn, 1);
+      const bool cut = cam >= 0x40000000u && !(cam & 3) && Rd32(base + cam + kCutOn) != 0;
+      if (cut && !g_cam.cut) {
+        g_cam.cut_clock = clock, g_cam.ended_clock = 0, g_cam.cut_motion.fill(0);
+        for (const Person& p : g_people)
+          if (p.ch && p.person < 6 && p.motion && p.motion != kStanding && p.motion != 20400 && !Lying(p.motion))
+            g_cam.cut_motion[p.person] = p.motion;
+        AddEvent(clock, "camera cut on (" + CutMotions() + ")");
+      } else if (!cut && g_cam.cut) {
+        AddEvent(clock, fmt::format("camera cut off after {:.1f} s", (clock - g_cam.cut_clock) / 60.0));
+      }
+      g_cam.cut = cut;
+      if (cut && !g_cam.ended_clock) {
+        bool on = false;
+        for (const Person& p : g_people)
+          if (p.ch && p.person < 6 && g_cam.cut_motion[p.person] && p.motion == g_cam.cut_motion[p.person]) on = true;
+        if (!on) g_cam.ended_clock = clock;
+      }
+      // A camera that stopped while the people move on (ec87bf: the view stayed on the mat) - the game's own eye, before
+      // MATCH CAMERA or the free camera move it
+      if (lr && g_cam.mode != 1) g_cam.still_clock = 0;  // (play's camera only: entrances (6) and the rest stand still)
+      if (lr && g_cam.mode == 1) {
+        const float ex = g_eye_x.load(std::memory_order_relaxed), ey = g_eye_y.load(std::memory_order_relaxed),
+                    ez = g_eye_z.load(std::memory_order_relaxed);
+        if (!g_cam.still_clock || std::fabs(ex - g_cam.ex) + std::fabs(ey - g_cam.ey) + std::fabs(ez - g_cam.ez) > 0.05f) {
+          g_cam.ex = ex, g_cam.ey = ey, g_cam.ez = ez, g_cam.still_clock = clock;
+          for (const Person& p : g_people)
+            if (p.ch && p.person < 6) g_cam.still_at[p.person] = {p.x, p.z};
+        } else if (clock - g_cam.still_clock >= kStillHeld && !g_cam.told_still) {
+          for (const Person& p : g_people) {
+            if (!p.ch || p.person >= 6) continue;
+            const float moved = std::hypot(p.x - g_cam.still_at[p.person][0], p.z - g_cam.still_at[p.person][1]);
+            if (moved < kStillMoved) continue;
+            g_cam.told_still = true;
+            Detect(fmt::format("the camera hasn't moved for {:.0f} s while person {} moved {:.0f} ({}, mode {}, eye {:.0f}, {:.0f}, {:.0f})",
+                               (clock - g_cam.still_clock) / 60.0, p.person, moved, cut ? std::string("a cut: ") + CutMotions() : CameraKind(lr),
+                               g_cam.mode, ex, ey, ez));
+            break;
+          }
+        }
+      }
+      if (cut && g_cam.mode == 1 && g_cam.ended_clock && clock - g_cam.ended_clock >= kCutHeld && !g_cam.told) {
+        g_cam.told = true;
+        Detect(fmt::format("a camera cut held {:.0f} s after its move ended ({}; the cut began at clock {}, eye {:.0f}, {:.0f}, {:.0f})",
+                           (clock - g_cam.ended_clock) / 60.0, CutMotions(), g_cam.cut_clock, g_eye_x.load(),
+                           g_eye_y.load(), g_eye_z.load()));
+      }
+    }
     // A NaN or far-away position (a wrestler thrown out of the world)
     for (int i = 0; i < kPeople; ++i) {
       Person& p = g_people[size_t(i)];
@@ -343,6 +458,12 @@ std::string MatchBoxText(const char* why, bool full) {
                    REXCVAR_GET(frame_rate), P2POnlineMode() ? "online" : "offline", REXCVAR_GET(cpu_reversal_chance),
                    REXCVAR_GET(cpu_reversal_rates), REXCVAR_GET(cpu_damage_level), REXCVAR_GET(cpu_pin_level),
                    REXCVAR_GET(cpu_momentum_level));
+  s += fmt::format("  camera: {} (mode {}), eye ({:.0f}, {:.0f}, {:.0f})", g_cam.cut ? std::string("cut") : CameraKind(g_cam.lr), g_cam.mode, g_eye_x.load(),
+                   g_eye_y.load(), g_eye_z.load());
+  if (g_cam.cut)
+    s += fmt::format(", a cut since clock {} ({}){}", g_cam.cut_clock, CutMotions(),
+                     g_cam.ended_clock ? fmt::format(", its move ended at clock {}", g_cam.ended_clock) : std::string());
+  s += "\n";
   const uint32_t show = full ? kMotions : 8;
   for (const Person& p : g_people) {
     if (!p.ch) continue;
@@ -372,6 +493,23 @@ std::string MatchBoxText(const char* why, bool full) {
   for (uint32_t k = g_event_n > ev ? g_event_n - ev : 0; k < g_event_n; ++k)
     evs += fmt::format("    {} {}\n", g_events[k % kEvents].clock, g_events[k % kEvents].text);
   s += "  events (clock text):\n" + (evs.empty() ? std::string("    -\n") : evs);
+  return s;
+}
+
+void MatchBoxCameraView(uint32_t lr, uint32_t camera, float eye_x, float eye_y, float eye_z) {
+  g_view_lr.store(lr, std::memory_order_relaxed), g_view_camera.store(camera, std::memory_order_relaxed);
+  g_eye_x.store(eye_x, std::memory_order_relaxed), g_eye_y.store(eye_y, std::memory_order_relaxed);
+  g_eye_z.store(eye_z, std::memory_order_relaxed);
+}
+
+std::string MatchBoxCameraTrail() {
+  std::lock_guard lock(g_box);
+  if (!g_on) return {};
+  std::string s = fmt::format(" | cam {} {} eye {:.0f} {:.0f} {:.0f}", g_cam.cut ? std::string("cut") : CameraKind(g_cam.lr),
+                              g_cam.mode, g_eye_x.load(), g_eye_y.load(), g_eye_z.load());
+  if (g_cam.cut)
+    s += fmt::format(" {} {:.0f}s{}", CutMotions(), (g_last_clock - g_cam.cut_clock) / 60.0,
+                     g_cam.ended_clock ? fmt::format(" ended {:.0f}s", (g_last_clock - g_cam.ended_clock) / 60.0) : std::string());
   return s;
 }
 

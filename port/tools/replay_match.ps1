@@ -53,7 +53,7 @@ function Get-BellMotions([string]$trail) {
     $first = Get-Content $trail -ErrorAction SilentlyContinue | Where-Object { $_ -match '^0 \|' } | Select-Object -First 1
     if (-not $first) { return $null }
     return (($first -split '\|' | Select-Object -Skip 1 | ForEach-Object { $f = $_.Trim() -split '\s+'
-        if ([int]$f[0] -le 6) { "$($f[0]):$($f[4])@$([math]::Round([double]$f[1] / 4)),$([math]::Round([double]$f[3] / 4))" } }) -join ' ')
+        if ($f[0] -match '^\d+$' -and [int]$f[0] -le 6) { "$($f[0]):$($f[4])@$([math]::Round([double]$f[1] / 4)),$([math]::Round([double]$f[3] / 4))" } }) -join ' ')
 }
 $wantBell = Get-BellMotions (Join-Path $Recording "trail.txt")
 

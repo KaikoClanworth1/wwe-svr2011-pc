@@ -26,7 +26,7 @@ Code: `port/src/match_record.cpp` (`match_record.h`).
 | `inputs.bin` | Every pad's state as the game read it, one record each time a pad changes. |
 | `bell.bin` | The state at the bell for exact replays: each character's first 8 KB, the random table and its indexes (about 40-80 KB). |
 | `box.txt` | The black box (`docs/LOG_DIAGNOSTICS.md`): each case as it is logged, then the full box at the end. |
-| `trail.txt` | Once a second of the match clock (60 world updates) from the bell: each person's position and motion. |
+| `trail.txt` | Once a second of the match clock (60 world updates) from the bell: each person's position and motion, then the camera: `cam <kind> <mode> eye <x y z>` (kind follow / cut / snap / rumble / backstage / the builder's address; mode 0x82E3CCF8: 1 play, 6 entrances) and, during a big move's camera cut, the moves on when it began (`person:motion`), its seconds and the seconds since those moves ended. |
 | `loaded.txt` | At the bell: fallback memory, weapon slots (slot:model), the random table counters. At the end: fallback memory and its peak. |
 | `mods.txt` | All installed mods, in load order, with on/off, used in this match, and a files hash. |
 | `done.txt` | Empty. Written last: the folder is complete. |

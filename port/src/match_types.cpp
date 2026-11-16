@@ -57,6 +57,7 @@
 #include "generated/default/svr2011_init.h"
 #include "free_cam.h"
 #include "crowd_fight.h"
+#include "caller_nv.h"
 #include "match_box.h"
 #include "match_record.h"
 #include "thread_cpu.h"
@@ -1828,6 +1829,32 @@ REX_HOOK_RAW(sub_82227150) {
     }
   }
   const uint32_t view = ctx.r3.u32, eye = ctx.r4.u32, dir = ctx.r5.u32;
+  // Test aid: SVR2011_TEST_CAM_FREEZE=<s>,<for s> - from that second of the match the scene's eye and direction stay
+  // where they were (a camera that stopped while the match goes on: report ec87bf, the box's detector)
+  if (static const char* freeze = std::getenv("SVR2011_TEST_CAM_FREEZE"); freeze && view == 0x82E3CC00 && eye && dir) {
+    static float at = -1, len = 0, kept[6];
+    static bool have = false;
+    if (at < 0) std::sscanf(freeze, "%f,%f", &at, &len);
+    const float sec = Rd32(base + 0x82E3CD0C) / 60.0f;
+    if (sec >= at && sec < at + len) {
+      if (!have) {
+        for (uint32_t k = 0; k < 3; ++k) kept[k] = RdF(base + eye + 4 * k), kept[3 + k] = RdF(base + dir + 4 * k);
+        have = true;
+        REXLOG_INFO("[svr2011] test: the camera stays here for {} s", len);
+      }
+      for (uint32_t k = 0; k < 3; ++k) WrF(base + eye + 4 * k, kept[k]), WrF(base + dir + 4 * k, kept[3 + k]);
+    }
+  }
+  // (the black box notes who built the scene's view and the match camera object, the builder's r31: report ec87bf -
+  // on the Switch r31 is a local of the recompiled caller with no hand-over at this call, so no camera object there)
+  if (view == 0x82E3CC00 && eye) {
+#ifdef __SWITCH__
+    const uint32_t camera_object = 0;
+#else
+    const uint32_t camera_object = SVR_CALLER_NV(ctx, r31);
+#endif
+    svr2011::MatchBoxCameraView(uint32_t(ctx.lr), camera_object, RdF(base + eye), RdF(base + eye + 4), RdF(base + eye + 8));
+  }
   svr2011::MatchCameraBefore(base, uint32_t(ctx.lr), view, eye, dir);  // (MATCH CAMERA: free_cam.h)
   __imp__sub_82227150(ctx, base);
   svr2011::MatchCameraAfter(base);
