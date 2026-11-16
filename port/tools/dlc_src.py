@@ -130,6 +130,9 @@ class DlcSet:
         self.others = len(every) - len(self.packages)
         if self.others and not self.packages:
             notice('DLC folder: its %d package(s) belong to another game: none used.' % self.others)
+        elif self.others:   # (said, not silent: a package left out without a word looked like a missing superstar, 88a29f)
+            ids = sorted({'%08X' % p.title for p in every if p not in self.packages})
+            notice('DLC folder: %d package(s) belong to another game (title id %s): left out.' % (self.others, ', '.join(ids[:4])))
         self._by_model = {}
         for p in self.packages:
             for i in p.models():

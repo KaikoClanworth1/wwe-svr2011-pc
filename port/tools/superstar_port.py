@@ -220,6 +220,9 @@ class Src:
         if not self.d.exists('pac') and not any(n.lower().endswith('.pac') for n in self.d.listdir('')):
             raise BadInput('--src has no pac folder: %s' % path)   # (JBI keeps its PACs in the disc root)
         self.dlc = None   # (--dlc: the game's DLC packages - dlc_src.py - what the disc doesn't have comes from them)
+        # (files the packages' copy wins for although the disc has one: a DLC superstar on a disc model left over
+        # without a character row - 2K17 carries 68 of 2K16's, report 88a29f)
+        self.prefer_dlc = set()
         if os.environ.get('SVR2011_PORT_DLC'):
             import dlc_src
             title = self.info().get('title_id')
@@ -245,6 +248,10 @@ class Src:
 
     def get(self, rel):
         """local path of rel (copied from the image when needed), or None"""
+        if self.dlc and rel in self.prefer_dlc:
+            p = self.dlc.get(rel)
+            if p:
+                return p
         if not self.d.exists(rel):
             return self.dlc.get(rel) if self.dlc else None
         if self.folder:
@@ -1642,38 +1649,68 @@ class GameW2K17(GameW2K16):
     def merge_dlc(self):
         """--dlc: a package's chEtc is an HSPC as the disc's (GameW.merge_dlc's EPAC / EPK8 reader left every 2K17
         package out, reports de65e8 / 09187a): read by the disc's own char_tables; names from the package's
-        string_360 pac, else the disc's. A package that doesn't read is left out as before."""
+        string_360 pac, else the disc's. A package that doesn't read is left out as before.
+
+        Report 88a29f (Ric Flair '88 never listed, no line in the log): a package superstar was dropped without a
+        word when (1) the disc has a model pac of his id - the 2K17 disc carries 68 of 2K16's DLC models without a
+        character row: such a leftover is not a disc superstar, the package's model and row win; (2) his row, name
+        or model sit in another package than the one with his table - every package's tables and string pacs
+        count now (his own package's first); (3) nothing names him. Each package model left out is now a notice."""
+        import dlc_src
         dlc = self.src.dlc
         if not dlc:
             return
+        real = {c for c, x in self.dat.items() if self._real_name(x)}   # (the disc's own superstars)
+        tables, strings = {}, {}   # (package name: (DAT rows, PRO rows) / {string id: text})
         for pk in dlc.packages:
-            own = {i for i in pk.models() if not self.src.d.exists(self.chpac_rel(i))}
-            low = pk.etc()
-            if not own or not low:
-                continue
-            try:
-                raw_dat, pro = self.char_tables(self.decode(pk.read(low)))
-            except Exception as e:   # (anything this reader can't make sense of: today's skip)
-                print('DLC package %s: its character table can\'t be read (%s)' % (pk.name, e), file=sys.stderr)
-                __import__('dlc_src').notice('DLC package %s: its character table can\'t be read: its superstars are left out.' % pk.display)
-                continue
-            names = dict(self.names)
+            for low in pk.matching(r'^pac/ch/chetc[^/]*\.pac$'):
+                try:
+                    d, p = self.char_tables(self.decode(pk.read(low)))
+                except Exception as e:   # (anything this reader can't make sense of: that table is left out)
+                    print('DLC package %s: %s can\'t be read (%s)' % (pk.name, low, e), file=sys.stderr)
+                    dlc_src.notice('DLC package %s: its character table can\'t be read: its superstars are left out.' % pk.display)
+                    continue
+                t = tables.setdefault(pk.name, ({}, {}))
+                t[0].update(d), t[1].update(p)
             for s in pk.matching(r'^pac/string[^/]*\.pac$'):
                 try:
-                    names.update(self._names(self.decode(pk.read(s))))
-                except Exception as e:   # (its names unread: the disc's, else the superstar is left out below)
+                    strings.setdefault(pk.name, {}).update(self._names(self.decode(pk.read(s))))
+                except Exception as e:   # (its names unread: another package's, else the disc's)
                     print('DLC package %s: %s not read (%s)' % (pk.name, s, e), file=sys.stderr)
-            for cid, r in raw_dat.items():
-                if cid not in own:
+        order = [pk.name for pk in reversed(dlc.packages)]   # (a later package's copy first, after his own)
+        for pk in dlc.packages:
+            for cid in sorted(pk.models()):
+                if cid in self.dlc_ids or dlc.package_of(cid) is not pk:
                     continue
-                x = self._shape17(r, names)
-                if not x[34:66].strip(b'\0'):
+                rel = self.chpac_rel(cid)
+                if self.src.d.exists(rel) and cid in real:
+                    continue   # (a disc superstar: the disc's)
+                look = [pk.name] + [n for n in order if n != pk.name]
+                row = next(((n, tables[n][0][cid]) for n in look if n in tables and cid in tables[n][0]), None)
+                if row is None:
+                    dlc_src.notice('DLC package %s: superstar %d has no character table row in any package: left out.' % (pk.display, cid))
                     continue
-                self.raw_dat[cid], self.dat[cid] = r, x
-                if cid in pro:
-                    self.pro[cid] = pro[cid]
+                names = dict(self.names)
+                for n in reversed(look):
+                    names.update(strings.get(n, {}))
+                x = self._shape17(row[1], names)
+                if not self._real_name(x):
+                    dlc_src.notice('DLC package %s: superstar %d has no name in any package: left out.' % (pk.display, cid))
+                    continue
+                if self.src.d.exists(rel):   # (a leftover disc model: the package's wins)
+                    self.src.prefer_dlc.add(rel)
+                self.raw_dat[cid], self.dat[cid] = row[1], x
+                if cid in tables[row[0]][1]:
+                    self.pro[cid] = tables[row[0]][1][cid]
+                else:
+                    self.pro.pop(cid, None)
                 self.dlc_ids.add(cid)
         self.render_ids = {i for (t, i) in self._ssf if t == 'SSFA'}
+
+    @staticmethod
+    def _real_name(x):
+        nm = x[34:66].split(b'\0')[0].strip()
+        return bool(nm) and not nm.upper().startswith((b'DUMMY', b'MOTION', b'TEST'))
 
     def _names(self, raw=None):
         for _, b in hspc(raw if raw is not None else self.pac_bytes('pac/string_360.pac')):
