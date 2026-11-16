@@ -166,6 +166,14 @@ void TestBox(uint32_t clock, bool referee, Person*& p0, bool& nan_test) {
 
 }  // namespace
 
+bool MatchBoxMotionMissing(uint32_t id) {
+  id &= 0xFFFF;
+  if (!id || Found(id)) return false;
+  for (const auto& m : g_missed)
+    if (m.load(std::memory_order_relaxed) == id) return true;
+  return false;
+}
+
 void MatchBoxMotionLooked(uint32_t id, bool found) {
   const bool test = id & 0x10000;  // (SVR2011_TEST_BOX=missing: counts as never found)
   id &= 0xFFFF;

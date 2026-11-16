@@ -19,6 +19,9 @@ void MatchBoxUpdate(PPCContext& ctx, uint8_t* base);
 // A motion look-up's answer (superstar_mods.cpp sub_823941F8: a body track, y 0 / 1): `found` in that bank list or
 // not - from any thread. A motion is "missing" when some list missed it and none ever had it this match.
 void MatchBoxMotionLooked(uint32_t id, bool found);
+// Whether the game's bank search (the sorted banks and the unsorted ones after it) missed motion `id` this match and
+// never found it: the missing-motion guard (match_types.cpp) asks.
+bool MatchBoxMotionMissing(uint32_t id);
 
 // The box as text (`why`: what asked for it; `full`: every motion and event, else the last few) - any thread.
 std::string MatchBoxText(const char* why, bool full);
