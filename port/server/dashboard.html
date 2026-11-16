@@ -46,7 +46,7 @@ body.anth nav.tabs { display: none; }  /* (the SvR Anthology page: its reports o
 .top h1 { font-size: 18px; margin: 0; white-space: nowrap; }
 .top .sub { color: var(--faint); font-size: 13px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
             text-overflow: ellipsis; }
-.tabs { max-width: 1180px; margin: 0 auto; padding: 0 12px; display: flex; gap: 2px; overflow-x: auto;
+.tabs { max-width: 1180px; margin: 0 auto; padding: 0 12px; display: flex; flex-wrap: wrap; gap: 2px;
         scrollbar-width: none; }
 .tabs::-webkit-scrollbar { display: none; }
 .tabs [role=tab] { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--dim);
