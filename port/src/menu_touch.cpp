@@ -614,10 +614,12 @@ bool MenuTouchTap(float fx, float fy, MenuTouchPress press) {
   g_shot_again = true;
   if (GuestPagesHoldInput() || GameKeyboardOpen() || g_row_moving || g_slot_moving) return false;
   if (P2POnlineMode()) return false;  // (first version: online screens may be synced by input; steer with the pad)
+  const float x = fx * 640, y = fy * 360;
+  // (a YES / NO box over the menu: before the menu under it - and with no menu at all: a new player's first start asks
+  // "create a new save game?" over the title, before the menus have a group)
+  if (DialogTap(x, y, press)) return true;
   uint32_t group = 0, cursor = 0;
   if (!ScriptMenuState(&group, &cursor)) return false;
-  const float x = fx * 640, y = fy * 360;
-  if (DialogTap(x, y, press)) return true;  // (a YES / NO box over the menu: before the menu under it)
   if (group == kSelectGroup) return VsTap(x, y, press) || GridTap(x, y, press);
   if (group == kTagGroup || group == kSixGroup)
     return VsTap(x, y, press) || PromptTap(x, y, press) || SlotTap(x, y, press) || GridTap(x, y, press);
