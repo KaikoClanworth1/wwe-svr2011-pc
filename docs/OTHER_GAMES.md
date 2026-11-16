@@ -262,6 +262,14 @@ package's own superstars: those with a model pac the disc doesn't have (`pac/ch/
 | WWE 2K14 | `chEtc_dlc<nn>.pac` CHAR; names in `string_dlc<nn>.pac` | `DLC_HD_dlc<nn>.pac` | 20 (377-396) |
 | WWE 2K15 | `chEtc_dlc<nn>.pac` CHAR; names as 2K14 | `dlc_hd_dlc<nn>.pac` | 19 |
 | WWE 2K16 | `chEtc_dlc<nn>.pac` CH20 / CH40, id at +4; names as 2K14 | `dlc_hd_dlc<nn>.pac` | 32; model pacs are EPK8 (2K15's form), not the disc's EPAC |
+| WWE 2K17 | `chEtc*.pac` an HSPC as the disc's (DAT 220 B, id at +4); names in its `string*.pac` | none mapped | 27 on a player's PC (118-684); no package here, proven on packages made from the disc |
+
+WWE 2K17 (report 88a29f, Ric Flair '88 not listed and nothing in the log): `GameW2K17.merge_dlc` takes every package
+model the disc has no superstar for. The 2K17 disc carries 68 model pacs without a character row (2K16's DLC ids 159,
+197, 585-603 among them); a package superstar on such an id is a DLC one, and his model is read from the package
+(`Src.prefer_dlc`), not the disc's leftover. His row and name may come from another package than his model (his own
+package's first). A model left out says why (`notice`: no row, no name), and so do packages of another title id in the
+folder.
 
 The theme comes from the package's own bank (`sound/DLC_<nn>.pck` and kin), else the disc's.
 
