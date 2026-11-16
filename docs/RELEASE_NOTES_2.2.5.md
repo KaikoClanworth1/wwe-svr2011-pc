@@ -23,6 +23,7 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 - **Community Creations move-sets** can be applied to big roster superstars - potential fix.
 - **WWE '13 Attitude Era entrances** (Gangrel's fire and lights, Val Venis's towel) - potential fix.
 - **Mod Maker: hair and cloth with long chains** are held to the game's 16-joint limit - potential fix.
+- **Android: a new player's first "create a new save game?" box ignored taps** - tap YES or NO now.
 - **Mod Maker: FBX build failed** ("list.index") on an eyelash mesh with its own texture - fixed.
 
 ☕ Enjoying the port? **Support me (optional, everything stays free):** https://www.patreon.com/c/KaikoClanworth · https://ko-fi.com/kaikoclanworth · https://www.paypal.com/donate/?hosted_button_id=MS4C2WC38N3W2
