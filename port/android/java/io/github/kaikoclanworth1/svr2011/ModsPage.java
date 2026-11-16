@@ -50,6 +50,8 @@ final class ModsPage {
     static File attiresFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Attires"); }
     static File titlesFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Titles"); }
     static File cawPartsFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "CawParts"); }
+    // (move packs - type=moves: pack.txt + its files; Discovery's entrance mods are these - the game reads Mods/Moves/<id>)
+    static File movesFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Moves"); }
     static File backgroundsFolder() { return Backgrounds.folder(); }
 
     // This app's version: the game's (the app installs the game of its own release).
@@ -125,7 +127,7 @@ final class ModsPage {
     static java.util.List<File> modFolders() {
         java.util.List<File> out = new java.util.ArrayList<>();
         File[] kinds = {titlesFolder(), cawPartsFolder(), arenasFolder(), superstarsFolder(), signsFolder(), mediaFolder(),
-            backstageFolder(), matchTypesFolder(), backgroundsFolder(), attiresFolder()};
+            backstageFolder(), matchTypesFolder(), backgroundsFolder(), attiresFolder(), movesFolder()};
         for (File k : kinds) {
             File[] ds = k == null ? null : k.listFiles(f -> f.isDirectory() && !f.getName().startsWith(".")
                 && (new File(f, "manifest.txt").isFile() || new File(f, "info.txt").isFile()));
@@ -146,9 +148,11 @@ final class ModsPage {
         File[] attires = attiresFolder().listFiles(f -> f.isDirectory() && new File(f, "attire.pac").isFile());
         File[] titles = titlesFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
         File[] cawParts = cawPartsFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
+        File[] packs = movesFolder().listFiles(f -> f.isDirectory() && !f.getName().startsWith(".") && new File(f, "pack.txt").isFile());
         File[] dirs = new File[(titles == null ? 0 : titles.length) + (cawParts == null ? 0 : cawParts.length) + (arenas == null ? 0 : arenas.length) + (stars == null ? 0 : stars.length)
             + (signs == null ? 0 : signs.length) + (media == null ? 0 : media.length) + (back == null ? 0 : back.length)
-            + (types == null ? 0 : types.length) + (pics == null ? 0 : pics.length) + (attires == null ? 0 : attires.length)];
+            + (types == null ? 0 : types.length) + (pics == null ? 0 : pics.length) + (attires == null ? 0 : attires.length)
+            + (packs == null ? 0 : packs.length)];
         int k = 0;
         if (titles != null) for (File f : titles) dirs[k++] = f;
         if (cawParts != null) for (File f : cawParts) dirs[k++] = f;
@@ -160,6 +164,7 @@ final class ModsPage {
         if (types != null) for (File f : types) dirs[k++] = f;
         if (pics != null) for (File f : pics) dirs[k++] = f;
         if (attires != null) for (File f : attires) dirs[k++] = f;
+        if (packs != null) for (File f : packs) dirs[k++] = f;
         if (dirs.length == 0) {
             TextView none = a_.text("None yet.", 15, LauncherActivity.kDim);
             none.setPadding(0, a_.dp(14), 0, a_.dp(14));
@@ -189,12 +194,13 @@ final class ModsPage {
             boolean attire = d.getParentFile().getName().equals("Attires");
             boolean titlePack = d.getParentFile().getName().equals("Titles");
             boolean cawPart = d.getParentFile().getName().equals("CawParts");
+            boolean movePack = d.getParentFile().getName().equals("Moves");
             String hint = (star && leftOut.contains(d.getName()) ? "NOT IN GAME - over the " + superstarLimit() + " limit. " : "")
-                + (titlePack ? "Title" : cawPart ? "Create A Superstar glasses" : attire ? "Attire " + m.get("attire") + " for " + starName(m.get("superstar")) : pic ? "Menu background" : matchType ? (d.getName().equals("free_roaming_backstage") ? "Match type - REMOVED: FREE-ROAMING BACKSTAGE isn't in the game for now" : "Match type") : backPack ? "Backstage area - OFF: backstage mods are switched off, Backstage Brawl plays the stock backstage" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
+                + (movePack ? "Move pack (moves / entrances)" : titlePack ? "Title" : cawPart ? "Create A Superstar glasses" : attire ? "Attire " + m.get("attire") + " for " + starName(m.get("superstar")) : pic ? "Menu background" : matchType ? (d.getName().equals("free_roaming_backstage") ? "Match type - REMOVED: FREE-ROAMING BACKSTAGE isn't in the game for now" : "Match type") : backPack ? "Backstage area - OFF: backstage mods are switched off, Backstage Brawl plays the stock backstage" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
                 + (m.containsKey("author") && !m.get("author").isEmpty() ? " by " + m.get("author") : "")
                 + (m.containsKey("version") ? ", v" + m.get("version") : "")
                 + (needsNewer(a_, m.get("needs")) ? " - NEEDS GAME " + m.get("needs") : "")
-                + (titlePack || cawPart || signPack || mediaPack || matchType || pic ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : attire ? "attire.pac" : "arena.pac").length()));
+                + (movePack || titlePack || cawPart || signPack || mediaPack || matchType || pic ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : attire ? "attire.pac" : "arena.pac").length()));
             LinearLayout controls = new LinearLayout(a_);
             Switch on = new Switch(a_);
             // (red when on, as the Settings switches: the default is hard to see)
@@ -574,6 +580,11 @@ final class ModsPage {
         boolean attire = type.equals("attire");
         boolean titlePack = type.equals("title");
         boolean cawPart = type.equals("cawpart");
+        boolean movePack = type.equals("moves");  // (a move pack: Discovery's entrance mods - the PC launcher's mods_tab.c)
+        if (movePack && !parts.containsKey("pack.txt")) {
+            deleteTree(stage);
+            throw new IOException("that move pack has no pack.txt");
+        }
         if (attire && !parts.containsKey("attire.pac")) {
             deleteTree(stage);
             throw new IOException("that attire mod has no attire.pac");
@@ -582,13 +593,13 @@ final class ModsPage {
             deleteTree(stage);
             throw new IOException("it has no pictures (.dds)");
         }
-        if (!titlePack && !cawPart && !pic && !attire && !signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac"))) {
+        if (!movePack && !titlePack && !cawPart && !pic && !attire && !signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac"))) {
             deleteTree(stage);
             throw new IOException(star ? "it has no ch.pac" : "it has no arena (not a SvR2011 mod?)");
         }
         // (custom moves - a superstar mod's moves/ pack, ported or made by hand: asked first, as on PC; not the port's
         // bundled mods)
-        if (!bundle && new File(stage, "moves/pack.txt").isFile()) {
+        if (!bundle && (new File(stage, "moves/pack.txt").isFile() || new File(stage, "pack.txt").isFile())) {
             String nm = m.containsKey("name") ? m.get("name") : m.containsKey("id") ? m.get("id") : "the mod";
             android.util.Log.w("SvR2011", "mods: \"" + nm + "\" has custom moves (ported or made by hand) - experimental "
                 + "and most likely broken" + (ask == null ? " (not asked)" : ""));
@@ -599,8 +610,8 @@ final class ModsPage {
             }
         }
         String id = m.containsKey("id") ? m.get("id").replaceAll("[^A-Za-z0-9_\\-]", "_") : "";
-        if (id.isEmpty()) id = titlePack ? "title" : cawPart ? "cawpart" : attire ? "attire" : pic ? "background" : matchType ? "matchtype" : backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
-        File dest = new File(titlePack ? titlesFolder() : cawPart ? cawPartsFolder() : attire ? attiresFolder() : pic ? backgroundsFolder() : matchType ? matchTypesFolder() : backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
+        if (id.isEmpty()) id = movePack ? "moves" : titlePack ? "title" : cawPart ? "cawpart" : attire ? "attire" : pic ? "background" : matchType ? "matchtype" : backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
+        File dest = new File(movePack ? movesFolder() : titlePack ? titlesFolder() : cawPart ? cawPartsFolder() : attire ? attiresFolder() : pic ? backgroundsFolder() : matchType ? matchTypesFolder() : backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
         Installed r = new Installed();
         r.name = m.containsKey("name") ? m.get("name") : id;
         r.type = type;
@@ -621,7 +632,7 @@ final class ModsPage {
         // if that fails) and only then the old one deleted: a failure leaves the installed copy as it was. (It used
         // to be deleted first: a stopped copy left a folder the mods list showed and the game left out - the PC
         // launcher's 2.1.2 bundled-mod reports, mods_tab.c swap_in.)
-        String need = attire ? "attire.pac" : pic || titlePack || cawPart ? "manifest.txt" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac";
+        String need = movePack ? "pack.txt" : attire ? "attire.pac" : pic || titlePack || cawPart ? "manifest.txt" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac";
         File kind = dest.getParentFile(), mods = kind.getParentFile();
         File fresh = new File(mods, ".new-" + kind.getName() + "-" + id), old = new File(mods, ".old-" + kind.getName() + "-" + id);
         // (its entrance / victory numbers another installed mod uses for different files: moved to free ones, kept on

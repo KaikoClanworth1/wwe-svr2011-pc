@@ -835,7 +835,9 @@ dot files and `disabled`.
 The game code is the same; differences are in install and platform:
 
 - **Installing.** Dot files are not installed, ids keep `[A-Za-z0-9_-]`, a
-  missing `type=` means arena, and `type=moves` has no route.
+  missing `type=` means arena, and `type=moves` goes to `Mods/Moves/<id>`
+  (from 2.2.6; before it, a move pack - Discovery's entrance mods - was
+  refused as "it has no arena").
 - **Graphics.** The renderer is Vulkan.
 - **HD movies.** `.mp4` plays only where the phone decodes it; otherwise the
   `.bik` fallback plays.
