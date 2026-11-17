@@ -102,6 +102,10 @@ REXCVAR_DEFINE_BOOL(native_scale_effects, kScaleEffectsDefault, "GPU",
 REXCVAR_DEFINE_DOUBLE(native_shadow_size, 1.0, "GPU",
                       "Native renderer: the shadow map's size, a share of its full size (1, 0.5, 0.25: SHADOW QUALITY "
                       "HIGH, MEDIUM, LOW) - smaller is cheaper and blurrier.");
+REXCVAR_DEFINE_BOOL(native_light_beams, true, "GPU",
+                    "Native renderer: the arena's light beams in matches - spotlight cones, lamp flares, banner glow "
+                    "(false: left out - about a quarter fewer draws, for phones whose render thread is per-draw "
+                    "bound). Applies at once.");
 REXCVAR_DEFINE_BOOL(native_shadows, true, "GPU",
                     "Native renderer: the characters' and the arena's real-time shadows (false: nothing "
                     "is drawn into the shadow map - no shadows, fewer draws). Applies at once.");
@@ -830,6 +834,23 @@ struct ScopeTimer {
   }
 };
 
+// Test aid SVR2011_TEST_DRAW_TIMES=1: Draw's own time split into its stages (laps) on the native perf line - which
+// part of a draw's recording costs what (phones are per-draw bound on the render thread).
+const bool g_draw_times = std::getenv("SVR2011_TEST_DRAW_TIMES") != nullptr;
+constexpr int kDrawLaps = 8;
+const char* const kDrawLapNames[kDrawLaps] = {"start", "pipeline", "vertices", "indices", "state", "constants", "bind", "call"};
+double g_draw_lap_ms[kDrawLaps] = {};
+struct DrawLaps {
+  std::chrono::steady_clock::time_point t = g_draw_times ? std::chrono::steady_clock::now()
+                                                         : std::chrono::steady_clock::time_point{};
+  void Lap(int i) {
+    if (!g_draw_times) return;
+    const auto now = std::chrono::steady_clock::now();
+    g_draw_lap_ms[i] += std::chrono::duration<double, std::milli>(now - t).count();
+    t = now;
+  }
+};
+
 Renderer* g_r = nullptr;
 Stream g_streams[16];
 
@@ -864,6 +885,9 @@ bool g_scale_effects = true;
 // native_shadows off: draws into the shadow map (the 1120 x 1120 32-bit float
 // target) are skipped; its clear stays, so nothing reads as shadowed.
 bool g_shadows = true;
+// native_light_beams off: the match scene's additive light draws (blend 0x01060106, depth tested - the arena's
+// spotlight cones, lamp flares and banner glow: ~160 of a 1v1's ~650 draws, 3% of its vertices) are skipped.
+bool g_light_beams = true;
 // native_shadow_size: the shadow map's host size as a share of its scaled size (SHADOW QUALITY: 1, 0.5, 0.25).
 float g_shadow_size = 1.0f;
 bool ShadowMap(uint32_t width, uint32_t height) { return width == 1120 && height == 1120; }
@@ -2044,6 +2068,8 @@ void ApplyOutputSettings(Renderer* r) {
       REXCVAR_GET(native_shadows) ? float(std::clamp(REXCVAR_GET(native_shadow_size), 0.125, 1.0)) : 0.0625f;
   static const bool shadows_once = (g_shadows = REXCVAR_GET(native_shadows));
   (void)shadows_once;
+  static const bool beams_once = (g_light_beams = REXCVAR_GET(native_light_beams));
+  (void)beams_once;
   static float user_res = float(REXCVAR_GET(native_render_scale));
   static bool dynamic = REXCVAR_GET(native_dynamic_scale);
   static float dynamic_min = float(REXCVAR_GET(native_dynamic_scale_min));
@@ -2065,6 +2091,7 @@ void ApplyOutputSettings(Renderer* r) {
     effects = REXCVAR_GET(native_scale_effects);
     shadow_size = REXCVAR_GET(native_shadows) ? float(std::clamp(REXCVAR_GET(native_shadow_size), 0.125, 1.0)) : 0.0625f;
     g_shadows = REXCVAR_GET(native_shadows);
+    g_light_beams = REXCVAR_GET(native_light_beams);
     user_res = float(REXCVAR_GET(native_render_scale));
     dynamic = REXCVAR_GET(native_dynamic_scale);
     dynamic_min = float(std::clamp(REXCVAR_GET(native_dynamic_scale_min), 0.5, 1.0));
@@ -2482,6 +2509,14 @@ void UpdateTitle(Renderer* r) {
                 "span {:.2f} ms, draws {:.0f} (drawn {:.0f}), pipeline builds {:.0f} ms",
                 f / psecs, r->perf_draw_ms / f, r->perf_wait_ms / f, r->perf_submit_ms / f, r->perf_span_ms / f,
                 r->perf_draws / f, r->perf_drawn / f, g_pipeline_ms);
+    if (g_draw_times) {
+      std::string laps;
+      for (int i = 0; i < kDrawLaps; ++i) {
+        laps += fmt::format(" {} {:.3f}", kDrawLapNames[i], g_draw_lap_ms[i] / f);
+        g_draw_lap_ms[i] = 0;
+      }
+      REXLOG_INFO("native perf: draw stages per frame (ms):{}", laps);
+    }
     if (g_write_backs) {
       REXLOG_INFO("native perf: {} resolves written back to guest memory ({:.0f} ms waiting; last {}x{})",
                   g_write_backs, g_write_back_ms, g_write_back_w, g_write_back_h);
@@ -4264,6 +4299,7 @@ void DrawFsr2SkinMotion(Renderer* r, DepthTarget* depth, uint32_t w, uint32_t h)
 void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, uint32_t count,
           bool indexed, const PendingUP* up = nullptr) {
   ScopeTimer timer(r->perf_draw_ms);
+  DrawLaps laps;
   ApplyPendingConstants();
   ++r->frame_stats.draws;
   if (r->hidden_frame) return;  // (a frame not shown: SetHalfFrames)
@@ -4279,6 +4315,23 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   if (!g_shadows && targets.color->width == 1120 && targets.color->height == 1120 &&
       targets.color->format == RenderFormat::R32_FLOAT) {
     ++r->frame_stats.skipped_target;  // (native_shadows off: the shadow map keeps its clear)
+    return;
+  }
+  // Test aid SVR2011_TEST_SKIP_BLEND=<hex RB_BLENDCONTROL0>: draws with that blend left out (what a class of draws is);
+  // SVR2011_TEST_SKIP_BLEND_ODD=1: only in odd frames (two frame shots in a row: the same moment with and without).
+  static const uint32_t skip_blend = [] {
+    const char* v = std::getenv("SVR2011_TEST_SKIP_BLEND");
+    return v ? uint32_t(std::strtoul(v, nullptr, 16)) : 0u;
+  }();
+  static const bool skip_odd = std::getenv("SVR2011_TEST_SKIP_BLEND_ODD") != nullptr;
+  if (skip_blend && Reg(RB_BLENDCONTROL0) == skip_blend && (!skip_odd || (r->frames & 1))) {
+    ++r->frame_stats.skipped_target;
+    return;
+  }
+  // native_light_beams off: the match's additive, depth-tested light draws (the arena's beams and flares).
+  if (!g_light_beams && g_match_scene.load() && !g_frame_2d && Reg(RB_BLENDCONTROL0) == 0x01060106 &&
+      ((Reg(RB_DEPTHCONTROL) >> 1) & 1)) {
+    ++r->frame_stats.skipped_target;
     return;
   }
   Shader* vs = FindShader(Be32(Device() + guest::kDeviceCurrentVertexShader));
@@ -4304,6 +4357,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
       return;
   }
 
+  laps.Lap(0);
   // Input layout: every input the vertex shader declares, from the game's
   // vertex declaration (or a zero stream when the declaration lacks it).
   // Built once per (shader, declaration contents) - not per draw.
@@ -4337,6 +4391,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     return;
   }
 
+  laps.Lap(1);
   // Vertex buffers for the streams the layout uses.
   plume::RenderVertexBufferView views[16] = {};
   uint32_t max_slot = 0;
@@ -4363,6 +4418,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     views[15] = plume::RenderVertexBufferView(r->zero_buffer->at(0), 256);
   }
 
+  laps.Lap(2);
   // Indices (16-bit big-endian), converted into the ring.
   uint32_t draw_count = count;
   bool draw_indexed = indexed;
@@ -4420,6 +4476,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     draw_base = int32_t(start);
   }
 
+  laps.Lap(3);
   // Viewport from the Xenos viewport transform.
   const float xs = RegFloat(PA_CL_VPORT_XSCALE), xo = RegFloat(PA_CL_VPORT_XOFFSET);
   const float ys = RegFloat(PA_CL_VPORT_YSCALE), yo = RegFloat(PA_CL_VPORT_YOFFSET);
@@ -4687,12 +4744,14 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
 
   auto* list = r->list;
   auto& ls = r->list_state;
+  laps.Lap(4);
   BindTargets(r, targets);  // (barriers first: they end a Vulkan render pass)
   if (!ls.bound) {
     list->setGraphicsPipelineLayout(r->layout.get());
     BindTables(r, list);
     ls.bound = true;
   }
+  laps.Lap(6);
   RenderBufferReference draw_constants[4];
   {
     // (Superstar Threads' attire bake - the 2080x1024 target: its paint layers checked at every draw)
@@ -4702,6 +4761,7 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
                                            GpuConstants(r, 256, kPixelConstantsBytes),
                                            SharedConstants(r, alpha_test, vs, ps, ndc), {}};
     textures::SetCheckEveryUse(false);
+    laps.Lap(5);
     auto [cpu, gpu] = Allocate(r, 256);
     if (cpu) {
       const uint32_t n = r->frame_stats.drawn * 2654435761u;
@@ -4786,10 +4846,13 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
       list->setIndexBuffer(&ibv);
       ls.ibv = ibv;
     }
+    laps.Lap(6);
     list->drawIndexedInstanced(draw_count, 1, 0, draw_base, 0);
   } else {
+    laps.Lap(6);
     list->drawInstanced(draw_count, 1, start, 0);
   }
+  laps.Lap(7);
   ++r->frame_stats.drawn;
 #if SVR2011_FSR2
   // FSR 2's masks: this draw noted for them (drawn again at the scene's resolve) when it is the HUD (no depth
