@@ -20,8 +20,13 @@
 //   nothing skips the reveal, the opponent's entrance itself can be skipped
 //   (report 2951f6). The "?" goes when the entrances start (at the
 //   latest: the match running, the entrances' end, the bell);
-// - the opponent's slot is the CPU's (slot -8 1, slot -4's pad 6): with a
-//   second controller in (mnk_mode's keyboard) the COM panel is player 2's.
+// - the opponent's slot is the CPU's as the select screen's CPU pick has it
+//   (+4 1, the no-pad / CPU flag; slot -4's pad 6): with a second
+//   controller in (mnk_mode's keyboard) the COM panel is player 2's. +4 0
+//   made the opponent a player's - a pad played him, A never skipped his
+//   entrance (report 2951f6). Test aids: SVR2011_TEST_MYSTERY_SLOT_LOG=1
+//   logs slots 0-1's bytes -8..+7 as built (any match);
+//   SVR2011_TEST_MYSTERY_NO_ORDER=1 leaves the game's entrance order.
 //
 // The pick: any selectable superstar (the roster records), the installed
 // superstar mods, the managers with the M tile on; never the player's own
@@ -245,6 +250,13 @@ void MysteryOpponentOnline(bool on) {
 }
 
 void MysteryOpponentFill(uint8_t* base, uint32_t match) {
+  // (test aid SVR2011_TEST_MYSTERY_SLOT_LOG=1: slots 0 and 1's bytes -8..+7 as built, any match)
+  if (static const bool slot_log = std::getenv("SVR2011_TEST_MYSTERY_SLOT_LOG") != nullptr; slot_log && match)
+    for (uint32_t i = 0; i < 2; ++i) {
+      std::string b;
+      for (int k = -8; k < 8; ++k) b += fmt::format(" {:02X}", base[match + kSlots + i * kSlotSize + k]);
+      REXLOG_INFO("mystery opponent: slot {} (mystery {}):{}", i, g_on.load(), b);
+    }
   if (!g_on.load() || !match || base[kLive] != kRule) return;
   uint8_t* me = base + match + kSlots;
   uint8_t* slot = base + match + kSlots + kSlotSize;
@@ -261,7 +273,8 @@ void MysteryOpponentFill(uint8_t* base, uint32_t match) {
   Wr32(slot + 8, g_pick * 100 + 2);  // (attire: the first, as the select screen gives)
   Wr16(slot + 54, uint16_t(g_pick));
   slot[5] = 1;   // (team)
-  slot[4] = 0;   // (a wrestler)
+  slot[4] = 1;   // (the no-pad / CPU flag, as the select screen's CPU pick has it - report 2951f6: 0 here made the
+                 // opponent a player's: a pad played him and only "his" player could skip his entrance)
   slot[-8] = 1;  // (controller: the CPU)
   // (and slot -4's low bits 6 - the character's +1152, the pad that plays him: the select screen's CPU picks have
   // 6. Report 2951f6: with a second controller in - mnk_mode's keyboard is player 2 - the COM panel is player 2's
@@ -395,7 +408,8 @@ REX_HOOK_RAW(sub_828C3AC8) {
       for (int i = 0; i < 6; ++i)
         if (base[match + kSlots + uint32_t(i) * kSlotSize - 8] == 1) hidden = i;
     }
-  if (((g_on.load() && base[kLive] == kRule) || (g_online.load() && hidden >= 0)) && ctx.r3.u32) {
+  static const bool no_order = std::getenv("SVR2011_TEST_MYSTERY_NO_ORDER") != nullptr;  // (tests: the game's order)
+  if (!no_order && ((g_on.load() && base[kLive] == kRule) || (g_online.load() && hidden >= 0)) && ctx.r3.u32) {
     const uint32_t order = ctx.r3.u32, people = Rd32(base + 0x82E3DDFC);
     if (people) {
       // (the last-entering team: the one with the highest order - swapped with the hidden one's)
