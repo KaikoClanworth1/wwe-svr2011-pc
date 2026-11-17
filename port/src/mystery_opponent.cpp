@@ -15,9 +15,18 @@
 //   slots 2-5 are emptied;
 // - entrances are on for the match (live rules +38), the opponent enters
 //   last (sub_828C3AC8's team order) and the controller is held from the
-//   first entrance to the bell (nothing skips them): the reveal is the
-//   opponent's entrance. The "?" goes when the entrances start (at the
-//   latest: the match running, the entrances' end, the bell).
+//   first entrance until 6 s into the opponent's (their theme - another
+//   Play_MUS_ event - or the first entrance's end; at most 4 minutes):
+//   nothing skips the reveal, the opponent's entrance itself can be skipped
+//   (report 2951f6). The "?" goes when the entrances start (at the
+//   latest: the match running, the entrances' end, the bell);
+// - the opponent's slot is the CPU's as the select screen's CPU pick has it
+//   (+4 1, the no-pad / CPU flag; slot -4's pad 6): with a second
+//   controller in (mnk_mode's keyboard) the COM panel is player 2's. +4 0
+//   made the opponent a player's - a pad played him, A never skipped his
+//   entrance (report 2951f6). Test aids: SVR2011_TEST_MYSTERY_SLOT_LOG=1
+//   logs slots 0-1's bytes -8..+7 as built (any match);
+//   SVR2011_TEST_MYSTERY_NO_ORDER=1 leaves the game's entrance order.
 //
 // The pick: any selectable superstar (the roster records), the installed
 // superstar mods, the managers with the M tile on; never the player's own
@@ -85,9 +94,19 @@ std::atomic<int64_t> g_entrances_since{0};  // (ms) the entrances started (0: no
 std::atomic<uint32_t> g_player_id{0};    // the player's pick (the VS screen's name)
 std::atomic<bool> g_auto_done{false};
 std::atomic<bool> g_online{false};         // an online MYSTERY OPPONENT match (MysteryOpponentOnline)      // the COM panel completed for the player (B26)
+std::atomic<int64_t> g_hold_until{0};     // (ms) the entrances' input hold ends then (0: not set - the 4-minute cap)
+std::string g_first_theme;                // the first entrance's sound event (the sound thread only)
+constexpr int64_t kHoldAfterReveal = 6000;  // (ms) the opponent seen walking out before their entrance can be skipped
 
 int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+}
+
+// The opponent's entrance is under way: the controller back (skipping) a few seconds on - once.
+void ReleaseHoldSoon(const char* why) {
+  int64_t none = 0;
+  if (g_hold_until.compare_exchange_strong(none, NowMs() + kHoldAfterReveal))
+    REXLOG_INFO("mystery opponent: {} - entrances can be skipped in {} s", why, kHoldAfterReveal / 1000);
 }
 
 const uint8_t* Record(uint8_t* base, uint32_t id) {
@@ -217,6 +236,7 @@ void MysteryOpponentSetup(uint8_t* base, bool on) {
   g_vs = false;
   g_loading = false;
   g_entrances_since = 0;
+  g_hold_until = 0;
   g_player_ready = false;
   g_player_id = 0;
   g_auto_done = false;
@@ -230,6 +250,13 @@ void MysteryOpponentOnline(bool on) {
 }
 
 void MysteryOpponentFill(uint8_t* base, uint32_t match) {
+  // (test aid SVR2011_TEST_MYSTERY_SLOT_LOG=1: slots 0 and 1's bytes -8..+7 as built, any match)
+  if (static const bool slot_log = std::getenv("SVR2011_TEST_MYSTERY_SLOT_LOG") != nullptr; slot_log && match)
+    for (uint32_t i = 0; i < 2; ++i) {
+      std::string b;
+      for (int k = -8; k < 8; ++k) b += fmt::format(" {:02X}", base[match + kSlots + i * kSlotSize + k]);
+      REXLOG_INFO("mystery opponent: slot {} (mystery {}):{}", i, g_on.load(), b);
+    }
   if (!g_on.load() || !match || base[kLive] != kRule) return;
   uint8_t* me = base + match + kSlots;
   uint8_t* slot = base + match + kSlots + kSlotSize;
@@ -246,8 +273,16 @@ void MysteryOpponentFill(uint8_t* base, uint32_t match) {
   Wr32(slot + 8, g_pick * 100 + 2);  // (attire: the first, as the select screen gives)
   Wr16(slot + 54, uint16_t(g_pick));
   slot[5] = 1;   // (team)
-  slot[4] = 0;   // (a wrestler)
+  slot[4] = 1;   // (the no-pad / CPU flag, as the select screen's CPU pick has it - report 2951f6: 0 here made the
+                 // opponent a player's: a pad played him and only "his" player could skip his entrance)
   slot[-8] = 1;  // (controller: the CPU)
+  // (and slot -4's low bits 6 - the character's +1152, the pad that plays him: the select screen's CPU picks have
+  // 6. Report 2951f6: with a second controller in - mnk_mode's keyboard is player 2 - the COM panel is player 2's
+  // and kept its pad 1: the opponent was played by an idle keyboard, not the AI)
+  if ((slot[-4] & 7) != 6) {
+    REXLOG_INFO("mystery opponent: the opponent's pad {} -> the CPU", slot[-4] & 7);
+    slot[-4] = uint8_t((slot[-4] & ~7) | 6);
+  }
   // (the COM cursor's own pick can land in a slot after it - a third
   // wrestler: the match is a one on one, every later slot empty)
   for (uint32_t i = 2; i < 6; ++i) {
@@ -267,25 +302,37 @@ void MysteryOpponentEvent(const char* e) {
     if (g_entrances_since.exchange(0)) REXLOG_INFO("mystery opponent: the bell - the controller back");
     return;
   }
-  if (!g_loading.load() && !g_vs.load()) return;
   static const bool no_event = std::getenv("SVR2011_TEST_MYSTERY_NO_EVENT") != nullptr;  // (tests: the fallbacks)
   if (no_event) return;
+  // (the opponent's entrance - they enter last: another entrance theme after the first one's. Report 2951f6: the
+  // controller was held through a 3-minute opponent's entrance too - only the reveal is held, not the entrance)
+  if (g_entrances_since.load() && !g_loading.load() && !g_vs.load()) {
+    if (!std::strncmp(e, "Play_MUS_", 9) && g_first_theme != e) ReleaseHoldSoon("the opponent's theme");
+    return;
+  }
+  if (!g_loading.load() && !g_vs.load()) return;
   if (std::strncmp(e, "Play_MUS_", 9) != 0 && std::strncmp(e, "Play_Ent_", 9) != 0) return;
   g_vs = false;
   g_loading = false;
+  g_first_theme = e;
+  g_hold_until = 0;
   g_entrances_since = NowMs();
-  REXLOG_INFO("mystery opponent: the entrances start ({:.40}) - revealed; no skipping", e);
+  REXLOG_INFO("mystery opponent: the entrances start ({:.40}) - revealed; no skipping until the opponent enters", e);
 }
 
 void MysteryOpponentReveal(const char* why) {
   if (!g_on.load()) return;
   const bool vs = g_vs.exchange(false), loading = g_loading.exchange(false);
   if (vs || loading) REXLOG_INFO("mystery opponent: revealed ({}) - the \"?\" goes", why);
+  // (the entrances' end or the match running - in report 2951f6's log the first entrance's end, just as the
+  // opponent's started: the controller back a few seconds later)
+  if (g_entrances_since.load()) ReleaseHoldSoon(why);
 }
 
 bool MysteryOpponentHoldsInput() {
-  const int64_t since = g_entrances_since.load();
-  return since && g_on.load() && NowMs() - since < 4 * 60 * 1000;  // (4 minutes at most)
+  const int64_t since = g_entrances_since.load(), until = g_hold_until.load(), now = NowMs();
+  if (!since || !g_on.load()) return false;
+  return until ? now < until : now - since < 4 * 60 * 1000;  // (4 minutes at most)
 }
 
 void MysteryOpponentLive(uint8_t* base, uint32_t live) {
@@ -361,7 +408,8 @@ REX_HOOK_RAW(sub_828C3AC8) {
       for (int i = 0; i < 6; ++i)
         if (base[match + kSlots + uint32_t(i) * kSlotSize - 8] == 1) hidden = i;
     }
-  if (((g_on.load() && base[kLive] == kRule) || (g_online.load() && hidden >= 0)) && ctx.r3.u32) {
+  static const bool no_order = std::getenv("SVR2011_TEST_MYSTERY_NO_ORDER") != nullptr;  // (tests: the game's order)
+  if (!no_order && ((g_on.load() && base[kLive] == kRule) || (g_online.load() && hidden >= 0)) && ctx.r3.u32) {
     const uint32_t order = ctx.r3.u32, people = Rd32(base + 0x82E3DDFC);
     if (people) {
       // (the last-entering team: the one with the highest order - swapped with the hidden one's)
