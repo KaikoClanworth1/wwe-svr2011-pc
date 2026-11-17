@@ -43,7 +43,8 @@ void MysterySelectFrame(uint8_t* base);
 void MysteryOpponentEvent(const char* e);
 
 // The game sees an idle controller while a MYSTERY OPPONENT match's
-// entrances run (graphics_page.cpp's input hold): nothing skips the reveal.
+// entrances run (graphics_page.cpp's input hold) until a few seconds into the
+// opponent's: nothing skips the reveal, the opponent's entrance can be skipped.
 bool MysteryOpponentHoldsInput();
 
 // The match is running (menu_hooks.cpp: its frame count counting, the
