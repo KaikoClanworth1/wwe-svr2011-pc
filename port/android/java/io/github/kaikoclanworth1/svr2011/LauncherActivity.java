@@ -755,6 +755,9 @@ public class LauncherActivity extends Activity {
         toggle(quality, "Wide screens", "Matches fill the screen's width (menus stay 16:9)", "native_widescreen", true);
         toggle(quality, "Prepare graphics", "Builds the graphics ahead in the menus: no stutter in matches",
             "native_prepare_pipelines", true);
+        // (the game's ADV. GRAPHICS -> LIGHT BEAMS: native_light_beams - about a quarter of a match's draws)
+        toggle(quality, "Light beams", "The arena's spotlight beams, flares and camera flashes. Off: faster on slow "
+            + "phones, the arena looks flatter", "native_light_beams", true);
 
         texturePacks(c);
 
@@ -812,6 +815,7 @@ public class LauncherActivity extends Activity {
             settings_.setBool("unlock_30fps", true);
             settings_.setBool("native_widescreen", true);
             settings_.setBool("native_prepare_pipelines", true);
+            settings_.setBool("native_light_beams", true);
             settings_.setBool("native_dump_textures", false);
             settings_.setBool("audio_mute", false);
             settings_.setBool("vibration", true);
