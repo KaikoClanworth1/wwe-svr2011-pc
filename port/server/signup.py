@@ -136,7 +136,7 @@ class Signup:
             self.db.commit()
 
     def backup(self, why):
-        folder = os.path.join(self.store.folder, "backups")
+        folder = getattr(self.store, "backup_dir", None) or os.path.join(self.store.folder, "backups")
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, "community-%s-%s.db" % (time.strftime("%Y%m%d-%H%M%S"), why))
         dst = sqlite3.connect(path)
