@@ -176,6 +176,33 @@ td.acts { text-align: right; white-space: nowrap; }
 .set input[type=number] { width: 120px; }
 .set textarea { grid-column: 2 / 4; width: 100%; min-height: 120px; resize: vertical; }
 .set .wide { grid-column: 2 / 4; }
+/* Settings: groups, defaults, the storage folders */
+.set .sh { grid-column: 1 / -1; font-weight: 650; font-size: 14px; padding-top: 10px; margin-top: 4px;
+           border-top: 1px solid var(--grid); }
+.set .sh:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+.set .def { color: var(--faint); font-size: 12px; display: block; }
+.set .tag { margin-left: 6px; vertical-align: 1px; }
+.set .val { font-variant-numeric: tabular-nums; word-break: break-all; }
+.set .sec-in { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.set .sec-in input { width: 220px; max-width: 100%; }
+.folders { display: grid; gap: 12px; }
+.fside { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.fside > b { display: block; margin-bottom: 4px; }
+.fside .h, .fold .h { color: var(--faint); font-size: 12.5px; }
+.fold { border-top: 1px solid var(--grid); padding: 12px 0 2px; margin-top: 10px; }
+.fold .t { font-weight: 600; }
+.fold .p { font: 13px/1.4 ui-monospace, Consolas, monospace; word-break: break-all; margin: 4px 0; }
+.fold .nums { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--dim); }
+.fold .nums b { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+.fold .bar { max-width: 420px; }
+.fold .chg { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.fold .chg input { flex: 1; min-width: 220px; font: 13px ui-monospace, Consolas, monospace; }
+.fold .res { margin-top: 6px; font-size: 13px; }
+.fold .res ul { margin: 4px 0 0; padding-left: 18px; color: var(--bad); }
+.fold .res .good { color: var(--ok); }
+.fold .old { margin-top: 8px; font-size: 13px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.fold .old code { word-break: break-all; }
+.fold .job { margin-top: 8px; font-size: 13px; }
 .row { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
 .names { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; }
 .names textarea { width: 100%; min-height: 260px; resize: vertical; box-sizing: border-box;
@@ -200,8 +227,11 @@ td.acts { text-align: right; white-space: nowrap; }
   .top .sub { display: none; }
   main { padding: 16px 16px 48px; }
   .tabs { padding: 0 6px; }
-  .set { grid-template-columns: 1fr; }
+  .set { grid-template-columns: 1fr; gap: 4px 14px; }
   .set textarea, .set .wide { grid-column: auto; }
+  .set > label { margin-top: 10px; }
+  .set .sh { grid-column: auto; }
+  .fold .chg input { min-width: 0; width: 100%; }
   .names { grid-template-columns: 1fr; }
   .charts { grid-template-columns: 1fr; }
   .tile .v { font-size: 22px; }
@@ -496,10 +526,18 @@ td.acts { text-align: right; white-space: nowrap; }
   </section>
 
   <section role="tabpanel" id="p-settings" aria-labelledby="tab-settings" tabindex="0" hidden>
+    <h2>Storage <span class="spacer"></span><button class="btn" id="r-folders">Refresh</button></h2>
+    <p class="note">Where the server keeps its big files. The database (community.db), settings.json and the name
+      lists stay in the data folder. A change copies every file to the new folder first and switches only when the
+      copy checks out; the old copy is kept until you delete it here.</p>
+    <div class="folders" id="folders"><span class="empty">Loading&hellip;</span></div>
     <h2>Settings</h2>
     <div class="set" id="settings"><span class="empty">Loading&hellip;</span></div>
     <div class="row"><button class="btn primary" id="save-set">Save settings</button>
       <button class="btn danger" id="restart">Restart online</button><span class="note" id="set-note"></span></div>
+    <h2>Server (command line)</h2>
+    <p class="note">Set where the server is started (its service file); they change at the next start.</p>
+    <div class="set" id="facts"></div>
   </section>
 
   <section role="tabpanel" id="p-logs" aria-labelledby="tab-logs" tabindex="0" hidden>
@@ -622,7 +660,7 @@ td.acts { text-align: right; white-space: nowrap; }
     else if (name === 'names') { loadNames(); loadFlagged(); loadCommentWords(); }
     else if (name === 'reports' || name === 'suggestions') loadReports();
     else if (name === 'supporters') loadSupporters();
-    else if (name === 'settings') { if (!settingsList.length) settings(); }
+    else if (name === 'settings') { if (!settingsList.length) settings(); folders(); }
     else if (name === 'logs') log();
   }
 
@@ -1676,22 +1714,46 @@ td.acts { text-align: right; white-space: nowrap; }
 
   // ---- settings + log
   var settingsList = [];
-  function settings() {
-    api('api/admin/settings').then(function (d) {
-      settingsList = d.settings;
-      el('settings').innerHTML = d.settings.map(function (x) {
+  function shown(v) { return v === true ? 'on' : v === false ? 'off' : v === '' ? '(empty)' : String(v); }
+  function settingRow(x) {
         var id = 'set-' + x.key;
         var input = typeof x.default === 'boolean'
           ? '<input type="checkbox" id="' + id + '" data-set="' + x.key + '"' + (x.saved ? ' checked' : '') + '>'
+          : x.text && x.max_len <= 100 ? '<input class="filter" type="text" id="' + id + '" data-set="' + x.key + '" maxlength="' + x.max_len + '" value="' + esc(x.saved) + '">'
           : x.text ? '<textarea class="filter" id="' + id + '" data-set="' + x.key + '" maxlength="' + x.max_len + '">' + esc(x.saved) +
             '</textarea>'
           : x.choices ? '<select class="filter" id="' + id + '" data-set="' + x.key + '">' + x.choices.map(function (c) {
               return '<option' + (c === x.saved ? ' selected' : '') + '>' + esc(c) + '</option>';
             }).join('') + '</select>'
           : '<input class="filter" type="number" id="' + id + '" data-set="' + x.key + '" min="' + x.min + '" max="' + x.max + '" value="' + x.saved + '">';
-        return '<label for="' + id + '"><b>' + esc(x.key.replace(/_/g, ' ')) + '</b></label>' + input + (x.text ? '<span></span>' : '') +
-          '<span class="h' + (x.text ? ' wide' : '') + '">' + esc(x.help) +
-          (x.live ? '' : ' (applies at the next start' + (x.value !== x.saved ? ': now ' + x.value : '') + ')') + '</span>';
+        return '<label for="' + id + '"><b>' + esc(x.key.replace(/_/g, ' ')) + '</b>' +
+          (x.live ? '' : '<span class="tag warn" title="Saved now, used from the next start">restart</span>') + '</label>' +
+          input + (x.text && x.max_len > 100 ? '<span></span>' : '') +
+          '<span class="h' + (x.text && x.max_len > 100 ? ' wide' : '') + '">' + esc(x.help) + ' <span class="def">Default: ' + esc(shown(x.default)) +
+          '</span>' + (!x.live && x.value !== x.saved ? ' <span class="def">(running with ' + esc(shown(x.value)) + ')</span>' : '') + '</span>';
+  }
+  function secretRow(name, x) {
+    var id = 'sec-' + name;
+    return '<label for="' + id + '"><b>' + esc(name.replace(/_/g, ' ')) + '</b></label>' +
+      '<span class="val">' + (x.set ? '<span class="tag on">set</span> ' + (x.where === 'dashboard' ? 'here' : 'from its file') : '<span class="tag">not set</span>') + '</span>' +
+      '<span class="h"><span class="sec-in"><input class="filter" type="password" autocomplete="new-password" id="' + id + '" placeholder="New value" aria-label="New ' + esc(name) + '">' +
+      '<button class="btn" data-secret="' + name + '">Replace</button>' +
+      (x.where === 'dashboard' ? '<button class="btn" data-secret-clear="' + name + '">Use the file</button>' : '') + '</span>' +
+      esc(x.help) + '. Never shown; what you type replaces it.</span>';
+  }
+  function settings() {
+    api('api/admin/settings').then(function (d) {
+      settingsList = d.settings;
+      el('settings').innerHTML = d.sections.map(function (sec) {
+        var rows = d.settings.filter(function (x) { return x.section === sec; }).map(settingRow);
+        Object.keys(d.secrets).forEach(function (n) { if (d.secrets[n].section === sec) rows.push(secretRow(n, d.secrets[n])); });
+        if (sec === 'Accounts' || sec === 'Discovery')
+          rows.push('<label><b>name filter</b></label><span class="val"><a href="#names" data-go="names">Names tab</a></span>' +
+                    '<span class="h">The words account names, uploads' + (sec === 'Discovery' ? ' and comments' : '') + ' are checked against, and its on / off switch, are on the Names tab.</span>');
+        return '<div class="sh">' + esc(sec) + '</div>' + rows.join('');
+      }).join('');
+      el('facts').innerHTML = d.server.map(function (f) {
+        return '<label><b>' + esc(f.key) + '</b></label><span class="val">' + esc(f.value) + '</span><span class="h">' + esc(f.help) + '</span>';
       }).join('');
       el('restart').disabled = !d.supervised;
       el('restart').title = d.supervised ? '' : 'No supervisor runs this server (--supervise): it would stay down.';
@@ -1704,10 +1766,114 @@ td.acts { text-align: right; white-space: nowrap; }
       if (atEnd) box.scrollTop = box.scrollHeight;
     }).catch(function (e) { el('log').textContent = e.message; });
   }
+  // (a JSON answer, its error text kept: the folders' checks say why)
+  function apiJ(path, body) {
+    var opts = {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)};
+    if (csrf) opts.headers['X-CSRF-Token'] = csrf.content;
+    return fetch(path, opts).then(function (r) {
+      if (r.status === 401 && csrf) { location.href = 'login?e=expired'; throw new Error('signed out'); }
+      return r.json().catch(function () { return {ok: false, error: r.status + ' ' + r.statusText}; });
+    });
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-secret],[data-secret-clear]');
+    if (!b) return;
+    var name = b.getAttribute('data-secret') || b.getAttribute('data-secret-clear');
+    var value = b.hasAttribute('data-secret') ? el('sec-' + name).value.trim() : '';
+    if (b.hasAttribute('data-secret') && !value) { el('set-note').textContent = 'Type the new ' + name.replace(/_/g, ' ') + ' first.'; return; }
+    if (!b.hasAttribute('data-secret') && !confirm('Remove the ' + name.replace(/_/g, ' ') + ' set here? The server goes back to its file (if it has one).')) return;
+    apiJ('api/admin/secret', {name: name, value: value}).then(function (d) {
+      el('set-note').textContent = d.ok ? name.replace(/_/g, ' ') + (value ? ' replaced' : ': the file is used again') : 'Not changed: ' + d.error;
+      if (d.ok) settings();
+    });
+  });
+
+  // ---- storage folders (storage.py; the storage node's through the core)
+  var folderJob = null, folderChecks = {};
+  function folders() {
+    return api('api/admin/folders').then(function (d) {
+      var running = false;
+      el('folders').innerHTML = d.sides.map(function (side) {
+        if (side.error) return '<div class="fside"><b>' + esc(side.name) + '</b><span class="err">' + esc(side.error) + '</span></div>';
+        var job = side.job;
+        if (job && (job.state === 'copying' || job.state === 'checking')) running = true;
+        return '<div class="fside"><b>' + esc(side.name) + '</b><span class="h">' + (side.side === 'node'
+            ? 'These folders are on the storage node: a change there moves its files on that machine.'
+            : 'These folders are on this server\'s own disk.') + '</span>' +
+          side.folders.map(function (f) {
+            var key = side.side + ':' + f.kind, c = folderChecks[key], mine = job && job.kind === f.kind;
+            var pct = f.total ? Math.round(100 * (f.total - f.free) / f.total) : 0;
+            return '<div class="fold"><div class="t">' + esc(f.label) + (f.is_default ? '' : ' <span class="tag">moved</span>') + '</div>' +
+              '<div class="h">' + esc(f.help) + '</div>' +
+              '<div class="p">' + esc(f.path) + '</div>' +
+              '<div class="nums"><span>Used <b>' + bytes(f.bytes) + '</b> in ' + f.files + ' file' + (f.files === 1 ? '' : 's') + '</span>' +
+              (f.free == null ? '<span>Free space: unknown</span>' : '<span>Free <b>' + bytes(f.free) + '</b> of ' + bytes(f.total) + ' on its disk</span>') +
+              '<span>Default: <code>' + esc(f.default) + '</code></span></div>' +
+              (f.total ? '<div class="bar" title="Its disk: ' + pct + '% full"><i style="width:' + pct + '%"></i></div>' : '') +
+              (mine ? '<div class="job">' + jobLine(job) + '</div>' : '') +
+              '<div class="chg"><input class="filter" id="fp-' + key + '" placeholder="New folder (a full path)" aria-label="New folder for ' + esc(f.label) + '" value="' + esc(c ? c.path : '') + '">' +
+              '<button class="btn" data-fcheck="' + key + '">Check</button>' +
+              '<button class="btn primary" data-fmove="' + key + '"' + (c && c.ok && !running ? '' : ' disabled') + ' title="Check the folder first">Move files</button></div>' +
+              (c ? '<div class="res">' + checkLine(c) + '</div>' : '') +
+              f.old.map(function (o) {
+                return '<div class="old"><span class="tag warn">old copy</span><code>' + esc(o.path) + '</code> ' +
+                  (o.exists ? bytes(o.bytes) + ' in ' + o.files + ' files' : '(gone)') +
+                  ' <button class="btn danger" data-fdel="' + key + '" data-path="' + esc(o.path) + '" data-size="' + o.bytes + '">Delete old copy</button></div>';
+              }).join('') + '</div>';
+          }).join('') + '</div>';
+      }).join('');
+      clearTimeout(folderJob);
+      if (running && current === 'settings') folderJob = setTimeout(folders, 1000);
+    }).catch(function (e) { el('folders').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
+  }
+  function jobLine(j) {
+    var pct = j.total_bytes ? Math.min(100, Math.round(100 * j.done_bytes / j.total_bytes)) : 100;
+    if (j.state === 'copying' || j.state === 'checking')
+      return '<b>' + (j.state === 'copying' ? 'Copying' : 'Checking the copy') + '</b> to <code>' + esc(j.to) + '</code>: ' +
+        bytes(j.done_bytes) + ' of ' + bytes(j.total_bytes) + ' (' + j.done_files + ' of ' + j.total_files + ' files)' +
+        '<div class="bar"><i style="width:' + pct + '%"></i></div>';
+    if (j.state === 'done') return '<span class="tag on">moved</span> from <code>' + esc(j.from) + '</code> (' + bytes(j.total_bytes) + '); the old copy is kept below.';
+    return '<span class="tag bad">move failed</span> ' + esc(j.error) + ' &mdash; still using <code>' + esc(j.from) + '</code>; nothing was lost.';
+  }
+  function checkLine(c) {
+    if (c.ok) return '<span class="good">Ready: ' + (c.exists ? 'the folder exists' : 'the folder will be made') + ', the server can write there, ' +
+      bytes(c.free) + ' free for ' + bytes(c.need) + '.</span>';
+    return 'Can\'t move there:<ul>' + (c.problems || [c.error]).map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul>';
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-fcheck],[data-fmove],[data-fdel]');
+    if (!b) return;
+    var key = b.getAttribute('data-fcheck') || b.getAttribute('data-fmove') || b.getAttribute('data-fdel');
+    var side = key.split(':')[0], kind = key.split(':')[1];
+    if (b.hasAttribute('data-fcheck')) {
+      var path = el('fp-' + key).value.trim();
+      apiJ('api/admin/folders/check', {side: side, kind: kind, path: path}).then(function (c) {
+        c.path = c.path || path; folderChecks[key] = c; folders();
+      });
+    } else if (b.hasAttribute('data-fmove')) {
+      var c = folderChecks[key];
+      if (!c || !c.ok) return;
+      if (!confirm('Move these files to\n' + c.path + '\n\n' + bytes(c.need) + ' are copied, checked, then the server switches to it. The old folder is kept.')) return;
+      apiJ('api/admin/folders/move', {side: side, kind: kind, path: c.path}).then(function (d) {
+        delete folderChecks[key];
+        if (!d.ok) folderChecks[key] = {ok: false, path: c.path, problems: [d.error]};
+        folders();
+      });
+    } else {
+      var p = b.getAttribute('data-path');
+      var typed = prompt('Delete the old copy\n' + p + '\n(' + bytes(Number(b.getAttribute('data-size'))) + ')? It can\'t be undone.\n\nType DELETE to confirm:');
+      if (typed === null) return;
+      apiJ('api/admin/folders/delete-old', {side: side, kind: kind, path: p, confirm: typed}).then(function (d) {
+        el('set-note').textContent = d.ok ? 'Deleted the old copy (' + bytes(d.freed) + ' freed).' : 'Not deleted: ' + d.error;
+        folders();
+      });
+    }
+  });
+  el('r-folders').addEventListener('click', folders);
   el('save-set').addEventListener('click', function () {
     var body = {};
     document.querySelectorAll('[data-set]').forEach(function (i) {
-      body[i.dataset.set] = i.type === 'checkbox' ? i.checked : i.tagName === 'SELECT' || i.tagName === 'TEXTAREA' ? i.value : Number(i.value);
+      body[i.dataset.set] = i.type === 'checkbox' ? i.checked : i.tagName === 'SELECT' || i.tagName === 'TEXTAREA' || i.type === 'text' ? i.value : Number(i.value);
     });
     function save() {
       api('api/admin/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})

@@ -63,6 +63,7 @@ import namefilter
 import relay
 import reports
 import signup
+import storage
 import supporters
 import thumbs
 
@@ -188,6 +189,56 @@ SETTINGS_SPEC = {
                                   "(big entrance movies: an .mp4 is ~10x smaller than a Bink one)"},
     "max_connections": {"default": 100, "min": 10, "max": 1000, "live": False,
                         "help": "game requests at once (more wait up to 10 s, then 503)"},
+    # (dash-settings, 18 Nov: limits that were the command line's or fixed in the code. "arg": the command-line
+    # option it replaces - the dashboard's value wins once saved; "apply": what the running server changes)
+    "max_file_mb": {"default": 8, "min": 1, "max": 256, "live": False, "arg": "max_file_mb",
+                    "help": "Community Creations: the largest single upload (MB). Was --max-file-mb"},
+    "quota_mb": {"default": 256, "min": 16, "max": 65536, "live": True, "arg": "quota_mb",
+                 "help": "Community Creations: what one player may store in all (MB, unpacked). Was --quota-mb"},
+    "max_music_mb": {"default": 512, "min": 1, "max": 4096, "live": False, "arg": "max_music_mb",
+                     "help": "entrance songs: the largest one sent (MB; stored as MP3). Was --max-music-mb"},
+    "max_movie_mb": {"default": 1024, "min": 1, "max": 8192, "live": False, "arg": "max_movie_mb",
+                     "help": "entrance movies: the largest one sent (MB; stored as MP4). Was --max-movie-mb"},
+    "media_quota_mb": {"default": 8192, "min": 64, "max": 1048576, "live": True, "arg": "media_quota_mb",
+                       "help": "entrance songs and movies one player may store in all (MB). Was --media-quota-mb"},
+    "discovery_max_mod_mb": {"default": 250, "min": 10, "max": 4096, "live": True,
+                             "help": "Discovery: the largest mod (MB) an upload or an update may be"},
+    "report_limit_10min": {"default": 5, "min": 1, "max": 100, "live": True,
+                           "help": "reports and suggestions one address or account may send in 10 minutes"},
+    "report_limit_day": {"default": 20, "min": 1, "max": 1000, "live": True,
+                         "help": "reports and suggestions one address or account may send in a day"},
+    "report_mod_checks_10min": {"default": 30, "min": 5, "max": 500, "live": True,
+                                "help": "report forms' mod checks one address may make in 10 minutes"},
+    "report_mod_quota_gb": {"default": 20, "min": 1, "max": 4096, "live": True, "arg": "report_mod_quota_gb",
+                            "help": "every report's mods together (GB) on this server; a storage node keeps its "
+                                    "own --report-mod-quota-gb. Was --report-mod-quota-gb"},
+    "login_tries_10min": {"default": 10, "min": 3, "max": 100, "live": True,
+                          "help": "sign-in tries one address, or one account name, may make in 10 minutes"},
+    "patreon_campaign": {"default": "", "text": True, "max_len": 32, "live": True, "arg": "patreon_campaign",
+                         "help": "Patreon: the campaign id to list (empty = the token's first campaign). Was "
+                                 "--patreon-campaign"},
+    "patreon_every_h": {"default": 6, "min": 1, "max": 72, "live": False,
+                        "help": "Patreon: hours between checks of the active patrons"},
+}
+# The Settings page's groups, in order; a key not listed shows under Online.
+SETTINGS_SECTIONS = [
+    ("Online", ["presence_window", "invite_life", "match_network", "netcode", "mods_online", "online_news",
+                "max_connections"]),
+    ("Accounts", ["account_checks", "login_tries_10min"]),
+    ("Reports", ["reports_need_account", "report_limit_10min", "report_limit_day", "report_mod_checks_10min",
+                 "report_mod_quota_gb"]),
+    ("Discovery", ["discovery_comments", "discovery_upvotes", "discovery_quota_mb", "discovery_warn_mb",
+                   "discovery_max_mod_mb"]),
+    ("Community Creations", ["cc_unmarked", "latest_release", "max_file_mb", "quota_mb", "max_music_mb",
+                             "max_movie_mb", "media_quota_mb"]),
+    ("Supporters", ["patreon_campaign", "patreon_every_h"]),
+]
+SETTINGS_SECTION = {k: name for name, keys in SETTINGS_SECTIONS for k in keys}
+# Secrets the dashboard may replace (never shown): kept in <data>/secrets/<name> (the service's own, mode 600),
+# read before the command line's file.
+SECRETS = {
+    "kofi_token": ("Supporters", "Ko-fi's verification token (Ko-fi: Settings -> More -> API). Used at once"),
+    "patreon_token": ("Supporters", "Patreon's Creator's Access Token. Used at the next check (Check Patreon now)"),
 }
 SETTINGS = {k: v["default"] for k, v in SETTINGS_SPEC.items()}
 MODFREE_SINCE = (2, 1, 5)  # (the release whose game marks Community Creations uploads checked for mods)
@@ -232,16 +283,33 @@ ADMIN_HEADERS = {"X-Frame-Options": "DENY", "Cache-Control": "no-store", "Referr
                  "X-Content-Type-Options": "nosniff"}   # the exit code that asks the supervisor (--supervise) to start the server again
 
 
-def load_settings(path):
+def load_settings(path, args=None):
+    """settings.json into SETTINGS. With args: a row that replaces a command-line option ("arg") takes the
+    option's value when it was never saved, and gives it its saved value when it was."""
     try:
         with open(path, encoding="utf-8") as f:
             stored = json.load(f)
+        if not isinstance(stored, dict):
+            stored = {}
     except (OSError, ValueError):
-        return
+        stored = {}
     for k, v in stored.items():
         ok, value = check_setting(k, v)
         if ok:
             SETTINGS[k] = value
+    if args is not None:
+        for k, spec in SETTINGS_SPEC.items():
+            arg = spec.get("arg")
+            if not arg or not hasattr(args, arg):
+                continue
+            if k in stored and check_setting(k, stored[k])[0]:
+                setattr(args, arg, SETTINGS[k])
+            else:
+                ok, value = check_setting(k, getattr(args, arg))
+                if ok:
+                    SETTINGS[k] = value
+                    SETTINGS_SPEC[k]["started"] = value
+    return stored
 
 
 def check_setting(k, v):
@@ -253,7 +321,11 @@ def check_setting(k, v):
     if "choices" in spec:
         return (True, v) if v in spec["choices"] else (False, None)
     if spec.get("text"):
-        return (True, news_clean(v)[:spec["max_len"]]) if isinstance(v, str) else (False, None)
+        if not isinstance(v, str):
+            return False, None
+        if k == "patreon_campaign":
+            return (True, v.strip()) if re.fullmatch(r"[0-9]{0,32}", v.strip()) else (False, None)
+        return True, news_clean(v)[:spec["max_len"]]
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return False, None
     v = int(v)
@@ -703,12 +775,20 @@ class Stats:
 
 class Service:
     def __init__(self, args):
+        self.args = args
         self.local_admin = bool(getattr(args, "local_admin", False))
         self.base = "/" + args.base.strip("/") if args.base.strip("/") else ""
+        self.role = getattr(args, "role", "all")
         blobs = None
-        if getattr(args, "role", "all") == "core":  # (the blob bytes on the storage node: the user's PC)
+        if self.role == "core":  # (the blob bytes on the storage node: the user's PC)
             blobs = gs.RemoteBlobs(args.storage_url, read_key(args.storage_key))
-        self.store = gs.Store(args.data, max_file=args.max_file_mb << 20, quota=args.quota_mb << 20, blobs=blobs)
+        # (the dashboard's Storage folders: storage.py, <data>/storage.json. A core keeps only its backups here -
+        # its blobs and reports are the storage node's, moved on the node)
+        self.folders = storage.Storage(args.data, ["backups"] if self.role == "core" else
+                                       ["blobs", "reports", "backups"], gs.log)
+        self.store = gs.Store(args.data, max_file=args.max_file_mb << 20, quota=args.quota_mb << 20, blobs=blobs,
+                              blob_dir=None if self.role == "core" else self.folders.path("blobs"),
+                              backup_dir=self.folders.path("backups"))
         # (the storage node's panel: its address and key; the wanted state - running / stopped - the PC's
         # watchdog asks for; the last time it asked)
         self.node_url = args.storage_url.rstrip("/") if blobs is not None else ""
@@ -722,9 +802,18 @@ class Service:
         self.node_polled = 0.0
         # (problem reports: where the blobs are - the storage node's reports folder, readable on the PC)
         self.reports = (reports.RemoteReports(args.storage_url, read_key(args.storage_key)) if blobs is not None
-                        else reports.LocalReports(args.data))
+                        else reports.LocalReports(args.data, self.folders.path("reports")))
         if isinstance(self.reports, reports.LocalReports):
             self.reports.mod_quota = int(args.report_mod_quota_gb * (1 << 30))
+            self.folders.hook("reports", self.reports.lock, self.reports.move_to)
+        if self.role != "core":
+            self.folders.hook("blobs", self.store.lock, self.store.move_blobs)
+
+        def backups_to(path):
+            os.makedirs(path, exist_ok=True)
+            self.store.backup_dir = path
+        self.folders.hook("backups", self.store.lock, backups_to)
+        self.secrets_dir = os.path.join(args.data, "secrets")
         self.report_tmp = os.path.join(args.data, "tmp", "reports")  # (mods sent with a report, on their way)
         self.report_times = collections.defaultdict(collections.deque)  # ip / account -> report times (memory only)
         self.check_times = collections.defaultdict(collections.deque)   # ip -> mod checks (memory only)
@@ -743,7 +832,8 @@ class Service:
         self.accounts.names = self.names
         # (the launcher's SUPPORTERS tab: Ko-fi's webhook, a Patreon poll, names added by hand - supporters.py)
         self.supporters = supporters.Supporters(
-            self.store, gs.log, getattr(args, "kofi_token_file", None), getattr(args, "patreon_token_file", None),
+            self.store, gs.log, [os.path.join(args.data, "secrets", "kofi_token"), getattr(args, "kofi_token_file", None)],
+            [os.path.join(args.data, "secrets", "patreon_token"), getattr(args, "patreon_token_file", None)],
             getattr(args, "patreon_api", None) or supporters.PATREON_API, getattr(args, "patreon_campaign", "") or "",
             flagged=lambda name: self.names.enabled and self.names.match(name) is not None)
         self.signup = signup.Signup(self.store, self.accounts, gs.log,
@@ -819,7 +909,9 @@ class Service:
             return request.headers.get("X-Portal-Role") == "admin"
         return self.local_admin
 
-    def throttled(self, ip, limit=10, window=600):
+    def throttled(self, ip, limit=None, window=600):
+        if limit is None:
+            limit = SETTINGS["login_tries_10min"]
         q = self.attempts[ip]
         while q and q[0] < now() - window:
             q.popleft()
@@ -895,7 +987,7 @@ class Service:
             client = int(body.get("client", 0) or 0)  # (2: a 2.1.6+ launcher - it walks the account steps)
         except (ValueError, AttributeError, TypeError):
             return web.json_response({"ok": False, "error": "Bad request."}, status=400)
-        if not register and self.signup.limits.hit(("login", name.strip().lower()), 10, 600):
+        if not register and self.signup.limits.hit(("login", name.strip().lower()), SETTINGS["login_tries_10min"], 600):
             return web.json_response({"ok": False, "error": "Too many tries - wait a few minutes."}, status=429)
         loop = asyncio.get_running_loop()
         if register and client < 2:  # (a 2.1.5 launcher: name and password only)
@@ -955,7 +1047,7 @@ class Service:
         token = request.headers.get("Authorization", "")[7:].strip()
 
         def step(a, b, ip):
-            if self.signup.limits.hit(("login", a["name"].lower()), 10, 600):
+            if self.signup.limits.hit(("login", a["name"].lower()), SETTINGS["login_tries_10min"], 600):
                 return "Too many tries - wait a few minutes."
             if not self.accounts.check(a["name"], str(b.get("password", "")))[0]:
                 return "Your password isn't right."
@@ -2404,22 +2496,27 @@ class Service:
         return web.json_response({"ok": True, "enabled": self.names.enabled, "flagged": rows})
 
     # Problem reports (reports.py, docs/REPORTS_API.md): anyone may send one (a Bearer account is noted);
-    # 5 in 10 minutes and 20 a day per address, and per account.
-    REPORT_LIMITS = ((600, 5), (86400, 20))
+    # 5 in 10 minutes and 20 a day per address, and per account (the Settings page's report_limit_*).
+    @property
+    def REPORT_LIMITS(self):
+        return (600, SETTINGS["report_limit_10min"]), (86400, SETTINGS["report_limit_day"])
 
     def report_throttled(self, keys):
         t = now()
+        limits = self.REPORT_LIMITS
         for key in keys:
             q = self.report_times[key]
-            while q and q[0] < t - self.REPORT_LIMITS[-1][0]:
+            while q and q[0] < t - limits[-1][0]:
                 q.popleft()
-            if any(sum(1 for x in q if x >= t - span) >= most for span, most in self.REPORT_LIMITS):
+            if any(sum(1 for x in q if x >= t - span) >= most for span, most in limits):
                 return True
         for key in keys:
             self.report_times[key].append(t)
         return False
 
-    CHECK_LIMIT = (600, 30)  # mod checks per IP: 30 in 10 minutes
+    @property
+    def CHECK_LIMIT(self):  # mod checks per IP: 30 in 10 minutes (report_mod_checks_10min)
+        return 600, SETTINGS["report_mod_checks_10min"]
     MAX_REPORT_BODY = (reports.MAX_ZIP + reports.MAX_IMAGES * reports.MAX_IMAGE + reports.MAX_MATCH +
                        reports.MAX_NEW_MOD_BYTES + (8 << 20))
 
@@ -2900,7 +2997,7 @@ class Service:
             if r:
                 self.store.db.execute("DELETE FROM blobs WHERE sha = ?", (sha,))
                 self.store.db.commit()
-        await asyncio.get_running_loop().run_in_executor(None, self.store.blobs.delete, sha)
+        await asyncio.get_running_loop().run_in_executor(None, self.locked_blob_delete, sha)
         gs.log("admin: orphan blob %s deleted" % sha[:16])
         return web.json_response({"ok": True})
 
@@ -3381,6 +3478,7 @@ class Service:
             for k, v in changed.items():
                 if SETTINGS_SPEC[k]["live"]:
                     SETTINGS[k] = v
+                    self.apply_setting(k, v)
             gs.log("settings: %s (dashboard)" % ", ".join(
                 "%s=%s" % (k, (repr(v[:60] + ("..." if len(v) > 60 else "")) + " (%d characters)" % len(v))
                            if isinstance(v, str) and SETTINGS_SPEC[k].get("text") else v)
@@ -3390,8 +3488,168 @@ class Service:
         except (OSError, ValueError):
             stored = {}
         return web.json_response({"ok": True, "supervised": self.supervised, "settings": [
-            dict(key=k, value=SETTINGS[k], saved=stored.get(k, SETTINGS[k]), **{
-                n: v for n, v in spec.items()}) for k, spec in SETTINGS_SPEC.items()]})
+            dict(key=k, value=SETTINGS[k], saved=stored.get(k, SETTINGS[k]), section=SETTINGS_SECTION.get(k, "Online"),
+                 **{n: v for n, v in spec.items()}) for k, spec in SETTINGS_SPEC.items()],
+            "sections": [name for name, _ in SETTINGS_SECTIONS], "secrets": self.secrets_state(),
+            "server": self.server_facts()})
+
+    def apply_setting(self, k, v):
+        """A live setting saved on the dashboard: what the running server changes besides SETTINGS."""
+        if k == "quota_mb":
+            self.store.quota = v << 20
+        elif k == "media_quota_mb":
+            self.media_quota = v << 20
+        elif k == "discovery_max_mod_mb":
+            discovery.MAX_MOD = v << 20
+        elif k == "report_mod_quota_gb" and isinstance(self.reports, reports.LocalReports):
+            self.reports.mod_quota = v << 30
+        elif k == "patreon_campaign":
+            self.supporters.patreon_campaign = v
+
+    def secrets_state(self):
+        """{name: {set, where, section, help}} - never the value."""
+        out = {}
+        files = {"kofi_token": self.supporters.kofi_token_file, "patreon_token": self.supporters.patreon_token_file}
+        for name, (section, help_) in SECRETS.items():
+            where = ""
+            for i, path in enumerate(files[name] if isinstance(files[name], list) else [files[name]]):
+                if supporters.read_secret(path):
+                    where = "dashboard" if i == 0 else "file"
+                    break
+            out[name] = {"set": bool(where), "where": where, "section": section, "help": help_}
+        return out
+
+    def server_facts(self):
+        """The command line's settings (read-only on the page: the service file sets them; a restart applies)."""
+        a = self.args
+        key_set = lambda p: bool(p) and os.path.isfile(p)
+        return [
+            {"key": "role", "value": self.role, "help": "all = one server; core = the VPS (blobs and reports on the "
+                                                        "storage node); set with --role"},
+            {"key": "data folder", "value": os.path.abspath(a.data), "help": "community.db, settings.json, "
+                                                                            "storage.json, the name lists (--data)"},
+            {"key": "listening on", "value": "%s:%s" % (getattr(a, "host", "?"), getattr(a, "port", "?")),
+             "help": "--host / --port"},
+            {"key": "game path", "value": self.base or "/", "help": "where the game's half is (--base)"},
+            {"key": "storage node", "value": self.node_url or "none (files kept here)",
+             "help": "--storage-url; its key file %s" % ("is set" if key_set(getattr(a, "storage_key", None)) else
+                                                         "isn't set")},
+            {"key": "relay", "value": ("edge %s, UDP %s" % (a.relay_edge, a.relay_udp_port)) if getattr(
+                a, "relay_edge", None) else ("UDP %s" % a.relay_udp_port if getattr(a, "relay_udp_port", 0) else
+                                             "TCP streams only"),
+             "help": "--relay-edge / --relay-udp-port; the shared secret %s" % (
+                 "is set" if key_set(getattr(a, "relay_secret", None)) else "isn't set")},
+            {"key": "dashboard sign-in", "value": "admin account %s" % a.admin_account if getattr(
+                a, "admin_account", None) else ("password set" if self.admin_auth_set() else "local only"),
+             "help": "--admin-account / --set-admin-password (run on the server)"},
+            {"key": "log file", "value": self.log_path or "none", "help": "--log"},
+            {"key": "supervised", "value": "yes" if self.supervised else "no",
+             "help": "--supervise: Restart online needs it"},
+        ]
+
+    def admin_auth_set(self):
+        try:
+            return bool(self.admin_auth.configured())
+        except Exception:
+            return False
+
+    @admin_only
+    async def admin_secret(self, request):
+        """POST {name, value}: replaces a secret (written to <data>/secrets/<name>, mode 600); value "" removes
+        the dashboard's copy (the command line's file is used again). Never answers with a value."""
+        try:
+            body = await request.json()
+            name, value = str(body.get("name", "")), str(body.get("value", ""))
+        except (ValueError, AttributeError, TypeError):
+            return web.json_response({"ok": False, "error": "Bad request."}, status=400)
+        if name not in SECRETS:
+            return web.json_response({"ok": False, "error": "Unknown secret."}, status=400)
+        value = value.strip()
+        if len(value) > 4096 or any(c in value for c in "\r\n\0"):
+            return web.json_response({"ok": False, "error": "One line, up to 4096 characters."}, status=400)
+        path = os.path.join(self.secrets_dir, name)
+        if not value:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            gs.log("settings: %s - the dashboard's copy removed (the command line's file is used)" % name)
+        else:
+            os.makedirs(self.secrets_dir, exist_ok=True)
+            tmp = path + ".tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(value + "\n")
+            os.replace(tmp, path)
+            gs.log("settings: %s replaced (dashboard)" % name)
+        return web.json_response({"ok": True, "secrets": self.secrets_state()})
+
+    # -- storage folders (storage.py): here, and the storage node's (its /__storage routes)
+
+    def node_json(self, method, path, body=None, timeout=10):
+        """The node's answer to a JSON call: (status, JSON or None); (0, None) when it doesn't answer."""
+        import urllib.error
+        import urllib.request
+        data = json.dumps(body).encode() if body is not None else (b"" if method == "POST" else None)
+        r = urllib.request.Request(self.node_url + path, method=method, data=data, headers={
+            "X-Storage-Key": self.node_key, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(r, timeout=timeout) as f:
+                return f.status, json.loads(f.read() or b"null")
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read() or b"null")
+            except ValueError:
+                return e.code, None
+        except Exception:
+            return 0, None
+
+    def locked_blob_delete(self, sha):
+        with self.store.lock:  # (a storage move switches the folder under this lock)
+            self.store.blobs.delete(sha)
+
+    @admin_only
+    async def admin_folders(self, request):
+        """GET: this server's folders and the node's (sizes, free space, old copies, the move running)."""
+        loop = asyncio.get_running_loop()
+        here = await loop.run_in_executor(None, self.folders.info)
+        here["side"] = "here"
+        here["name"] = "This server" + (" (the VPS)" if self.role == "core" else "")
+        node = None
+        if self.node_url:
+            status, info = await loop.run_in_executor(None, self.node_json, "GET", "/__storage", None, 60)
+            node = info if status == 200 and info else {"error": "The storage node didn't answer (%s)." % (
+                status or "down") if status != 404 else "The storage node runs an older server: update it to "
+                                                        "move its folders here."}
+            node["side"] = "node"
+            node["name"] = "Storage node (%s)" % self.node_url
+        return web.json_response({"ok": True, "sides": [here] + ([node] if node else []),
+                                  "confirm_word": storage.CONFIRM_WORD})
+
+    @admin_only
+    async def admin_folders_action(self, request):
+        """POST /api/admin/folders/{check|move|delete-old} {side, kind, path, confirm}."""
+        action = request.match_info["action"]
+        try:
+            body = await request.json()
+            side, kind, path = body.get("side", "here"), str(body.get("kind", "")), str(body.get("path", ""))
+            confirm = str(body.get("confirm", ""))
+        except (ValueError, AttributeError, TypeError):
+            return web.json_response({"ok": False, "error": "Bad request."}, status=400)
+        if action not in ("check", "move", "delete-old"):
+            return web.json_response({"ok": False, "error": "Unknown action."}, status=404)
+        loop = asyncio.get_running_loop()
+        if side == "node":
+            if not self.node_url:
+                return web.json_response({"ok": False, "error": "No storage node."}, status=400)
+            status, out = await loop.run_in_executor(None, self.node_json, "POST", "/__storage/" + action,
+                                                     {"kind": kind, "path": path, "confirm": confirm}, 120)
+            if not status:
+                return web.json_response({"ok": False, "error": "The storage node didn't answer."}, status=502)
+            gs.log("storage node: folders %s %s -> %s (dashboard)" % (action, kind, path or "-"))
+            return web.json_response(out or {"ok": False, "error": "HTTP %d" % status}, status=status)
+        out, status = await loop.run_in_executor(None, folders_action, self.folders, action, kind, path, confirm)
+        return web.json_response(out, status=status)
 
     @admin_only
     async def admin_restart(self, request):
@@ -3581,7 +3839,7 @@ class Service:
                 ctx["exception"])) if ctx.get("exception") else "")))
         Watchdog(loop).start()
         async def patreon():  # (the supporters' Patreon list: every 6 hours; off without a token file)
-            every = float(os.environ.get("SVR2011_PATREON_EVERY", supporters.PATREON_EVERY))  # (tests: shorter)
+            every = float(os.environ.get("SVR2011_PATREON_EVERY", SETTINGS["patreon_every_h"] * 3600))  # (tests: shorter)
             await asyncio.sleep(min(30.0, every))
             while True:
                 try:
@@ -3680,6 +3938,9 @@ class Service:
             app.router.add_route("*", p + "/api/admin/settings", self.admin_settings)
             app.router.add_post(p + "/api/admin/restart", self.admin_restart)
             app.router.add_route("*", p + "/api/admin/storage", self.admin_storage)
+            app.router.add_get(p + "/api/admin/folders", self.admin_folders)
+            app.router.add_post(p + "/api/admin/folders/{action}", self.admin_folders_action)
+            app.router.add_post(p + "/api/admin/secret", self.admin_secret)
             app.router.add_post(p + "/api/admin/user/{id}/{action}", self.admin_user_action)
             app.router.add_route("*", p + "/api/admin/invites", self.admin_invites)
             app.router.add_post(p + "/api/admin/invite/{id}/revoke", self.admin_invite_revoke)
@@ -3703,10 +3964,35 @@ def read_key(path):
         return f.read().strip()
 
 
+def folders_action(folders, action, kind, path, confirm):
+    """storage.py's check / move / delete-old -> (JSON, status) for both servers' routes."""
+    if action == "check":
+        return folders.check(kind, path), 200
+    if action == "move":
+        ok, why = folders.move(kind, path)
+        return ({"ok": True, "job": folders.status()}, 200) if ok else ({"ok": False, "error": why}, 409)
+    ok, why, freed = folders.delete_old(kind, path, confirm)
+    return ({"ok": True, "freed": freed}, 200) if ok else ({"ok": False, "error": why}, 409)
+
+
 def storage_app(args):
     """--role storage: only the Community Creations files' bytes (the user's PC behind the VPS):
-    GET / HEAD / PUT / DELETE /blob/<sha>?packed=0|1 with the core's key (X-Storage-Key), and /__health."""
-    blobs = gs.LocalBlobs(os.path.join(args.data, "blobs"))
+    GET / HEAD / PUT / DELETE /blob/<sha>?packed=0|1 with the core's key (X-Storage-Key), and /__health.
+    Its folders (blobs, reports) can be moved from the core's dashboard: /__storage (storage.py)."""
+    folders = storage.Storage(args.data, ["blobs", "reports"], gs.log)
+    blobs = gs.LocalBlobs(folders.path("blobs"))
+    blob_lock = threading.Lock()  # (writes held while a move switches the folder)
+
+    def blobs_to(path):
+        os.makedirs(path, exist_ok=True)
+        blobs.folder = path
+    folders.hook("blobs", blob_lock, blobs_to)
+
+    def locked(fn):
+        def run(*a):
+            with blob_lock:
+                return fn(*a)
+        return run
     key = read_key(args.storage_key)
 
     def ok(request):
@@ -3750,14 +4036,14 @@ def storage_app(args):
             if free is not None and free < len(data) + gs.STORAGE_RESERVE:
                 return storage_full("a blob of %d bytes, %d free" % (len(data), free))
             try:
-                await loop.run_in_executor(None, blobs.put, sha, data, request.query.get("packed") != "0")
+                await loop.run_in_executor(None, locked(blobs.put), sha, data, request.query.get("packed") != "0")
             except OSError as e:
                 if not gs.disk_full(e):
                     raise
                 return storage_full(str(e))
             return web.Response(text="ok")
         if request.method == "DELETE":
-            await loop.run_in_executor(None, blobs.delete, sha)
+            await loop.run_in_executor(None, locked(blobs.delete), sha)
             return web.Response(text="ok")
         if request.method == "HEAD":
             return web.Response(status=200 if blobs.exists(sha) else 404)
@@ -3817,7 +4103,29 @@ def storage_app(args):
     app.router.add_get("/__health", health)
     app.router.add_post("/__stop", stop)
     app.router.add_get("/blobs", blob_list)
-    reports.node_routes(app, args.data, ok, int(args.report_mod_quota_gb * (1 << 30)))  # (problem reports: <data>/reports)
+    node_reports = reports.node_routes(app, args.data, ok, int(args.report_mod_quota_gb * (1 << 30)),
+                                       folders.path("reports"))  # (problem reports: <data>/reports, or moved)
+    folders.hook("reports", node_reports.lock, node_reports.move_to)
+
+    async def storage_info(request):
+        if not ok(request):
+            return web.Response(status=403)
+        return web.json_response(await asyncio.get_running_loop().run_in_executor(None, folders.info))
+
+    async def storage_action(request):
+        if not ok(request):
+            return web.Response(status=403)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        out, status = await asyncio.get_running_loop().run_in_executor(
+            None, folders_action, folders, request.match_info["action"], str(body.get("kind", "")),
+            str(body.get("path", "")), str(body.get("confirm", "")))
+        return web.json_response(out, status=status)
+
+    app.router.add_get("/__storage", storage_info)
+    app.router.add_post("/__storage/{action:check|move|delete-old}", storage_action)
     return app
 
 
@@ -4001,7 +4309,8 @@ def main():
         return
     if args.log:
         gs.LOG = open(args.log, "a", encoding="utf-8")
-    load_settings(os.path.join(args.data, "settings.json"))
+    load_settings(os.path.join(args.data, "settings.json"), args)
+    discovery.MAX_MOD = SETTINGS["discovery_max_mod_mb"] << 20
     if SETTINGS["max_connections"] != SETTINGS_SPEC["max_connections"]["default"]:
         args.max_connections = SETTINGS["max_connections"]  # (the dashboard's, over the command line's)
     watch_supervisor()

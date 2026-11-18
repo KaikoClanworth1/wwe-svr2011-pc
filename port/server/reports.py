@@ -486,21 +486,25 @@ def _valid_id(rid):
 class LocalReports:
     """The reports in <data>/reports (this machine: --role all, or the storage node)."""
 
-    def __init__(self, folder):
-        self.dir = os.path.join(folder, "reports")
-        os.makedirs(self.dir, exist_ok=True)
-        self.index_path = os.path.join(self.dir, "index.jsonl")
-        self.status_path = os.path.join(self.dir, "status.json")
-        self.edits_path = os.path.join(self.dir, "edits.json")  # (id -> {n, date, pictures}: the senders' changes)
+    def __init__(self, folder, reports_dir=None):
         self.lock = threading.Lock()
+        self.move_to(reports_dir or os.path.join(folder, "reports"))
         self.contacts = {}  # (id -> its contact, the sender's last change included: reports from before the index had it)
-        self.mods_dir = os.path.join(self.dir, "mods")
-        os.makedirs(self.mods_dir, exist_ok=True)
         self.mod_quota = MOD_QUOTA
         self.counts = {}
         for row in self._rows():
             self.counts[row.get("signature", "")] = self.counts.get(row.get("signature", ""), 0) + 1
         self.mod_bytes = sum(e.stat().st_size for e in os.scandir(self.mods_dir) if e.name.endswith(".svrmod"))
+
+    def move_to(self, folder):
+        """Where the reports are (storage.py's switch calls it with the lock held)."""
+        self.dir = folder
+        os.makedirs(self.dir, exist_ok=True)
+        self.index_path = os.path.join(self.dir, "index.jsonl")
+        self.status_path = os.path.join(self.dir, "status.json")
+        self.edits_path = os.path.join(self.dir, "edits.json")  # (id -> {n, date, pictures}: the senders' changes)
+        self.mods_dir = os.path.join(self.dir, "mods")
+        os.makedirs(self.mods_dir, exist_ok=True)
 
     def _rows(self):
         try:
@@ -806,9 +810,9 @@ class LocalReports:
                 return False, "not a zip"
             if got != h:
                 return False, "hash mismatch"
-            with self.lock:
+            with self.lock:  # (the folder as it is now: a storage move switches it with this lock held)
                 if not self.has_mod(h):
-                    shutil.move(src_path, path)
+                    shutil.move(src_path, self.mod_path(h))
                     self.mod_bytes += size
             return True, ""
         finally:
@@ -1111,11 +1115,11 @@ class RemoteReports:
             return False
 
 
-def node_routes(app, folder, key_ok, mod_quota=MOD_QUOTA):
-    """The storage node's side (server.py storage_app)."""
+def node_routes(app, folder, key_ok, mod_quota=MOD_QUOTA, reports_dir=None):
+    """The storage node's side (server.py storage_app) -> its LocalReports (storage.py moves its folder)."""
     import asyncio
     from aiohttp import web
-    reports = LocalReports(folder)
+    reports = LocalReports(folder, reports_dir)
     reports.mod_quota = mod_quota
 
     async def mods_check(request):
@@ -1282,6 +1286,7 @@ def node_routes(app, folder, key_ok, mod_quota=MOD_QUOTA):
     app.router.add_post("/reports/{id}/mark", mark)
     app.router.add_post("/reports/{id}/delete", delete)
     app.router.add_get("/reports/{id}/{name}", one)
+    return reports
 
 
 def main():

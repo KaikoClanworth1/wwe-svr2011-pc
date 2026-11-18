@@ -72,4 +72,6 @@ started, newest first. It holds at most 500 names and is cached for a minute.
   `/etc/svr2011/patreon_token`) and `--patreon-campaign`.
 - The tokens are never logged, never stored in the database and never sent anywhere except to Patreon itself (the
   Patreon token only).
+- You can also replace either token on the dashboard: **Settings -> Supporters -> Replace**. That copy is kept in
+  `<data>/secrets/` (mode 600) and is used before the `/etc/svr2011` file (docs/DASHBOARD_SETTINGS.md).
 - Android doesn't have the tab yet. A note in `SuggestionsList.java` shows where the same endpoint would plug in.

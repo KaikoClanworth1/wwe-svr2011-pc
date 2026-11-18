@@ -414,9 +414,11 @@ class RemoteBlobs:
 
 
 class Store:
-    def __init__(self, folder, max_file=8 << 20, quota=256 << 20, cache_bytes=64 << 20, blobs=None):
+    def __init__(self, folder, max_file=8 << 20, quota=256 << 20, cache_bytes=64 << 20, blobs=None, blob_dir=None,
+                 backup_dir=None):
         self.folder = folder
-        self.blob_dir = os.path.join(folder, "blobs")
+        self.blob_dir = blob_dir or os.path.join(folder, "blobs")  # (storage.py: the dashboard's choice)
+        self.backup_dir = backup_dir or os.path.join(folder, "backups")
         os.makedirs(self.blob_dir, exist_ok=True)
         self._blobs = blobs  # (None: here - LocalBlobs)
         self.max_file = max_file
@@ -613,6 +615,12 @@ class Store:
 
     def _blob_path(self, sha, packed=True):
         return os.path.join(self.blob_dir, sha[:2], sha + (".xz" if packed else ".bin"))
+
+    def move_blobs(self, folder):
+        """storage.py's switch (the store's lock held): new blobs go to folder, and are read from there."""
+        self.blob_dir = folder
+        if isinstance(self._blobs, LocalBlobs):
+            self._blobs.folder = folder
 
     @property
     def blobs(self):

@@ -68,7 +68,14 @@ def _key(name):
 
 
 def read_secret(path):
-    """The secret file's first line, or '' (no file = that source is off)."""
+    """The secret file's first line, or '' (no file = that source is off). A list: the first file that has one
+    (server.py: the dashboard's copy in <data>/secrets, then the command line's file)."""
+    if isinstance(path, (list, tuple)):
+        for p in path:
+            got = read_secret(p)
+            if got:
+                return got
+        return ""
     if not path:
         return ""
     try:
