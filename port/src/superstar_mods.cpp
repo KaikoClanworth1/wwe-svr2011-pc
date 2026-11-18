@@ -2004,9 +2004,20 @@ void ApplyRecords(uint8_t* base) {
       REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {} (its saved profile was another mod's)", m.base, m.slot);
     }
     const bool same_name = !std::strncmp(reinterpret_cast<char*>(sr + kFullName), m.name.c_str(), kNameLen - 1);
-    const bool owned = !same_name && !stale && Owned(m.slot) &&
-                       !PlaceholderName(m.slot, std::string(reinterpret_cast<char*>(sr + kFullName), 0,
-                                                             strnlen(reinterpret_cast<char*>(sr + kFullName), kNameLen)));
+    // A player's rename changes the full name only (+34); the second name (+102) stays the one the mod's record
+    // was given (354d4e: "Mitsuharu Misawa" renamed, +102 kept). A record with another second name is another
+    // mod's, left in the save on this id - a removed mod's (report e5c301, 2.2.5: "Cody Rhodes" on 148 in both names,
+    // the id given to Edge '99 after a reinstall; the marks named Edge '99 once a save was written, and from then on
+    // Edge '99 played as Cody Rhodes with his moves and entrance). The marks say which mod the slot was given, not
+    // whose record the save holds there: so it is handed over.
+    const std::string held(reinterpret_cast<char*>(sr + kFullName), 0, strnlen(reinterpret_cast<char*>(sr + kFullName), kNameLen));
+    const bool own_second = !std::strncmp(reinterpret_cast<char*>(sr + kSecondName), m.name.c_str(), kNameLen - 1);
+    const bool marked = !same_name && !stale && Owned(m.slot) && !PlaceholderName(m.slot, held);
+    if (marked && !own_second && FirstTime(fmt::format("other record {} {:.32}", m.slot, held)))
+      REXLOG_INFO("[svr2011] superstar mods: id {} ({}) holds \"{:.32}\" (second name \"{:.32}\") in the save - another "
+                  "mod's record, not a rename (a rename keeps the second name {}): handed over", m.slot, m.folder,
+                  held, reinterpret_cast<char*>(sr + kSecondName), m.name);
+    const bool owned = marked && own_second;
     if (owned && FirstTime(fmt::format("renamed {} {:.32}", m.slot, reinterpret_cast<char*>(sr + kFullName))))
       REXLOG_INFO("[svr2011] superstar mods: id {} ({}) is named \"{:.32}\" in the save - renamed by the player, its "
                   "moves, entrance and edits kept", m.slot, m.folder, reinterpret_cast<char*>(sr + kFullName));
