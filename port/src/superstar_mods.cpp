@@ -3645,21 +3645,49 @@ REX_HOOK_RAW(sub_8273D978) {
 // select motions loop by themselves, and a held pose read as "static"). sub_8273F9A0(mgr) runs every frame on the
 // select screen: a panel playing its pose kPoseLoop after its last start gets it again (sub_8273D978, as the game
 // asks a panel's motion; the hook above sets the pose's x and notes the start).
+// Report b0ee60 (2.2.5): the loop above restarts fine (also in the CAW list), but an EDIT/MOT pose is a still pose -
+// it plays its way in and holds, so starting it again looks the same: the CAW stayed a static render on the grid
+// (the VS screen animates it with the game's own motion). Now the pose plays once, then after kPoseLoop the panel
+// gets the motion the game would give it (sub_8273D4A0's own pick: a rotating select motion, which loops by itself).
+// A new pick on that panel (the cursor moves, another CAW) plays the pose again.
+bool g_panel_idle[6] = {}, g_panel_ready[6] = {};
+REX_EXTERN(__imp__sub_8273D4A0);
 REX_EXTERN(__imp__sub_8273F9A0);
 REX_HOOK_RAW(sub_8273F9A0) {
   const uint32_t mgr = ctx.r3.u32;
   __imp__sub_8273F9A0(ctx, base);
   if (!g_pose_bank) return;
+  static const bool log = std::getenv("SVR2011_TEST_POSE_LOG") != nullptr;
+  static const bool old = std::getenv("SVR2011_TEST_POSE_HOLD_OLD") != nullptr;  // (test aid: 2.2.5's restart)
   const auto now = std::chrono::steady_clock::now();
   for (uint32_t panel = 0; panel < 6; ++panel) {
-    if (g_panel_pose_x[panel] < 0 || now - g_pose_started[panel] < kPoseLoop) continue;
+    if (g_panel_pose_x[panel] < 0 || g_panel_idle[panel]) continue;
+    // (a panel plays motions only at state 4 or 5: its pose shows from then on, so kPoseLoop counts from then)
+    const uint32_t slot = mgr + panel * 116, state = Rd32(base + slot + 16);
+    if (state != 4 && state != 5) {
+      g_panel_ready[panel] = false;
+      continue;
+    }
+    if (!g_panel_ready[panel]) g_panel_ready[panel] = true, g_pose_started[panel] = now;
+    if (now - g_pose_started[panel] < kPoseLoop) continue;
     g_pose_started[panel] = now;  // (tried: not again before kPoseLoop, started or not)
     const auto saved = ctx;
     ctx.r1.u64 = saved.r1.u32 - 0x100;
-    ctx.r3.u64 = mgr, ctx.r4.u64 = panel, ctx.r5.u64 = kCawPoseMotion, ctx.r6.u64 = uint32_t(g_panel_pose_x[panel]);
+    uint32_t motion = kCawPoseMotion, x = uint32_t(g_panel_pose_x[panel]);
+    if (!old) {
+      ctx.r3.u64 = mgr, ctx.r4.u64 = panel;
+      __imp__sub_8273D4A0(ctx, base);  // (the game's own pick for this panel, not the pose)
+      motion = ctx.r3.u32, x = 0;
+    }
+    ctx.r3.u64 = mgr, ctx.r4.u64 = panel, ctx.r5.u64 = motion, ctx.r6.u64 = x;
     ctx.r7.u64 = 0, ctx.r8.u64 = 0;
     sub_8273D978(ctx, base);
+    const uint32_t started = ctx.r3.u32;
     ctx = saved;
+    if (started && !old) g_panel_idle[panel] = true;
+    if (log)
+      REXLOG_INFO("[svr2011] select pose: panel {} state {} list {} -> {} {}", panel, state,
+                  Rd32(base + slot + 20), motion, started ? "started" : "not started");
   }
 }
 // (r3 the screen, r4 the panel) A panel's first motion starts here, with x 0 or the +120 sub_8273D978 put off: while it
@@ -3683,7 +3711,6 @@ REX_HOOK_RAW(sub_8273DF80) {
   g_starting_pose_x = -1;
 }
 
-REX_EXTERN(__imp__sub_8273D4A0);
 REX_HOOK_RAW(sub_8273D4A0) {
   const uint32_t mgr = ctx.r3.u32, slot = mgr + ctx.r4.u32 * 116;
   const uint32_t id = Rd32(base + slot + (Rd32(base + slot + 20) == 1 ? 64 : 44));
@@ -3708,7 +3735,7 @@ REX_HOOK_RAW(sub_8273D4A0) {
   if (const char* v = std::getenv("SVR2011_TEST_POSE_AS"); v && uint32_t(std::atoi(v)) == id)
     if (const char* q = std::strchr(v, '=')) as = uint32_t(std::atoi(q + 1));
   // (a Created Superstar with a pose set, once its bank has a slot; else as any CAW)
-  if (ctx.r4.u32 < 6) g_panel_pose_x[ctx.r4.u32] = -1;
+  if (ctx.r4.u32 < 6) g_panel_pose_x[ctx.r4.u32] = -1, g_panel_idle[ctx.r4.u32] = g_panel_ready[ctx.r4.u32] = false;
   // (test aid SVR2011_TEST_POSE_ALL=<pose>: every panel plays that Menu Screen Pose, as a Created Superstar's - the
   // select cursor starts on a disc superstar: A on it picks him, this asks; with SVR2011_TEST_CAW_POSE set, so the
   // screen loads EDIT/MOT)
