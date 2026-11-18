@@ -451,6 +451,12 @@ class Builder:
                     raise BuildError('%s: %s has NaN / infinite values' % (m.get('name'), key))
             if m.get('kind', 'skin') not in ('skin', 'eye', 'hair', 'lash'):
                 raise BuildError('%s: kind %s' % (m.get('name'), m.get('kind')))
+            # (a base with no hair part - bald 2011 superstars: Stone Cold, Cena, Orton - lends its skin mesh as the
+            # hair template, render flags 0x6 without the cut-out 0x110: hair cards were drawn solid, their clear
+            # texels a white sheet (report 686be2, SYM Jeff Hardy on base 101). Hair is a cut-out unless told not.)
+            if m.get('kind') == 'hair' and (m.get('material') or {}).get('cutout') is None and \
+                    not struct.unpack_from('>I', self.template_mesh('hair')[0].raw, 0x88)[0] & 0x110:
+                m['material'] = dict(m.get('material') or {}, cutout=True)
             m['_w'] = self.weights(m)
         if not getattr(self, '_faced', False):
             self._faced = True
