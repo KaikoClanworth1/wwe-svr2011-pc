@@ -2438,6 +2438,14 @@ std::vector<bool> g_stock_ok;        // the stock game plays the id without pack
 // starts a move there (docs/MOVE_PORTING.md 2.4) - the pair stood frozen in its first frame. Bundled Mankind 2.0.3's
 // Double Axe Handle 8 on 17093 (template 11003) froze matches (report 20261101-073525-b564c9; 2.0.4 moved it).
 bool NeverStarts(uint16_t id, uint16_t from) { return id >= 16000 && id / 1000 != from / 1000; }
+// A pack's copy of a submission (template 21000-21499) on a record outside those ids: the game tells a hold by its
+// id (sub_821B57F8 and its family test 21000-21499), so the copy plays its first part and the attacker stays in
+// it - report a36c2d (Marcus Cor Von's 3903 held him on the spot while his opponent got up, every time; the
+// game asked for it as a streamed motion that second), c017e9 (Sabu's SS Camel Clutch on 5962, held at frame 74).
+// No record in 21000-21499 is free, so such a copy can't be moved: not usable, movesets keep the base's move.
+bool HoldOffRange(uint16_t id, uint16_t from) {
+  return from >= 21000 && from < 21500 && (id < 21000 || id >= 21500);
+}
 
 // MoveUsable's list and CategoryDefaultMove's table from MOVS/WAZE records as in the file (the packs' patch
 // applied): at start-up from misc.pac (a match never loads MOVS/WAZE itself - CREATE A MOVE-SET does) and
@@ -2459,7 +2467,7 @@ void SetMoveTables(const uint8_t* w) {
   // (but not a copy on a record the game never starts - NeverStarts: movesets keep the base's move, a saved edit
   // the mod's own)
   for (const auto& [id, from] : g_copies)
-    if (NeverStarts(id, from)) usable[id] = false;
+    if (NeverStarts(id, from) || HoldOffRange(id, from)) usable[id] = false;
   // per category, the moves a slot falls back to in a match when its own has no record (cam_mod_moves.cpp), in
   // order: the game's moves (not a pack's) of that category the game always shows (unlock 512 or 1-3), then its
   // other game moves - CategoryDefaultMove takes the first one that plays (report 0afa16: category 3's first,
@@ -2554,6 +2562,14 @@ void LoadMoveTables(const fs::path& game) {
     if (!never.empty())
       REXLOG_WARN("[svr2011] move packs: moves on records the game never starts (16000 and up outside the template's "
                   "thousand - not usable, movesets keep other moves; port them again):{}", never);
+  }
+  {
+    std::string holds;
+    for (const auto& [id, from] : g_copies)
+      if (HoldOffRange(id, from)) holds += fmt::format(" {} (from {})", id, from);
+    if (!holds.empty())
+      REXLOG_WARN("[svr2011] move packs: submissions copied outside 21000-21499 - the game holds the attacker in their "
+                  "first part (not usable, movesets keep other moves):{}", holds);
   }
   {
     std::string gone;
