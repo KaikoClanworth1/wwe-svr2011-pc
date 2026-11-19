@@ -241,7 +241,8 @@ Manifest keys (in the order the converters write them,
 | `victory_gain=<dB>` | optional | that track's level, -20.0..+6.0 dB. Left out, it plays at the file's level |
 | `theme_gain_auto=<size>:<time>` | written by the launcher | marks a `theme_gain=` the launcher measured (the song's size and time then): measured again when the song changes. Without it, `theme_gain=` is the author's and is never changed |
 | `music=<1-253>` | optional | instead of `song=`: one of the game's own themes by music id. 254 (the user playlist) and 255 (none) are not accepted. `song=` wins when both are given |
-| `movie=<file>` | optional | the entrance (titantron) movie: a 320 x 320 Bink `.bik`, or an `.mp4` ([5.8](#58-media-theme-titantron)) |
+| `movie=<file>` | optional | the entrance (titantron) movie: a 320 x 320 Bink `.bik`, or an `.mp4` ([5.8](#58-media-theme-titantron)) - one picture: the top 320 x 220 the big screen (titantron), the bottom 320 x 100 strip the stage and ramp screens (minitron); the Mod Maker's "From a video..." puts a video for each in one movie |
+| `titantron=<id>` | optional | instead of `movie=`: one of the game's own entrance movies by number (`movies\titantron\<id>.bik`), so the mod carries no file. Ignored when the game has no such movie; `movie=` wins when both are given |
 | `attire<N>=<file>` | optional | N 1-4: another model pac whose first attire becomes attire N. When it is over the model budget, that attire alone is left out |
 | `attire<N>_name=` | optional | the attire's name on CHANGE ATTIRE (attire 1: the game's ORIGINAL ATTIRE) |
 | `needs=` | optional | see [1](#versioning) |

@@ -60,6 +60,7 @@ struct StarProject {
   // the SvR 2010-style extras (the game: superstar_mods.cpp)
   int pose = -1;                  // pose=<motion id>: the select / VS panel's pose (-1: the style's)
   int music = 0;                  // music= : a theme of the game's own (its music id 1-253) instead of a song file; 0 = none
+  int titantron = 0;              // titantron= : a titantron movie of the game's own (movies\titantron\<id>.bik) instead of a file; 0 = none
   int entrance = -1;              // entrance= number (-1: the style's); a superstar's id, or 535 (Jeff Hardy's, unused)
   int victory = -1;               // victory= scene (-1: the game's; Victories())
   std::wstring victory_song;      // victory_song= his music when he wins (none: his theme)
@@ -115,6 +116,8 @@ bool EntrancePicker(const char* label, int& value, const char* none, float width
 void ThemeGainRow();
 // "A game theme...": the game's own themes by superstar, each with a play button; sets g_star.music.
 void StockThemeRow();
+// "A game titantron...": the game's own entrance movies by superstar, each with a preview; sets g_star.titantron.
+void StockTronRow();
 std::string StockThemeName(int music);  // the superstars whose theme it is
 void SaveMod();
 void Install(bool start);

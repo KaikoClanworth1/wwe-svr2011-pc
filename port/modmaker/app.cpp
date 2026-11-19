@@ -1168,6 +1168,7 @@ namespace {
 std::map<int, MoveInfo> g_move_infos;
 std::map<int, std::vector<int>> g_profiles;  // star id -> 224 move ids
 std::map<int, int> g_profile_music;           // star id -> its theme's music id (ProfileMusic)
+std::map<int, int> g_profile_movie;           // star id -> its entrance's titantron movie id (ProfileMovie)
 struct SlotRule {
   uint8_t bits[16] = {};
   int situation = -1;  // (-1: any)
@@ -1219,6 +1220,7 @@ void LoadMoveset() {
             for (int s = 0; s < kMoveSlots; ++s) v[size_t(s)] = Le16(&r[size_t(s) * 2]);
             g_profiles[int(x.id)] = std::move(v);
             if (r.size() >= 0x1C0 + 0x12) g_profile_music[int(x.id)] = Le16(&r[0x1C0 + 0x10]);
+            if (r.size() >= 0x1C0 + 0x14) g_profile_movie[int(x.id)] = Le16(&r[0x1C0 + 0x12]);
           }
         if (en.name.rfind("DAT", 0) == 0 && PachRead(Unpack(en.data), pe))
           for (const auto& x : pe) {
@@ -1398,6 +1400,12 @@ int ProfileMusic(int star_id) {
   LoadMoveset();
   const auto it = g_profile_music.find(star_id);
   return it == g_profile_music.end() ? 0 : it->second;
+}
+
+int ProfileMovie(int star_id) {
+  LoadMoveset();
+  const auto it = g_profile_movie.find(star_id);
+  return it == g_profile_movie.end() ? 0 : it->second;
 }
 
 std::vector<int> ProfileMoves(int star_id) {
@@ -1840,17 +1848,19 @@ void MakeRenders(const Image& src, Image& render, Image& bust, Image& icon) {
   render = std::move(big);
 }
 
-void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int seconds, std::function<void(std::wstring)> done) {
+void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int seconds, std::function<void(std::wstring)> done,
+             const std::wstring& bottom) {
   if (Busy()) {
     Status("Still working on the last job: wait a moment.");
     return;
   }
-  RunInBackground([video, out, fit, seconds, done] {
+  RunInBackground([video, out, fit, seconds, done, bottom] {
     Progress("Making the Bink movie (" + FileName(video) + ") ...");
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     MovieJob job = {};
     wcsncpy_s(job.video, video.c_str(), _TRUNCATE);
     wcsncpy_s(job.out, out.c_str(), _TRUNCATE);
+    wcsncpy_s(job.bottom, bottom.c_str(), _TRUNCATE);
     job.fit = fit;
     job.max_seconds = seconds;
     const bool ok = movie_make(&job) != 0;
@@ -2067,42 +2077,175 @@ void ViewFooter() {
   ImGui::PopID();
 }
 
+namespace {
+// The titantron maker window (suggestion bd4b80): one at a time. The game's entrance movie is one 320 x 320 picture
+// - the top 320 x 220 the big screen (the titantron), the bottom 320 x 100 the stage and ramp screens' strip (the
+// minitron) - so the two videos are put in one movie (movie_maker.c, the launcher's Movies tab's way).
+struct TronMaker {
+  std::wstring top, bottom;  // the sources (a video, a picture, or a titantron movie: its own part of it)
+  int fit = MOVIE_FILL;
+  float at = 1.0f;           // the preview's time (s)
+  Picture shown;             // the preview frame
+  std::string note;          // why there is no preview
+  bool dirty = true;
+  std::wstring* target = nullptr;
+  std::string stem;
+  int converting = 0;        // Bink 2 sources being turned into .mp4
+} g_tron;
+
+// A Bink 2 source (WWE 2K15 and later): through the player's RAD tool to an .mp4 first, then into `into`.
+void TronSource(std::wstring f, std::wstring* into) {
+  const std::string ext = Lower(fs::path(f).extension().string());
+  if (ext != ".bk2" && ext != ".bik2") {
+    *into = f, g_tron.dirty = true;
+    return;
+  }
+  const fs::path work = fs::path(g_game) / L"Mods" / L".convert";
+  std::error_code ec;
+  fs::create_directories(work, ec);
+  const std::wstring mp4 = (work / (fs::path(f).stem().wstring() + L"_bink2.mp4")).wstring();
+  std::vector<std::wstring> args = {f, mp4};
+  if (!g_settings.bink2_tool.empty()) args.push_back(L"--tool"), args.push_back(g_settings.bink2_tool);
+  ++g_tron.converting;
+  RunToolJson(L"bink2_convert.py", args, [mp4, into](int code, const std::string& text) {
+    --g_tron.converting;
+    std::error_code e2;
+    if (code != 0 || !fs::exists(mp4, e2)) {
+      Status("The Bink 2 video didn't convert (see the log). Bink 2 needs RAD Video Tools (free, radgametools.com) - set it "
+             "on Superstar > From another game.");
+      Log("bink2: " + text);
+      return;
+    }
+    *into = mp4, g_tron.dirty = true;
+  });
+}
+
+void TronPreview() {
+  g_tron.dirty = false;
+  g_tron.note.clear();
+  if (g_tron.top.empty() && g_tron.bottom.empty()) {
+    g_tron.shown.Clear();
+    return;
+  }
+  std::vector<uint8_t> bgra(size_t(MOVIE_W) * MOVIE_H * 4);
+  WCHAR err[512] = L"";
+  const HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  const bool ok = movie_preview(g_tron.top.c_str(), g_tron.bottom.c_str(), g_tron.fit, g_tron.at, bgra.data(), err, 512) != 0;
+  if (SUCCEEDED(co)) CoUninitialize();
+  if (!ok) {
+    g_tron.shown.Clear();
+    g_tron.note = "No preview: " + Utf8(err);
+    return;
+  }
+  Image img;
+  img.w = MOVIE_W, img.h = MOVIE_H, img.rgba = std::move(bgra);
+  for (size_t i = 0; i < img.rgba.size(); i += 4) std::swap(img.rgba[i], img.rgba[i + 2]), img.rgba[i + 3] = 255;
+  g_tron.shown.Set(std::move(img));
+}
+
+void TronRow(const char* what, const char* hint, std::wstring& file) {
+  ImGui::PushID(what);
+  ImGui::TextUnformatted(what);
+  ImGui::SameLine(110 * g_scale);
+  const std::string name = file.empty() ? std::string(hint) : FileName(file);
+  if (file.empty()) ImGui::TextDisabled("%s", name.c_str());
+  else ImGui::TextUnformatted(name.c_str());
+  ImGui::SameLine(ImGui::GetContentRegionMax().x - 120 * g_scale);
+  if (ImGui::SmallButton("Pick...")) {
+    const COMDLG_FILTERSPEC spec[] = {{L"Videos, pictures and titantron movies",
+                                       L"*.mp4;*.mov;*.m4v;*.avi;*.wmv;*.mkv;*.webm;*.bik;*.bk2;*.bik2;*.png;*.jpg;*.jpeg;*.bmp"}};
+    const std::wstring f = PickFile(false, Wide(std::string("The ") + what + " video (or a picture)").c_str(), spec, 1);
+    if (!f.empty()) TronSource(f, &file);
+  }
+  std::vector<std::wstring> dropped;
+  if (DroppedOnLastItem(dropped) && !dropped.empty()) TronSource(dropped[0], &file);
+  ImGui::SameLine();
+  ImGui::BeginDisabled(file.empty());
+  if (ImGui::SmallButton("Clear")) file.clear(), g_tron.dirty = true;
+  ImGui::EndDisabled();
+  ImGui::PopID();
+}
+}  // namespace
+
+void MakeTitantron(const std::wstring& top, const std::wstring& bottom, int fit, const std::string& stem, std::wstring* target,
+                   int seconds) {
+  const fs::path work = fs::path(g_game) / L"Mods" / L".convert";
+  std::error_code ec;
+  fs::create_directories(work, ec);
+  const std::wstring from = !top.empty() ? top : bottom;
+  const std::wstring out = (work / (Wide(IdFrom(stem, "movie")) + L"_" + fs::path(from).stem().wstring() +
+                                    (top.empty() || bottom.empty() ? L"" : L"_tron") + L".bik")).wstring();
+  Log("titantron: making " + Utf8(out) + " from \"" + Utf8(top) + "\" + minitron \"" + Utf8(bottom) + "\", fit " + std::to_string(fit));
+  // (no titantron: the minitron's video is the clock - the big screen black)
+  MakeBink(top.empty() ? bottom : top, out, top.empty() ? MOVIE_FILL : fit, seconds,
+           [target](std::wstring made) { if (!made.empty() && target) *target = made, Touch(); }, top.empty() ? L"" : bottom);
+}
+
 bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::string& stem) {
   ImGui::PushID(label);
   bool pressed = false;
   if (ImGui::Button(label, ImVec2(220 * g_scale, 0))) {
-    const COMDLG_FILTERSPEC spec[] = {{L"Videos and pictures", L"*.mp4;*.mov;*.m4v;*.avi;*.wmv;*.mkv;*.webm;*.bk2;*.bik2;*.png;*.jpg;*.jpeg;*.bmp"}};
-    const std::wstring f = PickFile(false, L"A video (or a picture) for the entrance movie", spec, 1);
-    if (!f.empty()) {
-      const fs::path work = fs::path(g_game) / L"Mods" / L".convert";
-      std::error_code ec;
-      fs::create_directories(work, ec);
-      const std::wstring out = (work / (Wide(IdFrom(stem, "movie")) + L"_" + fs::path(f).stem().wstring() + L".bik")).wstring();
-      std::wstring* target = &movie;
-      const std::string ext = Lower(fs::path(f).extension().string());
-      if (ext == ".bk2" || ext == ".bik2") {  // Bink 2 (WWE 2K15 and later): through the player's RAD tool to .mp4 first
-        const std::wstring mp4 = (work / (fs::path(f).stem().wstring() + L"_bink2.mp4")).wstring();
-        std::vector<std::wstring> args = {f, mp4};
-        if (!g_settings.bink2_tool.empty()) args.push_back(L"--tool"), args.push_back(g_settings.bink2_tool);
-        RunToolJson(L"bink2_convert.py", args, [mp4, out, target](int code, const std::string& text) {
-          const size_t e = text.find("\"error\"");
-          if (code != 0 || !fs::exists(mp4)) {
-            Status("The Bink 2 video didn't convert" + (e == std::string::npos ? std::string(" (see the log).") : ": see the log.") +
-                   " Bink 2 needs RAD Video Tools (free, radgametools.com) - set it on Superstar > From another game.");
-            Log("bink2: " + text);
-            return;
-          }
-          WhenIdle([mp4, out, target] { MakeBink(mp4, out, 0, 0, [target](std::wstring made) { if (!made.empty()) *target = made, Touch(); }); });
-        });
-      } else {
-        MakeBink(f, out, 0, 0, [target](std::wstring made) { if (!made.empty()) *target = made, Touch(); });
-      }
-      pressed = true;
-    }
+    if (g_tron.target != &movie) g_tron = TronMaker();  // (another slot: start over)
+    g_tron.target = &movie, g_tron.stem = stem, g_tron.dirty = true;
+    ImGui::OpenPopup("tron_maker");
+    pressed = true;
   }
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Any video or picture -> a 320 x 320 Bink laid out like the game's titantron movies (the "
-                      "launcher's Movies tab does the same, with a preview and the bottom strip).");
+    ImGui::SetTooltip("Make the entrance movie from your own videos (or pictures): the titantron (the big screen) and the "
+                      "minitron (the stage and ramp screens' strip), put in one movie as the game plays them.");
+  // test aid SVR2011_TEST_TRON_MAKER=<titantron>|<minitron>: the first such button opens the maker with those two
+  static bool test_open = false;
+  if (const char* t = std::getenv("SVR2011_TEST_TRON_MAKER"); t && *t && !test_open) {
+    test_open = true;
+    const std::string v = t;
+    const size_t bar = v.find('|');
+    g_tron = TronMaker();
+    g_tron.target = &movie, g_tron.stem = stem;
+    g_tron.top = fs::u8path(v.substr(0, bar)).wstring();
+    if (bar != std::string::npos) g_tron.bottom = fs::u8path(v.substr(bar + 1)).wstring();
+    ImGui::OpenPopup("tron_maker");
+    Log("test: titantron maker open");
+  }
+  ImGui::SetNextWindowSize(ImVec2(560 * g_scale, 0), ImGuiCond_Always);
+  if (ImGui::BeginPopup("tron_maker")) {
+    ImGui::TextUnformatted("Titantron + minitron movie");
+    Hint("The game plays one movie on all of an arena's screens: its top part on the big screen (the titantron, "
+         "shown 16:9), its bottom strip on the stage and ramp screens (the minitron). Pick a video for each - an .mp4 "
+         "or other video, a picture, or a titantron movie (.bik / a mod's .mp4: its own part of it is used).");
+    ImGui::Separator();
+    TronRow("Titantron", "none (black)", g_tron.top);
+    TronRow("Minitron", "none (black)", g_tron.bottom);
+    static const char* kFits[] = {"Fit (black bars)", "Fill (edges cut off)", "Stretch"};
+    ImGui::TextUnformatted("Big screen");
+    ImGui::SameLine(110 * g_scale);
+    ImGui::SetNextItemWidth(180 * g_scale);
+    if (ImGui::Combo("##fit", &g_tron.fit, kFits, 3)) g_tron.dirty = true;
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1);
+    ImGui::SliderFloat("##at", &g_tron.at, 0.0f, 20.0f, "preview at %.1f s");
+    if (ImGui::IsItemDeactivatedAfterEdit()) g_tron.dirty = true;
+    if (g_tron.dirty && !g_tron.converting) TronPreview();
+    if (g_tron.converting) ImGui::TextDisabled("Converting the Bink 2 video...");
+    else if (!g_tron.note.empty()) ImGui::TextColored(kWarn, "%s", g_tron.note.c_str());
+    if (!g_tron.shown.Empty()) {
+      const float w = 320 * g_scale;
+      ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - w) / 2 + ImGui::GetCursorPosX());
+      ImGui::Image(g_tron.shown.Id(), ImVec2(w, w));
+      ImGui::PushTextWrapPos(0);
+      ImGui::TextDisabled("How the movie is stored: the top on the big screen (shown wide), the strip below it on the stage screens.");
+      ImGui::PopTextWrapPos();
+    }
+    ImGui::Separator();
+    ImGui::BeginDisabled((g_tron.top.empty() && g_tron.bottom.empty()) || g_tron.converting || Busy());
+    if (ImGui::Button("Make the movie", ImVec2(200 * g_scale, 0))) {
+      MakeTitantron(g_tron.top, g_tron.bottom, g_tron.fit, g_tron.stem, g_tron.target, 0);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
   ImGui::PopID();
   return pressed;
 }
@@ -3293,7 +3436,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   bool behind = false;  // --behind: tests - the window is never shown at all (frames still run)
   std::wstring perf_tour;  // --perf-tour <report>: every page in turn, its first-frame and slowest times
   std::vector<std::wstring> run_tool_args;
-  std::wstring make_bink_in, make_bink_out, moves_save;
+  std::wstring make_bink_in, make_bink_out, make_bink_bottom, moves_save;
   std::wstring shot;    // --shot <png> [--shot-after <s>]: the frame saved from the back buffer, then quit
   std::wstring ui_script;  // --ui-script <txt>: ImGui input played in, no real input (see UiScript)
   bool ring_view = false;
@@ -3378,6 +3521,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       const std::wstring a = argv[++i];
       const size_t c = a.rfind(L',');
       if (c != std::wstring::npos) make_bink_in = a.substr(0, c), make_bink_out = a.substr(c + 1);
+    }
+    else if (!wcscmp(argv[i], L"--make-bink-bottom") && more) {  // <video or picture>: --make-bink's minitron strip
+      make_bink_bottom = argv[++i];
     }
     else if (!wcscmp(argv[i], L"--run-tool") && more) {  // <script>,<arg>,<arg>...: the Python tool, output in the log
       std::vector<std::wstring> parts;
@@ -3887,7 +4033,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     WriteLogTo(moves_save + L".log");
     PostMessageW(g_wnd, WM_CLOSE, 0, 0);
   }
-  if (!make_bink_in.empty()) MakeBink(make_bink_in, make_bink_out, 0, 3, [](std::wstring out) { Status(out.empty() ? "test: bink failed" : "test: bink made"); });
+  if (!make_bink_in.empty())
+    MakeBink(make_bink_in, make_bink_out, 0, 3, [](std::wstring out) { Status(out.empty() ? "test: bink failed" : "test: bink made"); },
+             make_bink_bottom);
   if (!run_tool_args.empty()) {
     const std::wstring script = run_tool_args[0];
     run_tool_args.erase(run_tool_args.begin());
