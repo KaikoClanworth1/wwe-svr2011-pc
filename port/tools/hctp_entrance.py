@@ -974,6 +974,11 @@ def nyujyo_for(number):
 def write_pack(out, number, files, label):
     pac, gp, gt = nyujyo_for(number)
     d = os.path.join(out, 'pack')
+    # (a convert again into the same folder - the Mod Maker reuses one per item - left the last number's files beside
+    # the new ones, and they went into the mod: the pack's own sub-folders start empty; pack.txt is rewritten below)
+    import shutil
+    for sub in ('entrance', 'props', 'pyro'):
+        shutil.rmtree(os.path.join(d, sub), ignore_errors=True)
     os.makedirs(os.path.join(d, 'entrance'), exist_ok=True)
     lines = ['# %s' % label]
     for n, evp, evt in files:

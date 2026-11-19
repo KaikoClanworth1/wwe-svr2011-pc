@@ -418,6 +418,9 @@ def pack_victories(mods):
     used = set()
     if mods and os.path.isdir(mods):
         for root, dirs, files in os.walk(mods):
+            # (Mods\.convert holds the Mod Maker's converted results, not installed packs: a convert done again took
+            # a new number each time - suggestion 5f5787, tag numbers are few)
+            dirs[:] = [x for x in dirs if not x.startswith('.')]
             if 'PacOverlay' in root or os.path.exists(os.path.join(root, 'disabled')):
                 continue
             if 'pack.txt' in files:
@@ -498,6 +501,9 @@ def pack_numbers(mods):
     used = set()
     if mods and os.path.isdir(mods):
         for root, dirs, files in os.walk(mods):
+            # (Mods\.convert holds the Mod Maker's converted results, not installed packs: a convert done again took
+            # a new number each time - suggestion 5f5787, tag numbers are few)
+            dirs[:] = [x for x in dirs if not x.startswith('.')]
             if 'PacOverlay' in root or os.path.exists(os.path.join(root, 'disabled')):
                 continue
             if 'pack.txt' in files:
