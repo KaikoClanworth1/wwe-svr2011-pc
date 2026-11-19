@@ -56,6 +56,7 @@
 #include <map>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <set>
 #include <string>
 #include <thread>
@@ -1536,19 +1537,129 @@ void GrowDirectory(uint8_t* base) {
               need >> 10);
 }
 
+// ---- Archive list guard (report 44d4c3: big roster, 221 mods - a crash at start, every time, not reproduced here)
+// The pac lookup sub_826B87B0(fs, name, out) walks the file system's archives: the first at **(fs+72), the next at
+// archive+76, each one's table at archive+64. There, 3 ms after smods:\ch588.pac was mounted, an archive's table
+// pointer led to unmapped memory (read of 0x31059004) and the game crashed. Which archive, and why, is not known:
+// so before each walk the archives not seen yet are checked (archive record and table readable); one that isn't
+// is taken out of the list (the walk skips it - its pac can't be read anyway) and named in the log, once.
+// Potential fix only. Test aid: SVR2011_TEST_BAD_ARCHIVE=<n> - after the mods are mounted, archive n of the list
+// (0 = the first) gets an unmapped table pointer (0x00001000), to see the guard take it out.
+bool Committed(uint32_t at);
+constexpr uint32_t kFsArchives = 72, kArchiveTable = 64, kArchiveNext = 76;
+std::mutex g_arch_mu;
+std::set<uint64_t> g_arch_ok;                           // (archive << 32 | table) pairs checked
+std::unordered_map<uint32_t, std::string> g_arch_file;  // archive -> the mounted file it came from (Mount)
+uint32_t g_lookup_fs = 0;                               // the file system the lookups are given (r3)
+
+std::string ArchiveName(uint32_t a) {
+  const auto it = g_arch_file.find(a);
+  return it == g_arch_file.end() ? std::string("a game pac, or one mounted before the mods") : it->second;
+}
+
+// The archives of fs in list order (at most 4096; stops at one whose record isn't readable). Records already seen
+// readable aren't asked again (Mount lists them twice a file).
+std::unordered_set<uint32_t> g_arch_rec_ok;
+std::vector<uint32_t> Archives(uint8_t* base, uint32_t fs) {
+  std::vector<uint32_t> out;
+  if (!fs || !Committed(fs + kFsArchives)) return out;
+  const uint32_t head = Rd32(base + fs + kFsArchives);
+  if (!head || !Committed(head)) return out;
+  std::lock_guard lock(g_arch_mu);
+  for (uint32_t a = Rd32(base + head); a && out.size() < 4096; a = Rd32(base + a + kArchiveNext)) {
+    if (!g_arch_rec_ok.count(a)) {
+      if (!Committed(a) || !Committed(a + kArchiveNext + 3)) break;
+      g_arch_rec_ok.insert(a);
+    }
+    out.push_back(a);
+  }
+  return out;
+}
+
+std::atomic<uint32_t> g_arch_epoch{0};  // (bumped by each mount of ours: the list changed)
+void GuardArchives(uint8_t* base, uint32_t fs) {
+  // (the whole list is walked when it may have changed - another fs, another first archive, a mount of ours - and
+  // every 64th lookup; the lookups come by the thousand while a match loads)
+  static std::atomic<uint64_t> seen{0};
+  static std::atomic<uint32_t> calls{0}, ok_fs{0}, ok_head{0};  // (fs and its list head, already seen readable)
+  if (!fs || (fs != ok_fs.load() && !Committed(fs + kFsArchives))) return;
+  ok_fs = fs;
+  const uint32_t head0 = Rd32(base + fs + kFsArchives);
+  if (!head0 || (head0 != ok_head.load() && !Committed(head0))) return;
+  ok_head = head0;
+  const uint32_t first = Rd32(base + head0);
+  const uint64_t sig = uint64_t(fs ^ first) << 32 | g_arch_epoch.load();
+  if (seen.load() == sig && (calls.fetch_add(1) & 63)) return;
+  std::lock_guard lock(g_arch_mu);
+  seen = sig;
+  if (!g_lookup_fs) g_lookup_fs = fs;
+  const uint32_t head = Rd32(base + fs + kFsArchives);
+  if (!head || !Committed(head)) return;
+  uint32_t prev = 0, link = head;  // (link: where the current archive's pointer is stored - *head, or prev + 76)
+  size_t pos = 0;
+  for (uint32_t a = Rd32(base + head); a && pos < 4096; ++pos) {
+    const bool rec_ok = g_arch_rec_ok.count(a) ||
+                        (Committed(a) && Committed(a + kArchiveNext + 3) && g_arch_rec_ok.insert(a).second);
+    const uint32_t table = rec_ok ? Rd32(base + a + kArchiveTable) : 0;
+    const uint64_t key = uint64_t(a) << 32 | table;
+    if (rec_ok && (g_arch_ok.count(key) || (table && Committed(table) && Committed(table + 7)))) {
+      g_arch_ok.insert(key);
+      prev = a, link = a + kArchiveNext, a = Rd32(base + a + kArchiveNext);
+      continue;
+    }
+    const uint32_t next = rec_ok ? Rd32(base + a + kArchiveNext) : 0;
+    REXLOG_ERROR("[svr2011] archive guard: archive {} of the list at {:08X} ({}): {} table pointer {:08X}; before "
+                 "it {:08X} ({}), after it {:08X} ({}) - taken out of the list (report 44d4c3)",
+                 pos, a, ArchiveName(a), rec_ok ? "unreadable" : "record UNREADABLE,", table, prev,
+                 prev ? ArchiveName(prev) : "list head", next, next ? ArchiveName(next) : "end");
+    Wr32(base + link, next);  // (the walk goes from prev straight to next; an unreadable record ends the list)
+    a = next;
+  }
+}
+
+// Which archives a mount added (the list before and after) - for the guard's line.
+void NoteMounted(uint8_t* base, uint32_t fs, const std::vector<uint32_t>& before, const std::string& file) {
+  const std::unordered_set<uint32_t> had(before.begin(), before.end());
+  const auto now = Archives(base, fs);
+  std::lock_guard lock(g_arch_mu);
+  for (uint32_t a : now)
+    if (!had.count(a)) g_arch_file[a] = file;
+  ++g_arch_epoch;
+}
+
+void BreakArchiveForTest(uint8_t* base, uint32_t fs) {
+  const char* e = std::getenv("SVR2011_TEST_BAD_ARCHIVE");
+  if (!e || !*e) return;
+  const auto list = Archives(base, fs);
+  const size_t n = size_t(std::strtoul(e, nullptr, 10));
+  if (n >= list.size()) {
+    REXLOG_WARN("[svr2011] archive guard test: no archive {} ({} in the list)", n, list.size());
+    return;
+  }
+  REXLOG_WARN("[svr2011] archive guard test: archive {} at {:08X} ({}) gets table pointer 00001000 (was {:08X})", n,
+              list[n], ArchiveName(list[n]), Rd32(base + list[n] + kArchiveTable));
+  Wr32(base + list[n] + kArchiveTable, 0x00001000);
+  ++g_arch_epoch;
+}
+
 void Mount(PPCContext& ctx, uint8_t* base) {
   if (g_mounted || (g_mods.empty() && g_extra_mounts.empty())) return;
   g_mounted = true;
   GrowDirectory(base);
   const auto saved = ctx;
   const uint32_t str = saved.r1.u32 - 0x300;
+  const uint32_t fs = g_lookup_fs ? g_lookup_fs : Rd32(base + kVfs);
+  REXLOG_INFO("[svr2011] archive guard: {} archives before the mods (file system {:08X}, {})", Archives(base, fs).size(),
+              fs, g_lookup_fs ? "the lookups'" : "82ED5FEC's");
   for (const auto& f : g_extra_mounts) {
     std::memcpy(base + str, f.c_str(), f.size() + 1);
+    const auto before = Archives(base, fs);
     ctx = saved;
     ctx.r1.u64 = saved.r1.u32 - 0x400;
     ctx.r3.u64 = str;
     ctx.r4.u64 = 0;
     sub_826A1780(ctx, base);
+    NoteMounted(base, fs, before, f);
     REXLOG_INFO("[svr2011] superstar mods: mounted {} ({})", f, ctx.r3.u32);
   }
   for (const auto& m : g_mods) {
@@ -1557,14 +1668,19 @@ void Mount(PPCContext& ctx, uint8_t* base) {
     for (const std::string* p : files) {
       if (p->empty()) continue;
       std::memcpy(base + str, p->c_str(), p->size() + 1);
+      const auto before = Archives(base, fs);
       ctx = saved;
       ctx.r1.u64 = saved.r1.u32 - 0x400;
       ctx.r3.u64 = str;
       ctx.r4.u64 = 0;
       sub_826A1780(ctx, base);
+      NoteMounted(base, fs, before, *p);
       REXLOG_INFO("[svr2011] superstar mods: mounted {} ({})", *p, ctx.r3.u32);
     }
   }
+  REXLOG_INFO("[svr2011] archive guard: {} archives after the mods, {} named", Archives(base, fs).size(),
+              g_arch_file.size());
+  BreakArchiveForTest(base, fs);
   ctx = saved;
 }
 
@@ -2606,6 +2722,7 @@ uint32_t KeyAlias(uint8_t* base, const char* n) {
 
 REX_EXTERN(__imp__sub_826B87B0);
 REX_HOOK_RAW(sub_826B87B0) {
+  GuardArchives(base, ctx.r3.u32);  // (an archive whose table can't be read: out of the list, named once - 44d4c3)
   static const bool log = [] {
     const char* e = std::getenv("SVR2011_TEST_VFS_LOG");
     return e && *e == '1';
