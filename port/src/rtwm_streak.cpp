@@ -405,6 +405,17 @@ REX_HOOK_RAW(sub_82548010) {
     REXLOG_INFO("[svr2011] rtwm streak: a walk event of the player as the CAW {} (his pick: {})", g_swap_caw, was);
 }
 
+// (research, SVR2011_TEST_RTWM_BUILD_LOG=1: each event sub_82548010 posts - sub_826AD168(queue, event) from
+// 0x82548104: its type, the player id it carries, the table value)
+REX_EXTERN(__imp__sub_826AD168);
+REX_HOOK_RAW(sub_826AD168) {
+  static const bool log = std::getenv("SVR2011_TEST_RTWM_BUILD_LOG") != nullptr;
+  if (log && uint32_t(ctx.lr) == 0x82548104 && ctx.r4.u32)
+    REXLOG_INFO("[svr2011] rtwm build: walk event posted - type {} player id {} value {:08X}", int32_t(Rd32(base + ctx.r4.u32)),
+                int32_t(Rd32(base + ctx.r4.u32 + 4)), Rd32(base + ctx.r4.u32 + 8));
+  __imp__sub_826AD168(ctx, base);
+}
+
 // (research, SVR2011_TEST_RTWM_BUILD_LOG=1: each build's entry and the characters' +80 after)
 REX_EXTERN(__imp__sub_82195BA0);
 REX_HOOK_RAW(sub_82195BA0) {
