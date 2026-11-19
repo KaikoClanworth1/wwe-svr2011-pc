@@ -3999,6 +3999,59 @@ bool FlatPixels(const std::vector<Element>& decl, const PendingUP* up, bool inde
   return false;
 }
 
+// Wide / tall screens: a 2D box showing a scene copy (the pause menu's preview of the match, report 9378d8). The
+// scene's targets and their resolves are window-shaped there (HostWidth), but the game's 2D draws sample them with
+// the uvs of its 16:9 picture - the whole wide copy squeezed into the box, the wrestlers narrower. Such a draw (flat
+// 2D in pixels, no depth, not covering its whole target - screen passes, which do, keep sampling all of the copy)
+// samples the copy's 16:9 middle: its first texture coordinates, u -> 0.5 + (u - 0.5) * kx (v likewise, ky). The
+// element to change (a float pair, TEXCOORD0) or null; `crop`: kx, ky. Test aid SVR2011_TEST_NO_COPY_CROP=1: off.
+const Element* CropOfReshapedCopy(Renderer* r, const Shader* ps, const std::vector<Element>& decl, const PendingUP* up,
+                                  bool indexed, uint32_t start, uint32_t count, int32_t base_vertex, float tw, float th,
+                                  float crop[2]) {
+  static const bool off = EnvFlag("SVR2011_TEST_NO_COPY_CROP");
+  if (off || (g_wide <= 1.0f && g_tall <= 1.0f) || !ps) return nullptr;
+  float kx = 1.0f, ky = 1.0f;
+  for (const auto& [slot, dimension] : ps->textures) {
+    if (dimension != 0) continue;
+    const uint8_t* fc = Device() + guest::RegisterOffset(0x4800) + slot * 24;
+    const auto it = r->resolved.find(Be32(fc + 4) & 0xFFFFF000u);
+    if (it == r->resolved.end() || !it->second.width || !it->second.height || !it->second.host_w ||
+        !it->second.host_h)
+      continue;
+    const ResolvedTexture& t = it->second;
+    const float guest = float(t.width) / float(t.height), host = float(t.host_w) / float(t.host_h);
+    if (host > guest * 1.01f) kx = guest / host;
+    else if (host < guest / 1.01f) ky = host / guest;
+    if (kx != 1.0f || ky != 1.0f) break;
+  }
+  if (kx == 1.0f && ky == 1.0f) return nullptr;
+  bool full = false;
+  if (!FlatPixels(decl, up, indexed, start, count, base_vertex, tw, th, &full) || full) return nullptr;
+  for (const Element& tc : decl) {
+    if (tc.usage != 5 || tc.index != 0) continue;
+    if (VertexFormat(tc.type, false) != RenderFormat::R32G32_FLOAT) break;
+    crop[0] = kx, crop[1] = ky;
+    static uint32_t told = 0;
+    if (told++ < 4)
+      REXLOG_INFO("native renderer: a 2D box shows a {} scene copy - its 16:9 middle (u x {:.3f}, v x {:.3f})",
+                  kx != 1.0f ? "wide" : "tall", kx, ky);
+    return &tc;
+  }
+  static uint32_t told = 0;
+  if (told++ < 4) REXLOG_INFO("native renderer: a 2D box shows a reshaped scene copy, but no float-pair TEXCOORD0 - left as it is");
+  return nullptr;
+}
+
+// The crop above on converted vertices: `dst` (write-only ring memory) holds `n` vertices of `stride` from guest
+// `src` (big-endian); their TEXCOORD0 written again from the guest's.
+void CropCopyUvs(uint8_t* dst, const uint8_t* src, uint32_t n, uint32_t stride, const Element& tc, const float crop[2]) {
+  for (uint32_t v = 0; v < n; ++v) {
+    const uint8_t* q = src + size_t(v) * stride + tc.offset;
+    const float uv[2] = {0.5f + (BeFloat(q) - 0.5f) * crop[0], 0.5f + (BeFloat(q + 4) - 0.5f) * crop[1]};
+    std::memcpy(dst + size_t(v) * stride + tc.offset, uv, sizeof(uv));
+  }
+}
+
 // `up`: a DrawVerticesUP (stream 0 is the game's vertex data, not a buffer).
 #if SVR2011_FSR2
 // FSR 2's mask values (reactive) for the HUD, blended draws, skinned ones and the crowd; composition 1 for all.
@@ -4392,6 +4445,12 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
   }
 
   laps.Lap(1);
+  // (wide / tall screens: a 2D box showing a scene copy - its 16:9 middle, CropOfReshapedCopy)
+  float crop[2] = {1.0f, 1.0f};
+  const Element* crop_tc = ((Reg(RB_DEPTHCONTROL) >> 1) & 1)
+                               ? nullptr
+                               : CropOfReshapedCopy(r, ps, decl, up, indexed, start, count, base_vertex,
+                                                    float(targets.color->width), float(targets.color->height), crop);
   // Vertex buffers for the streams the layout uses.
   plume::RenderVertexBufferView views[16] = {};
   uint32_t max_slot = 0;
@@ -4401,6 +4460,8 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     auto [cpu, ref] = Allocate(r, bytes, 16);
     if (!cpu || !bytes) return;
     ConvertVertices(cpu, ObjectData(up->data), bytes, up->stride, 0, decl, 0);
+    if (crop_tc && crop_tc->stream == 0 && crop_tc->offset + 8 <= up->stride)
+      CropCopyUvs(cpu, ObjectData(up->data), up->count, up->stride, *crop_tc, crop);
     views[0] = plume::RenderVertexBufferView(ref, uint32_t(bytes));
   }
   for (const auto& e : layout) {
@@ -4411,6 +4472,18 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
     uint32_t size = 0;
     const RenderBufferReference vb = VertexBuffer(r, s.buffer, e.slotIndex, s, decl, &size);
     if (!vb.ref || s.offset >= size) continue;
+    if (crop_tc && crop_tc->stream == e.slotIndex && s.stride >= crop_tc->offset + 8) {
+      // (the box's stream: converted again into the ring for this draw, its uvs cropped - the cached copy stays)
+      const uint8_t* src = ObjectData(Be32(Virtual(s.buffer) + 0x18) & ~3u);
+      auto [cpu, ref] = Allocate(r, size, 256);
+      if (cpu && src) {
+        ConvertVertices(cpu, src, size, s.stride, s.offset, decl, e.slotIndex);
+        CropCopyUvs(cpu + s.offset, src + s.offset, (size - s.offset) / s.stride, s.stride, *crop_tc, crop);
+        views[e.slotIndex] = plume::RenderVertexBufferView(RenderBufferReference(ref.ref, ref.offset + s.offset),
+                                                           size - s.offset);
+        continue;
+      }
+    }
     views[e.slotIndex] = plume::RenderVertexBufferView(
         RenderBufferReference(vb.ref, vb.offset + s.offset), size - s.offset);
   }
