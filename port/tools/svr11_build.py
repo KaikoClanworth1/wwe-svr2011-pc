@@ -241,6 +241,7 @@ class Builder:
         portrait = spec.get('portrait')
         self.conv = W.Conv(tp)
         self.template = tp
+        self._hair_lent = self.lend_hair(tp) if self.conv.hair is None else False
         if portrait:
             p = self.path(portrait)
             self.portrait = open(p, 'rb').read() if p.lower().endswith('.dds') else \
@@ -249,6 +250,29 @@ class Builder:
             self.portrait = None
         self.nodes = self.posed_nodes(spec.get('joints') or {})
         self.index = {n['name']: i for i, n in enumerate(self.nodes)}
+
+    # stock pacs (next to the template) whose hair model lends its mesh block to a bald base: ch110 first
+    HAIR_LENDERS = ('ch110.pac', 'ch100.pac', 'ch102.pac', 'ch103.pac', 'ch104.pac', 'ch105.pac')
+
+    def lend_hair(self, tp):
+        """a base with no hair model (bald 2011 superstars: 101 Orton, 107, 139, 161) would give its hair the skin
+        mesh block - the game then draws it with a skin shader whose output alpha never takes the colour texture's
+        (frame dump: ps 96789912 vs stock hair 42C5BB28), so hair cards were solid with white sheets (report 686be2,
+        SYM Jeff Hardy on 101). A stock hair block - hair shader, vertex format 0x4 - is borrowed from a pac with
+        hair beside the template instead. -> True when one was found"""
+        here = os.path.dirname(os.path.abspath(tp))
+        for name in self.HAIR_LENDERS:
+            p = os.path.join(here, name)
+            if os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(tp)) or not os.path.isfile(p):
+                continue
+            try:
+                lender = W.Conv(p)
+            except (KeyError, ValueError, OSError, IndexError, StopIteration):
+                continue
+            if lender.hair is not None:
+                self.conv.p_hair = lender.p_hair
+                return True
+        return False
 
     def path(self, p):
         return p if os.path.isabs(p) else os.path.join(self.base, p)
@@ -451,13 +475,11 @@ class Builder:
                     raise BuildError('%s: %s has NaN / infinite values' % (m.get('name'), key))
             if m.get('kind', 'skin') not in ('skin', 'eye', 'hair', 'lash'):
                 raise BuildError('%s: kind %s' % (m.get('name'), m.get('kind')))
-            # (a base with no hair part - bald 2011 superstars: Stone Cold, Cena, Orton - lends its skin mesh as the
-            # hair template, render flags 0x6 without the cut-out 0x110: hair cards were drawn solid, their clear
-            # texels a white sheet (report 686be2, SYM Jeff Hardy on base 101). Hair is a cut-out unless told not.)
-            if m.get('kind') == 'hair' and (m.get('material') or {}).get('cutout') is None and \
-                    not struct.unpack_from('>I', self.template_mesh('hair')[0].raw, 0x88)[0] & 0x110:
-                m['material'] = dict(m.get('material') or {}, cutout=True)
             m['_w'] = self.weights(m)
+        if any(m.get('kind') == 'hair' for m in meshes) and self.conv.hair is None and \
+                not getattr(self, '_hair_lent', False):
+            self.warnings.append('the base has no hair model and no stock pac with one was found next to it: hair '
+                                 'is drawn with the skin shader, its see-through texels solid')
         if not getattr(self, '_faced', False):
             self._faced = True
             self.face_pivots(meshes)
