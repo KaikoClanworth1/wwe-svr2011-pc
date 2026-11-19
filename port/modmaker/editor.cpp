@@ -1930,6 +1930,49 @@ void RingKitPanel() {
   if (changed) Edited();
 }
 
+// The crowd's parts (suggestion 3dcea6: an outdoor arena's far stands hung in the sky): each stand of the seat file
+// on or off, and how many of its rows - from the ring out - keep their people. Seen in the game, not in the 3D view.
+void CrowdPartsRows() {
+  if (!g_arena || !g_light.crowd) return;
+  static const Arena* for_arena = nullptr;
+  static size_t for_entries = 0;
+  static std::vector<CrowdStand> stands;
+  if (for_arena != g_arena || for_entries != g_arena->entries.size())
+    for_arena = g_arena, for_entries = g_arena->entries.size(), stands = CrowdStands(*g_arena);
+  if (stands.empty()) return;
+  if (!ImGui::TreeNodeEx("Crowd parts", g_light.crowd_keep.empty() ? 0 : ImGuiTreeNodeFlags_DefaultOpen)) return;
+  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+  ImGui::TextWrapped("Leave out a stand, or its back rows (counted from the ring), where the arena has no seats there - "
+                     "an outdoor show's crowd would float in the sky. Seen in the game, not in this view.");
+  ImGui::PopStyleColor();
+  bool changed = false;
+  for (int i = 0; i < int(stands.size()); ++i) {
+    const CrowdStand& st = stands[size_t(i)];
+    const int all = int(st.rows.size());
+    const auto it = g_light.crowd_keep.find(i);
+    int rows = it == g_light.crowd_keep.end() ? all : std::min(it->second, all);
+    bool on = rows > 0;
+    ImGui::PushID(i);
+    if (ImGui::Checkbox(st.name.c_str(), &on)) rows = on ? all : 0, changed = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%d people, rows %s to %s", st.people, st.rows.front().c_str(), st.rows.back().c_str());
+    if (all > 1) {
+      ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.5f);
+      ImGui::SetNextItemWidth(-1);
+      char fmt[48];
+      std::snprintf(fmt, sizeof fmt, rows >= all ? "all %d rows" : "%%d of %d rows", all);
+      if (ImGui::SliderInt("##rows", &rows, 0, all, fmt)) changed = true;
+    }
+    ImGui::PopID();
+    if (changed) {
+      if (rows >= all) g_light.crowd_keep.erase(i);
+      else g_light.crowd_keep[i] = rows;
+    }
+  }
+  if (!g_light.crowd_keep.empty() && ImGui::SmallButton("Whole crowd back")) g_light.crowd_keep.clear(), changed = true;
+  if (changed) Edited();
+  ImGui::TreePop();
+}
+
 void LightingPanel() {
   int& p = g_light.preset;
   ImGui::SetNextItemWidth(-1);
@@ -1949,6 +1992,7 @@ void LightingPanel() {
   if (ImGui::SliderFloat("Strength", &g_light.strength, 0.3f, 1.6f, "%.2f")) p = int(std::size(kPresets)) - 1, Edited();
   ImGui::TextDisabled("Every arena material's colour (not the crowd).");
   if (ImGui::Checkbox("Crowd in the seats", &g_light.crowd)) Edited();
+  CrowdPartsRows();
   {  // the crowd's colour: the arena's audience lightmap (aud_lightmap)
     const bool has = g_arena && HasAudienceLightmap(*g_arena);
     ImGui::BeginDisabled(!has || !g_light.crowd);
@@ -2579,7 +2623,7 @@ void ViewPreset(int which) {
 }  // namespace
 
 bool Lighting::Default() const {
-  return color[0] == 1 && color[1] == 1 && color[2] == 1 && strength == 1 && crowd && CrowdDefault();
+  return color[0] == 1 && color[1] == 1 && color[2] == 1 && strength == 1 && crowd && CrowdDefault() && crowd_keep.empty();
 }
 
 void Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, const Hooks& hooks) {
@@ -2813,6 +2857,19 @@ void TestEdit() {
     if (!br.empty()) g_light.crowd_bright = std::clamp(std::strtof(br.c_str(), nullptr), 0.5f, 1.5f);
     Log("test edit: crowd lighting " + v + (br.empty() ? "" : " x" + br));
   }
+  // test aid SVR2011_TEST_CROWD_PARTS=<stand>:<rows>[,...] (or "all"): the crowd parts set before the save; the stands
+  // logged either way
+  if (const char* cp = std::getenv("SVR2011_TEST_CROWD_PARTS"); cp && *cp) {
+    for (const CrowdStand& st : CrowdStands(*g_arena))
+      Log("test edit: crowd stand \"" + st.name + "\": " + std::to_string(st.rows.size()) + " rows " + st.rows.front() + "-" +
+          st.rows.back() + ", " + std::to_string(st.people) + " people");
+    g_light.crowd_keep.clear();
+    std::istringstream v(cp);
+    for (std::string part; std::getline(v, part, ',');)
+      if (const size_t c = part.find(':'); c != std::string::npos)
+        g_light.crowd_keep[std::atoi(part.c_str())] = std::max(0, std::atoi(part.c_str() + c + 1));
+    Log(std::string("test edit: crowd parts ") + cp);
+  }
   if (g_sel >= 0 && g_objs[g_sel].movable) {
     g_objs[g_sel].pos.x += 20;
     ApplyObj(g_objs[g_sel]);
@@ -2933,6 +2990,10 @@ void ApplyBuild(Arena& a) {
     }
   }
   if (g_area_lo >= 0) return;  // (backstage: no crowd, no ring)
+  if (g_light.crowd) {  // (always: a mod reopened with parts left out gets them back when they're ticked again)
+    const int n = CropCrowd(a, g_light.crowd_keep);
+    if (!g_light.crowd_keep.empty() || n) Log("  crowd parts: " + std::to_string(n) + " people left out");
+  }
   if (!g_light.crowd) {
     const int n = HideCrowd(a);
     Log("  crowd left out (" + std::to_string(n) + " crowd models)");
@@ -2958,6 +3019,13 @@ std::string ManifestLines() {
       s += b;
     }
     if (!g_light.crowd) s += "crowd=0\n";
+    if (g_light.crowd && !g_light.crowd_keep.empty()) {  // (baked into arena.pac: read back when the mod reopens)
+      s += "crowd.parts=";
+      bool first = true;
+      for (const auto& [stand, rows] : g_light.crowd_keep)
+        s += (first ? "" : ",") + std::to_string(stand) + ":" + std::to_string(rows), first = false;
+      s += "\n";
+    }
     if (g_light.crowd && !g_light.CrowdDefault()) {  // (baked into arena.pac: read back when the mod reopens)
       char c[128];
       if (g_light.crowd_mode == 2)
@@ -2994,6 +3062,11 @@ void FromManifest(const std::string& text) {
       g_light.preset = int(std::size(kPresets)) - 1;
     } else if (line == "crowd=0") {
       g_light.crowd = false;
+    } else if (line.rfind("crowd.parts=", 0) == 0) {
+      std::istringstream v(line.substr(12));
+      for (std::string part; std::getline(v, part, ',');)
+        if (const size_t c = part.find(':'); c != std::string::npos)
+          g_light.crowd_keep[std::atoi(part.c_str())] = std::max(0, std::atoi(part.c_str() + c + 1));
     } else if (line.rfind("crowd.light=", 0) == 0) {
       const std::string v = line.substr(12);
       if (v == "neutral") {

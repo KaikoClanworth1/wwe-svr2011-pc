@@ -8,6 +8,7 @@
 #include <d3d11.h>
 
 #include <functional>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,6 +23,9 @@ struct Lighting {
   float color[3] = {1, 1, 1};     // multiplied into every material colour
   float strength = 1.0f;
   bool crowd = true;              // the people in the seats
+  // the crowd's parts (svrfmt CropCrowd, suggestion 3dcea6): stand index -> rows kept from the ring (0: none); a
+  // stand not in it keeps every row. Manifest crowd.parts=<stand>:<rows>,...
+  std::map<int, int> crowd_keep;
   // the crowd's colour (the arena's aud_lightmap, svrfmt TintAudienceLightmap): 0 as made, 1 neutral, 2 crowd_color;
   // crowd_bright scales it either way
   int crowd_mode = 0;
