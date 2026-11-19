@@ -146,7 +146,7 @@ def attire(kids, tp, portrait):
     out = {0: jboy.write(S8.model(tp, tp.body, [(m8s[0], lambda s: (tp.p_eye, EYE) if 'Reflect' in s['shader'] else (tp.p_skin, SKIN))],
                                   textures, nodes))}
     if 0x2710 in m8s:
-        out[0x2710] = jboy.write(S8.model(tp, tp.hair, [(m8s[0x2710], lambda s: (tp.p_hair, SKIN))], textures[:5], nodes))
+        out[0x2710] = jboy.write(S8.model(tp, tp.hair or tp.body, [(m8s[0x2710], lambda s: (tp.p_hair, SKIN))], textures[:5], nodes))
     if 0x4e20 in m8s:
         out[0x4e20] = jboy.write(S8.model(tp, tp.lash, [(m8s[0x4e20], lambda s: (tp.p_lash, {'texDiffuse': 'color'}))], ['color'], nodes))
     ta = [('normal', normal_d), ('noise', tp.ttex['noise']), ('Mk', mk_d)]

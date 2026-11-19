@@ -308,7 +308,92 @@ def hair_text_problems(text):
     return out
 
 
-class Conv:
+# ---------------------------------------------------------------- hair template (a checked stock hair block)
+# A bald base (101 Stone Cold, 105-107, 123, 125, 139, 158, 160, 161, 186, 190, 191 - or a fallback template, ch106)
+# has no hair model: its hair would take the body's skin block (flags 0x6, vertex format 0x8), drawn with a skin
+# shader whose output alpha never takes the colour texture's (frame dump: ps 96789912 vs stock hair 42C5BB28) - hair
+# cards solid, their clear texels white sheets (report 686be2). Such a base borrows a stock hair block from the
+# player's own game pacs beside the template (read at convert time, never shipped): ch110 first, then any stock
+# superstar whose block passes stock_hair_block. A base with a hair model keeps its own last block, even 108, 135,
+# 175, 177, 179, 195's skin-type one (flags 0x4, vertex format 0x4): in game it cuts like a stock hair block (SYM
+# Jeff Hardy and WWE '13 Jericho on 179, hair-lender-2). Shared by svr11_build, w13_char, svr08_char, svr07_char.
+HAIR_LENDERS = (110,) + tuple(c for c in range(100, 200) if c != 110)
+_hair_lent = {}     # (template folder -> (mesh block, ch id) or (None, 0))
+_hair_notes = []    # (notes for the porter's report since the last take_hair_notes)
+
+
+def stock_hair_block(s):
+    """a hair-material mesh block as the stock ones: yBumpMapSS, cut-out flags 0x110, vertex format 0x4, no tiling
+    map bound (a replaced / modded pac's hair - or ch108's last, skin-type block - doesn't pass: not lent)"""
+    p = {n: v for n, t, v in s.params}
+    til = p.get('texTilingMap')
+    return (s.shader == 'yBumpMapSS' and struct.unpack_from('>I', s.raw, 0x88)[0] & 0x110 == 0x110
+            and s.vfmt == 0x4 and til is not None and struct.unpack('>i', til[:4])[0] < 0)
+
+
+def lend_hair(tmpl_pac):
+    """the first stock hair block among the game pacs beside tmpl_pac -> (mesh block, ch id), (None, 0) for none"""
+    here = os.path.normcase(os.path.dirname(os.path.abspath(tmpl_pac)))
+    if here not in _hair_lent:
+        _hair_lent[here] = (None, 0)
+        for cid in HAIR_LENDERS:
+            p = os.path.join(here, 'ch%d.pac' % cid)
+            if not os.path.isfile(p):
+                continue
+            try:
+                _, groups = ch_tool.epk8_read(open(p, 'rb').read())
+                t = dict(svrfmt.pach_read(ch_tool.unpack(groups[0][1][0][1])))
+                if 0x2710 not in t:
+                    continue
+                s = jboy.read(ch_tool.unpack(t[0x2710])).meshes[-1]
+            except Exception:   # noqa: BLE001 (a pac that doesn't read lends nothing)
+                continue
+            if stock_hair_block(s):
+                _hair_lent[here] = (s, cid)
+                break
+    return _hair_lent[here]
+
+
+def hair_template(own_hair, tmpl_pac, fallback):
+    """the hair's template mesh block: own_hair's last mesh, or for a bald base a lent stock hair block, else
+    fallback (the skin block) -> (mesh block, note for the report or '')"""
+    if own_hair is not None and own_hair.meshes:
+        return own_hair.meshes[-1], ''
+    s, cid = lend_hair(tmpl_pac)
+    if s is not None:
+        return s, ('hair: the base superstar is bald - the hair is drawn with the hair material of your game\'s '
+                   'ch%d.pac%s' % (cid, '' if cid == 110 else ' (ch110.pac missing or not the original)'))
+    return fallback, ('hair: the base superstar is bald and no stock superstar with hair was found in your game\'s '
+                      'pac\\ch - the hair\'s see-through parts are drawn solid')
+
+
+def take_hair_notes():
+    """the hair notes since the last call (superstar_port's report), cleared"""
+    out = list(dict.fromkeys(_hair_notes))
+    del _hair_notes[:]
+    return out
+
+
+class HairTemplate:
+    """p_hair, looked up on first use (a model without hair borrows nothing): needs .hair (the template's hair
+    model or None), .tmpl_pac, .p_skin; the note lands in .hair_notes and take_hair_notes()"""
+    _p_hair = None
+
+    @property
+    def p_hair(self):
+        if self._p_hair is None:
+            self._p_hair, note = hair_template(self.hair, self.tmpl_pac, self.p_skin)
+            if note:
+                self.__dict__.setdefault('hair_notes', []).append(note)
+                _hair_notes.append(note)
+        return self._p_hair
+
+    @p_hair.setter
+    def p_hair(self, s):
+        self._p_hair = s
+
+
+class Conv(HairTemplate):
     def __init__(self, tmpl_pac, portrait=None):
         self.tmpl_pac = tmpl_pac
         self.portrait = open(portrait, 'rb').read() if portrait else None
@@ -316,7 +401,7 @@ class Conv:
         n, b = groups[0][1][0]
         self.t = {i: ch_tool.unpack(x) for i, x in svrfmt.pach_read(ch_tool.unpack(b))}
         self.body = jboy.read(self.t[0])
-        # (some templates have no hair model, ch139: hair then takes the body's skin block)
+        # (some templates have no hair model, ch139: p_hair then borrows a stock one - HairTemplate)
         self.hair = jboy.read(self.t[0x2710]) if 0x2710 in self.t else None
         self.lash = jboy.read(self.t[0x4e20])
         self.tnodes = self.body.nodes           # jboy.py dicts (written back as read)
@@ -326,7 +411,6 @@ class Conv:
         ms = self.body.meshes
         self.p_skin = skin_template(ms)
         self.p_eye = next(s for s in ms if s.shader == 'yReflect')
-        self.p_hair = self.hair.meshes[-1] if self.hair else self.p_skin
         self.p_lash = self.lash.meshes[0]
         self.ttex = dict(tex_bundle_read(self.t[0xa]))
 
@@ -550,7 +634,7 @@ class Conv:
                     k = m13['nodes'][k]['parent']
                 else:
                     sub_map[i] = idx11.get('atama', 0)
-            tmpl = tm.meshes[-1]
+            tmpl = self.p_hair if dst == 0x2710 else tm.meshes[-1]
 
             def hkind(s, t=tmpl, sl=slots, hair=dst == 0x2710):
                 # (an opaque part in the hair model - 2K14 Hollywood Hogan's bandana, yCh_gear - is drawn like the
@@ -842,7 +926,7 @@ def gear(conv, kids13, out):
     m13 = read13(kids13[pieces[0]])
     sub = _sub_map(m13, body13, nodes, nmap)
     tm = conv.hair or conv.body
-    tmpl = tm.meshes[-1]   # (a see-through card's parameters: the hair's)
+    tmpl = conv.p_hair   # (a see-through card's parameters: the hair's)
     slots = {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}
     pm = conv.model(m13, tm, nodes, sub, origin, tex_body, lambda s: (tmpl, slots))
     merged = jboy.read(jboy.write(body))
