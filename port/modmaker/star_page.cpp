@@ -21,6 +21,9 @@
 #include "char_preview.h"
 #include "json.h"
 #include "pac_attires.h"
+extern "C" {
+#include "../launcher/movie_maker.h"
+}
 #include "star_page_internal.h"
 #include "full_preview.h"
 #include "rig_map.h"
@@ -1082,6 +1085,120 @@ void StockThemeRow() {
   }
 }
 
+// ---- the game's own titantron movies (titantron= ids: movies\titantron\<id>.bik, by the superstars whose entrance
+// plays it) - the mod carries no file (suggestion bd4b80: "a pre-added titantron")
+
+struct StockTron {
+  int id = 0;
+  std::string names;  // the superstars with it ("" : none - the game's own extras)
+};
+
+std::wstring StockTronFile(int id) {
+  wchar_t name[16];
+  std::swprintf(name, 16, L"%03d.bik", id);
+  const fs::path f = fs::path(g_game) / L"movies" / L"titantron" / name;
+  std::error_code ec;
+  return fs::exists(f, ec) ? f.wstring() : std::wstring();
+}
+
+const std::vector<StockTron>& StockTrons() {
+  static std::vector<StockTron> v;
+  if (v.empty()) {
+    std::map<int, std::string> by;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"movies" / L"titantron", ec))
+      if (Lower(PathStr(e.path().extension())) == ".bik")
+        if (const int id = std::atoi(PathStr(e.path().stem()).c_str()); id > 0 && id < 1000) by[id];
+    for (const StarInfo& st : Stars())
+      if (const int m = ProfileMovie(st.id); by.count(m)) by[m] += (by[m].empty() ? "" : ", ") + st.name;
+    for (const auto& [id, n] : by) v.push_back({id, n});
+    std::sort(v.begin(), v.end(), [](const StockTron& a, const StockTron& b) {
+      if (a.names.empty() != b.names.empty()) return b.names.empty();  // (the named ones first)
+      return a.names.empty() ? a.id < b.id : Lower(a.names) < Lower(b.names);
+    });
+  }
+  return v;
+}
+
+std::string StockTronName(int id) {
+  for (const StockTron& t : StockTrons())
+    if (t.id == id) return t.names.empty() ? "titantron " + std::to_string(id) : t.names;
+  return "titantron " + std::to_string(id);
+}
+
+namespace {
+Picture g_tron_frame;  // the stock movie the list shows
+int g_tron_frame_id = 0;
+void ShowStockTron(int id) {
+  if (g_tron_frame_id == id) return;
+  g_tron_frame_id = id;
+  g_tron_frame.Clear();
+  const std::wstring f = StockTronFile(id);
+  if (f.empty()) return;
+  std::vector<uint8_t> bgra(size_t(MOVIE_W) * MOVIE_H * 4);
+  WCHAR err[256] = L"";
+  const HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  const bool ok = movie_preview(f.c_str(), f.c_str(), MOVIE_FIT, 2.0, bgra.data(), err, 256) != 0;  // (both parts)
+  if (SUCCEEDED(co)) CoUninitialize();
+  if (!ok) return Log("stock titantron " + std::to_string(id) + ": no preview: " + Utf8(err));
+  Image img;
+  img.w = MOVIE_W, img.h = MOVIE_H, img.rgba = std::move(bgra);
+  for (size_t i = 0; i < img.rgba.size(); i += 4) std::swap(img.rgba[i], img.rgba[i + 2]), img.rgba[i + 3] = 255;
+  g_tron_frame.Set(std::move(img));
+}
+}  // namespace
+
+void StockTronRow() {
+  static char find[64] = "";
+  if (!g_star.movie.empty() && g_star.titantron) g_star.titantron = 0;  // (a movie file picked: it wins)
+  if (g_star.titantron > 0) {
+    ImGui::TextUnformatted("The game's titantron:");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.6f, 1), "%s", StockTronName(g_star.titantron).c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x##stt")) g_star.titantron = 0, Touch();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Back to the style's titantron.");
+  }
+  if (ImGui::Button("A game titantron...")) find[0] = 0, g_tron_frame_id = -1, ImGui::OpenPopup("stock_tron");
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("One of the game's own entrance movies (titantron and minitron), by superstar: the mod carries no file.");
+  ImGui::SetNextWindowSize(ImVec2(640 * g_scale, 420 * g_scale), ImGuiCond_Always);
+  if (ImGui::BeginPopup("stock_tron")) {
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(300 * g_scale);
+    ImGui::InputTextWithHint("##find", "find a superstar", find, sizeof find);
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ImGui::CloseCurrentPopup();
+    const std::string f = Lower(find);
+    ImGui::BeginChild("trons", ImVec2(300 * g_scale, 0), true);
+    int hovered = 0;
+    for (const StockTron& t : StockTrons()) {
+      const std::string label = t.names.empty() ? "titantron " + std::to_string(t.id) : t.names;
+      if (!f.empty() && Lower(label).find(f) == std::string::npos && std::to_string(t.id) != f) continue;
+      ImGui::PushID(t.id);
+      if (ImGui::Selectable(label.c_str(), g_star.titantron == t.id)) {
+        g_star.titantron = t.id, g_star.movie.clear(), Touch();
+        ImGui::CloseCurrentPopup();
+      }
+      if (ImGui::IsItemHovered()) hovered = t.id;
+      ImGui::PopID();
+    }
+    if (StockTrons().empty()) ImGui::TextDisabled("No titantron movies in the game folder (movies\\titantron).");
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    const int show = hovered ? hovered : g_tron_frame_id > 0 ? g_tron_frame_id : g_star.titantron;
+    if (show > 0) ShowStockTron(show);
+    if (!g_tron_frame.Empty()) {
+      ImGui::Image(g_tron_frame.Id(), ImVec2(300 * g_scale, 300 * g_scale));
+      ImGui::TextDisabled("top: the big screen, strip: the stage screens");
+    } else {
+      ImGui::TextDisabled("Point at one to see it.");
+    }
+    ImGui::EndGroup();
+    ImGui::EndPopup();
+  }
+}
+
 void ThemeGainRow() {
   if (g_star.song.empty()) return;
   ImGui::Indent();
@@ -1170,6 +1287,7 @@ bool PrepareJob(Job& j) {
   if (g_star.victory > 0) j.manifest += "victory=" + std::to_string(g_star.victory) + "\n";
   if (const std::string g = DbText(g_star.victory_gain, -20.0f, 6.0f); !g.empty() && !g_star.victory_song.empty()) j.manifest += "victory_gain=" + g + "\n";
   if (g_star.song.empty() && g_star.music > 0) j.manifest += "music=" + std::to_string(g_star.music) + "\n";
+  if (g_star.movie.empty() && g_star.titantron > 0) j.manifest += "titantron=" + std::to_string(g_star.titantron) + "\n";
   for (int a = 1; a < 4; ++a)
     if (g_star.attire_entrance[a] > 0)
       j.manifest += "attire" + std::to_string(a + 1) + "_entrance=" + std::to_string(g_star.attire_entrance[a]) + "\n";
@@ -2421,6 +2539,7 @@ void OpenFullPreview(int n, int start_part) {
   r.attire = !pac.empty() ? in : 1;
   r.gear = gear != 0;
   r.song = n >= 6000 && !g_star.victory_song.empty() ? g_star.victory_song : g_star.song, r.movie = g_star.movie, r.pack = g_star.pack;
+  if (r.movie.empty() && g_star.titantron > 0) r.movie = StockTronFile(g_star.titantron);
   r.title = g_star.name[0] ? g_star.name : "your superstar";
   r.start_part = start_part;
   r.height = g_star.height;  // (the mod's height=: on the superstar's own size)
@@ -3474,6 +3593,9 @@ void Draw() {
         while (*p && *p != ',') ++p;
         if (*p == ',') ++p;
       }
+    // test aid SVR2011_TEST_TITANTRON=<id>: one of the game's titantrons ("A game titantron...") before the test save
+    if (const char* t = std::getenv("SVR2011_TEST_TITANTRON"); t && std::atoi(t) > 0)
+      g_star.titantron = std::atoi(t), g_star.movie.clear(), Log("test: the game's titantron " + StockTronName(g_star.titantron));
     if (!g_test_save.empty() && g_test_import.rfind("game:", 0) != 0) {  // (game: saves once the port is done)
       Job j;
       PrepareJob(j);
@@ -3683,6 +3805,7 @@ void Draw() {
   ImGui::SameLine();
   BinkFromVideoButton("From a video...", g_star.movie, g_star.name);
   MovieSizeRow(g_star.movie);
+  StockTronRow();
   const std::vector<int> own = OwnAttires();
   auto in_model = [&](int n) {  // (the game counts them contiguous from 1)
     for (int k = 1; k <= n; ++k)
@@ -3870,7 +3993,7 @@ void Draw() {
 std::string StateText() {
   std::string s = std::string("name=") + g_star.name + "\nshort=" + g_star.short_name + "\nstyle=" +
                   std::to_string(g_star.style) + "\ncall=" + std::to_string(g_star.call) + "\nauthor=" + g_star.author +
-                  "\nversion=" + g_star.version + "\nheight=" + HeightText() + "\ngain=" + GainText() + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) + "\nvictory_song=" + Utf8(g_star.victory_song) + "\nvictory_gain=" + DbText(g_star.victory_gain, -20.0f, 6.0f) + "\nmusic=" + std::to_string(g_star.music) + "\nmats=" + MaterialsText(g_star.mats) +
+                  "\nversion=" + g_star.version + "\nheight=" + HeightText() + "\ngain=" + GainText() + "\nmodel=" + Utf8(g_star.model) + "\nsong=" + Utf8(g_star.song) + "\nvictory_song=" + Utf8(g_star.victory_song) + "\nvictory_gain=" + DbText(g_star.victory_gain, -20.0f, 6.0f) + "\nmusic=" + std::to_string(g_star.music) + "\ntitantron=" + std::to_string(g_star.titantron) + "\nmats=" + MaterialsText(g_star.mats) +
                   "\nmovie=" + Utf8(g_star.movie) + "\nvoice=" + Utf8(g_star.voice) + "\ncall_gain=" + CallGainText() + "\nloading=" + std::to_string(g_star.picture_load.rgba.size()) + "\nratings=";
   // (the style's own attributes, filled in when the page is first drawn, aren't a change: a new project stays clean)
   bool style_ratings = true;
@@ -3996,6 +4119,7 @@ void WriteProject(ProjectOut& out) {
   }
   out.File("song", g_star.song, "star/theme");
   if (g_star.music > 0) out.Key("music", std::to_string(g_star.music));
+  if (g_star.titantron > 0) out.Key("titantron", std::to_string(g_star.titantron));
   if (const std::string g = GainText(); !g.empty()) out.Key("theme_gain", g);
   out.File("movie", ProjectMovie(g_star.movie), "star/movie");
   if (g_settings.keep_bik && !g_star.movie.empty()) {  // (the Bink kept beside the mp4)
@@ -4200,6 +4324,7 @@ bool Read(const ProjectIn& in, bool mod) {
     g_star.mats = MaterialsFromText(t);
   }
   if (const int m = std::atoi(in.Get("music").c_str()); m >= 1 && m <= 253) g_star.music = m;
+  if (const int t = std::atoi(in.Get("titantron").c_str()); t >= 1 && t < 1000) g_star.titantron = t;
   if (const std::string g = in.Get("theme_gain"); !g.empty()) g_star.theme_gain = std::clamp(float(std::atof(g.c_str())), -20.0f, 6.0f);
   g_star.movie = file("movie", nullptr);
   if (Lower(PathStr(fs::path(g_star.movie).extension())) == ".mp4") {  // (its Bink: put back beside it, same name)
@@ -4424,7 +4549,8 @@ bool TakePartFromMod(const std::wstring& svrmod, StarPart part, int slot) {
       break;
     case StarPart::kMusic:  // (their theme and titantron video)
       g_star.song = got.song, g_star.music = got.music, g_star.theme_gain = got.theme_gain;
-      if (!got.movie.empty()) g_star.movie = got.movie;
+      if (!got.movie.empty()) g_star.movie = got.movie, g_star.titantron = 0;
+      else if (got.titantron > 0) g_star.titantron = got.titantron;
       Status(got.song.empty() && !got.music ? who + " came without a theme." : "The music is " + who + "'s now.");
       break;
     case StarPart::kExtras:  // (their strength, height and what the announcer says)

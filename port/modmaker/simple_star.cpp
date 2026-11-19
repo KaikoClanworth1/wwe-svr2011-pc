@@ -428,6 +428,7 @@ void StepEntranceOwn() {
   ImGui::SameLine();
   BinkFromVideoButton("Make one from any video...", g_star.movie, g_star.name);
   MovieSizeRow(g_star.movie);
+  StockTronRow();
 }
 
 // A move-set slot as a row: its move (yours or the style's), Change..., Watch it, the style's again.

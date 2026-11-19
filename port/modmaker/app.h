@@ -306,6 +306,7 @@ bool MaterialTestApply(const std::wstring& pac, int attire_in_pac, bool gear, in
                        std::map<std::tuple<int, bool, uint32_t, int>, struct MatEdit>& edits);
 // A superstar's entrance theme: the game's music id (profile +0x1C0 +0x10; 1-253 the game's own themes), 0 if none.
 int ProfileMusic(int star_id);
+int ProfileMovie(int star_id);  // its entrance's titantron movie id (movies\titantron\<id>.bik; 0: none)
 // Whether a move fits a slot (unknown moves: false); the moves that do, by name.
 bool MoveFitsSlot(int slot, int move_id);
 const std::vector<int>& MovesForSlot(int slot);
@@ -610,7 +611,9 @@ Image GameLook(const Image& src);
 // fit: 0 whole picture with bars, 1 fill, 2 stretch; seconds: 0 = all.
 // The movie made from `video` (movie_make: the titantron layout) as `out` (a .bik), then that as an .mp4 beside it (same
 // name): done() gets the .mp4 ("" failed; the .bik when no .mp4 could be made). Both stay in the work folder.
-void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int seconds, std::function<void(std::wstring)> done);
+// (bottom: the stage strip's picture or video under the big screen - the minitron; "" = black)
+void MakeBink(const std::wstring& video, const std::wstring& out, int fit, int seconds, std::function<void(std::wstring)> done,
+             const std::wstring& bottom = L"");
 // A Bink movie's .mp4 in the work folder (<game>\Mods\.convert\movies, one per file: path + size + time), made now when
 // missing (blocks: a worker thread); "" + why when it can't be. CachedMp4: the same without making it ("" not yet).
 std::wstring ShrunkMovie(const std::wstring& bik, std::string* why = nullptr);
@@ -625,8 +628,13 @@ std::string SizeText(uint64_t bytes);
 std::wstring ProjectMovie(const std::wstring& movie);
 // The movie slot's line: its size, and as an .mp4 (made in the background when it is a Bink), plus the keep-Bink option.
 void MovieSizeRow(const std::wstring& movie);
-// A "From a video..." button that makes the Bink into <game>\Mods\.convert and sets `movie`.
+// A "From a video..." button: a window with the titantron (big screen) and minitron (stage strip) videos, a fit and a
+// preview frame; Make puts the two in one movie (the game's layout) into <game>\Mods\.convert and sets `movie`.
 bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::string& stem);
+// The titantron (top: the big screen) and minitron (bottom: the stage strip) sources in one movie, made in the
+// background into <game>\Mods\.convert; *target set to it when made (seconds 0: the whole video).
+void MakeTitantron(const std::wstring& top, const std::wstring& bottom, int fit, const std::string& stem, std::wstring* target,
+                   int seconds);
 // The footer under every superstar 3D view: Reset view, Blood (off by default) and its Damage level (the game's
 // light / medium / heavy blood), the mouse hint. One state for all views.
 void ViewFooter();

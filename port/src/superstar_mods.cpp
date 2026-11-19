@@ -997,6 +997,7 @@ void LoadMods() {
     }
     m.name = m.short_name = m.folder;
     std::string song, movie, moves;
+    int stock_movie = 0;  // titantron=<id>: one of the game's own entrance movies (movies\titantron\<id>.bik)
     float song_gain = 0.0f;  // theme_gain=<dB>: the theme's level (-20..+6, the Mod Maker's loudness match)
     std::string attires[4];  // attire<N>= (1-4): another pac's first attire as attire N
     if (FILE* t = std::fopen((f / "manifest.txt").string().c_str(), "rb")) {
@@ -1064,6 +1065,7 @@ void LoadMods() {
           else REXLOG_WARN("[svr2011] superstar mods: {}: cae={} is not a {}-byte entrance block ({} bytes): left out", m.folder,
                            l.substr(4), kCaeSize, b.size());
         }
+        if (l.rfind("titantron=", 0) == 0) stock_movie = std::atoi(l.c_str() + 10);
         if (l.rfind("music=", 0) == 0) {  // (1-253: the game's own themes; 254 is the user playlist, 255 none)
           const int v = std::atoi(l.c_str() + 6);
           if (v >= 1 && v <= 253) m.music = v;
@@ -1110,6 +1112,20 @@ void LoadMods() {
       m.sign_files = std::move(signs);
     }
     if (!temp) InstallMedia(m, f, song, movie, song_gain);  // (a fetched mod's theme / movie: not copied in)
+    // A titantron of the game's own (Mod Maker "A game titantron...", suggestion bd4b80): its movie id, when the mod
+    // has no movie file of its own and the game has that movie - nothing to copy, so a fetched mod gets it too.
+    if (!m.movie && stock_movie > 0 && stock_movie < 1000) {
+      char name[16];
+      std::snprintf(name, sizeof name, "%03d.bik", stock_movie);
+      std::error_code te;
+      if (fs::exists(rex::filesystem::GetExecutableFolder() / "movies" / "titantron" / name, te)) {
+        m.movie = stock_movie;
+        REXLOG_INFO("[svr2011] superstar mods: {}: the game's titantron {}", m.name, stock_movie);
+      } else {
+        REXLOG_WARN("[svr2011] superstar mods: {}: titantron={} - the game has no movies/titantron/{}: the base's plays", m.name,
+                    stock_movie, name);
+      }
+    }
     ReadApplied(m, f);
     m.slot = temp ? temp_slot() : slot_of(m.folder);
     // Test aid SVR2011_TEST_SLOT_SWAP=<folder>,<folder>: those two mods take each other's ids this run (slots.txt
