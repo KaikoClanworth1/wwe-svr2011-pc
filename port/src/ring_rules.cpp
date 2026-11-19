@@ -9,6 +9,7 @@
 // k * 4.2. Units: 1 = 10 cm, y points down.
 #include "util.h"
 #include "ring_rules.h"
+#include "cae_steps.h"
 #include "caw_limits.h"
 #include "fps_overlay.h"
 
@@ -536,6 +537,7 @@ REX_HOOK_RAW(sub_823236D0) {
   const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch() -
                                                     std::chrono::steady_clock::duration(g_state_made_at.load())).count();
   REXLOG_INFO("[svr2011] entrance state: object removed ({:08X}) {:.2f} s after it was made - by {}", was, secs, chain);
+  svr2011::CaeStepsLeave("its entrance scene ended");  // (CREATE AN ENTRANCE's editor: cae_steps.h)
   if (MatchStateLateAid() && g_last_update_arg) {
     const auto saved = ctx;
     ctx.r3.u64 = g_last_update_arg;

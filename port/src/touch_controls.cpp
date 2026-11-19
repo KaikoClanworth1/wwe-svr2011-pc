@@ -6,6 +6,7 @@
 #include "online_overlay.h"
 #include "keyboard_typing.h"
 #include "menu_touch.h"
+#include "cae_steps.h"
 #include "frame_rate.h"
 
 #include <algorithm>
@@ -670,6 +671,7 @@ void TapUp(uint32_t pointer) {
   if (Clock::now() - g_tap_at > std::chrono::milliseconds(700) || g_w <= 0 || g_h <= 0) return;
   // Menus are 16:9 with bars on other shapes of screen.
   const float pw = std::min(g_w, g_h * 16 / 9), ph = pw * 9 / 16;
+  svr2011::CaeStepsTap((g_tap_x - (g_w - pw) / 2) / pw, (g_tap_y - (g_h - ph) / 2) / ph);  // (cae_steps.h)
   MenuTouchTap((g_tap_x - (g_w - pw) / 2) / pw, (g_tap_y - (g_h - ph) / 2) / ph, TapPress);
 }
 
@@ -695,6 +697,7 @@ bool Down(uint32_t pointer, float x, float y) {
     return false;
   }
   Control& c = Current()[i];
+  svr2011::CaeStepsTouchControl(c.id.c_str());  // (CREATE AN ENTRANCE's steps: cae_steps.h)
   switch (c.kind) {
     case Kind::kLayout:
       SetMode(g_mode.load() == kMenu ? kMatch : kMenu);

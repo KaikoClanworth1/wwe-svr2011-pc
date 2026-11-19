@@ -200,15 +200,24 @@ int CaePreferredRow(PPCContext& ctx, uint8_t* base, uint32_t list, uint32_t valu
       if (motion) t_scene_default = n == int(m.base) || std::find(m.numbers.begin(), m.numbers.end(), n) != m.numbers.end();
       else if (!std::exchange(t_scene_default, false)) return -1;
       if (motion && !t_scene_default) return -1;
-      uint32_t text;
+      uint32_t text, base_text;
       {
         std::lock_guard lock(g_mutex);
         text = Text("MOD: " + m.name);
+        base_text = Text("MOD: " + m.name + " (BASE)");
       }
       if (!text) return -1;
       const uint32_t count = Rd32(base, list), items = Rd32(base, list + 8);
       for (uint32_t i = 0; i < count && items; ++i)
-        if (Rd32(base, items + i * kItemSize) == value && Rd32(base, items + i * kItemSize + 12) == text) return int(i);
+        if (Rd32(base, items + i * kItemSize) == value &&
+            (Rd32(base, items + i * kItemSize + 12) == text || Rd32(base, items + i * kItemSize + 12) == base_text))
+          return int(i);
+      // (his base's part while the list has his own row of another number - Kenny Omega's 10500, loaded on his base's
+      // 10139: two "MOD: KENNY OMEGA" rows showed in MOTION (report 9f6377). The base's is "MOD: <name> (BASE)".)
+      if (motion && n == int(m.base) && base_text)
+        for (uint32_t i = 0; i < count && items; ++i)
+          if (Rd32(base, items + i * kItemSize + 12) == text && Rd32(base, items + i * kItemSize) != value)
+            return AddRow(ctx, base, list, value, base_text, false);
       return AddRow(ctx, base, list, value, text, false);
     }
     return -1;
