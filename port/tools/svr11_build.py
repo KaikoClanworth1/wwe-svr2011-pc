@@ -453,7 +453,7 @@ class Builder:
                 raise BuildError('%s: kind %s' % (m.get('name'), m.get('kind')))
             m['_w'] = self.weights(m)
         if any(m.get('kind') == 'hair' for m in meshes) and not getattr(self, '_hair_noted', False):
-            self._hair_noted = True   # (a skin-block hair template borrows a stock hair block: w13_char.HairTemplate)
+            self._hair_noted = True   # (a bald base borrows a stock hair block: w13_char.HairTemplate)
             self.conv.p_hair
             self.warnings += getattr(self.conv, 'hair_notes', [])
         if not getattr(self, '_faced', False):

@@ -309,13 +309,14 @@ def hair_text_problems(text):
 
 
 # ---------------------------------------------------------------- hair template (a checked stock hair block)
-# The hair's mesh block decides its shader. A skin block (a bald base - 101 Stone Cold, 105-107, 123, 125, 139,
-# 158, 160, 161, 186, 190, 191 - has no hair model, and 108, 135, 175, 177, 179, 195 build their hair part's last
-# mesh on one) is drawn with a skin shader whose output alpha never takes the colour texture's (frame dump: ps
-# 96789912 vs stock hair 42C5BB28): hair cards solid, their clear texels white sheets (report 686be2). Such a base
-# borrows a stock hair block from the player's own game pacs beside the template (read at convert time, never
-# shipped): ch110 first, then any stock superstar whose block passes stock_hair_block. Shared by every porter
-# (svr11_build, w13_char, svr08_char, svr07_char); a base whose own block passes builds as before.
+# A bald base (101 Stone Cold, 105-107, 123, 125, 139, 158, 160, 161, 186, 190, 191 - or a fallback template, ch106)
+# has no hair model: its hair would take the body's skin block (flags 0x6, vertex format 0x8), drawn with a skin
+# shader whose output alpha never takes the colour texture's (frame dump: ps 96789912 vs stock hair 42C5BB28) - hair
+# cards solid, their clear texels white sheets (report 686be2). Such a base borrows a stock hair block from the
+# player's own game pacs beside the template (read at convert time, never shipped): ch110 first, then any stock
+# superstar whose block passes stock_hair_block. A base with a hair model keeps its own last block, even 108, 135,
+# 175, 177, 179, 195's skin-type one (flags 0x4, vertex format 0x4): in game it cuts like a stock hair block (SYM
+# Jeff Hardy and WWE '13 Jericho on 179, hair-lender-2). Shared by svr11_build, w13_char, svr08_char, svr07_char.
 HAIR_LENDERS = (110,) + tuple(c for c in range(100, 200) if c != 110)
 _hair_lent = {}     # (template folder -> (mesh block, ch id) or (None, 0))
 _hair_notes = []    # (notes for the porter's report since the last take_hair_notes)
@@ -323,7 +324,7 @@ _hair_notes = []    # (notes for the porter's report since the last take_hair_no
 
 def stock_hair_block(s):
     """a hair-material mesh block as the stock ones: yBumpMapSS, cut-out flags 0x110, vertex format 0x4, no tiling
-    map bound (a replaced / modded pac's hair - or a hair part built on a skin block, as ch108's - doesn't pass)"""
+    map bound (a replaced / modded pac's hair - or ch108's last, skin-type block - doesn't pass: not lent)"""
     p = {n: v for n, t, v in s.params}
     til = p.get('texTilingMap')
     return (s.shader == 'yBumpMapSS' and struct.unpack_from('>I', s.raw, 0x88)[0] & 0x110 == 0x110
@@ -354,19 +355,16 @@ def lend_hair(tmpl_pac):
 
 
 def hair_template(own_hair, tmpl_pac, fallback):
-    """the hair's template mesh block: own_hair's last mesh when it's a stock hair block, else a lent one, else
-    own_hair's / fallback (the skin block) -> (mesh block, note for the report or '')"""
-    own = own_hair.meshes[-1] if own_hair is not None and own_hair.meshes else None
-    if own is not None and stock_hair_block(own):
-        return own, ''
-    why = ' is bald' if own is None else '\'s hair part is built on a skin material'
+    """the hair's template mesh block: own_hair's last mesh, or for a bald base a lent stock hair block, else
+    fallback (the skin block) -> (mesh block, note for the report or '')"""
+    if own_hair is not None and own_hair.meshes:
+        return own_hair.meshes[-1], ''
     s, cid = lend_hair(tmpl_pac)
     if s is not None:
-        return s, ('hair: the base superstar%s - the hair is drawn with the hair material of your game\'s ch%d.pac%s'
-                   % (why, cid, '' if cid == 110 else ' (ch110.pac missing or not the original)'))
-    return (own if own is not None else fallback), (
-        'hair: the base superstar%s and no stock superstar with hair was found in your game\'s pac\\ch - the hair\'s '
-        'see-through parts are drawn solid' % why)
+        return s, ('hair: the base superstar is bald - the hair is drawn with the hair material of your game\'s '
+                   'ch%d.pac%s' % (cid, '' if cid == 110 else ' (ch110.pac missing or not the original)'))
+    return fallback, ('hair: the base superstar is bald and no stock superstar with hair was found in your game\'s '
+                      'pac\\ch - the hair\'s see-through parts are drawn solid')
 
 
 def take_hair_notes():
