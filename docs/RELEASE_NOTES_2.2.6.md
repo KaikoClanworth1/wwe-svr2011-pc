@@ -12,10 +12,13 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 - **Arena Editor: crowd parts** - turn each crowd stand on or off and choose how many rows from the ring keep their people (Lighting -> Crowd parts).
 - **Mod Maker: attire mods for superstar mods** - pick an installed superstar mod on the Attires page; the attire becomes that mod's next attire (up to 4).
 - **Entrances from other games bring their props and lights** (The Miz's hat, Del Rio's car, the entrance's own stage lighting). The porter warns about anything it can't bring.
+- **INFINITE FINISHERS** (OPTIONS -> CPU, also in the launcher and Android settings): once a finisher meter is full it stays full for the rest of the match. Off by default, offline only.
+- **Title mods can carry a belt from SvR 2008 / 2009 / 2010** (Mod Maker title page -> Belt model).
 - **LIGHT BEAMS** row in ADV. GRAPHICS (PC launcher and Android Quality card too).
 
 ## 🛠️ Fixes
 - **Crash at start with a big roster and many mods** - the game now skips a damaged mod file and names it in the log (potential fix).
+- **Road to WrestleMania (Streak) played as a mod: you couldn't talk to or push people backstage**, and the week 3 scene didn't start - potential fix. Cutscenes still show the created superstar.
 - **A new mod took over a deleted mod's name and moves** (2.2.5) - fixed.
 - **Android: slowdown during pins by the CPU** below 60 fps - the match no longer slows down (potential fix).
 - **CAW patterns grey or see-through** (2.2.3-2.2.5) - fixed.
