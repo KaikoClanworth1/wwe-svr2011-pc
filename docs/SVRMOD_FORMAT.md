@@ -252,13 +252,13 @@ The game's record and profile offsets used above are listed in
 
 ### 3.2 type=attire
 
-Another attire for a **stock** superstar (`superstar_mods.cpp`, attire mods;
+Another attire for a **stock** superstar, or for a **superstar mod** (`superstar_mods.cpp`, attire mods;
 `modmaker/attire_page.cpp`).
 
 | key / file | |
 |---|---|
 | `attire.pac` | **required**: a model pac; its first attire is used |
-| `superstar=<id>` | the stock superstar it is for |
+| `superstar=<id>` or `mod:<folder>` | the stock superstar it is for, or an installed superstar mod (its folder in `Mods\Superstars`): the mod takes it as its next attire after its own and its `attire<N>=` files, in folder order, 4 at most (`attire=new`; `name=` and `entrance=` become that attire's). The launchers' attire clash rules leave these alone |
 | `attire=<1-4>` or `new` | which attire it replaces; `new` takes the first attire the superstar's own pac does not have |
 | `model=attire.pac` | the model file (written by the Mod Maker) |
 | `entrance=<n>` | optional: this attire's entrance |

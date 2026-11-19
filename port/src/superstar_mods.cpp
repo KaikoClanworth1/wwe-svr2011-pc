@@ -804,6 +804,86 @@ uint32_t AttireMask(const fs::path& pac, uint32_t id) {
   return mask;
 }
 
+// The attires a model pac has whatever character id its entries carry (a superstar mod's ch.pac keeps the id of the
+// superstar it was made from): attire digit -> bit, EMD kind 2 entries.
+uint32_t AnyAttireMask(const fs::path& pac) {
+  uint32_t mask = 0;
+  FILE* f = std::fopen(pac.string().c_str(), "rb");
+  if (!f) return 0;
+  svrfmt::Bytes d(0x4000);
+  const bool ok = std::fread(d.data(), 1, d.size(), f) == d.size();
+  std::fclose(f);
+  if (!ok || std::memcmp(d.data(), "EPK8", 4)) return 0;
+  for (size_t p = 0x800; p + 12 <= 0x4000;) {
+    if (!std::memcmp(&d[p], "\0\0\0\0", 4)) break;
+    const bool emd = !std::memcmp(&d[p], "EMD ", 4);
+    const uint32_t entries = (uint32_t(d[p + 4]) | uint32_t(d[p + 5]) << 8) / 4;
+    p += 12;
+    for (uint32_t k = 0; k < entries && p + 16 <= 0x4000; ++k, p += 16)
+      if (emd && d[p + 6] >= '0' && d[p + 6] <= '3' && d[p + 7] == '2') mask |= 1u << (d[p + 6] - '0');
+  }
+  return mask;
+}
+
+// Attire mods for a superstar MOD (suggestion cc6fbd: many mods of one superstar as one superstar's attires):
+// Mods\Attires\<folder> with type=attire, superstar=mod:<the superstar mod's folder>, attire=new and its model. The
+// superstar mod takes them after its own attires, as attire<N>= files (folder order A-Z, 4 attires at most).
+struct ModAttire {
+  fs::path model;
+  std::string folder, name;
+  int entrance = -1;
+};
+std::map<std::string, std::vector<ModAttire>> g_mod_attires;  // lower-case superstar mod folder -> its attire mods
+bool g_mod_attires_read = false;
+
+std::string LowerAscii(std::string s) {
+  for (char& c : s) c = char(std::tolower(uint8_t(c)));
+  return s;
+}
+
+const std::vector<ModAttire>& AttiresForMod(const std::string& folder) {
+  if (!g_mod_attires_read) {
+    g_mod_attires_read = true;
+    std::error_code ec;
+    std::vector<fs::path> dirs;
+    for (const auto& e : fs::directory_iterator(g_game / "Mods" / "Attires", ec))
+      if (e.is_directory(ec) && !fs::exists(e.path() / "disabled", ec) && fs::exists(e.path() / "manifest.txt", ec))
+        dirs.push_back(e.path());
+    std::sort(dirs.begin(), dirs.end());
+    for (const auto& d : dirs) {
+      std::string type, star, model = "attire.pac";
+      ModAttire a;
+      a.folder = d.filename().string();
+      if (FILE* t = std::fopen((d / "manifest.txt").string().c_str(), "rb")) {
+        char line[512];
+        while (std::fgets(line, sizeof line, t)) {
+          std::string l(line);
+          while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' ')) l.pop_back();
+          const size_t eq = l.find('=');
+          if (eq == std::string::npos || l[0] == '#') continue;
+          const std::string k = l.substr(0, eq), v = l.substr(eq + 1);
+          if (k == "type") type = v;
+          else if (k == "superstar") star = v;
+          else if (k == "name") a.name = v.substr(0, 31);
+          else if (k == "model" && !v.empty()) model = v;
+          else if (k == "entrance") a.entrance = std::clamp(std::atoi(v.c_str()), 0, 65535);
+        }
+        std::fclose(t);
+      }
+      if (type != "attire" || star.rfind("mod:", 0) != 0 || star.size() <= 4) continue;
+      a.model = d / fs::u8path(model);
+      if (!fs::exists(a.model, ec)) {
+        REXLOG_WARN("[svr2011] attire mods: {}: no {} - left out", a.folder, model);
+        continue;
+      }
+      g_mod_attires[LowerAscii(star.substr(4))].push_back(std::move(a));
+    }
+  }
+  static const std::vector<ModAttire> kNone;
+  const auto it = g_mod_attires.find(LowerAscii(folder));
+  return it == g_mod_attires.end() ? kNone : it->second;
+}
+
 // ---- A wrestler's vertex memory in a match (tools/model_budget.py)
 // Each wrestler's model gets a 768 KB physical window (the game's XMemAlloc
 // allocator 128): 192 pages of 4 KB. The loader (sub_826E73F8) makes a vertex
@@ -1166,10 +1246,26 @@ void LoadMods() {
       if (!temp) left_out.push_back(m.folder);
       continue;
     }
+    if (!temp) {  // (attire mods made for this superstar mod: its next free attires - AttiresForMod)
+      const uint32_t own = AnyAttireMask(f / "ch.pac");
+      for (const ModAttire& am : AttiresForMod(m.folder)) {
+        int n = 1;
+        while (n < 4 && ((own >> n & 1) || !attires[n].empty())) ++n;
+        if (n >= 4) {
+          REXLOG_WARN("[svr2011] attire mods: {} -> superstar mod {}: it has 4 attires already - left out", am.folder,
+                      m.folder);
+          continue;
+        }
+        { const auto u = am.model.u8string(); attires[n].assign(reinterpret_cast<const char*>(u.data()), u.size()); }  // (absolute: f / it is it)
+        if (!am.name.empty()) m.attire_names[n] = am.name;
+        if (am.entrance > 0) m.attire_entrance[n] = am.entrance;
+        REXLOG_INFO("[svr2011] attire mods: {} -> superstar mod {} attire {} ({})", am.folder, m.folder, n + 1, am.name);
+      }
+    }
     char nm[32];
     uint32_t drop = 0;
     for (int a = 0; a < 4; ++a)
-      if (!attires[a].empty() && fs::exists(f / attires[a], ec)) drop |= 1u << a;
+      if (!attires[a].empty() && fs::exists(f / fs::u8path(attires[a]), ec)) drop |= 1u << a;
     std::snprintf(nm, sizeof nm, "ch%03u.pac", m.key);
     if (!Current(ov / nm, {f / "ch.pac", f / "manifest.txt"})) {
       svrfmt::Bytes ch;
@@ -1197,7 +1293,7 @@ void LoadMods() {
       if (!(drop >> a & 1)) continue;
       char an[32];
       std::snprintf(an, sizeof an, "ch%03u_a%d.pac", m.key, a + 1);
-      const fs::path src = f / attires[a];
+      const fs::path src = f / fs::u8path(attires[a]);
       if (!Current(ov / an, {src, f / "manifest.txt"})) {
         svrfmt::Bytes d;
         std::string notes;
@@ -1408,6 +1504,16 @@ void LoadAttireMods() {
       std::fclose(t);
     }
     if (type != "attire") continue;
+    if (std::string star; [&] {  // (superstar=mod:<folder>: a superstar mod's attire - AttiresForMod, not here)
+          FILE* t = std::fopen((f / "manifest.txt").string().c_str(), "rb");
+          if (!t) return false;
+          char line[512];
+          while (std::fgets(line, sizeof line, t))
+            if (!std::strncmp(line, "superstar=mod:", 14)) star = line;
+          std::fclose(t);
+          return !star.empty();
+        }())
+      continue;
     if (((p.a.id < 100 || p.a.id > 321) && !DlcSuperstar(p.a.id)) || ModOf(p.a.id)) {
       REXLOG_WARN("[svr2011] attire mods: {}: superstar={} is not a stock or installed DLC superstar (a superstar mod "
                   "takes attireN= in its own manifest)", p.a.folder, p.a.id);
