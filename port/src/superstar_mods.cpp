@@ -971,7 +971,10 @@ void LoadMods() {
   const fs::path dir = g_game / "Mods" / "Superstars";
   if (!fs::is_directory(dir, ec)) return;
   if (FILE* t = std::fopen((dir / "limit.txt").string().c_str(), "wb")) {  // (the launcher's count: Mods tab)
-    std::fprintf(t, "%u\n", unsigned(std::size(kPool)));
+    // (big_roster: the ids past 322 too - it said 137 and the launchers marked the mods past it "NOT IN GAME",
+    // report 26ad41)
+    const unsigned high = svr2011::BigRosterOn() ? svr2011::kLastHighId - svr2011::kFirstHighId + 1 : 0;
+    std::fprintf(t, "%u\n", unsigned(std::size(kPool)) + high);
     std::fclose(t);
   }
   std::vector<fs::path> folders;

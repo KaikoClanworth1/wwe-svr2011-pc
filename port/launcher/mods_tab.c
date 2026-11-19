@@ -101,6 +101,26 @@ static void superstar_limit(void)
         fclose(f);
         f = NULL;
     }
+    /* The big roster as set now (svr2011.toml big_roster, the Saves tab's switch; limit.txt is the last start's):
+       137 pool ids + 180 past 322 (src/big_roster.h) - report 26ad41 */
+    swprintf_s(path, MAX_PATH, L"%s\\svr2011.toml", s_game);
+    if (!_wfopen_s(&f, path, L"rb") && f) {
+        int big = -1;
+        while (fgets(line, sizeof line, f)) {
+            const char *p = line;
+            while (*p == ' ' || *p == '\t') ++p;
+            if (strncmp(p, "big_roster", 10)) continue;
+            p += 10;
+            while (*p == ' ' || *p == '\t') ++p;
+            if (*p++ != '=') continue;
+            while (*p == ' ' || *p == '\t') ++p;
+            big = !strncmp(p, "true", 4);
+        }
+        fclose(f);
+        f = NULL;
+        if (big == 1 && s_star_ids < SUPERSTAR_IDS + 180) s_star_ids = SUPERSTAR_IDS + 180;
+        if (big == 0 && s_star_ids > SUPERSTAR_IDS) s_star_ids = SUPERSTAR_IDS;
+    }
     swprintf_s(s_over_label, 64, L"superstar - NOT IN GAME (over the %d limit)", s_star_ids);
     swprintf_s(path, MAX_PATH, L"%s\\Mods\\Superstars\\slots.txt", s_game);
     if (!_wfopen_s(&f, path, L"rb") && f) {

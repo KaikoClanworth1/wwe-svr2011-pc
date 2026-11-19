@@ -358,6 +358,17 @@ def attire(kids, tp, portrait, costume_ids, first_kids):
                            next((d for n, d in both if suffix in n.lower() and 'blood' not in n.lower()), None))
     color, normal = pick('color'), pick('normal') or pick('nomal')   # (2009 Maria's sheet is "12702nomal")
     ao = next((d for n, d in base.items() if n.lower().endswith('ao')), None) or pick('ao')
+    # (Sheets named without "color" / "normal" - report 098693, 2008 Chris Masters: "3402all" / "3402all_N" / "3402_AO".
+    # Others in 2008 / 2009: "jbl_suit_n", "5306allN", "4602norm", "1202bump", "8102_C", "5506" with "5506_N". Then a
+    # normal is "_n", "norm", "bump", or another sheet's name + "N"; a colour is "_c", else the one sheet left that is
+    # no AO, normal or blood.)
+    names = [n for n, _ in both]
+    is_n = lambda n: (n.lower().endswith('_n') or 'norm' in n.lower() or 'nomal' in n.lower() or 'bump' in n.lower() or
+                      (n[-1:] in 'nN' and n[:-1] in names))
+    usable = lambda n: 'blood' not in n.lower() and not n.lower().endswith('ao')
+    normal = normal or next((d for n, d in both if usable(n) and is_n(n)), None)
+    color = (color or next((d for n, d in both if usable(n) and n.lower().endswith('_c')), None) or
+             next((d for n, d in both if usable(n) and not is_n(n)), None))
     cos = dict(tex_read(kids[0x27])) if 0x27 in kids else {}
     # (the costume sheets' names: "_c" / "_n" / "ao" mostly; 2008 Rey Mysterio's are 2304_color / 2304_nomal / 2304_AO)
     cpick = lambda *suffixes: next((d for s in suffixes for n, d in cos.items() if n.lower().endswith(s)), None)

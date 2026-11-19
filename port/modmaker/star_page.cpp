@@ -3441,15 +3441,20 @@ void Problems(std::vector<Problem>& p) {
                       Touch();
                     }));
   if (!g_game.empty()) {
+    // (the mods the game loads: switched-off ones don't count; 137 places, 317 with the big roster - report 26ad41:
+    // big roster on and 137 mods, one of them off, and this said the game was full)
     int mods = 0;
     std::error_code ec;
     for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / L"Superstars", ec))
-      if (e.is_directory(ec) && fs::exists(e.path() / L"manifest.txt", ec)) ++mods;
-    if (mods >= 137)
-      p.push_back(Error("The game already has 137 superstar mods - the most it can hold. Installing this one would leave one out.")
+      if (e.is_directory(ec) && fs::exists(e.path() / L"manifest.txt", ec) && !fs::exists(e.path() / L"disabled", ec)) ++mods;
+    const int limit = SuperstarModLimit();
+    const std::string most = std::to_string(limit) + (limit > 137 ? " with the big roster" : "");
+    if (mods >= limit)
+      p.push_back(Error("The game already has " + std::to_string(mods) + " superstar mods on - the most it can hold (" +
+                        most + "). Installing this one would leave one out.")
                       .With("See my installed mods", [] { GoTo(PageId::kInstalled); }));
-    else if (mods >= 132)
-      p.push_back(Warning(std::to_string(137 - mods) + " superstar mod places left in the game (it holds 137).").Note());
+    else if (mods >= limit - 5)
+      p.push_back(Warning(std::to_string(limit - mods) + " superstar mod places left in the game (it holds " + most + ").").Note());
   }
   tag(kStepName);
 }
@@ -3612,7 +3617,7 @@ void Draw() {
   if (g_star.simple) return SimpleDraw();
   {
     const float top = ImGui::GetCursorPosY();
-    Heading("Superstar", "A new playable character under the M tile of the character select (up to 137 mods).");
+    Heading("Superstar", "A new playable character under the M tile of the character select (up to 137 mods, 317 with the big roster).");
     const ImVec2 after = ImGui::GetCursorPos();
     const float bw = 280 * g_scale;
     ImGui::SetCursorPos(ImVec2(std::max(0.0f, ImGui::GetWindowWidth() - bw - 24 * g_scale), top));

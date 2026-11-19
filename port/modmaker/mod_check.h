@@ -16,8 +16,11 @@ namespace mm {
 // kind: the Mods sub-folder ("Superstars", "Attires", "Arenas", "Moves", "Backstage", "Signs", "Media",
 // "Backgrounds", "MatchTypes").
 std::vector<Problem> CheckModFolder(const std::string& kind, const std::filesystem::path& dir);
-// The installed mods together: the game's limits (137 superstars, 400 sign-pack signs, 200 movies, 8 backstage rows).
+// The installed mods together: the game's limits (137 superstars - 317 with the big roster -, 400 sign-pack signs, 200 movies, 8 backstage rows).
 std::vector<Problem> CheckInstalledSet();
+// The most superstar mods the game loads at once: 137, or 317 with the big roster on (<game>\svr2011.toml
+// big_roster = true, the launcher's "more superstar mods at once": src/big_roster.h, 137 pool ids + 180 past 322).
+int SuperstarModLimit();
 // A .svrmod file: unpacked to the cache and checked as its manifest's type says.
 std::vector<Problem> CheckSvrmod(const std::wstring& file);
 // The Mods sub-folder for a manifest's type= ("" unknown).
