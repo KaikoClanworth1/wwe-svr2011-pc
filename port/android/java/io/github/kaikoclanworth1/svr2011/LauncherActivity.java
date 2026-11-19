@@ -774,6 +774,9 @@ public class LauncherActivity extends Activity {
             false);
         // (src/fast_loads.cpp: the Start Screen's loading screens at four updates a frame)
         toggle(game, "Faster loading screens", "Their animations play faster", "fast_loads", false);
+        // (src/infinite_finishers.cpp: the game's OPTIONS -> CPU -> INFINITE FINISHERS - offline matches only)
+        toggle(game, "Infinite finishers", "A finisher doesn't use the momentum meter up: with it full, keep doing "
+            + "finishers (offline matches)", "infinite_finishers", false);
         // (src/superstar_mods.cpp: per_mod_saves - the save is backed up first when it's turned on)
         Switch per_mod = toggle(game, "Experimental: mod saves in their own files",
             "Each superstar mod's save data in Saves/.mods - an uninstalled mod leaves the save clean. At the next "
@@ -824,6 +827,7 @@ public class LauncherActivity extends Activity {
             settings_.setBool("skip_intros", false);
             settings_.setBool("skip_training", false);
             settings_.setBool("fast_loads", false);
+            settings_.setBool("infinite_finishers", false);
             settings_.setBool("per_mod_saves", false);
             settings_.setBool("big_roster", false);
             settings_.setString("native_texture_quality", "high");

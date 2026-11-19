@@ -153,7 +153,7 @@ enum {
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
     ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL, ID_TEXTURES, ID_ARENA_LIGHT, ID_UPSCALE, ID_MATCH_CAMERA, ID_VIBRATION,
-    ID_LIGHT_BEAMS, ID_FULLSCREEN_EX, ID_RENDER_RES, ID_RES_HINT,
+    ID_LIGHT_BEAMS, ID_INFINITE_FIN, ID_FULLSCREEN_EX, ID_RENDER_RES, ID_RES_HINT,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
     ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL, ID_ON_PEERS, ID_ON_ROUTE,
@@ -2521,7 +2521,7 @@ static void settings_load(void)
     WCHAR p[MAX_PATH];
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, perf = -1, w = 1280, h = 720, res = 0, in_section = 0;
-    int msaa = 0, aa = 0, emulated = 0, api = 0, language = 1, online = 0, prepare = 1, frame_rate = 60, light_beams = 1;
+    int msaa = 0, aa = 0, emulated = 0, api = 0, language = 1, online = 0, prepare = 1, frame_rate = 60, light_beams = 1, infinite_fin = 0;
     int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0, fast_loads = 0, arena_light = 100, vibration = 1;
     int match_camera = 0;
     int share = 1, up_kbs = 0, up_peers = 0, mod_mb = 0, mods_mb = 0;  /* (the game's online mod settings) */
@@ -2558,6 +2558,7 @@ static void settings_load(void)
             else if (!strcmp(key, "native_upscale_quality")) upscale_quality = atoi(val);
             else if (!strcmp(key, "native_prepare_pipelines")) prepare = !strcmp(val, "true");
             else if (!strcmp(key, "native_light_beams")) light_beams = strcmp(val, "false") != 0;
+            else if (!strcmp(key, "infinite_finishers")) infinite_fin = !strcmp(val, "true");
             else if (!strcmp(key, "process_priority")) priority = atoi(val) >= 1;
             else if (!strcmp(key, "unlock_everything")) unlock_all = strcmp(val, "false") != 0;
             else if (!strcmp(key, "skip_intros")) skip_intros = !strcmp(val, "true");
@@ -2629,6 +2630,7 @@ static void settings_load(void)
     }
     CheckDlgButton(s_wnd, ID_PREPARE, prepare ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_LIGHT_BEAMS, light_beams ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_INFINITE_FIN, infinite_fin ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_PRIORITY, priority ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_UNLOCK_ALL, unlock_all ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_INTROS, skip_intros ? BST_CHECKED : BST_UNCHECKED);
@@ -2651,7 +2653,7 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 46 };
+    enum { NK = 47 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
@@ -2663,7 +2665,7 @@ static int settings_save(void)
                                     "native_upscale", "native_upscale_quality", "match_camera",
                                     "online_mod_upload", "online_mod_upload_kbs", "online_mod_upload_peers",
                                     "online_mod_max_mb", "online_mods_max_mb", "fast_loads", "vibration",
-                                    "native_light_beams" };
+                                    "native_light_beams", "infinite_finishers" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -2735,6 +2737,8 @@ static int settings_save(void)
     strcpy_s(vals[44], 64, IsDlgButtonChecked(s_wnd, ID_VIBRATION) == BST_CHECKED ? "true" : "false");
     /* (the game's ADV. GRAPHICS -> LIGHT BEAMS: the arena's beams, flares and camera flashes) */
     strcpy_s(vals[45], 64, IsDlgButtonChecked(s_wnd, ID_LIGHT_BEAMS) == BST_CHECKED ? "true" : "false");
+    /* (the game's OPTIONS -> CPU -> INFINITE FINISHERS: a finisher doesn't use the meter up - offline only) */
+    strcpy_s(vals[46], 64, IsDlgButtonChecked(s_wnd, ID_INFINITE_FIN) == BST_CHECKED ? "true" : "false");
     {
         static const char *k_textures[3] = { "\"high\"", "\"medium\"", "\"low\"" };
         const int ti = (int)SendMessageW(ctl(ID_TEXTURES), CB_GETCURSEL, 0, 0);
@@ -2852,6 +2856,7 @@ static void settings_defaults(void)
     display_hint();
     CheckDlgButton(s_wnd, ID_PREPARE, BST_CHECKED);
     CheckDlgButton(s_wnd, ID_LIGHT_BEAMS, BST_CHECKED);
+    CheckDlgButton(s_wnd, ID_INFINITE_FIN, BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_PRIORITY, BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_UNLOCK_ALL, BST_CHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_INTROS, BST_UNCHECKED);
@@ -4658,8 +4663,11 @@ static void build_ui(void)
     add(TAB_SETTINGS, L"Static", L"Menus and text (commentary stays English). "
                                  L"Also in game: GRAPHICS.",
         SS_LEFT, X0 + 362, 464, 186, 34, 0);
-    add(TAB_SETTINGS, L"Button", L"Everything unlocked from the start (DLC stays)",
-        BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 500, 340, 22, ID_UNLOCK_ALL);
+    add(TAB_SETTINGS, L"Button", L"Everything unlocked (DLC stays)",
+        BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 500, 226, 22, ID_UNLOCK_ALL);
+    /* infinite_finishers (the game's OPTIONS -> CPU -> INFINITE FINISHERS): a finisher doesn't use the meter up */
+    add(TAB_SETTINGS, L"Button", L"Infinite finishers", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 248, 500, 128, 22,
+        ID_INFINITE_FIN);
     /* match_camera (the game's GRAPHICS -> MATCH CAMERA; BACK + R3 / F4 in a match) */
     h = add(TAB_SETTINGS, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 380, 498, 166, 200,
             ID_MATCH_CAMERA);
@@ -9520,7 +9528,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             break;
         case ID_WINDOWED: case ID_FULLSCREEN: case ID_FULLSCREEN_EX: case ID_VSYNC: case ID_MUTE:
         case ID_PREPARE: case ID_PRIORITY: case ID_UNLOCK_ALL: case ID_SKIP_INTROS: case ID_SKIP_TRAINING: case ID_VIBRATION:
-        case ID_LIGHT_BEAMS:
+        case ID_LIGHT_BEAMS: case ID_INFINITE_FIN:
             if (HIWORD(wp) == BN_CLICKED) {
                 if (LOWORD(wp) == ID_WINDOWED || LOWORD(wp) == ID_FULLSCREEN || LOWORD(wp) == ID_FULLSCREEN_EX)
                     display_hint();
