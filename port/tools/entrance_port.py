@@ -695,6 +695,9 @@ def hctp_convert(src, entrance, number, name, parts, rep, game='hctp', game_pac=
                                   game=game, own_props=own)
     rep['notes'] += notes + ['%s: %d' % kv for kv in sorted(r.items())]
     rep['dropped'] += ['%s: %d' % kv for kv in sorted(r.items()) if 'dropped' in kv[0]]
+    if any('op 118 dropped' in k for k in r):   # (suggestion 2beeff: a loss the player sees, not a note)
+        rep['warnings'].append('lights: the source\'s crowd lighting cues (op 118) have no 2011 equivalent - the crowd '
+                               'keeps 2011\'s lighting during the entrance')
     return evp, evt
 
 
@@ -915,9 +918,9 @@ def dlc_props(src, game, evp11, rep):
     try:
         disc = ['pac/evt/' + f for f in src.listdir('pac/evt') if re.match(r'(?i)evtobj_dlc\d+\.pac$', f)]
         # (then the disc's own evtobj.pac, for a prop 2011's lacks - WWE '13's Gangrel fire 2726, report 08b661; only
-        # ids 2011 doesn't have reach here, and the DLC pacs come first)
-        if disc:
-            disc += ['pac/evt/' + f for f in src.listdir('pac/evt') if f.lower() == 'evtobj.pac']
+        # ids 2011 doesn't have reach here, and the DLC pacs come first. Every game, not only one with DLC pacs on its
+        # disc: WWE '12 / 2K14's own props - suggestion 2beeff)
+        disc += ['pac/evt/' + f for f in src.listdir('pac/evt') if f.lower() == 'evtobj.pac']
     except Exception:   # noqa: BLE001
         disc = []
     if not packages and not disc:
@@ -951,22 +954,70 @@ def dlc_props(src, game, evp11, rep):
                 continue
             for (g, n), b in ents.items():
                 if g == 'SOBJ' and n.isdigit():
-                    found.setdefault(int(n), b)
+                    found.setdefault(int(n), (b, where))
     for pid, warnings in sorted(missing.items()):
         if pid not in found or any(p[0] == pid for p in PROPS):
             continue
         with tempfile.TemporaryDirectory() as d:
             a, b = os.path.join(d, 'in.bin'), os.path.join(d, 'out.bin')
             with open(a, 'wb') as f:
-                f.write(found[pid])
+                f.write(found[pid][0])
             r = subprocess.run([E13.find_svrmod(SVRMOD), 'wwe13prop', a, b], capture_output=True, text=True, stdin=subprocess.DEVNULL)
             if r.returncode or not os.path.exists(b):
-                rep['notes'].append('prop %d: its DLC model not converted (%s)' % (pid, (r.stdout or '').strip()[:120]))
+                rep['notes'].append('prop %d: its model (%s) not converted (%s)' % (pid, found[pid][1], (r.stdout or '').strip()[:120]))
                 continue
             with open(b, 'rb') as f:
                 PROPS.append((pid, DLC_PROP_FALLBACK, f.read()))
         rep['warnings'] = [w for w in rep['warnings'] if w not in warnings]
-        rep['notes'].append('prop %d: the DLC package\'s own model as evtobj %d, added by the pack' % (pid, pid))
+        rep['notes'].append('prop %d: the model from %s as evtobj %d, added by the pack' % (pid, found[pid][1], pid))
+
+
+# SvR 2008-2010 and Legends keep their props as 2011 does (pac/evt/_EvtObj.pac SOBJ <id>: PACH {0: JBOY, 10: textures};
+# 2010 / 2009 share 150 / 84 entries with 2011 byte for byte, 2008's models have 2011's header, sizes and textures),
+# so a prop 2011 lacks comes along as it is (suggestion 2beeff: Gangrel's / the Brood's props, pyro and lights).
+OWN_PROP_GAMES = {'svr08', 'svr09', 'svr10', 'low'}
+_NOT_IN_2011 = re.compile(r"^props \[[\d, ]*\] are not in 2011 \(they will not show\)$")
+
+
+def source_props(src, game, evp11, game_pac, rep):
+    """the props the script uses that 2011's evtobj lacks: SvR 2008-2010 / Legends - from the source disc's own evtobj,
+    as new entries under their own ids (2011's DLC_PROP_FALLBACK when the pack can't add them); every game - a warning
+    names the ones still missing (the PS2 games' own models are not 2011's format: HCTP 3002's 2044 and the like had
+    no warning and did not show)"""
+    if not game_pac:
+        return
+    try:
+        ours = EPR.game_ids(game_pac)
+    except (OSError, ValueError) as x:
+        rep['notes'].append("2011's evtobj.pac not read (%s): props not checked" % x)
+        return
+    used = sorted({o['model'] for o in E08.parse_evp(evp11, '2011')['objs'] if (o['t0'], o['t1']) == E08.TYPE_PROP})
+    need = [m for m in used if m and m not in ours and not any(p[0] == m for p in PROPS)]   # (model 0: an empty prop object)
+    rep['warnings'] = [w for w in rep['warnings'] if not _NOT_IN_2011.match(w)]   # (the converters' fixed lists)
+    if not need:
+        return
+    theirs = {}
+    if game in OWN_PROP_GAMES:
+        try:
+            f = next(n for n in src.listdir('pac/evt') if n.lower() in ('_evtobj.pac', 'evtobj.pac'))
+            _, groups, _ = svrfmt.epac_read(src.read('pac/evt/' + f))
+            theirs = {n.decode('latin-1').strip(' \0'): b for ty, es in groups if ty == b'SOBJ' for n, b in es}
+        except (OSError, StopIteration, ValueError, AttributeError) as x:   # (a lone entrance file: no evtobj beside it)
+            rep['notes'].append("the source's evtobj.pac not read (%s)" % x)
+    left = []
+    for m in need:
+        b = theirs.get(str(m))
+        if b is None:
+            if not any(re.search(r'\bprop %d\b' % m, w) for w in rep['warnings']):   # (WWE '12+: warned per object)
+                left.append(m)
+            continue
+        data = svrfmt.pach_write([(k, EPR._unpack(v)) for k, v in svrfmt.pach_read(EPR._unpack(b))])   # (plain parts)
+        PROPS.append((m, DLC_PROP_FALLBACK, data))
+        rep['notes'].append("prop %d: %s's own model as evtobj %d, added by the pack (2011's %d if it can't be: "
+                            "propfallback)" % (m, GAMES[game]['name'], m, DLC_PROP_FALLBACK))
+    if left:
+        why = "or the source's evtobj.pac" if game in OWN_PROP_GAMES else "(%s's own models are not ported)" % GAMES[game]['name']
+        rep['warnings'].append('props %s are not in 2011 %s - they will not show' % (left, why))
 
 
 def wwe13_convert(src, entrance, number, name, parts, rep, game_pac=None, game='wwe13'):
@@ -1381,8 +1432,11 @@ PYRO_GAMES = ('svr10', 'wwe12', 'wwe13', 'wwe2k14', 'wwe2k15', 'wwe2k16', 'wwe2k
 def pyro(src, g, entrance, number, d, rep):
     """the source entrance's PCE6/LPE6 particle set -> pack d/pyro + pacentry lines (notes only on failure)"""
     if g not in PYRO_GAMES:
-        if g in ('svr07', 'svr09', 'svr06'):
-            rep['notes'].append('pyro: %s particle sets are an older format (not converted)' % GAMES[g]['name'])
+        # (a warning, not a note: the entrance plays without its pyro - suggestion 2beeff. 2007-2009 / Legends' PCEN sets
+        # are numbered sub-packs, not 2010 / 2011's PCE6 layout; SvR 2008 and Legends said nothing before)
+        if g in ('svr07', 'svr08', 'svr09', 'low', 'svr06'):
+            rep['warnings'].append('pyro: %s particle sets are an older format (not converted): the entrance plays '
+                                   'without its pyro' % GAMES[g]['name'])
         return
     try:
         if g in ('wwe2k16', 'wwe2k17'):                # (one particle pac per entrance)
@@ -1555,6 +1609,7 @@ def cmd_convert(a):
             members = tracked_members(evp, evt)
         rep['notes'].append('the source moves members %s (%s)' % (', '.join(map(str, members)) or 'none', rep['source_team']))
         evp, evt = apply_team(evp, evt, team, rep)
+        source_props(src, g, evp, gp, rep)
         if team != 'singles':
             rep['notes'].append('a %s entrance: TEAM MANAGER -> the team -> ENTRANCE SETTING -> MOTION, the MOD row' % team)
         progress(60, 'checking')

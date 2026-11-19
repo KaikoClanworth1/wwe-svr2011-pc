@@ -415,8 +415,10 @@ def global_donor(stock, obj13, prefer=None):
 # position x 100, from y 50 x 10; angles: 2011's zyx = the source's zyx x GLOBAL_AXES; the source's event 87 starts
 # a track (no event in 2011), 88 and 256 end it (op 1, 00), 208 is op 137 (as on any object).
 GLOBAL_AXES = ((0, 0, 1), (-1, 0, 0), (0, -1, 0))
-OWN_GLOBAL_GAMES = {'wwe2k14', 'wwe13'}  # (the others keep a stock donor until they are played; WWE '13 played 14 Nov,
-# Gangrel 53: his own red, dark lights where the donor's left the arena lit - report 08b661)
+OWN_GLOBAL_GAMES = {'wwe2k14', 'wwe13', 'wwe12'}  # (the others keep a stock donor until they are played; WWE '13 played
+# 14 Nov, Gangrel 53: his own red, dark lights where the donor's left the arena lit - report 08b661. WWE '12, 19 Nov
+# (suggestion 2beeff): on the 183 entrances it shares with 2011, positions within 1 cm (90th percentile) on 141, colours
+# 1.000 x 2011's at the median - the rest re-timed or re-authored keys, not a scale)
 
 
 def _key_at(keys, t):
@@ -920,7 +922,7 @@ def convert_evp(evp13, number, stock, props11, name, rep):
             if o['model'] in S.PROP_MAP:
                 rep['notes'].append('object %d: prop %d -> %d' % (i, o['model'], S.PROP_MAP[o['model']]))
                 o['model'] = S.PROP_MAP[o['model']]
-            if props11 and o['model'] not in props11:
+            if props11 and o['model'] and o['model'] not in props11:   # (model 0: an empty prop object, not a prop)
                 rep['warnings'].append('object %d: prop %d is not in 2011\'s evtobj.pac (it will not show)' % (i, o['model']))
         elif k == '?':
             rep['warnings'].append('object %d: unknown object type %08x/%08x kept' % (i, o['t0'], o['t1']))
@@ -1090,6 +1092,11 @@ def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None
             continue
         score, dn, di, dents = don
         rep['notes'].append('object %d: global object tracks from 2011 entrance %d object %d (%d slots alike)' % (i, dn, di, int(score) % 100))
+        if dn != src_num:   # (2011's own take of the same entrance: its lights are the source's - suggestion 2beeff)
+            rep['warnings'].append('lights: %s - 2011 entrance %d\'s lights and effects stand in (the colours and dark '
+                                   'moments may differ from the source)' % (
+                                       'the entrance\'s own could not be read' if own_lights else
+                                       'this game\'s own are not converted yet', dn))
         for x in dents:
             ents.append(dict(y=x['y'], x=x['x'], id=25000 + i, frames=x['frames'], rt=S.RT_2011, data=x['data'],
                              share=False, tail_off=None))

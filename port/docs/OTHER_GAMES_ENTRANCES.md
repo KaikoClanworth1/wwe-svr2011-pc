@@ -543,3 +543,36 @@ use the entrance's own tracks (`wwe13_entrance.global_track`), not a stock donor
 Record: u8 hold (that many skipped frames follow; at most 0x5f), 3 f32 LE position, 3 s16 LE angles, 3 u16 LE colour. Position = source x 100, from y 50 x 10;
 colour = the source's second channel x 4096; angles: zyx, 2011's matrix = the source's x `GLOBAL_AXES`. Source events: 87 starts (nothing in 2011), 88 / 256 end (op 1, 00), 208 = op 137.
 Checked against the entrances 2K14 and 2011 share, tracks of equal length only: position exact to the 90th percentile, angles within 115 / 65536; other differences look re-authored.
+
+## Props, lights and pyro by game (suggestion 2beeff, 19 Nov)
+
+What an entrance brings along, and the warning (report.json `warnings`) when something can't come across. Counted by
+converting every entrance of each disc offline (the inventory below); only the rows marked "played" are seen in game.
+
+| game | props 2011 lacks | lights (the global object) | pyro |
+|---|---|---|---|
+| SvR 2008 | from 2008's own `pac/evt/_EvtObj.pac` (8 entrances: 2040, 2100, 2116, 2151, 2152, 2154, 3142) | its own tracks | older `PCEN` format: **warned** (122 / 140 have a set) |
+| SvR 2009 | from 2009's own `_EvtObj.pac` (2116, 2152, 2262) | its own tracks | `PCEN`: **warned** |
+| Legends of WrestleMania | from its own `_EvtObj.pac` (21 props + the ring carts) | its own tracks | `PCEN`: **warned** |
+| SvR 2010 | from 2010's own `_EvtObj.pac` (2403, 2405) | its own tracks | its own `PCE6` / `LPE6` (191 of 211; 19 have none) |
+| WWE '12 | its disc's `evtobj.pac` through `svrmod wwe13prop` (9 entrances: Del Rio's car 2636, Cena's 2649, the DLC alt gears' 2653-2658 ...) - before only with DLC pacs | its own tracks (since 19 Nov) in 222 of 247; 22 can't be read: a 2011 donor, **warned** | its own `PCE6` / `LPE6` (224 of 247; 23 have none) |
+| WWE '13 | DLC pacs, then its disc's `evtobj.pac` (35 entrances; Gangrel's goblet / fire, report 08b661) | its own tracks (played 14 Nov) in 293 of 317; 22 can't be read: a donor, **warned** | its own (285 of 317), also `prtcls_dlc<nn>.pac` |
+| WWE 2K14 | as WWE '13 | its own tracks | its own `PCE6` |
+| HCTP | 2011's ids, the Undertaker's bike as its own model; **warned** for 2040 / 2044 / 2104 / 2112 (12 entrances: PS2 models not ported) | no lights object; op 118 crowd-lighting cues (3002, 3047, 3202, 3247): **warned** | none in the data (flashes are op 18, kept) |
+| not done yet | SvR 2007 (props in `evt0.pac`), SvR 2004 / SYM / SvR 2006 / JBI (PS2 models), 2K15-2K17 (63+ props, `wwe13prop` not checked on them) | 2K15-2K17: a 2011 donor, **warned** | 2007: **warned**; PS2 games: PS2 textures |
+
+- **Why 2008-2010's props copy as they are:** their `_EvtObj.pac` SOBJ entries are 2011's PACH {0: JBOY, 10: textures}
+  (2011's own add parts 30 / 200 / 1000 / 1010, which the game does without - Legends' carts played that way). 2010 /
+  2009 share 150 / 84 entries with 2011 byte for byte; 2008 none byte for byte, but its JBOY headers, sizes and
+  texture banks match 2011's (2038). `entrance_port.source_props` adds a missing one under its own id with
+  `propfallback <id> 2006`; the converters' fixed "not in 2011" lists are replaced by a check against 2011's
+  `evtobj.pac` (`entrance_props.game_ids`), which also caught HCTP's ids that never had a warning. Model 0 is an
+  empty prop object, not a prop.
+- **Lights:** a donor's tracks are a warning now, unless the donor is 2011's own take of the same entrance (the same
+  number and name). WWE '12's own: on the 183 entrances it shares with 2011, positions within 1 cm at the 90th
+  percentile on 141, colours 1.000 x 2011's at the median (the rest: keys re-timed or re-authored, as 102 / 103).
+- **Pyro:** 2007-2009 and Legends' `PCEN` entries are PACH packs of numbered sub-packs (PCCH 5001: 2008 children 0-7 of
+  1039 bytes, 2010 / 2011 {0, 16000}); their emitters are not mapped, so the entrance plays without them (a warning -
+  SvR 2008 and Legends said nothing before).
+- Conversions that fail on main as well: SvR 2008 4077 / 4180, 2009 and Legends 4200, 2010 160 (an event block that
+  doesn't walk 2011's size table).
