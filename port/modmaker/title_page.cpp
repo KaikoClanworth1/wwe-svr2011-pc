@@ -7,6 +7,7 @@
 #include <map>
 #include <set>
 
+#include "disc_list.h"
 #include "app.h"
 #include "json.h"
 #include "mod_check.h"
@@ -25,7 +26,17 @@ struct TitlePack {
   std::wstring art, picture;
   std::map<std::string, std::wstring> belt;  // belt texture -> picture
   std::vector<ZipEntry> extra;               // an opened mod's other files (a belt model's pack.txt ...): kept
+  // the belt model from another game (suggestion 5ee174; title_port --belt-from: its pac/evt/_EvtObj.pac entries for
+  // this title, added by the move packs): "" this game's own, svr2008 / svr2009 / svr2010 - the disc set in My game discs
+  std::string belt_from;
 };
+// The games whose belts port as they are (the same SOBJ entries as 2011's).
+const char* const kBeltGames[][2] = {{"svr2010", "SvR 2010"}, {"svr2009", "SvR 2009"}, {"svr2008", "SvR 2008"}};
+bool HasPortedBelt(const std::vector<ZipEntry>& files) {
+  for (const auto& e : files)
+    if (e.name.rfind("belt/", 0) == 0) return true;
+  return false;
+}
 TitlePack g_p;
 
 Json g_titles;               // title_port titles
@@ -132,8 +143,14 @@ void Problems(std::vector<Problem>& p) {
     p.push_back(Error("Pick the title to replace."));
     return;
   }
-  if (!g_p.name[0] && g_p.art.empty() && g_p.picture.empty() && g_p.belt.empty())
-    p.push_back(Error("Nothing to replace yet: give the title a new name, a picture or a belt texture."));
+  if (!g_p.name[0] && g_p.art.empty() && g_p.picture.empty() && g_p.belt.empty() && g_p.belt_from.empty())
+    p.push_back(Error("Nothing to replace yet: give the title a new name, a picture, a belt texture or another game's belt."));
+  if (!g_p.belt_from.empty()) {
+    if (disc_list::PathFor(g_p.belt_from).empty() && !HasPortedBelt(g_p.extra))
+      p.push_back(Error("The belt from " + g_p.belt_from + " needs that game's disc.", "Add it on My game discs."));
+    if (!g_p.belt.empty())
+      p.push_back(Warning("The other game's belt brings its own textures: the belt textures picked below are left out."));
+  }
   const Json* t = TitleRow(g_p.key);
   if (!t) return;
   if (!g_p.picture.empty() && !(*t)["pictures"].items.empty()) {
@@ -170,9 +187,19 @@ void Build(std::function<void(std::vector<ZipEntry>)> done) {
   add(L"--version", Wide(g_p.version));
   add(L"--art", g_p.art);
   add(L"--picture", g_p.picture);
-  for (const auto& [tex, pic] : g_p.belt) add(L"--set", Wide(tex) + L"=" + pic);
+  // (another game's belt: ported from its disc now - an opened mod's ported files are used again without the disc)
+  const std::wstring belt_disc = g_p.belt_from.empty() ? std::wstring() : disc_list::PathFor(g_p.belt_from);
+  if (!belt_disc.empty()) add(L"--belt-from", Wide(g_p.belt_from)), add(L"--belt-src", belt_disc);
+  else
+    for (const auto& [tex, pic] : g_p.belt) add(L"--set", Wide(tex) + L"=" + pic);
+  if (!g_p.belt_from.empty() && belt_disc.empty() && !HasPortedBelt(g_p.extra)) {
+    Status("The belt from " + g_p.belt_from + " needs that game's disc: add it on My game discs.");
+    return;
+  }
   const std::string project = ModProjectText(PageId::kTitle);
-  const std::vector<ZipEntry> extra = g_p.extra;
+  std::vector<ZipEntry> extra;
+  for (const auto& e : g_p.extra)  // (a new port brings pack.txt and belt/ again)
+    if (belt_disc.empty() || (e.name != "pack.txt" && e.name.rfind("belt/", 0) != 0)) extra.push_back(e);
   RunToolJson(L"title_port.py", args, [done, project, extra](int code, const std::string& text) {
     Json j;
     ParseJson(text, j);
@@ -249,6 +276,7 @@ void TestRun() {
     else if (k == "art") g_p.art = Wide(v);
     else if (k == "picture") g_p.picture = Wide(v);
     else if (k == "set" && v.find('=') != std::string::npos) g_p.belt[v.substr(0, v.find('='))] = Wide(v.substr(v.find('=') + 1));
+    else if (k == "belt_from") g_p.belt_from = v;
   }
   Touch();
   if (g_test_save.empty()) return;  // (only filled in: for a shot of the page)
@@ -324,8 +352,30 @@ void Draw() {
     PictureRow("picture", g_p.picture, L"The belt picture", w, w * float(s["height"].n) / std::max(1.0f, float(s["width"].n)));
   }
   ImGui::SeparatorText("The belt's look");
+  {  // the belt model: this game's, or another game's (its own model and textures)
+    std::string shown = "This game's belt";
+    for (const auto& g : kBeltGames)
+      if (g_p.belt_from == g[0]) shown = std::string(g[1]) + "'s belt";
+    ImGui::SetNextItemWidth(260 * g_scale);
+    if (ImGui::BeginCombo("Belt model", shown.c_str())) {
+      if (ImGui::Selectable("This game's belt", g_p.belt_from.empty())) g_p.belt_from.clear(), Touch();
+      for (const auto& g : kBeltGames) {
+        const bool have = !disc_list::PathFor(g[0]).empty();
+        ImGui::BeginDisabled(!have);
+        if (ImGui::Selectable((std::string(g[1]) + "'s belt" + (have ? "" : " (add the disc on My game discs)")).c_str(),
+                              g_p.belt_from == g[0]))
+          g_p.belt_from = g[0], Touch();
+        ImGui::EndDisabled();
+      }
+      ImGui::EndCombo();
+    }
+    Hint("Another WWE game's belt for this title - its model and textures, on the shoulder, round the waist, held up and in "
+         "cut scenes - taken from your disc of that game when the mod is made.");
+  }
   const auto& belt = (*row)["belt"].items;
-  if (belt.empty()) {
+  if (!g_p.belt_from.empty()) {
+    ImGui::TextDisabled("The belt comes with its own textures from that game.");
+  } else if (belt.empty()) {
     ImGui::TextDisabled("This title's belt has no textures to replace: its name and pictures can change.");
   } else {
     ImGui::TextWrapped("The belt in entrances, celebrations, cut scenes and when picked up in a match. Left: the game's texture. "
@@ -369,7 +419,7 @@ void Draw() {
 
 std::string StateText() {
   std::string s = "title=" + g_p.key + "\nname=" + g_p.name + "\nchampion=" + g_p.champion + "\nauthor=" + g_p.author + "\nversion=" + g_p.version +
-                  "\nart=" + Utf8(g_p.art) + "\npicture=" + Utf8(g_p.picture) + "\n";
+                  "\nart=" + Utf8(g_p.art) + "\npicture=" + Utf8(g_p.picture) + "\nbelt_from=" + g_p.belt_from + "\n";
   for (const auto& [k, v] : g_p.belt) s += "belt." + k + "=" + Utf8(v) + "\n";
   return s;
 }
@@ -382,6 +432,7 @@ void WriteProject(ProjectOut& out) {
   out.Key("champion", g_p.champion);
   out.Key("author", g_p.author);
   out.Key("version", g_p.version);
+  if (!g_p.belt_from.empty()) out.Key("belt_from", g_p.belt_from);
   out.File("art", g_p.art, "title/art");
   out.File("picture", g_p.picture, "title/picture");
   int i = 0;
@@ -399,6 +450,7 @@ void ReadKeys(const ProjectIn& in) {
   std::snprintf(g_p.author, sizeof g_p.author, "%s", in.Get("author").c_str());
   std::snprintf(g_p.version, sizeof g_p.version, "%s", in.Get("version").c_str());
   if (!g_p.version[0]) std::snprintf(g_p.version, sizeof g_p.version, "1.0");
+  g_p.belt_from = in.Get("belt_from");
 }
 
 bool ReadProject(const ProjectIn& in) {
