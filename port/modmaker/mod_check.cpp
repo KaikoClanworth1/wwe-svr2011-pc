@@ -8,6 +8,7 @@
 #include <cstring>
 #include <map>
 #include <set>
+#include <share.h>
 #include <functional>
 #include <sstream>
 
@@ -1075,6 +1076,25 @@ std::vector<Problem> CheckModFolder(const std::string& kind, const fs::path& dir
   return p;
 }
 
+int SuperstarModLimit() {
+  bool big = false;
+  if (FILE* f = g_game.empty() ? nullptr : _wfsopen((fs::path(g_game) / L"svr2011.toml").c_str(), L"rb", _SH_DENYNO)) {
+    char line[512];
+    while (std::fgets(line, sizeof line, f)) {  // (a top-level key, as the launcher writes it: big_roster = true)
+      const char* p = line;
+      while (*p == ' ' || *p == '	') ++p;
+      if (std::strncmp(p, "big_roster", 10)) continue;
+      p += 10;
+      while (*p == ' ' || *p == '	') ++p;
+      if (*p++ != '=') continue;
+      while (*p == ' ' || *p == '	') ++p;
+      big = !std::strncmp(p, "true", 4);
+    }
+    std::fclose(f);
+  }
+  return big ? 317 : 137;
+}
+
 std::vector<Problem> CheckInstalledSet() {
   std::vector<Problem> p;
   if (g_game.empty()) return p;
@@ -1092,7 +1112,11 @@ std::vector<Problem> CheckInstalledSet() {
     with_pac += Exists(d / "ch.pac");
     if (!Trim(ReadManifest(d).Get("movie")).empty()) ++movies;
   }
-  if (with_pac > 137) p.push_back(Error(std::to_string(with_pac) + " superstar mods are on, and the game holds 137: the rest are left out.").With("See them", [] { GoTo(PageId::kInstalled); }));
+  const int limit = SuperstarModLimit();
+  if (with_pac > limit)
+    p.push_back(Error(std::to_string(with_pac) + " superstar mods are on, and the game holds " + std::to_string(limit) +
+                      (limit > 137 ? " (with the big roster)" : "") + ": the rest are left out.")
+                    .With("See them", [] { GoTo(PageId::kInstalled); }));
   const auto left = LeftOut(mods / "Superstars");
   if (!left.empty()) {
     std::string l;
