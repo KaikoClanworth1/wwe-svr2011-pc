@@ -450,7 +450,8 @@ bool g_extra_update = false;  // (see below: an extra update of this frame)
 // referee is in his count motion (190).
 std::atomic<bool> g_pin_counting{false};
 std::atomic<bool> g_pin_cpu{false};  // (the man pinned is a CPU: one update a frame while counted - see the judge's hook)
-std::atomic<uint32_t> g_pin_cpu_frame{0};  // (the match frame the judge last saw it: a judge gone quiet after a 3 ends the rule)
+std::atomic<uint32_t> g_pin_cpu_frame{0};
+std::atomic<uint32_t> g_pin_cpu_pad{0};  // (that CPU's controller, its +2584: see sub_8221D148's hook)  // (the match frame the judge last saw it: a judge gone quiet after a 3 ends the rule)
 // The frames the world-update hook has started (g_frame_serial) and the one in which the judge last saw a CPU's count
 // (g_pin_cpu_serial). The one-update rule holds only while the judge keeps running: a 3 that ends the match leaves
 // the judge silent with g_pin_counting / g_pin_cpu still set, and the match clock then stands (the replay, the
@@ -735,8 +736,10 @@ REX_HOOK_RAW(sub_8269D768) {
                     "{}, the pin's {})", held, G32(base, kMatchFrames), g_pin_cpu_frame.load());
     }
   }
-  if (static const bool off = std::getenv("SVR2011_TEST_PIN_CPU_RULE_OFF") != nullptr;
-      !off && g_pin_counting.load() && g_pin_cpu.load() && g_world_ticks > 1 && judge_live &&
+  // (2.2.2-2.2.5's way, off now: the CPU's AI steps once a frame in the count instead - sub_8221D148's hook. Test
+  // aid SVR2011_TEST_PIN_CPU_RULE=1 brings the rule back)
+  if (static const bool on = std::getenv("SVR2011_TEST_PIN_CPU_RULE") != nullptr;
+      on && g_pin_counting.load() && g_pin_cpu.load() && g_world_ticks > 1 && judge_live &&
       G32(base, kMatchFrames) <= g_pin_cpu_frame.load() + 2) {
     static uint32_t told_frame = 0, told = 0;
     if (const uint32_t f = G32(base, kMatchFrames); f > told_frame + 300 && (++told <= 20 || told % 100 == 0)) {
@@ -1794,10 +1797,11 @@ REX_HOOK_RAW(sub_822446E0) {
     }
     const uint32_t port = pinned ? Rd32(base + pinned + 1152) : 0;
     g_pin_cpu = pinned && (port >= svr2011::kMaxPlayers || svr2011::PlayerPadType(port) == svr2011::PadType::kNone);
+    g_pin_cpu_pad = g_pin_cpu.load() ? Rd32(base + pinned + 2584) : 0u;
     g_pin_cpu_frame = frame;
     g_pin_cpu_serial = g_frame_serial.load();
   } else {
-    g_pin_cpu = false;
+    g_pin_cpu = false, g_pin_cpu_pad = 0;
   }
   // (a new match - its frame count starts again, the judge object is the same: nothing from the last one's pins)
   static uint32_t last_frame = 0;
@@ -1907,6 +1911,28 @@ REX_HOOK_RAW(sub_82165AD8) {
 // or 3 made 0, and a kick-out gone with it: reports 4f62f3, a2fd0a, c35ceb). 2.2.0 ran the count at one update a frame,
 // which made it and what followed slow motion (report f7ad46). Here: while the pin is on, the press he should have made.
 // Test aids: SVR2011_TEST_PIN_GATE_OFF=1 (the game's alone), SVR2011_TEST_PIN_STEP_LOG=1 (each update of his count).
+// A CPU pinned below 60 fps (reports bead2e, 4eed91, f83b6c). Its controller's update, sub_8221D148 (r3: the
+// controller +32), steps its AI (sub_827EB298) - every update; the characters' job, which acts on its presses, once
+// a frame. With two updates a frame the AI's timed kick-out tap never reached the job (its pad flickered 0x80 / 0xC0
+// and the tap never came): 60 fps 4 of 4 kick-outs, 30 fps none. 2.2.2-2.2.5 ran the whole world at one update a
+// frame through such a count - slow motion on phones at every pin on a CPU. Now only that CPU's controller and AI
+// skip the frame's earlier updates while the count runs: they step once a frame, as at 60 fps, and the world keeps
+// its speed. Test aid SVR2011_TEST_PIN_AI_EVERY_UPDATE=1: the game's way.
+REX_EXTERN(__imp__sub_8221D148);
+REX_HOOK_RAW(sub_8221D148) {
+  static const bool every = std::getenv("SVR2011_TEST_PIN_AI_EVERY_UPDATE") != nullptr;
+  if (!every && g_extra_update && g_pin_counting.load() && g_pin_cpu.load()) {
+    if (const uint32_t pad = g_pin_cpu_pad.load(); pad && (ctx.r3.u32 == pad + 32 || ctx.r3.u32 == pad)) {
+      static uint32_t told = 0;
+      if (++told <= 3 || told % 500 == 0)
+        REXLOG_INFO("pin count: a CPU is pinned - its controller and AI step once a frame (controller {:08X}{}; {} "
+                    "times)", pad, ctx.r3.u32 == pad ? "" : " +32", told);
+      return;
+    }
+  }
+  __imp__sub_8221D148(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_822EB8D8);
 REX_HOOK_RAW(sub_822EB8D8) {
   static const bool off = std::getenv("SVR2011_TEST_PIN_GATE_OFF") != nullptr;
