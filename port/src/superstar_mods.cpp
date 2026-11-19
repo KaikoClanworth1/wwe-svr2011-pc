@@ -28,6 +28,7 @@
 #include "cae_mod_motions.h"
 #include "no_mods.h"
 #include "caw_limits.h"
+#include "blood.h"
 #include "mem_trace.h"
 #include "superstar_mods.h"
 #include "title_new.h"
@@ -368,8 +369,8 @@ bool BuildRenders(const fs::path& out, uint32_t base, uint32_t slot, const fs::p
 // won't do: an installed mod's files carry the zip's old dates).
 std::string Stamp(const std::vector<fs::path>& srcs) {
   // (the overlay format's version: a change rebuilds every overlay once -
-  // 2: models kept within the match's vertex budget, FitModelBudget)
-  std::string st = "overlay 2\n";
+  // 2: models kept within the match's vertex budget, FitModelBudget; "blood": blood overlays made, blood.h)
+  std::string st = svr2011::BloodForAll() ? "overlay 2\nblood 2\n" :"overlay 2\n";
   std::error_code ec;
   for (const auto& p : srcs) {
     if (!fs::exists(p, ec)) continue;
@@ -846,6 +847,11 @@ uint32_t EntryPages(const svrfmt::Bytes& entry, std::vector<svrfmt::PachEntry>* 
 // overlays left out where needed. -> false: an attire still doesn't fit.
 // `notes` gets what was done.
 bool FitModelBudget(svrfmt::Bytes& pac, std::string& notes) {
+  // (blood overlays first, made where missing (blood.h) - then left out like the model's own where over)
+  {
+    std::string blood;
+    if (svr2011::GiveBlood(pac, g_game, blood)) notes += " blood overlays:" + blood;
+  }
   svrfmt::Epac e;
   if (!svrfmt::EpacRead(pac, e)) return true;  // (not readable here: left to the game)
   bool changed = false, fits = true;
@@ -1163,7 +1169,7 @@ void LoadMods() {
         left_out.push_back(m.folder);
         continue;
       }
-      if (!notes.empty()) REXLOG_INFO("[svr2011] superstar mods: {}: vertex memory:{}", m.folder, notes);
+      if (!notes.empty()) REXLOG_INFO("[svr2011] superstar mods: {}: model:{}", m.folder, notes);
       if (!RenameModel(ch, m.key, -1, 0, drop) || !svrfmt::WriteFile((ov / nm).string(), ch)) {
         REXLOG_WARN("[svr2011] superstar mods: {}: ch.pac is not a character model pac (EPK8 with EMD models)", m.folder);
         continue;
