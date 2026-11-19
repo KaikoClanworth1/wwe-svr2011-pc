@@ -67,6 +67,11 @@ CUTOUT_TRIS = 0.15   # an opaque-drawn mesh with more triangle middles on see-th
 # body (a report: legs gone, holes in the torso, boots as outlines) drew that body see-through.
 BLEND_SOLID_TRIS = 0.9
 BLEND_SOLID_MIN = 8
+# ... nor one whose texture's alpha is never solid: SYM's tops, trunks and arms carry a gloss level there (Jeff Hardy's
+# tank top 0-66, his pants 20, his arms 30 - report 686be2), not opacity. Alpha is opacity only when the texture
+# reaches half (128) and isn't nearly all in-between (no texel above 240 and over 90% between 16 and 240: a level).
+OPACITY_MIN_MAX = 128
+OPACITY_LEVEL_SHARE = 0.9
 
 # a bone's segment: bone -> the child it points at (2011 names). Not the neck (kubi -> atama): the PS2 head joint
 # isn't where 2011's is (HCTP / SYM: low and back, at the neck's base), so turning the neck onto 2011's neck line tipped
@@ -756,6 +761,16 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
         mids = [((uvs[i][0] + uvs[j][0] + uvs[k][0]) / 3, (uvs[i][1] + uvs[j][1] + uvs[k][1]) / 3) for i, j, k in tris]
         return sum(1 for u, v in mids if al[int(v * h) % h, int(u * w) % w] < 16) / len(mids)
 
+    def alpha_is_opacity(name):
+        """whether a texture's alpha can be opacity at all (OPACITY_MIN_MAX / OPACITY_LEVEL_SHARE); no texture: yes"""
+        img = tex.get(name.lower())
+        if img is None:
+            return True
+        al = img[..., 3]
+        if int(al.max()) < OPACITY_MIN_MAX:
+            return False
+        return not (float((al > 240).mean()) < 0.01 and float(((al >= 16) & (al <= 240)).mean()) > OPACITY_LEVEL_SHARE)
+
     def cutout(sub):
         """whether a PS2 submesh is drawn blended (hair cards, hair lines, laces): its material's flags (u32 at
         +0x24) - JBI / SYM / HCTP: 0x07 opaque, 0x05 blended (bit 0x02 clear) in a model that has 0x07; SvR 2004 on: 0x05 opaque,
@@ -850,6 +865,10 @@ def build_model(body, parts, tex, out_dir, template, tag, old_materials=False):
                         clear_share(tname, uvs, tris) >= BLEND_SOLID_TRIS:
                     blended = False   # (its texture's alpha isn't opacity: BLEND_SOLID_TRIS)
                     solid_blended.append('%s (%s, %d triangles)' % ('%s_m%d_%d' % (src['name'] or tag, mi, si), tname, len(tris)))
+                elif blended and old_materials and not alpha_is_opacity(tname):
+                    blended = False   # (its texture's alpha is a gloss level, never solid: OPACITY_MIN_MAX)
+                    solid_blended.append('%s (%s, %d triangles, alpha a level)' % (
+                        '%s_m%d_%d' % (src['name'] or tag, mi, si), tname, len(tris)))
                 kind = 'eye' if 'eye' in tname.lower() else 'hair' if blended or (not old_materials and see_through(tname, uvs, tris)) else 'skin'
                 mesh = dict(name='%s_m%d_%d' % (src['name'] or tag, mi, si), kind=kind, positions=pos, normals=nrm,
                             uvs=uvs, bones=bones, weights=wts, triangles=tris, _tex=tname, _spec=spec_of(sub))
