@@ -2864,6 +2864,7 @@ void TestEdit() {
       Log("test edit: crowd stand \"" + st.name + "\": " + std::to_string(st.rows.size()) + " rows " + st.rows.front() + "-" +
           st.rows.back() + ", " + std::to_string(st.people) + " people");
     g_light.crowd_keep.clear();
+    g_light.crowd = true;  // (an empty arena starts without its crowd: the parts are tested with it on)
     std::istringstream v(cp);
     for (std::string part; std::getline(v, part, ',');)
       if (const size_t c = part.find(':'); c != std::string::npos)
