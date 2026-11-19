@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <map>
 #include <set>
 
 namespace svrfmt {
@@ -139,7 +140,7 @@ bool CopyAudienceLightmap(Arena& to, const Arena& from) {
 int HideCrowd(Arena& a) {
   int n = 0;
   for (auto& e : a.entries) {
-    if (e.id != 0x4E20) continue;
+    if (e.id != 0x4E20 && e.id != 0x4E2A) continue;  // (both: the low-detail pack is the one weak phones draw)
     const bool packed = IsBpe(e.data);
     std::vector<PachEntry> subs;
     if (!PachRead(Unpack(e.data), subs)) continue;
@@ -232,6 +233,286 @@ int CopyModelInto(Arena& dst, int host_model, const Arena& src, int src_model, s
   for (auto& s : add) host.meshes.push_back(std::move(s));
   dst.models[host_model].changed = true;
   return first;
+}
+
+// ------------------------------------------------------------------ crowd parts (suggestion 3dcea6)
+
+namespace {
+
+struct SeatLine {
+  std::string text;  // without its line end
+  std::string end;   // "\r\n", "\n" or ""
+};
+
+std::vector<SeatLine> SeatLines(const std::string& t) {
+  std::vector<SeatLine> v;
+  size_t p = 0;
+  while (p < t.size()) {
+    size_t nl = t.find('\n', p);
+    SeatLine l;
+    if (nl == std::string::npos) {
+      l.text = t.substr(p);
+      p = t.size();
+    } else {
+      l.text = t.substr(p, nl - p);
+      l.end = "\n";
+      p = nl + 1;
+    }
+    if (!l.text.empty() && l.text.back() == '\r') l.text.pop_back(), l.end = "\r" + l.end;
+    v.push_back(std::move(l));
+  }
+  return v;
+}
+
+std::string TrimSeat(const std::string& s) {
+  size_t a = 0, b = s.size();
+  while (a < b && (s[a] == ' ' || s[a] == '\t')) ++a;
+  while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t')) --b;
+  return s.substr(a, b - a);
+}
+
+// "A (32.0, 80.0, 10.0, 0.0); 3" -> "A" ("" when it isn't a seat row)
+std::string SeatRowId(const std::string& tl) {
+  const size_t paren = tl.find('(');
+  if (tl.empty() || tl[0] == ';' || paren == std::string::npos || paren == 0) return "";
+  const std::string id = TrimSeat(tl.substr(0, paren));
+  for (char c : id)
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') return "";
+  return id;
+}
+
+// A seat file: rows under stand comments in its first { } and people groups ("[n] count") after it.
+// Text from its first byte (the crowd's binary people models can hold '{', '[' and '(' too).
+bool IsSeatFile(const std::string& t) {
+  if (t.empty() || t[0] != ';' || t.find('\0') != std::string::npos) return false;
+  return t.find('{') != std::string::npos && t.find("\n[") != std::string::npos && t.find('(') != std::string::npos;
+}
+
+struct SeatParse {
+  std::vector<std::string> stand_keys;               // in this file's order
+  std::map<std::string, std::pair<int, int>> rows;   // row id -> (stand index in stand_keys, its place from the ring)
+  std::vector<std::vector<std::string>> stand_rows;
+  size_t people_from = 0;                            // the first line after the seat block
+};
+
+SeatParse ParseSeats(const std::vector<SeatLine>& lines) {
+  SeatParse s;
+  int depth = 0, stand = -1;
+  bool opened = false;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    const std::string tl = TrimSeat(lines[i].text);
+    if (!opened) {
+      if (tl.rfind("{", 0) == 0) opened = true, depth = 1;
+      continue;
+    }
+    if (tl.rfind("}", 0) == 0) {
+      s.people_from = i + 1;
+      break;
+    }
+    if (tl.size() > 1 && tl[0] == ';') {
+      const std::string key = TrimSeat(tl.substr(1));
+      if (key.empty()) continue;
+      stand = int(s.stand_keys.size());
+      s.stand_keys.push_back(key);
+      s.stand_rows.emplace_back();
+      continue;
+    }
+    const std::string id = SeatRowId(tl);
+    if (id.empty()) continue;
+    if (stand < 0) {  // (rows before any stand comment: a stand of their own)
+      stand = 0;
+      s.stand_keys.push_back("");
+      s.stand_rows.emplace_back();
+    }
+    s.rows[id] = {stand, int(s.stand_rows[size_t(stand)].size())};
+    s.stand_rows[size_t(stand)].push_back(id);
+  }
+  (void)depth;
+  return s;
+}
+
+// A person's line: "C00(b03)\t;comment" / "M07" / a left-out one "; off C00(b03)". Its token, the row id, its "bNN".
+struct Person {
+  bool off = false;
+  std::string token, row, tex, rest;
+};
+
+bool ParsePerson(const std::string& text, Person& p) {
+  std::string tl = TrimSeat(text);
+  p = Person();
+  if (tl.rfind("; off ", 0) == 0) p.off = true, tl = TrimSeat(tl.substr(6));
+  else if (tl.empty() || tl[0] == ';' || tl[0] == '{' || tl[0] == '}' || tl[0] == '[') return false;
+  size_t e = 0;
+  while (e < tl.size() && tl[e] != ' ' && tl[e] != '\t' && tl[e] != ';') ++e;
+  p.token = tl.substr(0, e);
+  p.rest = p.off ? std::string() : tl.substr(e);
+  size_t r = 0;
+  while (r < p.token.size() && !std::isdigit(static_cast<unsigned char>(p.token[r]))) ++r;
+  if (r == 0 || r == p.token.size()) return false;
+  p.row = p.token.substr(0, r);
+  const size_t a = p.token.find('('), b = p.token.find(')');
+  if (a != std::string::npos && b != std::string::npos && b > a) p.tex = p.token.substr(a + 1, b - a - 1);
+  return true;
+}
+
+std::string PersonSeat(const Person& p) {  // the token without its "(bNN)"
+  const size_t a = p.token.find('(');
+  return a == std::string::npos ? p.token : p.token.substr(0, a);
+}
+
+const char* StandName(const std::string& key, int index, std::string& own) {
+  static const struct { const char* key; const char* name; } kNames[] = {
+      {"\x89\x45\x89\x9C", "Far side, right"}, {"\x8D\xB6\x89\x9C", "Far side, left"},
+      {"\x89\x45\x89\xA1", "Right side"},      {"\x8D\xB6\x89\xA1", "Left side"},
+      {"\x8E\xE8\x91\x4F", "Near side (the camera's)"}};
+  for (const auto& n : kNames)
+    if (key == n.key) return n.name;
+  bool plain = !key.empty();
+  for (char c : key) plain = plain && static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) < 127;
+  own = plain ? key : "Stand " + std::to_string(index + 1);
+  return own.c_str();
+}
+
+}  // namespace
+
+std::string CropSeatText(const std::string& text, const std::vector<std::string>& stand_keys, const std::map<int, int>& keep,
+                         int* left_out) {
+  std::vector<SeatLine> lines = SeatLines(text);
+  const SeatParse s = ParseSeats(lines);
+  // row id -> kept?
+  std::map<std::string, bool> row_kept;
+  for (const auto& [id, at] : s.rows) {
+    bool kept = true;
+    const std::string& key = s.stand_keys[size_t(at.first)];
+    for (size_t k = 0; k < stand_keys.size(); ++k)
+      if (stand_keys[k] == key) {
+        const auto it = keep.find(int(k));
+        if (it != keep.end()) kept = at.second < it->second;
+      }
+    row_kept[id] = kept;
+  }
+  int out_count = 0;
+  size_t group_line = std::string::npos;  // the "[n] count" line of the group being read
+  int active = 0;
+  std::string tex, shown_tex;  // the texture the next untagged person wears (as first written; as the file now reads)
+  std::vector<SeatLine> out;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    SeatLine l = lines[i];
+    const std::string tl = TrimSeat(l.text);
+    if (i < s.people_from) {
+      out.push_back(l);
+      continue;
+    }
+    if (!tl.empty() && tl[0] == '[') {
+      group_line = out.size(), active = 0, tex.clear(), shown_tex.clear();
+      out.push_back(l);
+      continue;
+    }
+    if (!tl.empty() && tl[0] == '}' && group_line != std::string::npos) {  // the group's count: its people seated now
+      std::string& g = out[group_line].text;
+      const size_t rb = g.find(']');
+      if (rb != std::string::npos) {
+        size_t a = rb + 1;
+        while (a < g.size() && (g[a] == ' ' || g[a] == '\t')) ++a;
+        size_t b = a;
+        while (b < g.size() && std::isdigit(static_cast<unsigned char>(g[b]))) ++b;
+        if (b > a) g = g.substr(0, a) + std::to_string(active) + g.substr(b);
+      }
+      group_line = std::string::npos;
+      out.push_back(l);
+      continue;
+    }
+    Person p;
+    if (group_line == std::string::npos || !ParsePerson(l.text, p)) {
+      out.push_back(l);
+      continue;
+    }
+    if (!p.tex.empty()) tex = p.tex;
+    const auto rk = row_kept.find(p.row);
+    const bool kept = rk == row_kept.end() || rk->second;
+    if (kept) {
+      // (its texture said where the file before it no longer says it: a left-out person wore it)
+      std::string token = p.token;
+      if (p.tex.empty() && !tex.empty() && tex != shown_tex) token = PersonSeat(p) + "(" + tex + ")";
+      shown_tex = tex;
+      const size_t lead = l.text.find_first_not_of(" \t");
+      l.text = (lead == std::string::npos ? std::string() : l.text.substr(0, lead)) + token + p.rest;
+      ++active;
+    } else {
+      // (its own "(bNN)" kept in the comment: the person comes back as written)
+      std::string token = p.token;
+      if (p.tex.empty() && !tex.empty() && !p.off) token = PersonSeat(p) + "(" + tex + ")";
+      l.text = "; off " + token;
+      if (!p.off) ++out_count;
+    }
+    out.push_back(l);
+  }
+  if (left_out) *left_out += out_count;
+  std::string r;
+  for (const auto& l : out) r += l.text + l.end;
+  return r;
+}
+
+std::vector<CrowdStand> CrowdStands(const Arena& a) {
+  std::vector<CrowdStand> v;
+  for (const auto& e : a.entries) {
+    if (e.id != 0x4E20) continue;
+    std::vector<PachEntry> subs;
+    if (!PachRead(Unpack(e.data), subs)) continue;
+    for (const auto& sub : subs) {
+      const Bytes raw = Unpack(sub.data);
+      const std::string t(raw.begin(), raw.end());
+      if (!IsSeatFile(t)) continue;
+      const std::vector<SeatLine> lines = SeatLines(t);
+      const SeatParse s = ParseSeats(lines);
+      for (size_t k = 0; k < s.stand_keys.size(); ++k) {
+        CrowdStand c;
+        c.key = s.stand_keys[k];
+        std::string own;
+        c.name = StandName(c.key, int(k), own);
+        c.rows = s.stand_rows[k];
+        v.push_back(std::move(c));
+      }
+      bool in_group = false;
+      for (size_t i = s.people_from; i < lines.size(); ++i) {
+        const std::string tl = TrimSeat(lines[i].text);
+        if (!tl.empty() && tl[0] == '[') in_group = true;
+        Person p;
+        if (!in_group || !ParsePerson(lines[i].text, p)) continue;
+        if (const auto it = s.rows.find(p.row); it != s.rows.end()) ++v[size_t(it->second.first)].people;
+      }
+      return v;  // (the first seat file: the others seat the same stands)
+    }
+  }
+  return v;
+}
+
+int CropCrowd(Arena& a, const std::map<int, int>& keep) {
+  std::vector<std::string> keys;
+  for (const auto& s : CrowdStands(a)) keys.push_back(s.key);
+  if (keys.empty()) return 0;
+  int left_out = 0;
+  for (auto& e : a.entries) {
+    if (e.id != 0x4E20 && e.id != 0x4E2A) continue;
+    const bool packed = IsBpe(e.data);
+    std::vector<PachEntry> subs;
+    if (!PachRead(Unpack(e.data), subs)) continue;
+    bool changed = false;
+    for (auto& sub : subs) {
+      const Bytes raw = Unpack(sub.data);
+      const std::string t(raw.begin(), raw.end());
+      if (!IsSeatFile(t)) continue;
+      const std::string c = CropSeatText(t, keys, keep, &left_out);
+      if (c == t) continue;
+      const Bytes w(c.begin(), c.end());
+      sub.data = IsBpe(sub.data) ? BpeEncode(w) : w;
+      changed = true;
+    }
+    if (!changed) continue;
+    const Bytes pach = PachWrite(subs);
+    e.data = packed ? BpeEncode(pach) : pach;
+  }
+  return left_out;
 }
 
 }  // namespace svrfmt

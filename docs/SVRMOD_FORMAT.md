@@ -295,7 +295,7 @@ LoadCustomArenas`). Older mods may have `info.txt` in place of
 | `titantron=live` | keep the match camera on the arena's screens (models 800-899); default: entrances only ([5.8](#58-media-theme-titantron)) |
 | `source=` | Mod Maker: where the arena came from (not read by the game) |
 | `crowd_source=own` / `host` / `none` | arena_port (SvR 2007-2010, LoW ports): whose crowd the arena carries - the source game's own, 2011 RAW's, or none (`crowd=0` too). A note, not read by the game |
-| `ring.tints=`, `ring.turnbuckles=`, `ring.pads=`, `light.color=`, `light.strength=`, `crowd=0`, `crowd.light=neutral | as made | <r g b>`, `crowd.bright=` | Mod Maker notes. Already baked into `arena.pac`, read back when the mod reopens (`modmaker/svrfmt/ring_kit.cpp`, `modmaker/editor.cpp`) |
+| `ring.tints=`, `ring.turnbuckles=`, `ring.pads=`, `light.color=`, `light.strength=`, `crowd=0`, `crowd.light=neutral | as made | <r g b>`, `crowd.bright=`, `crowd.parts=<stand>:<rows>,...` | Mod Maker notes. Already baked into `arena.pac`, read back when the mod reopens (`modmaker/svrfmt/ring_kit.cpp`, `modmaker/editor.cpp`). `crowd.parts=`: the crowd stands (in the seat file's order) and how many of their rows from the ring keep their people; the people left out stay in the seat files as `; off <seat>` comments, so they come back when the mod reopens and the rows are put back (`modmaker/svrfmt/arena_build.cpp CropCrowd`) |
 
 ### 3.4 type=backstage
 
