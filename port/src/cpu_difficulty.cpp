@@ -259,7 +259,33 @@ REX_HOOK_RAW(sub_8221DD88) {
 }
 REX_EXTERN(__imp__sub_821F4D90);
 REX_HOOK_RAW(sub_821F4D90) {
+  const uint32_t stats = ctx.r3.u32;  // (+32 the character, +148 the momentum meter, float)
   svr2011::WithLevel(base, svr2011::EffectiveCpuTuning().momentum, [&] { __imp__sub_821F4D90(ctx, base); });
+  // Research aid SVR2011_TEST_FIN_LOG=1 (infinite finishers, suggestion 9beda8): each character's stats object
+  // +120..+199 once a second (words as hex, the meter's neighbours)
+  static const bool fin_log = std::getenv("SVR2011_TEST_FIN_LOG") != nullptr;
+  if (fin_log && stats) {
+    static std::mutex m;
+    static uint32_t objs[8] = {};
+    static uint32_t last_frame = 0;
+    std::lock_guard lock(m);
+    bool known = false;
+    for (uint32_t& o : objs)
+      if (o == stats) { known = true; break; }
+    if (!known)
+      for (uint32_t& o : objs)
+        if (!o) { o = stats; break; }
+    const uint32_t frame = svr2011::Rd32(base + 0x82E3CD0C);
+    if (frame / 60 != last_frame / 60 || frame < last_frame) {
+      last_frame = frame;
+      for (uint32_t o : objs) {
+        if (!o) continue;
+        std::string w;
+        for (uint32_t k = 120; k < 200; k += 4) w += fmt::format(" {:08X}", svr2011::Rd32(base + o + k));
+        REXLOG_INFO("fin log: frame {} stats {:08X} char {:08X}:{}", frame, o, svr2011::Rd32(base + o + 32), w);
+      }
+    }
+  }
 }
 REX_EXTERN(__imp__sub_821F4FA0);
 REX_HOOK_RAW(sub_821F4FA0) {
