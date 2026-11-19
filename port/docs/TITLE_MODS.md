@@ -138,6 +138,25 @@ A new title (behind the gate): `py tools/title_port.py make --new --name "SvR PC
 folder and, with `--svrmod`, the file to install (launcher Mods tab, or copy the folder into
 `Mods\Titles`).
 
+### A belt from another game (suggestion 5ee174)
+
+SvR 2008, 2009 and 2010 keep their belts as 2011 does: SOBJ entries with the same ids (2004, 2014, 2024, 3004 ...
+for the WWE title; `data/belt_weapon_textures.json` lists each title's) in `pac/evt/_EvtObj.pac`. Each is a model
+(part 0), its textures (0xA) and its attach text (0x64). Most of 2011's own entries add a second texture set and bend
+data (0x1E, 0x3E8, 0x3F2), but some of its belts (Hardcore 2015 / 2025, 2309, 2310, 2513) are the three old parts byte
+for byte, so an old entry loads as it is.
+
+```
+py tools/title_port.py belts --game svr2010 --src <2010 disc> --game11 <2011 game folder>
+py tools/title_port.py make --title WWE --name "WWE Championship" --belt-from svr2010 --belt-src <2010 disc> --out <dir>
+```
+
+`belts` lists the source game's title belts and whether each differs from 2011's (by its model). `--belt-from` copies
+that game's entries for the title into `belt/<id>.bin` with `pacentry evt\evtobj.pac SOBJ <id> belt/<id>.bin` lines in
+`pack.txt` (the move packs add them; `Mods\Titles` is a move-pack root) and notes `belt_from=` in the manifest. The
+Mod Maker's Championship titles page has it as "Belt model", using the disc set on My game discs. WWE '12 / '13 belts
+(another model format) come later.
+
 ## How the game does it
 
 - Name: `src/title_mods.cpp`. Each title has a fixed list of string ids, found by text in the English
