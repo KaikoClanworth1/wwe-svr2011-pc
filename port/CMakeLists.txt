@@ -122,6 +122,7 @@ set(SVR2011_SOURCES
     src/menu_touch.cpp
     src/cae_steps.cpp
     src/big_roster.cpp
+    src/infinite_finishers.cpp
     src/post_effects.cpp
     src/replays.cpp
     src/reel_save.cpp

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include <fmt/format.h>
@@ -27,6 +28,7 @@
 #include <rex/ppc.h>
 
 #include "graphics_page.h"
+#include "infinite_finishers.h"
 #include "p2p.h"
 
 #include "generated/default/svr2011_init.h"
@@ -259,8 +261,63 @@ REX_HOOK_RAW(sub_8221DD88) {
 }
 REX_EXTERN(__imp__sub_821F4D90);
 REX_HOOK_RAW(sub_821F4D90) {
+  const uint32_t stats = ctx.r3.u32;  // (+32 the character, +148 the momentum meter, float)
   svr2011::WithLevel(base, svr2011::EffectiveCpuTuning().momentum, [&] { __imp__sub_821F4D90(ctx, base); });
+  // Research aid SVR2011_TEST_FIN_LOG=1 (infinite finishers, suggestion 9beda8): each character's stats object
+  // +120..+199 once a second (words as hex, the meter's neighbours)
+  static const bool fin_log = std::getenv("SVR2011_TEST_FIN_LOG") != nullptr;
+  if (fin_log && stats) {
+    static std::mutex m;
+    static uint32_t objs[8] = {};
+    static uint32_t last_frame = 0;
+    std::lock_guard lock(m);
+    bool known = false;
+    for (uint32_t& o : objs)
+      if (o == stats) { known = true; break; }
+    if (!known)
+      for (uint32_t& o : objs)
+        if (!o) { o = stats; break; }
+    const uint32_t frame = svr2011::Rd32(base + 0x82E3CD0C);
+    if (frame / 60 != last_frame / 60 || frame < last_frame) {
+      last_frame = frame;
+      for (uint32_t o : objs) {
+        if (!o) continue;
+        std::string w;
+        for (uint32_t k = 120; k < 200; k += 4) w += fmt::format(" {:08X}", svr2011::Rd32(base + o + k));
+        REXLOG_INFO("fin log: frame {} stats {:08X} char {:08X}:{}", frame, o, svr2011::Rd32(base + o + 32), w);
+      }
+    }
+  }
 }
+// The momentum meter's writers (stats +144, -1..1): sub_821F5370 (adds a delta, clamped - every update),
+// sub_821F3010 (puts it back to a constant, +180 -1), sub_821F1CC0 (sets it - at a match's start from sub_825B3470).
+// INFINITE FINISHERS (infinite_finishers.cpp) keeps a meter that has been full full; research aid
+// SVR2011_TEST_FIN_LOG=1: each call's +144 before / after and its caller.
+namespace {
+template <void (*F)(PPCContext&, uint8_t*)>
+void MeterWriter(PPCContext& ctx, uint8_t* base, const char* name) {
+  static const bool log = std::getenv("SVR2011_TEST_FIN_LOG") != nullptr;
+  const uint32_t stats = ctx.r3.u32, lr = uint32_t(ctx.lr);
+  const double f1 = ctx.f1.f64;
+  const uint32_t before = log && stats ? svr2011::Rd32(base + stats + 144) : 0;
+  if (stats && lr == 0x825B3470) svr2011::InfiniteFinishersMeterSet(stats);  // (a match's start)
+  F(ctx, base);
+  svr2011::InfiniteFinishersMeterWritten(base, stats);
+  if (!log || !stats) return;
+  const uint32_t after = svr2011::Rd32(base + stats + 144);
+  float b, a;
+  std::memcpy(&b, &before, 4), std::memcpy(&a, &after, 4);
+  if (b != a)
+    REXLOG_INFO("fin log: {} stats {:08X} meter {:.3f} -> {:.3f} (f1 {:.3f}) from {:08X}, frame {}", name, stats, b, a, f1, lr,
+                svr2011::Rd32(base + 0x82E3CD0C));
+}
+}  // namespace
+REX_EXTERN(__imp__sub_821F5370);
+REX_HOOK_RAW(sub_821F5370) { MeterWriter<__imp__sub_821F5370>(ctx, base, "add"); }
+REX_EXTERN(__imp__sub_821F3010);
+REX_HOOK_RAW(sub_821F3010) { MeterWriter<__imp__sub_821F3010>(ctx, base, "reset"); }
+REX_EXTERN(__imp__sub_821F1CC0);
+REX_HOOK_RAW(sub_821F1CC0) { MeterWriter<__imp__sub_821F1CC0>(ctx, base, "set"); }
 REX_EXTERN(__imp__sub_821F4FA0);
 REX_HOOK_RAW(sub_821F4FA0) {
   svr2011::WithLevel(base, svr2011::EffectiveCpuTuning().momentum, [&] { __imp__sub_821F4FA0(ctx, base); });

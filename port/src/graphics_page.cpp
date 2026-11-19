@@ -131,6 +131,7 @@ enum Row {
   kVsStyle,                                                      // GRAPHICS (after RING MAT: vs_styles.h)
   kCpuPreset, kCpuReversal, kCpuRates, kCpuDamage, kCpuPin, kCpuMomentum,  // CPU (cpu_difficulty.h)
   kLightBeams,                                                   // ADV. GRAPHICS (after SHADOW QUALITY)
+  kInfiniteFinishers,                                            // CPU (last: infinite_finishers.cpp)
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
@@ -185,7 +186,7 @@ const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate,
 #endif
                                              {kRenderScale, kAntiAliasing, kUpscaling, kTextureQuality, kArenaBrightness, kMatFix, kVsStyle, kWide, kCutsceneFps},
                                              {kPreset, kCrowd, kShadows, kLightBeams, kEffects, kDof, kMotionBlur, kSoft, kPrepare},
-                                             {kCpuPreset, kCpuReversal, kCpuRates, kCpuDamage, kCpuPin, kCpuMomentum}};
+                                             {kCpuPreset, kCpuReversal, kCpuRates, kCpuDamage, kCpuPin, kCpuMomentum, kInfiniteFinishers}};
 // SHADOWS: only with the renderer's native_shadows setting.
 bool HasShadows() {
   static const bool has = !rex::cvar::GetFlagByName("native_shadows").empty();
@@ -519,6 +520,7 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool wide_ = true;    // matches as wide as the screen
   bool dof_ = true, blur_ = true, soft_ = false, replays_ = true;  // depth of field, motion blur (post_effects.cpp)
   bool beams_ = true;  // LIGHT BEAMS (native_light_beams)
+  bool infinite_finishers_ = false;  // INFINITE FINISHERS (infinite_finishers)
   bool caw_no_limits_ = true;  // CAW LIMITS: OFF (the port's) / STOCK (caw_limits.cpp)
   int fast_start_ = 0;  // FAST START (fast_start.h): bit 0 skip_intros, bit 1 skip_training
   bool prepare_ = true;  // the known pipelines built ahead in the menus
@@ -653,6 +655,7 @@ void GraphicsPage::Load() {
   wide_ = rex::cvar::Query<bool>("native_widescreen");
   dof_ = rex::cvar::Query<bool>("depth_of_field");
   beams_ = !HasLightBeams() || rex::cvar::Query<bool>("native_light_beams");
+  infinite_finishers_ = rex::cvar::Query<bool>("infinite_finishers");
   blur_ = rex::cvar::Query<bool>("motion_blur");
   soft_ = rex::cvar::Query<bool>("soft_filter");
   replays_ = rex::cvar::Query<bool>("replays");
@@ -845,6 +848,11 @@ void GraphicsPage::Change(int row, int dir) {
     case kLanguage:
       language_ = (language_ + dir + kNumLanguages) % kNumLanguages;
       SaveSetting("user_language", std::to_string(kLanguages[language_].id));
+      break;
+    case kInfiniteFinishers:
+      infinite_finishers_ = !infinite_finishers_;
+      rex::cvar::SetFlagByName("infinite_finishers", infinite_finishers_ ? "true" : "false");
+      SaveSetting("infinite_finishers", infinite_finishers_ ? "true" : "false");
       break;
     case kLightBeams:
       beams_ = !beams_;
@@ -1599,6 +1607,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kWide: return wide_ ? "FULL WIDTH" : "16:9";
       case kDof: return dof_ ? "ON" : "OFF";
       case kLightBeams: return beams_ ? "ON" : "OFF";
+      case kInfiniteFinishers: return infinite_finishers_ ? "ON" : "OFF";
       case kMotionBlur: return blur_ ? "ON" : "OFF";
       case kSoft: return soft_ ? "ON (XBOX 360)" : "OFF";
       case kReplays: return replays_ ? "ON" : "OFF";
@@ -1676,6 +1685,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kWide: return "WIDE SCREENS";
       case kDof: return "DEPTH OF FIELD";
       case kLightBeams: return "LIGHT BEAMS";
+      case kInfiniteFinishers: return "INFINITE FINISHERS";
       case kMotionBlur: return "MOTION BLUR";
       case kSoft: return "SOFT FILTER";
       case kReplays: return "REPLAYS";
@@ -1737,6 +1747,9 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kTouch: return "The on-screen controller. Its EDIT button moves, resizes and remaps it.";
       case kWide: return "Screens wider than 16:9: matches fill the width (menus stay 16:9).";
       case kDof: return "Wide shots blur what is out of focus. OFF: the whole ring stays sharp.";
+      case kInfiniteFinishers:
+        return "ON: a finisher doesn't use the momentum meter up - with it full, keep doing finishers (players and "
+               "CPUs). Offline matches only.";
       case kLightBeams:
         return "The arena's spotlight beams, lamp flares, sign glow and camera flashes. OFF: a quarter fewer draws "
                "in a match - faster on weak phones, the arena looks flatter.";
