@@ -707,6 +707,8 @@ final class ModsPage {
     }
 
     static String starName(String id) {
+        // (superstar=mod:<folder>: an attire for a superstar mod - the game gives it that mod's next attire)
+        if (id != null && id.trim().startsWith("mod:")) return "the superstar mod " + id.trim().substring(4);
         if (id != null) for (String[] s : MoviesPage.kStars) if (s[0].equals(id.trim())) return s[1];
         return "superstar " + id;
     }

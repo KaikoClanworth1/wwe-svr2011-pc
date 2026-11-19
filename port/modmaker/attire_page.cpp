@@ -24,6 +24,9 @@ namespace {
 
 struct AttireProject {
   int star = -1;          // 2011 id
+  // or a superstar mod's next attire (suggestion cc6fbd: a mod as another mod's / one superstar's attire): its
+  // installed folder's name (Mods\Superstars\<folder>; manifest superstar=mod:<folder>, attire=new); star is -1 then
+  std::string star_mod;
   int slot = 0;           // 1-4: replace that attire; 0: a new one
   char name[32] = "", author[64] = "", version[16] = "1.0";
   std::wstring model;     // a ch pac
@@ -86,14 +89,16 @@ std::vector<int> CurrentAttires(int id) {
   return cache[id] = out;
 }
 
+std::string StarModName(const std::string& folder);
 std::string ModId() {
   const StarInfo* s = StarOrDlcById(g_at.star);
-  return IdFrom(std::string(g_at.name[0] ? g_at.name : "attire") + "_" + (s ? s->name : std::to_string(g_at.star)), "attire");
+  const std::string who = !g_at.star_mod.empty() ? StarModName(g_at.star_mod) : s ? s->name : std::to_string(g_at.star);
+  return IdFrom(std::string(g_at.name[0] ? g_at.name : "attire") + "_" + who, "attire");
 }
 
 bool Build(std::vector<ZipEntry>& files) {
   Bytes pac;
-  if (g_at.star < 0 || g_at.model.empty() || !ReadFile(Utf8(g_at.model), pac) || pac.size() < 0x4000 || std::memcmp(pac.data(), "EPK8", 4)) {
+  if ((g_at.star < 0 && g_at.star_mod.empty()) || g_at.model.empty() || !ReadFile(Utf8(g_at.model), pac) || pac.size() < 0x4000 || std::memcmp(pac.data(), "EPK8", 4)) {
     Status("Pick the superstar and a character model pac first.");
     return false;
   }
@@ -118,8 +123,9 @@ bool Build(std::vector<ZipEntry>& files) {
     }
     pac = EpacWrite(e);
   }
-  std::string man = "type=attire\nid=" + ModId() + "\nsuperstar=" + std::to_string(g_at.star) +
-                    "\nattire=" + (g_at.slot ? std::to_string(g_at.slot) : std::string("new")) + "\nname=" + g_at.name +
+  const bool for_mod = !g_at.star_mod.empty();  // (a superstar mod's next attire: always a new one)
+  std::string man = "type=attire\nid=" + ModId() + "\nsuperstar=" + (for_mod ? "mod:" + g_at.star_mod : std::to_string(g_at.star)) +
+                    "\nattire=" + (g_at.slot && !for_mod ? std::to_string(g_at.slot) : std::string("new")) + "\nname=" + g_at.name +
                     "\nmodel=attire.pac\nauthor=" + g_at.author + "\nversion=" + g_at.version + "\n" + MadeWith();
   if (g_at.entrance > 0) man += "entrance=" + std::to_string(g_at.entrance) + "\n";
   files.push_back({"manifest.txt", Bytes(man.begin(), man.end())});
@@ -269,6 +275,37 @@ std::vector<std::pair<std::wstring, std::string>> InstalledStars() {
   return out;
 }
 
+// An installed superstar mod's name and its attires now: its model pac's own, its attire<N>= files and the attire
+// mods made for it (superstar=mod:<folder>, this one's own folder left out) - the game gives them in that order.
+std::string StarModName(const std::string& folder) {
+  Bytes t;
+  const fs::path dir = fs::path(g_game) / L"Mods" / L"Superstars" / fs::u8path(folder);
+  if (!ReadFile(PathStr(dir / L"manifest.txt"), t)) return folder;
+  const std::string n = Value(std::string(t.begin(), t.end()), "name");
+  return n.empty() ? folder : n;
+}
+int StarModAttires(const std::string& folder) {
+  const fs::path dir = fs::path(g_game) / L"Mods" / L"Superstars" / fs::u8path(folder);
+  Bytes t;
+  if (!ReadFile(PathStr(dir / L"manifest.txt"), t)) return 0;
+  const std::string m(t.begin(), t.end());
+  const std::string inner = Value(m, "model").empty() ? "ch.pac" : Value(m, "model");
+  int n = int(ModelAttires((dir / fs::u8path(inner)).wstring()).size());
+  for (int a = 2; a <= 4; ++a)
+    if (!Value(m, ("attire" + std::to_string(a)).c_str()).empty()) n = std::max(n, a);
+  std::error_code ec;
+  std::vector<fs::path> dirs;
+  for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / L"Attires", ec))
+    if (e.is_directory(ec)) dirs.push_back(e.path());
+  for (const auto& d : dirs) {
+    Bytes at;
+    if (PathStr(d.filename()) == ModId() || fs::exists(d / L"disabled", ec) || !ReadFile(PathStr(d / L"manifest.txt"), at)) continue;
+    const std::string am(at.begin(), at.end());
+    if (Value(am, "type") == "attire" && Lower(Value(am, "superstar")) == "mod:" + Lower(folder)) ++n;
+  }
+  return n;
+}
+
 bool g_keep_entrance = false;  // (From a superstar mod: its entrance= goes with the attire)
 
 // The source taken in: the model, the attire's name when none is typed, the entrance if asked.
@@ -288,7 +325,15 @@ bool TakeStarSource(const std::wstring& src) {
 }
 
 void Problems(std::vector<Problem>& p) {
-  if (g_at.star < 0) p.push_back(Error("No superstar yet.", "Pick whose attire this is."));
+  if (g_at.star < 0 && g_at.star_mod.empty()) p.push_back(Error("No superstar yet.", "Pick whose attire this is."));
+  if (!g_at.star_mod.empty()) {
+    std::error_code ec;
+    if (!fs::is_directory(fs::path(g_game) / L"Mods" / L"Superstars" / fs::u8path(g_at.star_mod), ec))
+      p.push_back(Error("The superstar mod \"" + g_at.star_mod + "\" isn't installed.", "Install it first, or pick another superstar."));
+    else if (StarModAttires(g_at.star_mod) >= 4)
+      p.push_back(Error(StarModName(g_at.star_mod) + " has 4 attires already (with the attire mods made for it) - the game's limit.",
+                        "Switch one of its attire mods off in the launcher's Mods tab."));
+  }
   if (g_at.model.empty()) p.push_back(Error("No model yet.", "A character model pac (ch.pac): its first attire becomes this attire."));
   else {
     Bytes head;
@@ -353,6 +398,8 @@ void Draw() {
   if (g_test.pending) {
     g_test.pending = false;
     g_at.star = g_test.star, g_at.slot = g_test.slot;
+    // test aid SVR2011_TEST_ATTIRE_FOR_MOD=<superstar mod folder>: the attire is that mod's next one
+    if (const char* fm = std::getenv("SVR2011_TEST_ATTIRE_FOR_MOD"); fm && *fm) g_at.star = -1, g_at.star_mod = fm, g_at.slot = 0;
     if (Lower(FileName(g_test.model)).ends_with(".pac")) {
       g_at.model = g_test.model;
       std::snprintf(g_at.name, sizeof g_at.name, "RING GEAR");
@@ -362,7 +409,7 @@ void Draw() {
     if (g_test_from > 0) g_at.from = g_test_from;
     if (!g_test_name.empty()) std::snprintf(g_at.name, sizeof g_at.name, "%s", g_test_name.c_str());
   }
-  if (!g_test_save.empty() && g_at.star >= 0 && !g_at.model.empty()) {
+  if (!g_test_save.empty() && (g_at.star >= 0 || !g_at.star_mod.empty()) && !g_at.model.empty()) {
     std::vector<ZipEntry> files;
     if (Build(files) && WriteFile(Utf8(g_test_save), ZipWrite(files))) Log("test: saved " + Utf8(g_test_save));
     g_test_save.clear();
@@ -375,14 +422,33 @@ void Draw() {
   const auto& stars = Stars();
   const StarInfo* who = StarOrDlcById(g_at.star);
   ImGui::SetNextItemWidth(320 * g_scale);
-  if (ImGui::BeginCombo("Superstar", who ? who->name.c_str() : g_at.star >= 0 ? std::to_string(g_at.star).c_str() : "(pick one)")) {
+  const std::string star_label = !g_at.star_mod.empty() ? StarModName(g_at.star_mod) + " (a mod)"
+                                 : who ? who->name : g_at.star >= 0 ? std::to_string(g_at.star) : "(pick one)";
+  if (ImGui::BeginCombo("Superstar", star_label.c_str())) {
     for (const auto& s : stars)
-      if (ImGui::Selectable((s.name + "##" + std::to_string(s.id)).c_str(), g_at.star == s.id)) g_at.star = s.id, g_at.slot = EntranceGear(s.id) ? 1 : 0, Touch();
+      if (ImGui::Selectable((s.name + "##" + std::to_string(s.id)).c_str(), g_at.star == s.id))
+        g_at.star = s.id, g_at.star_mod.clear(), g_at.slot = EntranceGear(s.id) ? 1 : 0, Touch();
     // (the installed DLC's superstars: their attires are in the DLC packages - the game replaces / adds them the same way)
     if (!DlcStars().empty()) ImGui::SeparatorText("DLC");
     for (const auto& s : DlcStars())
-      if (ImGui::Selectable((s.name + "##" + std::to_string(s.id)).c_str(), g_at.star == s.id)) g_at.star = s.id, g_at.slot = EntranceGear(s.id) ? 1 : 0, Touch();
+      if (ImGui::Selectable((s.name + "##" + std::to_string(s.id)).c_str(), g_at.star == s.id))
+        g_at.star = s.id, g_at.star_mod.clear(), g_at.slot = EntranceGear(s.id) ? 1 : 0, Touch();
+    // (installed superstar mods: this becomes their next attire - many mods of one superstar as one's attires)
+    const auto mods = InstalledStars();
+    if (!mods.empty()) ImGui::SeparatorText("Superstar mods");
+    for (const auto& [dir, name] : mods) {
+      const std::string folder = PathStr(fs::path(dir).filename());
+      if (ImGui::Selectable((name + "##mod_" + folder).c_str(), g_at.star_mod == folder))
+        g_at.star = -1, g_at.star_mod = folder, g_at.slot = 0, Touch();
+    }
     ImGui::EndCombo();
+  }
+  if (!g_at.star_mod.empty()) {
+    const int n = StarModAttires(g_at.star_mod);  // (0: not installed - Problems says so)
+    if (n > 0)
+      ImGui::TextDisabled("%s", n >= 4 ? "It has 4 attires already (its own and attire mods made for it)."
+                                       : ("It becomes attire " + std::to_string(n + 1) + " of this superstar mod (after its " +
+                                          std::to_string(n) + ").").c_str());
   }
   if (g_at.star >= 0) {
     const auto now = CurrentAttires(g_at.star);
@@ -673,7 +739,7 @@ void RunEditorTest() {
 }
 
 std::string StateText() {
-  return "star=" + std::to_string(g_at.star) + "\nslot=" + std::to_string(g_at.slot) + "\nname=" + g_at.name +
+  return "star=" + std::to_string(g_at.star) + "\nstar_mod=" + g_at.star_mod + "\nslot=" + std::to_string(g_at.slot) + "\nname=" + g_at.name +
          "\nmodel=" + Utf8(g_at.model) + "\nentrance=" + std::to_string(g_at.entrance) + "\nauthor=" + g_at.author +
          "\nversion=" + g_at.version + "\ngear=" + g_at.gear + "\nmats=" + MaterialsText(g_at.mats);
 }
@@ -681,7 +747,8 @@ std::string StateText() {
 void Reset() { g_at = AttireProject(); }
 
 void WriteProject(ProjectOut& out) {
-  out.Key("superstar", g_at.star);
+  if (!g_at.star_mod.empty()) out.Key("superstar", "mod:" + g_at.star_mod);
+  else out.Key("superstar", g_at.star);
   out.Key("attire", g_at.slot ? std::to_string(g_at.slot) : std::string("new"));
   out.Key("name", g_at.name);
   out.Key("author", g_at.author);
@@ -699,6 +766,8 @@ void WriteProject(ProjectOut& out) {
 
 bool Read(const ProjectIn& in, bool mod) {
   g_at.star = in.GetInt("superstar", -1);
+  g_at.star_mod.clear();
+  if (const std::string st = in.Get("superstar"); st.rfind("mod:", 0) == 0) g_at.star = -1, g_at.star_mod = st.substr(4);
   const std::string a = in.Get("attire");
   g_at.slot = a == "new" || a.empty() ? 0 : std::clamp(std::atoi(a.c_str()), 1, 4);
   std::snprintf(g_at.name, sizeof g_at.name, "%s", in.Get("name").c_str());
