@@ -3281,8 +3281,11 @@ void ApplyWeapons(uint8_t* base) {
       r[27] = w.model;
     }
   }
-  for (uint32_t i = 0; i < n; ++i)  // (the chosen weapons lie about in place of the game's: OPTIONS -> WEAPONS)
-    base[records + i * 28 + 27] = uint8_t(svr2011::ExtremeWeaponsPlacedModel(int(i), TestPlacedModel(i, list[i].model)));
+  // (the chosen weapons lie about in place of the game's: OPTIONS -> WEAPONS. Not in the cell: TABLES & LADDERS
+  // keeps its tables and ladders - report 59e547)
+  for (uint32_t i = 0; i < n; ++i)
+    base[records + i * 28 + 27] = uint8_t(cell ? TestPlacedModel(i, list[i].model)
+                                               : svr2011::ExtremeWeaponsPlacedModel(int(i), TestPlacedModel(i, list[i].model)));
   g_swapped = {entry, Rd32(base + entry), Rd32(base + entry + 4), lent, lent ? kExtremeFirst : 0};
   Wr32(base + entry, n);
   Wr32(base + entry + 4, records);
@@ -3414,6 +3417,21 @@ REX_HOOK_RAW(sub_8227B938) {
   svr2011::ExtremeWeaponsMaking(base, false, ctx);
   RestoreCrowdWeapons(base);
   RestoreWeapons(base);
+}
+
+// A rule's tables as they are made (sub_8227B938, its list's loop): sub_828B4BD8 says whether the rule is a table
+// one (TABLES, TLC, ... and one arena); in any other, every other table of the list is made as model 9 instead. The
+// cell's list is ours and model 9 isn't in its load list - its maker made nothing and HELL IN A CELL: TABLES &
+// LADDERS had one table of its two (report 59e547). For the cell's tables: a table rule.
+REX_EXTERN(__imp__sub_828B4BD8);
+REX_HOOK_RAW(sub_828B4BD8) {
+  if (uint32_t(ctx.lr) == 0x8227BAC8 && g_swapped.entry) {
+    if (const uint32_t rule = base[0x82E3DE00]; rule >= kCellFirst && rule <= kCellLast) {
+      ctx.r3.u64 = 1;
+      return;
+    }
+  }
+  __imp__sub_828B4BD8(ctx, base);
 }
 
 // ... and put in place at the start: sub_8227D130(weapons).
