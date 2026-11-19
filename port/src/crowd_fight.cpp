@@ -237,7 +237,7 @@ void Handoff(PPCContext& ctx, uint8_t* base, int person, uint32_t asked, uint32_
   // At their feet, a step toward the ring's middle (out of the barricade).
   const float d = std::max(std::sqrt(x * x + z * z), 1.f);
   const float wx = x - x / d * 6.f, wz = z - z / d * 6.f;
-  const int model = svr2011::ExtremeWeaponsPlacedModel(1, kHanded[g_turn % std::size(kHanded)]);
+  const int model = svr2011::ExtremeWeaponsPlacedModel(int(g_turn % 1024), kHanded[g_turn % std::size(kHanded)]);  // (picks in turn)
   const uint32_t made = SpawnWeapon(ctx, base, model, wx, wz, y < -6.f);
   ++g_turn;
   g_fighter_at[person] = frames + 1;

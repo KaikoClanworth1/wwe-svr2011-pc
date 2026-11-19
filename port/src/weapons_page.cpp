@@ -487,12 +487,14 @@ void ExtremeWeaponsMaking(uint8_t* base, bool begin, PPCContext& ctx) {
 }
 
 int ExtremeWeaponsPlacedModel(int i, int model) {
-  // (WEAPONS EVERYWHERE's table, ladder, trash can and guitar lying about: the chosen ones, in turn)
-  if (!g_making && g_real && (model == 5 || model == 11 || model == 63 || model == 89)) {
-    static int turn = 0;
-    if (i == 0) turn = 0;
-    return int(g_nine[size_t(turn++) % g_real]);
-  }
+  // (WEAPONS EVERYWHERE's table, ladder, trash can and guitar lying about: the chosen ones, by the record's place.
+  // The list is written twice - as the weapons are made, sub_8227B938, and as they are put in place, sub_8227D130,
+  // which puts each record on the next object made only if its model is the record's - so both must give the same
+  // models. A turn counter did not (its reset needed record 0 to be one of these, and it is a chair in every list):
+  // with OPTIONS -> WEAPONS picks, the made and placed models differed and no weapon of the list was put down -
+  // HELL IN A CELL: TABLES & LADDERS with no tables or ladders, report 59e547)
+  if (!g_making && g_real && i >= 0 && (model == 5 || model == 11 || model == 63 || model == 89))
+    return int(g_nine[size_t(i) % g_real]);
   return model;
 }
 
