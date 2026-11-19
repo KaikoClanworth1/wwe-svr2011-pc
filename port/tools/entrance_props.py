@@ -35,6 +35,19 @@ def game_prop(game_pac, pid):
     return None
 
 
+_GAME_IDS = {}
+
+
+def game_ids(game_pac):
+    """the prop ids 2011's evtobj.pac has (SOBJ entry names)"""
+    import os
+    if game_pac not in _GAME_IDS:
+        _, groups, _ = svrfmt.epac_read(open(os.path.join(game_pac, 'evt', 'evtobj.pac'), 'rb').read())
+        _GAME_IDS[game_pac] = {int(n.decode('latin-1').strip(' \0')) for typ, es in groups if typ == b'SOBJ'
+                               for n, _ in es if n.decode('latin-1').strip(' \0').isdigit()}
+    return _GAME_IDS[game_pac]
+
+
 def _textures(part):
     """a texture bank (u32 count, 12 bytes, count x {name[16], ext[4], u32 size, u32 offset}) -> {name: dds}"""
     raw = _unpack(part)
