@@ -1036,7 +1036,9 @@ void SetVsTest(const std::string& spec) {
 void Tick() {
   VsTestStep();
   std::lock_guard lock(g_pending_mutex);
-  if (!g_pending) {
+  // (a mod opened with --open: its arena is set when it's read, never pending - the test edit and save run on it)
+  const bool opened_mod = !g_pending && g_proj.edited && !g_test_save.empty() && g_test_state == 0;
+  if (!g_pending && !opened_mod) {
     if (g_test_state == 2 && !Busy()) {
       WriteLogTo(g_test_save + L".log");  // (the test scripts read it)
       PostMessageW(g_wnd, WM_CLOSE, 0, 0);
@@ -1044,14 +1046,16 @@ void Tick() {
     }
     return;
   }
-  g_proj.edited = std::move(g_pending);
-  g_proj.fbx = g_pending_fbx;
-  editor::SetArena(g_proj.edited.get(), g_proj.name);
-  if (g_pending_to_editor) GoTo(PageId::kEditor);
-  g_pending_to_editor = false;
-  if (g_pending_no_crowd) editor::Light().crowd = false;
-  g_pending_no_crowd = false;
-  Touch();
+  if (!opened_mod) {
+    g_proj.edited = std::move(g_pending);
+    g_proj.fbx = g_pending_fbx;
+    editor::SetArena(g_proj.edited.get(), g_proj.name);
+    if (g_pending_to_editor) GoTo(PageId::kEditor);
+    g_pending_to_editor = false;
+    if (g_pending_no_crowd) editor::Light().crowd = false;
+    g_pending_no_crowd = false;
+    Touch();
+  }
   if (!g_test_save.empty() && g_test_state == 0) {
     g_test_state = 1;
     if (g_test_lib >= 0) editor::TestLibrary(g_test_lib);
