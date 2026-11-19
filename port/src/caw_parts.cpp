@@ -439,7 +439,9 @@ std::vector<std::string> CawPartsListing() { return g_listing; }
 // A part's settings (default colours, its layer...) are a second table, one per category: 28-byte rows by the record's
 // texture number, sub_828DDC98 / sub_828DDCC8, built when the editor loads, as long as the stock textures. A mod part's
 // number is past its end, and the next category's row made it draw wrong or not at all. It gets a row of its own, a copy
-// of the row of the texture its .rec names at +14 (its template).
+// of the row of the texture its .rec names at +14 (its template). Only a mod part: stock textures past a table's end
+// (category 25, textures 64-72: the clothing patterns) are read from the rows after it on purpose - a copy of row 0
+// drew every pattern picked in the editor as faint edges, see-through where it should be white (report 27046d).
 REX_EXTERN(__imp__sub_828DDC98);
 REX_EXTERN(__imp__sub_828DDCC8);
 
@@ -457,7 +459,8 @@ uint32_t CawRow(uint8_t* base, uint32_t self, uint32_t cat, uint32_t index) {
   auto it = rows.find(key);
   if (it != rows.end()) return it->second;
   const auto src = g_row_source.find(key);
-  const uint32_t from = src != g_row_source.end() && src->second < count ? src->second : 0;
+  if (src == g_row_source.end()) return 0;  // (a stock texture: the game's own row)
+  const uint32_t from = src->second < count ? src->second : 0;
   const uint32_t row = g_memory ? g_memory->SystemHeapAlloc(28) : 0;
   if (!row) return 0;
   std::memcpy(base + row, base + table + from * 28, 28);
