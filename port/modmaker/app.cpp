@@ -2193,6 +2193,19 @@ bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::stri
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("Make the entrance movie from your own videos (or pictures): the titantron (the big screen) and the "
                       "minitron (the stage and ramp screens' strip), put in one movie as the game plays them.");
+  // test aid SVR2011_TEST_TRON_MAKER=<titantron>|<minitron>: the first such button opens the maker with those two
+  static bool test_open = false;
+  if (const char* t = std::getenv("SVR2011_TEST_TRON_MAKER"); t && *t && !test_open) {
+    test_open = true;
+    const std::string v = t;
+    const size_t bar = v.find('|');
+    g_tron = TronMaker();
+    g_tron.target = &movie, g_tron.stem = stem;
+    g_tron.top = fs::u8path(v.substr(0, bar)).wstring();
+    if (bar != std::string::npos) g_tron.bottom = fs::u8path(v.substr(bar + 1)).wstring();
+    ImGui::OpenPopup("tron_maker");
+    Log("test: titantron maker open");
+  }
   ImGui::SetNextWindowSize(ImVec2(560 * g_scale, 0), ImGuiCond_Always);
   if (ImGui::BeginPopup("tron_maker")) {
     ImGui::TextUnformatted("Titantron + minitron movie");
@@ -2218,7 +2231,9 @@ bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::stri
       const float w = 320 * g_scale;
       ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - w) / 2 + ImGui::GetCursorPosX());
       ImGui::Image(g_tron.shown.Id(), ImVec2(w, w));
+      ImGui::PushTextWrapPos(0);
       ImGui::TextDisabled("How the movie is stored: the top on the big screen (shown wide), the strip below it on the stage screens.");
+      ImGui::PopTextWrapPos();
     }
     ImGui::Separator();
     ImGui::BeginDisabled((g_tron.top.empty() && g_tron.bottom.empty()) || g_tron.converting || Busy());
