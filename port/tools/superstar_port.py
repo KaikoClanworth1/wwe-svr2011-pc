@@ -3007,6 +3007,9 @@ def main(argv):
         return 3
     if _template_note and isinstance(res, dict):
         res.setdefault('warnings', []).extend(_template_note)
+    if 'w13_char' in sys.modules and isinstance(res, dict):   # (the in-process porters' hair template: which stock
+        hn = sys.modules['w13_char'].take_hair_notes()          # pac lent its hair block - w13_char.HairTemplate)
+        res.setdefault('warnings', []).extend('model: ' + n for n in hn if 'model: ' + n not in res['warnings'])
     if rep_path:
         os.makedirs(os.path.dirname(rep_path), exist_ok=True)
         json.dump(res, open(rep_path, 'w'), indent=1)

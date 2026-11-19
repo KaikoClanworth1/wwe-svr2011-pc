@@ -241,7 +241,6 @@ class Builder:
         portrait = spec.get('portrait')
         self.conv = W.Conv(tp)
         self.template = tp
-        self._hair_lent = None   # (lend_hair, tried once when an attire has hair and the base is bald)
         if portrait:
             p = self.path(portrait)
             self.portrait = open(p, 'rb').read() if p.lower().endswith('.dds') else \
@@ -250,44 +249,6 @@ class Builder:
             self.portrait = None
         self.nodes = self.posed_nodes(spec.get('joints') or {})
         self.index = {n['name']: i for i, n in enumerate(self.nodes)}
-
-    # the player's own game pacs (beside the template, read at convert time - never shipped) whose hair model lends
-    # its mesh block to a bald base: ch110 first, then any stock superstar
-    HAIR_LENDERS = (110,) + tuple(c for c in range(100, 200) if c != 110)
-
-    @staticmethod
-    def stock_hair_block(s):
-        """a hair-material mesh block as the stock ones: yBumpMapSS, cut-out flags 0x110, vertex format 0x4, no
-        tiling map bound (a replaced / modded pac's hair - or a stock hair part built on a skin block, as ch108's -
-        doesn't pass)"""
-        p = {n: v for n, t, v in s.params}
-        til = p.get('texTilingMap')
-        return (s.shader == 'yBumpMapSS' and struct.unpack_from('>I', s.raw, 0x88)[0] & 0x110 == 0x110
-                and s.vfmt == 0x4 and til is not None and struct.unpack('>i', til[:4])[0] < 0)
-
-    def lend_hair(self, tp):
-        """a base with no hair model (bald 2011 superstars: 101 Orton, 105-107, 123, 125, 139, 158, 160, 161, 186,
-        190, 191) would give its hair the skin mesh block - the game then draws it with a skin shader whose output
-        alpha never takes the colour texture's (frame dump: ps 96789912 vs stock hair 42C5BB28), so hair cards were
-        solid with white sheets (report 686be2, SYM Jeff Hardy on 101). A stock hair block - hair shader, vertex
-        format 0x4 - is borrowed from the game's own pac with hair beside the template instead. -> the pac's name,
-        or '' when none was found"""
-        here = os.path.dirname(os.path.abspath(tp))
-        for cid in self.HAIR_LENDERS:
-            p = os.path.join(here, 'ch%d.pac' % cid)
-            if os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(tp)) or not os.path.isfile(p):
-                continue
-            try:
-                lender = W.Conv(p)
-            except Exception:   # noqa: BLE001 (a pac that doesn't read lends nothing)
-                continue
-            if lender.hair is not None and self.stock_hair_block(lender.p_hair):
-                self.conv.p_hair = lender.p_hair
-                self.warnings.append('hair: the base superstar is bald - the hair is drawn with the hair material of '
-                                     'your game\'s ch%d.pac%s' % (cid, '' if cid == 110 else
-                                                                  ' (ch110.pac missing or not the original)'))
-                return 'ch%d.pac' % cid
-        return ''
 
     def path(self, p):
         return p if os.path.isabs(p) else os.path.join(self.base, p)
@@ -491,11 +452,10 @@ class Builder:
             if m.get('kind', 'skin') not in ('skin', 'eye', 'hair', 'lash'):
                 raise BuildError('%s: kind %s' % (m.get('name'), m.get('kind')))
             m['_w'] = self.weights(m)
-        if any(m.get('kind') == 'hair' for m in meshes) and self.conv.hair is None and self._hair_lent is None:
-            self._hair_lent = self.lend_hair(self.template)
-            if not self._hair_lent:
-                self.warnings.append('hair: the base superstar is bald and no stock superstar with hair was found in '
-                                     'your game\'s pac\\ch - the hair\'s see-through parts are drawn solid')
+        if any(m.get('kind') == 'hair' for m in meshes) and not getattr(self, '_hair_noted', False):
+            self._hair_noted = True   # (a skin-block hair template borrows a stock hair block: w13_char.HairTemplate)
+            self.conv.p_hair
+            self.warnings += getattr(self.conv, 'hair_notes', [])
         if not getattr(self, '_faced', False):
             self._faced = True
             self.face_pivots(meshes)

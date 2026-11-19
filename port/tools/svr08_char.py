@@ -22,6 +22,7 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 import ch_tool, svrfmt, jboy  # noqa: E402
 from w13_char import tex_bundle_read as tex_read, resize_rgba, dds_encode  # noqa: E402 (the same texture helpers)
+from w13_char import HairTemplate as _HairTemplate  # noqa: E402 (p_hair: a checked stock hair block)
 
 B = 8
 
@@ -83,12 +84,14 @@ def mk_from_ao(ao_dds):
     return dds_encode(Image.merge('RGBA', (Image.new('L', im.size, 0), g, g, Image.new('L', im.size, 255))), 'DXT5')
 
 
-class Template:
+class Template(_HairTemplate):
     def __init__(self, path):
+        self.tmpl_pac = path
         _, groups = ch_tool.epk8_read(open(path, 'rb').read())
         self.t = {i: ch_tool.unpack(x) for i, x in svrfmt.pach_read(ch_tool.unpack(groups[0][1][0][1]))}
         self.body = jboy.read(self.t[0])
-        self.hair = jboy.read(self.t[0x2710])
+        # (a bald base - ch106, a fallback template - has no hair model: p_hair borrows a stock hair block)
+        self.hair = jboy.read(self.t[0x2710]) if 0x2710 in self.t else None
         self.lash = jboy.read(self.t[0x4e20])
         d = self.t[0]
         nnode, nptr = u32(d, 0x20), u32(d, 0x28)
@@ -98,7 +101,6 @@ class Template:
         from w13_char import skin_template
         self.p_skin = skin_template(ms)   # (not the first skin mesh: see skin_template)
         self.p_eye = next(s for s in ms if s.shader == 'yReflect')
-        self.p_hair = self.hair.meshes[-1]
         self.p_lash = self.lash.meshes[0]
         self.ttex = dict(tex_read(self.t[0xa]))
 
@@ -373,7 +375,7 @@ def attire(kids, tp, portrait, costume_ids, first_kids):
     nodes = tp.nodes_at(kids[0], legs)
     out = {0: jboy.write(model(tp, tp.body, parts, textures, nodes))}
     if 0x2710 in kids:
-        out[0x2710] = jboy.write(model(tp, tp.hair, [(fit(read08(kids[0x2710])), lambda s: (tp.p_hair, SKIN))], textures[:5], nodes))
+        out[0x2710] = jboy.write(model(tp, tp.hair or tp.body, [(fit(read08(kids[0x2710])), lambda s: (tp.p_hair, SKIN))], textures[:5], nodes))
     if 0x4e20 in kids:
         out[0x4e20] = jboy.write(model(tp, tp.lash, [(fit(read08(kids[0x4e20])), lambda s: (tp.p_lash, {'texDiffuse': 'color'}))], ['color'], nodes))
     if atlas:
