@@ -1812,6 +1812,23 @@ void SetOwned(uint32_t slot) {
   std::lock_guard lock(g_owned_mutex);
   g_owned.insert(slot);
 }
+// The mod's display name when the save was written (the marks' 4th field, from 2.2.6): an update that renames the
+// mod keeps its slot's record - with the player's edits - as the mod's (ApplyRecords' second-name test).
+std::map<uint32_t, std::string> g_marked_name;
+std::string MarkedName(uint32_t slot) {
+  std::lock_guard lock(g_owned_mutex);
+  const auto it = g_marked_name.find(slot);
+  return it == g_marked_name.end() ? std::string() : it->second;
+}
+// Two record names the same (the game's 31 characters), letter case aside.
+bool SameName(const char* a, const std::string& b) {
+  for (uint32_t i = 0; i < kNameLen - 1; ++i) {
+    const unsigned char x = static_cast<unsigned char>(a[i]), y = i < b.size() ? static_cast<unsigned char>(b[i]) : 0;
+    if (std::tolower(x) != std::tolower(y)) return false;
+    if (!x) return true;
+  }
+  return true;
+}
 
 std::set<uint32_t> g_stale;  // slots to hand over at this load's ApplyRecords
 fs::file_time_type g_marks_seen;
@@ -1829,7 +1846,12 @@ void WriteMarks() {
   fs::create_directories(f.parent_path(), ec);
   if (FILE* t = std::fopen(f.string().c_str(), "wb")) {
     for (const auto& m : g_mods)
-      if (!m.temp) std::fprintf(t, "%u\t%s\t%08X\n", m.slot, m.folder.c_str(), m.fingerprint);
+      if (!m.temp) {
+        std::string name = m.name;  // (the mod's display name now: an update that renames it is still it)
+        for (char& c : name)
+          if (c == '\t' || c == '\n' || c == '\r') c = ' ';
+        std::fprintf(t, "%u\t%s\t%08X\t%s\n", m.slot, m.folder.c_str(), m.fingerprint, name.c_str());
+      }
     std::fclose(t);
   }
   REXLOG_INFO("[svr2011] superstar mods: the save written - which mod each slot's profile is: {}", f.string());
@@ -1841,6 +1863,7 @@ void CheckSavedProfiles(uint8_t* base) {
   {
     std::lock_guard lock(g_owned_mutex);
     g_owned.clear();  // (a save loaded: who owns each slot is this save's, below and in ApplyRecords)
+    g_marked_name.clear();
   }
   g_marks_seen = SaveWriteTime();  // (the save just loaded: not a write)
   svrfmt::Bytes file;
@@ -1850,14 +1873,19 @@ void CheckSavedProfiles(uint8_t* base) {
   struct Mark {
     std::string folder;
     uint32_t fp = 0;
+    std::string name;  // (the mod's display name at the write; "" in a mark from before 2.2.6)
   };
   std::map<uint32_t, Mark> marks;
   if (FILE* t = std::fopen(MarksFile().string().c_str(), "rb")) {
     char line[600];
     while (std::fgets(line, sizeof line, t)) {
-      char folder[512] = {};
+      char folder[512] = {}, name[128] = {};
       unsigned id = 0, fp = 0;
-      if (std::sscanf(line, "%u\t%511[^\t]\t%x", &id, folder, &fp) == 3) marks[id] = {folder, fp};
+      int at = 0;
+      if (std::sscanf(line, "%u\t%511[^\t]\t%x%n", &id, folder, &fp, &at) == 3) {
+        if (line[at] == '\t') std::sscanf(line + at + 1, "%127[^\r\n]", name);
+        marks[id] = {folder, fp, name};
+      }
     }
     std::fclose(t);
   }
@@ -1874,7 +1902,11 @@ void CheckSavedProfiles(uint8_t* base) {
     if (const auto k = marks.find(m.slot); k != marks.end()) {
       if (k->second.folder != m.folder) why = "made for " + k->second.folder;
       else if (!SameVersion(m, k->second.fp)) why = "made for an older " + m.folder;
-      else SetOwned(m.slot);  // (this mod's, this version: a renamed record stays its)
+      else {
+        SetOwned(m.slot);  // (this mod's, this version: a renamed record stays its)
+        std::lock_guard lock(g_owned_mutex);
+        if (!k->second.name.empty()) g_marked_name[m.slot] = k->second.name;
+      }
     } else {
       // (a save from before the file, or a slot new to it: does the profile look like this mod's?)
       size_t own = 0, same = 0;
@@ -2011,14 +2043,26 @@ void ApplyRecords(uint8_t* base) {
     // Edge '99 played as Cody Rhodes with his moves and entrance). The marks say which mod the slot was given, not
     // whose record the save holds there: so it is handed over.
     const std::string held(reinterpret_cast<char*>(sr + kFullName), 0, strnlen(reinterpret_cast<char*>(sr + kFullName), kNameLen));
-    const bool own_second = !std::strncmp(reinterpret_cast<char*>(sr + kSecondName), m.name.c_str(), kNameLen - 1);
+    // (letter case aside; an update that renamed the mod: its name in the save's marks)
+    const std::string was_named = MarkedName(m.slot);
+    const char* second = reinterpret_cast<char*>(sr + kSecondName);
+    const bool renamed_mod = !was_named.empty() && !SameName(second, m.name) && SameName(second, was_named);
+    const bool own_second = SameName(second, m.name) || renamed_mod;
     const bool marked = !same_name && !stale && Owned(m.slot) && !PlaceholderName(m.slot, held);
     if (marked && !own_second && FirstTime(fmt::format("other record {} {:.32}", m.slot, held)))
       REXLOG_INFO("[svr2011] superstar mods: id {} ({}) holds \"{:.32}\" (second name \"{:.32}\") in the save - another "
                   "mod's record, not a rename (a rename keeps the second name {}): handed over", m.slot, m.folder,
                   held, reinterpret_cast<char*>(sr + kSecondName), m.name);
     const bool owned = marked && own_second;
-    if (owned && FirstTime(fmt::format("renamed {} {:.32}", m.slot, reinterpret_cast<char*>(sr + kFullName))))
+    if (owned && renamed_mod) {
+      // (the mod's update renamed it: the record takes the new names - a player's own full name stays)
+      REXLOG_INFO("[svr2011] superstar mods: id {} ({}) - its update renamed it \"{:.32}\" -> \"{}\": its record and the "
+                  "player's edits kept, the names updated", m.slot, m.folder, was_named, m.name);
+      if (SameName(reinterpret_cast<char*>(sr + kFullName), was_named)) PutName(sr, kFullName, m.name);
+      if (SameName(reinterpret_cast<char*>(sr + kShortName), was_named)) PutName(sr, kShortName, m.short_name);
+      PutName(sr, kSecondName, m.name);
+    }
+    if (owned && !renamed_mod && FirstTime(fmt::format("renamed {} {:.32}", m.slot, reinterpret_cast<char*>(sr + kFullName))))
       REXLOG_INFO("[svr2011] superstar mods: id {} ({}) is named \"{:.32}\" in the save - renamed by the player, its "
                   "moves, entrance and edits kept", m.slot, m.folder, reinterpret_cast<char*>(sr + kFullName));
     if (same_name || owned) {
