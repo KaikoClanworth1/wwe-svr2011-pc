@@ -35,6 +35,10 @@ struct Pack {
   std::map<int, std::string> waze;    // waze bits (hex)
   std::map<int, int> copies;          // wazecopy
   int exh = 0, evt = 0, mbd = 0, unknown = 0;
+  // pacentry lines (a ported entrance's scripts / tracks, its props, its pyro: move_packs.cpp writes them into the pac
+  // named) and their files missing; label = the pack's first comment (entrance_port: "<game> entrance N as 2011 M")
+  int entries = 0, entries_missing = 0, entrance_scripts = 0;
+  std::string label;
   std::vector<std::string> errors;
   bool loaded = false;
   size_t bytes = 0;
@@ -45,6 +49,8 @@ int g_sel = -1;  // move id selected in the list
 void ParsePack(Pack& p) {
   p.motions.clear(), p.names.clear(), p.waze.clear(), p.copies.clear(), p.errors.clear();
   p.exh = p.evt = p.mbd = p.unknown = 0;
+  p.entries = p.entries_missing = p.entrance_scripts = 0;
+  p.label.clear();
   p.bytes = 0;
   p.loaded = false;
   if (p.folder.empty()) return;
@@ -61,11 +67,23 @@ void ParsePack(Pack& p) {
   while (std::getline(in, line)) {
     ++n;
     if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (!line.empty() && line[0] == '#' && p.label.empty())
+      if (const size_t a = line.find_first_not_of("# "); a != std::string::npos) p.label = line.substr(a);
     if (line.empty() || line[0] == '#') continue;
     std::istringstream ls(line);
     std::string kind;
     ls >> kind;
-    if (kind == "motion") {
+    if (kind == "pacentry") {  // <pac> <group> <name> <file> (report 5f5787: an entrance pack was "not understood")
+      std::string pac, group, name, file;
+      ls >> pac >> group >> name >> file;
+      if (file.empty()) { p.errors.push_back("line " + std::to_string(n) + ": pacentry line incomplete"); continue; }
+      ++p.entries;
+      if (group.rfind("EVP", 0) == 0) ++p.entrance_scripts;
+      const fs::path f = fs::path(p.folder) / fs::u8path(file);
+      if (!fs::exists(f, ec)) ++p.entries_missing;
+      else p.bytes += size_t(fs::file_size(f, ec));
+    } else if (kind == "propfallback") {  // <prop id> <2011 prop id>: the game's prop when the pack's can't be added
+    } else if (kind == "motion") {
       Motion m;
       ls >> m.pac >> m.path >> m.id >> m.x >> m.y >> m.frames >> m.file;
       if (m.file.empty()) { p.errors.push_back("line " + std::to_string(n) + ": motion line incomplete"); continue; }
@@ -107,7 +125,8 @@ void ParsePack(Pack& p) {
     const std::string k = m.pac + "|" + m.path + "|" + std::to_string(m.id) + "/" + std::to_string(m.x) + "/" + std::to_string(m.y);
     if (++seen[k] == 2) p.errors.push_back("motion " + std::to_string(m.id) + " x" + std::to_string(m.x) + " y" + std::to_string(m.y) + " is in " + m.pac + " " + m.path + " twice");
   }
-  if (p.motions.empty() && p.waze.empty()) p.errors.push_back("pack.txt has no motion or waze lines.");
+  if (p.motions.empty() && p.waze.empty() && !p.entries) p.errors.push_back("pack.txt has no motion, waze or pacentry lines.");
+  if (p.entries_missing) p.errors.push_back(std::to_string(p.entries_missing) + " pacentry file(s) missing from the pack folder.");
 }
 
 // The pack's own move records: waze lines and wazecopy (a stock record copied under a new id).
@@ -121,7 +140,10 @@ size_t RecordCount(const Pack& p) {
 void OpenFolder(const std::wstring& f) {
   g_pack.folder = f;
   ParsePack(g_pack);
-  if (!g_pack.name[0]) std::snprintf(g_pack.name, sizeof g_pack.name, "%s", FileName(f).c_str());
+  // (a converter's result is a folder named "pack": its label - "WWE '13 entrance 741 as 2011 712" - names it better)
+  if (!g_pack.name[0])
+    std::snprintf(g_pack.name, sizeof g_pack.name, "%s",
+                  FileName(f) == "pack" && !g_pack.label.empty() ? g_pack.label.c_str() : FileName(f).c_str());
   g_sel = -1;
   Touch();
   Status(g_pack.loaded ? "Pack: " + std::to_string(g_pack.motions.size()) + " motions, " + std::to_string(RecordCount(g_pack)) + " moves"
@@ -493,6 +515,9 @@ void Draw() {
                 [&] { std::set<int> ids; for (const auto& m : g_pack.motions) ids.insert(m.id); for (const auto& w : g_pack.waze) ids.insert(w.first);
                       for (const auto& c : g_pack.copies) ids.insert(c.first); return ids.size(); }(),
                 RecordCount(g_pack), g_pack.exh, g_pack.evt, g_pack.mbd);
+    if (g_pack.entries)  // (a ported entrance: its scripts / tracks, props and pyro go into the game's pacs as entries)
+      ImGui::Text("%d pac entries (%d entrance script(s), with their tracks, props and pyro)%s", g_pack.entries,
+                  g_pack.entrance_scripts, g_pack.label.empty() ? "" : (" - " + g_pack.label).c_str());
     ImGui::BeginChild("list", ImVec2(0, -(problems.empty() ? 0 : 30 * g_scale * float(std::min<size_t>(problems.size(), 4)))), false);
     MoveList();
     PutPanel();
