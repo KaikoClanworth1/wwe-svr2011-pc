@@ -377,6 +377,45 @@ REX_HOOK_RAW(sub_8253D008) {
                 g_swap_caw, was);
 }
 
+// The walk's player events (sub_82548010, from sub_82538F68): each posts event type 8 - the player's person id (his
+// character's +80, the pick, through sub_828B7028), a script-table value and his place - and the story's triggers
+// (talk, push, the next scene's marker) wait for the CAW's id there. The mod's pick gave the mod's id (111 for JBL
+// where the CAW walk gave 0): nothing answered (reports f7fa6f "can't talk or push", 80722f "the week 3 scene
+// doesn't start"). As in sub_8253D008 above: for this one function the player's +80 holds the CAW's pick.
+REX_EXTERN(__imp__sub_82548010);
+REX_HOOK_RAW(sub_82548010) {
+  // (research, SVR2011_TEST_RTWM_BUILD_LOG=1: each event's player pick as the function reads it - a CAW walk's and a
+  // mod walk's compared)
+  static const bool log = std::getenv("SVR2011_TEST_RTWM_BUILD_LOG") != nullptr;
+  if (log && svr2011::InRoadToWrestleMania())
+    if (const uint32_t c = Rd32(base + 0x82E3CC50); c >= 0x40000000u && !(c & 3))
+      REXLOG_INFO("[svr2011] rtwm build: walk event, character 0 pick {} (swap {} -> CAW {})", Rd32(base + c + 80), g_swap_id,
+                  g_swap_caw);
+  uint8_t* pick = nullptr;
+  uint32_t was = 0;
+  if (g_swap_id && g_swap_person < 9 && svr2011::InRoadToWrestleMania())
+    if (const uint32_t c = Rd32(base + 0x82E3CC50 + g_swap_person * 4); c >= 0x40000000u && !(c & 3))
+      if (const uint32_t v = Rd32(base + c + 80); v / 100 == g_swap_id)
+        pick = base + c + 80, was = v, Wr32(pick, g_swap_caw * 100 + v % 100);
+  __imp__sub_82548010(ctx, base);
+  if (!pick) return;
+  Wr32(pick, was);
+  static uint32_t said = 0;
+  if (said++ < 4)
+    REXLOG_INFO("[svr2011] rtwm streak: a walk event of the player as the CAW {} (his pick: {})", g_swap_caw, was);
+}
+
+// (research, SVR2011_TEST_RTWM_BUILD_LOG=1: each event sub_82548010 posts - sub_826AD168(queue, event) from
+// 0x82548104: its type, the player id it carries, the table value)
+REX_EXTERN(__imp__sub_826AD168);
+REX_HOOK_RAW(sub_826AD168) {
+  static const bool log = std::getenv("SVR2011_TEST_RTWM_BUILD_LOG") != nullptr;
+  if (log && uint32_t(ctx.lr) == 0x82548104 && ctx.r4.u32)
+    REXLOG_INFO("[svr2011] rtwm build: walk event posted - type {} player id {} value {:08X}", int32_t(Rd32(base + ctx.r4.u32)),
+                int32_t(Rd32(base + ctx.r4.u32 + 4)), Rd32(base + ctx.r4.u32 + 8));
+  __imp__sub_826AD168(ctx, base);
+}
+
 // (research, SVR2011_TEST_RTWM_BUILD_LOG=1: each build's entry and the characters' +80 after)
 REX_EXTERN(__imp__sub_82195BA0);
 REX_HOOK_RAW(sub_82195BA0) {
