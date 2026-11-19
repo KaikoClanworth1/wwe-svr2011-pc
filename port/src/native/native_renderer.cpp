@@ -4605,13 +4605,15 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
                         it->second.width, it->second.height, base, Be32(fc + 4) & 0x3F,
                         (Be32(fc + 8) & 0x1FFF) + 1, ((Be32(fc + 8) >> 13) & 0x1FFF) + 1);
         } else {
-          std::snprintf(one, sizeof(one), " %s%u:t", sh == vs ? "v" : "p", slot);
+          // (a texture: its base and size - which picture a draw samples)
+          std::snprintf(one, sizeof(one), " %s%u:t@%X/%ux%u", sh == vs ? "v" : "p", slot, base,
+                        (Be32(fc + 8) & 0x1FFF) + 1, ((Be32(fc + 8) >> 13) & 0x1FFF) + 1);
         }
         std::strncat(tex, one, sizeof(tex) - std::strlen(tex) - 1);
       }
     }
     // The positions' extent (float positions only; the first 64 vertices).
-    char pos[96] = "?";
+    char pos[160] = "?";
     for (const Element& el : decl) {
       if (el.usage != 0 || el.index != 0) continue;
       const RenderFormat pf = VertexFormat(el.type, false);
@@ -4647,6 +4649,23 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
       }
       std::snprintf(pos, sizeof(pos), "x %.1f..%.1f y %.1f..%.1f z %.2f..%.2f", mn[0], mx[0], mn[1], mx[1],
                     comps > 2 ? mn[2] : 0.0f, comps > 2 ? mx[2] : 0.0f);
+      // (a 2D draw's first texture coordinates' extent, float pairs: which part of its picture it shows)
+      for (const Element& tc : decl) {
+        if (tc.usage != 5 || tc.index != 0 || tc.stream != el.stream ||
+            VertexFormat(tc.type, false) != RenderFormat::R32G32_FLOAT)
+          continue;
+        float a[2] = {1e30f, 1e30f}, b[2] = {-1e30f, -1e30f};
+        for (uint32_t k = 0; k < n; ++k) {
+          const int64_t v = ib ? int64_t(Be16(ib + 2 * k)) + base_vertex : int64_t(up ? k : start + k);
+          for (int c = 0; c < 2; ++c) {
+            const float f = BeFloat(data + v * stride + tc.offset + 4 * c);
+            a[c] = std::min(a[c], f), b[c] = std::max(b[c], f);
+          }
+        }
+        const size_t len = std::strlen(pos);
+        std::snprintf(pos + len, sizeof(pos) - len, " uv %.3f..%.3f %.3f..%.3f", a[0], b[0], a[1], b[1]);
+        break;
+      }
       break;
     }
     std::fprintf(g_drawlog, "f%llu %4u tgt %ux%u vte %02X z %u blend %08X prim %u n %u%s vs %08X ps %08X vp %.0f,%.0f %.0fx%.0f |%s | pos %s\n",
