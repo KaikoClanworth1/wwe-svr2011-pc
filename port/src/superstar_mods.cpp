@@ -370,7 +370,7 @@ bool BuildRenders(const fs::path& out, uint32_t base, uint32_t slot, const fs::p
 std::string Stamp(const std::vector<fs::path>& srcs) {
   // (the overlay format's version: a change rebuilds every overlay once -
   // 2: models kept within the match's vertex budget, FitModelBudget; "blood": blood overlays made, blood.h)
-  std::string st = svr2011::BloodForAll() ? "overlay 2\nblood\n" : "overlay 2\n";
+  std::string st = svr2011::BloodForAll() ? "overlay 2\nblood 2\n" :"overlay 2\n";
   std::error_code ec;
   for (const auto& p : srcs) {
     if (!fs::exists(p, ec)) continue;

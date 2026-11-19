@@ -36,11 +36,37 @@ constexpr const char* kSkin = "yBumpMapSS";
 
 // The front projection of the shared blood textures (fitted on the stock models, blood.h) and the lift off the
 // skin. Bands: the face from the head top to the chin, the body from the collarbones to the belly.
+constexpr uint32_t kBloodFaceMask[32] = {
+    0xFFFFFFFFu, 0xFFFFFFFFu, 0xC1FFFF83u, 0xC3FFFFC3u,
+    0xC7FFFFE3u, 0xC7FFFFF3u, 0xDFFFFFF3u, 0xDFFFFFF3u,
+    0xDFFFFFFBu, 0xDFFFFFFBu, 0xFFFFFFFBu, 0xFFFFFFFBu,
+    0xFFFFFFFBu, 0xFFFFFFFBu, 0xDFFFFFFBu, 0xDFFFFFFBu,
+    0xDFFFFFFBu, 0xDFFFFFF3u, 0xDFFFFFF3u, 0xFFFFFFF3u,
+    0xFFFFFFF3u, 0xFFFFFFF3u, 0xDFFFFFF3u, 0xDFF3FFE3u,
+    0xCFF3FFC3u, 0xCFF1FF83u, 0xC7C1FC03u, 0xC3C1DC03u,
+    0xC3C1DC03u, 0xC001DC03u, 0xFFFFFFFFu, 0xFFFFFFFFu,
+};
+constexpr uint32_t kBloodBodyMask[32] = {
+    0x00000000u, 0x0003C000u, 0x0003C000u, 0x003FFF00u,
+    0x003FFF00u, 0x007FFFC0u, 0x00FFFFE0u, 0x01FFFFE0u,
+    0x01FFFFE0u, 0x01FFFFE0u, 0x01FFFFE0u, 0x01FFFFC0u,
+    0x01FFFFC0u, 0x00FFFFC0u, 0x0FFFFFC0u, 0x0FFFFFF0u,
+    0x0FFFFFF0u, 0x0FFFFFF8u, 0x1FFFFFF8u, 0x1FFFFFF8u,
+    0x1FFFFFF8u, 0x1FFFFFC0u, 0x1FFFFFF0u, 0x0FFFFFF0u,
+    0x0FFFFFF0u, 0x0FFFFFE0u, 0x07FFFFE0u, 0x03FFFDE0u,
+    0x03F80000u, 0x00000000u, 0x00000000u, 0x00000000u,
+};
+
 struct Projection {
   float u0, ux, v0, vy, lift;
+  const uint32_t* mask;  // where the shared textures (any pattern, any stage) can show blood: 32 x 32 cells, a row a
+                         // word (bit x), widened by a cell
+  float vmid;            // (the bloodiest height, kept first when over the caps)
 };
-constexpr Projection kFaceMap{0.5f, 0.44f, -0.11f, 0.44f, 0.0023f};
-constexpr Projection kBodyMap{0.53f, 0.19f, -0.8f, 0.24f, 0.002f};
+constexpr Projection kFaceMap{0.5f, 0.44f, -0.11f, 0.44f, 0.0023f, kBloodFaceMask, 0.35f};
+constexpr Projection kBodyMap{0.53f, 0.19f, -0.8f, 0.24f, 0.002f, kBloodBodyMask, 0.4f};
+// The largest stock overlay (ch234's blood_face: 2318 vertices, 6557 indices; 1135 / 3359 in one mesh)
+constexpr size_t kMeshVerts = 1100, kMeshIndices = 3300, kModelVerts = 2300, kModelIndices = 6500;
 
 // Stock ch100's blood_face / blood_body (header, textures, the meshes' descriptor and parameters) and its
 // stand-in textures (8 x 8: bloodface, bloodbody and their _sp) for attires whose bundle has none.
@@ -162,11 +188,13 @@ float OffSkin(const svrfmt::Model& overlay, const Skin& skin) {
 // An overlay from the body's skin: the triangles facing the front inside the projection's band, lifted along
 // their normal, with the template's model header, textures and per-mesh descriptor / parameters.
 bool MakeOverlay(const svrfmt::Model& body, float top, const svrfmt::Model& tmpl, const Projection& pr,
-                 svrfmt::Model& out, size_t& tri_count) {
+                 svrfmt::Model& out, size_t& tri_count, bool& capped) {
   out = tmpl;
   out.nodes = body.nodes;  // (the body's palettes are kept: node index + 1)
   out.meshes.clear();
   tri_count = 0;
+  capped = false;
+  size_t used_v = 0, used_i = 0;
   const svrfmt::Mesh& tm = tmpl.meshes[0];
   for (const auto& s : body.meshes) {
     if (s.shader != kSkin || s.verts.empty()) continue;
@@ -188,24 +216,55 @@ bool MakeOverlay(const svrfmt::Model& body, float top, const svrfmt::Model& tmpl
       in[k] = uv[k][0] > -0.05f && uv[k][0] < 1.05f && uv[k][1] > -0.05f && uv[k][1] < 1.05f &&
               sign * v.normal[2] < -0.1f;
     }
-    std::vector<std::array<uint16_t, 3>> tris;
-    for (const auto& st : s.strips)
-      for (const auto& t : svrfmt::StripToTriangles(st.indices))
-        if (t[0] < n && t[1] < n && t[2] < n && t[0] != t[1] && t[1] != t[2] && t[0] != t[2] && in[t[0]] &&
-            in[t[1]] && in[t[2]])
-          tris.push_back(t);
-    if (tris.empty()) continue;
-    std::vector<int> remap(n, -1);
-    svrfmt::Mesh m;
-    m.raw = tm.raw;
-    m.palette = s.palette;
-    m.material = uint32_t(out.meshes.size());
-    m.shader = tm.shader;
-    m.vfmt = tm.vfmt;
-    m.params = tm.params;
-    m.weights.resize(s.weights.size());
-    for (auto& t : tris)
-      for (auto& i : t) {
+    // the triangles to keep, as (strip, position in it): the source's own strip order, so runs of them stay
+    // strips (one index a triangle) - inside the band, facing the front, and where the shared textures can
+    // show blood (pr.mask, 32 x 32 cells of the texture)
+    struct Tri {
+      size_t strip, at;
+      float pri;  // (lower: kept first when over the caps - nearest the texture's bloodiest middle)
+    };
+    std::vector<Tri> cand;
+    for (size_t si = 0; si < s.strips.size(); ++si) {
+      const auto& idx = s.strips[si].indices;
+      for (size_t k = 0; k + 2 < idx.size(); ++k) {
+        const uint16_t a = idx[k], b = idx[k + 1], c = idx[k + 2];
+        if (a >= n || b >= n || c >= n || a == b || b == c || a == c || !in[a] || !in[b] || !in[c]) continue;
+        const float cu = (uv[a][0] + uv[b][0] + uv[c][0]) / 3, cv = (uv[a][1] + uv[b][1] + uv[c][1]) / 3;
+        const int gx = std::clamp(int(cu * 32), 0, 31), gy = std::clamp(int(cv * 32), 0, 31);
+        if (!(pr.mask[gy] >> gx & 1)) continue;
+        cand.push_back({si, k, (cu - 0.5f) * (cu - 0.5f) + (cv - pr.vmid) * (cv - pr.vmid)});
+      }
+    }
+    if (cand.empty()) continue;
+    // a mesh of the first `keep` candidates by priority (all of them: their source order)
+    auto build = [&](size_t keep, svrfmt::Mesh& m, size_t& tris_out) {
+      std::vector<Tri> use = cand;
+      if (keep < use.size()) {
+        std::nth_element(use.begin(), use.begin() + keep, use.end(), [](const Tri& x, const Tri& y) { return x.pri < y.pri; });
+        use.resize(keep);
+        std::sort(use.begin(), use.end(), [](const Tri& x, const Tri& y) { return x.strip != y.strip ? x.strip < y.strip : x.at < y.at; });
+      }
+      std::vector<uint16_t> strip;
+      for (size_t r = 0; r < use.size();) {
+        size_t e = r;  // a run: the same source strip, consecutive positions
+        while (e + 1 < use.size() && use[e + 1].strip == use[r].strip && use[e + 1].at == use[e].at + 1) ++e;
+        const auto& idx = s.strips[use[r].strip].indices;
+        const size_t k0 = use[r].at, k1 = use[e].at;
+        if (!strip.empty()) strip.push_back(strip.back()), strip.push_back(idx[k0]);  // (degenerate join)
+        if (strip.size() % 2 != k0 % 2) strip.push_back(idx[k0]);  // (each triangle keeps its winding)
+        for (size_t k = k0; k <= k1 + 2; ++k) strip.push_back(idx[k]);
+        r = e + 1;
+      }
+      std::vector<int> remap(n, -1);
+      m = svrfmt::Mesh{};
+      m.raw = tm.raw;
+      m.palette = s.palette;
+      m.material = uint32_t(out.meshes.size());
+      m.shader = tm.shader;
+      m.vfmt = tm.vfmt;
+      m.params = tm.params;
+      m.weights.resize(s.weights.size());
+      for (auto& i : strip) {
         if (remap[i] < 0) {
           remap[i] = int(m.verts.size());
           svrfmt::Vertex v = s.verts[i];
@@ -218,10 +277,31 @@ bool MakeOverlay(const svrfmt::Model& body, float top, const svrfmt::Model& tmpl
         }
         i = uint16_t(remap[i]);
       }
-    m.strips.push_back({6, svrfmt::TrianglesToStrip(tris)});
+      m.strips.push_back({6, std::move(strip)});
+      tris_out = use.size();
+    };
+    // within the largest stock overlay's sizes (a bigger one overran the game's block heap - Mankind, 19 Nov):
+    // per mesh and what is left of the whole overlay's
+    const size_t max_v = std::min(kMeshVerts, kModelVerts - used_v), max_i = std::min(kMeshIndices, kModelIndices - used_i);
+    svrfmt::Mesh m;
+    size_t tris = 0;
+    build(cand.size(), m, tris);
+    if (m.verts.size() > max_v || m.strips[0].indices.size() > max_i) {
+      size_t lo = 0, hi = cand.size();  // (the most triangles that fit)
+      while (lo + 1 < hi) {
+        const size_t mid = (lo + hi) / 2;
+        build(mid, m, tris);
+        (m.verts.size() <= max_v && m.strips[0].indices.size() <= max_i ? lo : hi) = mid;
+      }
+      if (!lo) break;
+      build(lo, m, tris);
+      capped = true;
+    }
+    used_v += m.verts.size(), used_i += m.strips[0].indices.size();
     svrfmt::Bound(m);
-    tri_count += tris.size();
+    tri_count += tris;
     out.meshes.push_back(std::move(m));
+    if (used_v >= kModelVerts || used_i >= kModelIndices) break;
   }
   return !out.meshes.empty();
 }
@@ -277,13 +357,16 @@ bool GiveBlood(svrfmt::Bytes& pac, const fs::path& game, std::string& notes) {
         if (!make[i]) continue;
         svrfmt::Model ov;
         size_t tris = 0;
+        bool capped = false;
         const bool had = find(i ? kBody : kFace) != kids.end();
         if (had) kids.erase(find(i ? kBody : kFace));
-        if (!MakeOverlay(body, skin.top, i ? tp->body : tp->face, i ? kBodyMap : kFaceMap, ov, tris)) continue;
+        if (!MakeOverlay(body, skin.top, i ? tp->body : tp->face, i ? kBodyMap : kFaceMap, ov, tris, capped)) continue;
         kids.push_back({i ? kBody : kFace, svrfmt::BpeEncodeStored(svrfmt::JboyWrite(ov))});
-        char line[96];
-        std::snprintf(line, sizeof line, " %s %s (%zu triangles)", i ? "body" : "face",
-                      had ? "replaced - another model's" : "made", tris);
+        size_t nv = 0, ni = 0;
+        for (const auto& mm : ov.meshes) nv += mm.verts.size(), ni += mm.strips.empty() ? 0 : mm.strips[0].indices.size();
+        char line[160];
+        std::snprintf(line, sizeof line, " %s %s (%zu triangles, %zu vertices, %zu indices%s)", i ? "body" : "face",
+                      had ? "replaced - another model's" : "made", tris, nv, ni, capped ? ", cut to the stock sizes" : "");
         what += line;
       }
       // (another model's hair blood floats too)
