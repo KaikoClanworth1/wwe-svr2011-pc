@@ -33,6 +33,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "superstar_mods.h"
+#include "cae_steps.h"
 #include "../modmaker/svrfmt/bytes.h"
 
 REXCVAR_DEFINE_BOOL(managers_tile, true, "Gameplay",
@@ -82,6 +83,7 @@ void NoteSelectOpen(uint32_t screen) {
   if (screen == last && now - at < std::chrono::seconds(15)) return;
   last = screen, at = now;
   REXLOG_INFO("[svr2011] character select: open (screen {:08X})", screen);
+  svr2011::CaeStepsLeave("back at the select screen");  // (CREATE AN ENTRANCE: cae_steps.h)
 }
 
 }  // namespace

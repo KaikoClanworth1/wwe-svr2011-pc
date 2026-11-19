@@ -24,6 +24,7 @@
 // extra ones repeat the controller reading and leave the characters' job to
 // the frame's last update (below). Online lockstep: one update a frame.
 #include "frame_rate.h"
+#include "cae_steps.h"
 #include "match_box.h"
 #include "match_record.h"
 #include "match_diag.h"
@@ -1097,6 +1098,7 @@ REX_HOOK_RAW(sub_82905058) {
     svr2011::ReportPagePad(base, base + out);  // (the pause menu's REPORT A PROBLEM: report_page.h)
   }
   if (out && ctx.r3.u32 == 0) svr2011::PadIconsInput(user, base + out);  // (who pressed last: pad_icons.h)
+  if (user == 0 && out && ctx.r3.u32 == 0) svr2011::CaeStepsPad(base + out);  // (CREATE AN ENTRANCE: cae_steps.h)
   if (out && ctx.r3.u32 == 0) svr2011::PadMapApply(base, user, base + out);  // (the player's layout, in play: pad_map.h)
   if (out) {  // (a replay: the recording's pad this frame - match_record.h)
     uint32_t result = ctx.r3.u32;

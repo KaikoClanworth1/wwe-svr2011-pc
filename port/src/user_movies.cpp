@@ -8,6 +8,7 @@
 // Custom Movies\ids.txt ("<id><TAB><file>") so a saved entrance keeps its
 // movie when other movies are added or removed.
 #include "user_movies.h"
+#include "cae_steps.h"
 
 #include "hd_movies.h"
 
@@ -420,6 +421,7 @@ thread_local int t_page_movie = -1;
 REX_EXTERN(__imp__sub_8287E960);
 REX_HOOK_RAW(sub_8287E960) {
   const uint32_t slots = ctx.r3.u32, e = ctx.r4.u32;
+  svr2011::CaeStepsEditorOpen();  // (its steps in the log: cae_steps.h)
   svr2011::CaeLoadingEntrance(true);  // (the edited mod's own scene parts: "MOD: <name>" - cae_mod_motions.cpp)
   __imp__sub_8287E960(ctx, base);
   svr2011::CaeLoadingEntrance(false);

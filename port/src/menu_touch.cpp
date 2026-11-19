@@ -7,6 +7,7 @@
 //   x = e[+160] + L[+144] + e[+4] * L[+160],  y = e[+164] + L[+148] + e[+8] * L[+164]
 // Test aid SVR2011_TEST_MENU_TOUCH_LOG=1: each new element drawn, once.
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -607,6 +608,39 @@ void MenuTouchPanel(PPCContext& ctx, uint8_t* base, uint32_t cursor) {
     }
     ctx = saved;
   }
+}
+
+std::string MenuTouchPageTitle() {
+  // (CREATE AN ENTRANCE's editor: the left panel's title - element id 1001 near its top, SELECT TEMPLATE / MOTION /
+  // PYRO ... - else its first row, as the pyro timeline's TRIGGER PYRO; "" when that panel draws nothing)
+  const auto now = Clock::now();
+  std::lock_guard lock(g_drawn_mutex);
+  // The page opened last is the one on top: the panel's title stays drawn under an open list, and its rows under the
+  // pyro timeline - so the newest of the titles (id 1001) and the timeline's top rows (id 1000, above the panel's).
+  const Drawn* page = nullptr;
+  bool list = false;  // (a list has its page count under the title, "1/14": SELECT TEMPLATE is a panel and a list)
+  for (const Drawn& d : g_drawn) {
+    if (!d.element || !d.text[0] || now - d.seen > kRecent || d.x >= 320 || d.y >= 80) continue;
+    unsigned a = 0, b = 0;
+    char end = 0;
+    // (its page count, "1/14" - drawn as numbers apart from the '/' picture: "14")
+    if (d.id == 1000 && (std::sscanf(d.text, "%u/%u%c", &a, &b, &end) == 2 || std::sscanf(d.text, "%u%c", &a, &end) == 1)) {
+      list = true;
+      continue;
+    }
+    if (!(d.id == 1001 || (d.id == 1000 && d.y < 60 && d.x >= 100 && d.x < 200))) continue;
+    // (words in capitals, as the editor draws its titles and rows: not an icon - the W logo beside the timeline's rows
+    // is one character, EE 80 8B - nor a loading screen's tip, "The Miz, telling Bret Hart of his...")
+    int letters = 0;
+    bool lower = false;
+    for (const char* c = d.text; *c; ++c)
+      if (static_cast<unsigned char>(*c) < 0x80 && std::isalpha(static_cast<unsigned char>(*c)))
+        ++letters, lower |= std::islower(static_cast<unsigned char>(*c)) != 0;
+    if (letters < 2 || lower) continue;
+    if (!page || d.moved > page->moved || (d.moved == page->moved && d.y < page->y)) page = &d;
+  }
+  if (!page) return "";
+  return std::string(page->text) + (page->id == 1001 && list ? " list" : "");
 }
 
 bool MenuTouchTap(float fx, float fy, MenuTouchPress press) {

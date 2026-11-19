@@ -14,6 +14,16 @@ bool MenuTouchTap(float x, float y, MenuTouchPress press);
 
 }  // namespace svr2011
 
+#include <string>
+
+namespace svr2011 {
+
+// The title of the page drawn in the left panel now (CREATE AN ENTRANCE's editor: SELECT TEMPLATE, MOTION, PYRO...;
+// its first row where it has no title, TRIGGER PYRO; "" when nothing is drawn there) - the game's text, any language.
+std::string MenuTouchPageTitle();
+
+}  // namespace svr2011
+
 #include <rex/ppc.h>
 
 namespace svr2011 {
