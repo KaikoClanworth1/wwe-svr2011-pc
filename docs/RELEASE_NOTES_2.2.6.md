@@ -18,6 +18,7 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 
 ## 🛠️ Fixes
 - **Crash at start with a big roster and many mods** - the game now skips a damaged mod file and names it in the log (potential fix).
+- **SLOBBER KNOCKER and GAUNTLET ELIMINATOR ended at the first fall** with only 2 people when started from the menus - the waiting opponents come in again (potential fix).
 - **Road to WrestleMania (Streak) played as a mod: you couldn't talk to or push people backstage**, and the week 3 scene didn't start - potential fix. Cutscenes still show the created superstar.
 - **A new mod took over a deleted mod's name and moves** (2.2.5) - fixed.
 - **Android: slowdown during pins by the CPU** below 60 fps - the match no longer slows down (potential fix).
