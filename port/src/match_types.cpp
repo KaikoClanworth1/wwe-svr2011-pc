@@ -228,6 +228,12 @@ bool g_ge = false;  // the match set up is a Gauntlet Eliminator
 // the session's rule at its start (sub_828C48E8): there it's swapped too.
 uint32_t g_online_from = ~0u, g_online_to = ~0u;
 uint32_t g_setup_serial = 0;  // (match set-ups so far: the people builder's gauntlet line once per match)
+// The rule of the last match set-up (sub_828BD278's r4). Report 99ffde: from the menus the people are built
+// (sub_828BBEF0) while the live settings' rule (0x82E3DE00) still says 00 - it becomes the gauntlet 0x52 only as
+// the match loads - so SLOBBER KNOCKER's and GAUNTLET ELIMINATOR's fills, gated on the live rule, never ran
+// (2 people, the match over at the first fall). svrtest set the live rule itself, which hid it.
+uint32_t g_setup_rule = ~0u;
+bool GauntletNow(const uint8_t* base) { return base[0x82E3DE00] == kGauntlet || g_setup_rule == kGauntlet; }
 uint32_t g_ge_text[4] = {};
 
 // ELIMINATION: after NORMAL in TRIPLE THREAT (rule 0x0D) and FATAL-4-WAY
@@ -1341,6 +1347,7 @@ REX_HOOK_RAW(sub_827374A0) {
     svr2011::UseBackstageRow(use ? k : -1);
     g_pending_own_row = -1;
   }
+  g_setup_rule = rule;
   g_slobber = g_pending_slobber && rule == kGauntlet && !Rd32(base + kStoryContext);
   g_pending_slobber = false;
   g_roof = g_pending_roof && rule >= kCellFirst && rule <= kCellLast && !Rd32(base + kStoryContext);
@@ -1558,29 +1565,42 @@ REX_HOOK_RAW(sub_828BBEF0) {
       REXLOG_INFO("[svr2011] people: match {:08X} slot {} (from -8):{}", ctx.r3.u32, i, hex);
     }
   }
+  // (test aid SVR2011_TEST_LIVE_RULE_00=1: the live rule reads 00 here, as the players' did in report 99ffde - the
+  // game sets it again as the match loads)
+  if (static const bool zero = std::getenv("SVR2011_TEST_LIVE_RULE_00") != nullptr; zero && base[0x82E3DE00] == kGauntlet)
+    base[0x82E3DE00] = 0;
+  // (report 99ffde: the live rule 00 here, with a SLOBBER KNOCKER / GAUNTLET ELIMINATOR set-up - the gauntlet 0x52
+  // again, as on the menus' usual way, so our fill AND the game's own people builder (run below) build the waiting
+  // ones as the gauntlet's; with 00 an opponent came in and froze, the match never ended)
+  if ((g_slobber || g_ge) && g_setup_rule == kGauntlet && base[0x82E3DE00] != kGauntlet && !Rd32(base + kStoryContext) &&
+      ctx.r3.u32 && g_online_to != kGauntlet) {
+    REXLOG_INFO("match types: the live rule was {:02X} as the people are built - set to the gauntlet {:02X} (report 99ffde)",
+                base[0x82E3DE00], kGauntlet);
+    base[0x82E3DE00] = uint8_t(kGauntlet);
+  }
   if (base[0x82E3DE00] == kLumberjack && !Rd32(base + kStoryContext) && ctx.r3.u32) {
     FillLumberjackSlots(base, ctx.r3.u32);
   }
   // (report 6d63a6: SLOBBER KNOCKER with nobody waiting - 2 people, the match over at the first fall - with no fill
   // line logged. Once per match set-up, when a gauntlet row is on or the live rule is the gauntlet: what this
   // hook's conditions saw and slots 2-5's picks, +8 - 51200 empty)
-  if (static uint32_t told = ~0u; told != g_setup_serial && (g_slobber || g_ge || base[0x82E3DE00] == kGauntlet)) {
+  if (static uint32_t told = ~0u; told != g_setup_serial && (g_slobber || g_ge || GauntletNow(base))) {
     told = g_setup_serial;
     std::string picks;
     for (uint32_t i = 2; ctx.r3.u32 && i < 6; ++i)
       picks += fmt::format(" {}", Rd32(base + ctx.r3.u32 + kSlots + i * kSlotSize + 8));
     REXLOG_INFO("match types: people built - slobber {} g. eliminator {} live rule {:02X} online to {:02X} story {:08X} "
-                "match {:08X} chosen {} from {:08X}; slots 2-5:{}",
-                g_slobber, g_ge, base[0x82E3DE00], g_online_to & 0xFF, Rd32(base + kStoryContext), ctx.r3.u32,
+                "set-up rule {:02X} match {:08X} chosen {} from {:08X}; slots 2-5:{}",
+                g_slobber, g_ge, base[0x82E3DE00], g_online_to & 0xFF, Rd32(base + kStoryContext), g_setup_rule & 0xFF, ctx.r3.u32,
                 g_lumberjacks_chosen, uint32_t(ctx.lr), picks);
   }
-  if (g_slobber && g_online_to != kGauntlet && base[0x82E3DE00] == kGauntlet && ctx.r3.u32) {  // (the 2 waiting opponents; online: the lobby's)
+  if (g_slobber && g_online_to != kGauntlet && GauntletNow(base) && ctx.r3.u32) {  // (the 2 waiting opponents; online: the lobby's)
     if (const uint32_t rules = Rd32(base + kRules))
       for (int i = 2; i < kSlobberPeople; ++i) base[rules + kGauntlet * kRuleSize + 2 + i * 3 + 2] = 3;
     FillRandomSlots(base, ctx.r3.u32, kSlobberPeople - 2, 1, 3, "slobber knocker opponents");
     for (uint32_t i = kSlobberPeople; i < 6; ++i) Wr32(base + ctx.r3.u32 + kSlots + i * kSlotSize + 8, 51200);
   }
-  if (g_ge && base[0x82E3DE00] == kGauntlet && ctx.r3.u32) {  // (the 4 entrants: random, each his own team)
+  if (g_ge && GauntletNow(base) && ctx.r3.u32) {  // (the 4 entrants: random, each his own team)
     if (const uint32_t rules = Rd32(base + kRules))
       for (int i = 2; i < kGePeople; ++i) base[rules + kGauntlet * kRuleSize + 2 + i * 3 + 2] = 3;
     FillRandomSlots(base, ctx.r3.u32, kGePeople - 2, 2, 3, "gauntlet eliminator entrants");
